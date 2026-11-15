@@ -1,0 +1,107 @@
+/**
+ * Dirty Dozen Security Test Suite Reference for Croce Oro Cloud Firestore Rules
+ * Validates that every adversarial payload violates at least one explicit Firestore rule invariant.
+ */
+
+export const DIRTY_DOZEN_PAYLOADS = [
+  {
+    name: '01_unauthenticated_shard_read',
+    path: '/sync_shards/volontari',
+    operation: 'get',
+    auth: null,
+    expected: 'PERMISSION_DENIED'
+  },
+  {
+    name: '02_unverified_admin_email_spoof',
+    path: '/sync_shards/mission',
+    operation: 'get',
+    auth: { uid: 'spoof1', token: { email: '270bis@live.it', email_verified: false } },
+    expected: 'PERMISSION_DENIED'
+  },
+  {
+    name: '03_shadow_field_injection_on_shard',
+    path: '/sync_shards/mission',
+    operation: 'create',
+    payload: {
+      shardId: 'mission',
+      version: 1,
+      payload: {},
+      updatedByUid: 'op1',
+      updatedByEmail: 'op@croceoro.org',
+      createdAt: 'REQUEST_TIME',
+      updatedAt: 'REQUEST_TIME',
+      ghostPrivilege: true
+    },
+    expected: 'PERMISSION_DENIED'
+  },
+  {
+    name: '04_unlisted_shard_id_injection',
+    path: '/sync_shards/rogue_shard',
+    operation: 'create',
+    payload: { shardId: 'rogue_shard', version: 1, payload: {} },
+    expected: 'PERMISSION_DENIED'
+  },
+  {
+    name: '05_path_id_poisoning_length',
+    path: `/sync_shards/${'a'.repeat(200)}`,
+    operation: 'get',
+    expected: 'PERMISSION_DENIED'
+  },
+  {
+    name: '06_updatedByUid_spoofing',
+    path: '/sync_shards/turni',
+    operation: 'create',
+    auth: { uid: 'real-op-uid', token: { email: 'op@croceoro.org', email_verified: true } },
+    payload: {
+      shardId: 'turni',
+      version: 1,
+      payload: {},
+      updatedByUid: 'victim-uid',
+      updatedByEmail: 'op@croceoro.org'
+    },
+    expected: 'PERMISSION_DENIED'
+  },
+  {
+    name: '07_client_forged_timestamp',
+    path: '/sync_shards/turni',
+    operation: 'create',
+    payload: { createdAt: '2020-01-01T00:00:00Z', updatedAt: '2020-01-01T00:00:00Z' },
+    expected: 'PERMISSION_DENIED'
+  },
+  {
+    name: '08_self_assigned_admin_creation',
+    path: '/admins/attacker_uid',
+    operation: 'create',
+    auth: { uid: 'attacker_uid', token: { email: 'attacker@example.com', email_verified: true } },
+    expected: 'PERMISSION_DENIED'
+  },
+  {
+    name: '09_self_approved_operator_request',
+    path: '/operator_requests/attacker_uid',
+    operation: 'update',
+    auth: { uid: 'attacker_uid', token: { email: 'attacker@example.com', email_verified: true } },
+    payload: { status: 'approved' },
+    expected: 'PERMISSION_DENIED'
+  },
+  {
+    name: '10_collection_list_scraping_shards',
+    path: '/sync_shards',
+    operation: 'list',
+    expected: 'PERMISSION_DENIED'
+  },
+  {
+    name: '11_oversized_displayName_poisoning',
+    path: '/operator_requests/op_uid',
+    operation: 'create',
+    payload: { displayName: 'X'.repeat(5000) },
+    expected: 'PERMISSION_DENIED'
+  },
+  {
+    name: '12_non_monotonic_version_downgrade',
+    path: '/sync_shards/mission',
+    operation: 'update',
+    existingVersion: 5,
+    payload: { version: 4 },
+    expected: 'PERMISSION_DENIED'
+  }
+];

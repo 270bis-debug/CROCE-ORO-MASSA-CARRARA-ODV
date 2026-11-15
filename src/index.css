@@ -1,0 +1,337 @@
+@import "tailwindcss";
+
+@theme {
+  --color-slate-50: #f8fafc;
+  --color-slate-100: #f1f5f9;
+  --color-slate-200: #e2e8f0;
+  --color-slate-300: #cbd5e1;
+  --color-slate-400: #94a3b8;
+  --color-slate-500: #64748b;
+  --color-slate-600: #475569;
+  --color-slate-700: #334155;
+  --color-slate-800: #1e293b;
+  --color-slate-900: #0f172a;
+  --color-slate-950: #020617;
+
+  --color-red-50: #fef2f2;
+  --color-red-100: #fee2e2;
+  --color-red-200: #fecaca;
+  --color-red-300: #fca5a5;
+  --color-red-400: #f87171;
+  --color-red-500: #ef4444;
+  --color-red-600: #dc2626;
+  --color-red-700: #b91c1c;
+  --color-red-800: #991b1b;
+  --color-red-900: #7f1d1d;
+  --color-red-950: #450a0a;
+
+  --color-amber-50: #fffbeb;
+  --color-amber-100: #fef3c7;
+  --color-amber-200: #fde68a;
+  --color-amber-300: #fcd34d;
+  --color-amber-400: #fbbf24;
+  --color-amber-500: #f59e0b;
+  --color-amber-600: #d97706;
+  --color-amber-700: #b45309;
+  --color-amber-800: #92400e;
+  --color-amber-900: #78350f;
+  --color-amber-950: #451a03;
+
+  --color-emerald-50: #ecfdf5;
+  --color-emerald-100: #d1fae5;
+  --color-emerald-200: #a7f3d0;
+  --color-emerald-300: #6ee7b7;
+  --color-emerald-400: #34d399;
+  --color-emerald-500: #10b981;
+  --color-emerald-600: #059669;
+  --color-emerald-700: #047857;
+  --color-emerald-800: #065f46;
+  --color-emerald-900: #064e3b;
+  --color-emerald-950: #022c22;
+
+  --color-sky-50: #f0f9ff;
+  --color-sky-100: #e0f2fe;
+  --color-sky-200: #bae6fd;
+  --color-sky-300: #7dd3fc;
+  --color-sky-400: #38bdf8;
+  --color-sky-500: #0ea5e9;
+  --color-sky-600: #0284c7;
+  --color-sky-700: #0369a1;
+  --color-sky-800: #075985;
+  --color-sky-900: #0c4a6e;
+  --color-sky-950: #082f49;
+
+  --color-blue-50: #eff6ff;
+  --color-blue-100: #dbeafe;
+  --color-blue-200: #bfdbfe;
+  --color-blue-300: #93c5fd;
+  --color-blue-400: #60a5fa;
+  --color-blue-500: #3b82f6;
+  --color-blue-600: #2563eb;
+  --color-blue-700: #1d4ed8;
+  --color-blue-800: #1e40af;
+  --color-blue-900: #1e3a8a;
+  --color-blue-950: #172554;
+
+  --color-indigo-50: #eef2ff;
+  --color-indigo-100: #e0e7ff;
+  --color-indigo-200: #c7d2fe;
+  --color-indigo-300: #a5b4fc;
+  --color-indigo-400: #818cf8;
+  --color-indigo-500: #6366f1;
+  --color-indigo-600: #4f46e5;
+  --color-indigo-700: #4338ca;
+  --color-indigo-800: #3730a3;
+  --color-indigo-900: #312e81;
+  --color-indigo-950: #1e1b4b;
+
+  --color-cyan-50: #ecfeff;
+  --color-cyan-100: #cffafe;
+  --color-cyan-200: #a5f3fc;
+  --color-cyan-300: #67e8f9;
+  --color-cyan-400: #22d3ee;
+  --color-cyan-500: #06b6d4;
+  --color-cyan-600: #0891b2;
+  --color-cyan-700: #0e7490;
+  --color-cyan-800: #155e75;
+  --color-cyan-900: #164e63;
+  --color-cyan-950: #083344;
+
+  --color-teal-50: #f0fdf4;
+  --color-teal-100: #ccfbf1;
+  --color-teal-200: #99f6e4;
+  --color-teal-300: #5eead4;
+  --color-teal-400: #2dd4bf;
+  --color-teal-500: #14b8a6;
+  --color-teal-600: #0d9488;
+  --color-teal-700: #0f766e;
+  --color-teal-800: #115e59;
+  --color-teal-900: #134e4a;
+  --color-teal-950: #042f2e;
+
+  --color-purple-50: #faf5ff;
+  --color-purple-100: #f3e8ff;
+  --color-purple-200: #e9d5ff;
+  --color-purple-300: #d8b4fe;
+  --color-purple-400: #c084fc;
+  --color-purple-500: #a855f7;
+  --color-purple-600: #9333ea;
+  --color-purple-700: #7e22ce;
+  --color-purple-800: #6b21a8;
+  --color-purple-900: #581c87;
+  --color-purple-950: #3b0764;
+}
+
+html {
+  min-height: 100%;
+  width: 100%;
+  overflow-x: hidden;
+  scroll-behavior: smooth;
+}
+
+body {
+  min-height: 100%;
+  width: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+#root {
+  min-height: 100%;
+  width: 100%;
+}
+
+/* ========================================================================= */
+/* RETROCOMPATIBILITÀ TOTALE GOOGLE CHROME 109 (WINDOWS 7/8) E FIREFOX OBSOLETI */
+/* Previene testi neri su sfondi scuri, pulsanti invisibili e assenza colori */
+/* ========================================================================= */
+
+html.accesso-web-sfondo-bianco,
+body.accesso-web-sfondo-bianco {
+  background: #ffffff !important;
+  background-color: #ffffff !important;
+}
+
+/* Tutti i pannelli scuri della centrale devono SEMPRE avere testo chiaro per non ereditare colori neri */
+.bg-slate-900,
+.bg-slate-950,
+.bg-slate-800,
+[class*="bg-slate-900"],
+[class*="bg-slate-950"],
+[class*="bg-slate-800"] {
+  color: #f1f5f9;
+}
+
+/* Assicura che TUTTI i pulsanti siano al 100% visibili, cliccabili e con contrasto elevato */
+button,
+[role="button"],
+input[type="button"],
+input[type="submit"] {
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  appearance: none;
+  box-sizing: border-box;
+  opacity: 1 !important;
+  visibility: visible !important;
+  cursor: pointer;
+}
+
+/* Fallback solidi RGB / HEX per TUTTI i colori testo usati nella Centrale Operativa */
+.text-white { color: #ffffff !important; }
+.text-slate-100 { color: #f1f5f9 !important; }
+.text-slate-200 { color: #e2e8f0 !important; }
+.text-slate-300 { color: #cbd5e1 !important; }
+.text-slate-400 { color: #94a3b8 !important; }
+.text-slate-500 { color: #64748b !important; }
+.text-slate-600 { color: #475569 !important; }
+.text-slate-700 { color: #334155 !important; }
+.text-slate-800 { color: #1e293b !important; }
+.text-slate-900 { color: #0f172a !important; }
+.text-slate-950 { color: #020617 !important; }
+
+.text-amber-200 { color: #fde68a !important; }
+.text-amber-300 { color: #fcd34d !important; }
+.text-amber-400 { color: #fbbf24 !important; }
+.text-amber-500 { color: #f59e0b !important; }
+
+.text-emerald-200 { color: #a7f3d0 !important; }
+.text-emerald-300 { color: #6ee7b7 !important; }
+.text-emerald-400 { color: #34d399 !important; }
+.text-emerald-500 { color: #10b981 !important; }
+.text-emerald-600 { color: #059669 !important; }
+
+.text-sky-200 { color: #bae6fd !important; }
+.text-sky-300 { color: #7dd3fc !important; }
+.text-sky-400 { color: #38bdf8 !important; }
+.text-sky-500 { color: #0ea5e9 !important; }
+
+.text-blue-200 { color: #bfdbfe !important; }
+.text-blue-300 { color: #93c5fd !important; }
+.text-blue-400 { color: #60a5fa !important; }
+.text-blue-500 { color: #3b82f6 !important; }
+.text-blue-600 { color: #2563eb !important; }
+
+.text-indigo-200 { color: #c7d2fe !important; }
+.text-indigo-300 { color: #a5b4fc !important; }
+.text-indigo-400 { color: #818cf8 !important; }
+.text-indigo-500 { color: #6366f1 !important; }
+
+.text-cyan-200 { color: #a5f3fc !important; }
+.text-cyan-300 { color: #67e8f9 !important; }
+.text-cyan-400 { color: #22d3ee !important; }
+
+.text-teal-200 { color: #99f6e4 !important; }
+.text-teal-300 { color: #5eead4 !important; }
+.text-teal-400 { color: #2dd4bf !important; }
+
+.text-red-200 { color: #fecaca !important; }
+.text-red-300 { color: #fca5a5 !important; }
+.text-red-400 { color: #f87171 !important; }
+.text-red-500 { color: #ef4444 !important; }
+.text-red-600 { color: #dc2626 !important; }
+
+.text-purple-300 { color: #d8b4fe !important; }
+.text-purple-400 { color: #c084fc !important; }
+
+/* Fallback solidi RGB / HEX per sfondi */
+.bg-slate-950 { background-color: #020617 !important; }
+.bg-slate-900 { background-color: #0f172a !important; }
+.bg-slate-800 { background-color: #1e293b !important; }
+.bg-slate-700 { background-color: #334155 !important; }
+.bg-slate-100 { background-color: #f1f5f9 !important; }
+.bg-slate-50 { background-color: #f8fafc !important; }
+.bg-white { background-color: #ffffff !important; }
+
+/* Sfondi con opacità: Chrome 109 non supporta color-mix(), forniamo fallback solidi/rgba */
+.bg-slate-950\/80, .bg-slate-950\/90, .bg-slate-950\/70, .bg-slate-950\/60 { background-color: rgba(2, 6, 23, 0.85) !important; }
+.bg-slate-900\/80, .bg-slate-900\/90, .bg-slate-900\/95, .bg-slate-900\/70 { background-color: rgba(15, 23, 42, 0.9) !important; }
+.bg-slate-800\/80, .bg-slate-800\/70 { background-color: rgba(30, 41, 59, 0.85) !important; }
+.bg-sky-500\/10 { background-color: rgba(14, 165, 233, 0.12) !important; }
+.bg-amber-500\/10, .bg-amber-500\/20 { background-color: rgba(245, 158, 11, 0.18) !important; }
+.bg-emerald-500\/20, .bg-emerald-950\/50, .bg-emerald-950\/70 { background-color: rgba(6, 78, 59, 0.6) !important; }
+.bg-blue-950\/20, .bg-blue-950\/80 { background-color: rgba(23, 37, 84, 0.65) !important; }
+.bg-red-950\/20, .bg-red-950\/80, .bg-red-950\/90 { background-color: rgba(69, 10, 10, 0.7) !important; }
+.bg-indigo-950\/20, .bg-indigo-950\/80 { background-color: rgba(30, 27, 75, 0.65) !important; }
+.bg-cyan-950\/70 { background-color: rgba(8, 51, 68, 0.7) !important; }
+.bg-teal-950\/40 { background-color: rgba(4, 47, 46, 0.5) !important; }
+
+.bg-red-600 { background-color: #dc2626 !important; }
+.hover\:bg-red-500:hover { background-color: #ef4444 !important; }
+.bg-emerald-600 { background-color: #059669 !important; }
+.bg-emerald-500 { background-color: #10b981 !important; }
+.hover\:bg-emerald-700:hover { background-color: #047857 !important; }
+.bg-amber-500 { background-color: #f59e0b !important; }
+.bg-amber-400 { background-color: #fbbf24 !important; }
+.hover\:bg-amber-400:hover { background-color: #fbbf24 !important; }
+.bg-blue-600 { background-color: #2563eb !important; }
+.hover\:bg-blue-500:hover { background-color: #3b82f6 !important; }
+.bg-sky-600 { background-color: #0284c7 !important; }
+
+/* Bordi solidi con fallback */
+.border-slate-800, [class*="border-slate-800"] { border-color: #1e293b !important; }
+.border-slate-700, [class*="border-slate-700"] { border-color: #334155 !important; }
+.border-slate-600 { border-color: #475569 !important; }
+.border-slate-400 { border-color: #94a3b8 !important; }
+.border-slate-300 { border-color: #cbd5e1 !important; }
+.border-red-500 { border-color: #ef4444 !important; }
+.border-red-600 { border-color: #dc2626 !important; }
+.border-emerald-600 { border-color: #059669 !important; }
+.border-emerald-500 { border-color: #10b981 !important; }
+.border-amber-500 { border-color: #f59e0b !important; }
+.border-amber-400 { border-color: #fbbf24 !important; }
+.border-sky-500, [class*="border-sky-500"] { border-color: #0ea5e9 !important; }
+.border-blue-500 { border-color: #3b82f6 !important; }
+.border-indigo-500 { border-color: #6366f1 !important; }
+
+/* Card Enti Istituzionali: devono essere sempre ben visibili, con contrasto netto */
+.card-ente-istituzionale {
+  background-color: #0a1128 !important;
+  border: 1px solid #334155 !important;
+  color: #f1f5f9 !important;
+}
+.card-ente-istituzionale:hover {
+  background-color: #131c38 !important;
+  border-color: #64748b !important;
+}
+.card-ente-istituzionale.is-selezionato {
+  background-color: #0f2744 !important;
+  border-color: #38bdf8 !important;
+  box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.4) !important;
+}
+
+/* In modalità web (sfondo bianco), i contenitori principali devono avere sfondo bianco puro */
+body.accesso-web-sfondo-bianco .web-bg-white,
+.accesso-web-sfondo-bianco .web-bg-white {
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+  border-color: #cbd5e1 !important;
+}
+
+/* Transizione fluida e continua per l'ambulanza in marcia sulla mappa Leaflet */
+.leaflet-marker-icon.custom-ambulance-pin {
+  transition: transform 0.85s cubic-bezier(0.25, 1, 0.5, 1) !important;
+  will-change: transform;
+}
+
+/* Stili di stampa cartacea */
+@media print {
+  * {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+  body {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+    background: white !important;
+    color: black !important;
+  }
+  tr.riga-donazione-lilla,
+  .riga-donazione-lilla {
+    background-color: #f3e8ff !important;
+    color: #1e1b4b !important;
+    border-left: 5px solid #9333ea !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+}

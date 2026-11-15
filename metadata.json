@@ -1,0 +1,6 @@
+{
+  "name": "Centrale Operativa - Croce Oro Massa Carrara",
+  "description": "Centrale operativa e terminale di bordo per gestione missioni, stati mezzo, soccorso veterinario e protezione civile.",
+  "requestFramePermissions": ["geolocation", "microphone", "camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,1530 @@
+{
+  "volontari": [
+    {
+      "id": "vol-admin",
+      "nome": "Amministratore",
+      "cognome": "Centrale",
+      "matricola": "ADM-001",
+      "qualifica": "Soccorritore",
+      "telefono": "0585 625410",
+      "email": "centrale@croceoromassacarrara.it",
+      "pin": "4451",
+      "dataRegistrazione": "01/01/2026",
+      "inTurno": false,
+      "profiloCentrale": true,
+      "approvato": true,
+      "firmaBase64": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAGQAAAAyCAYAAACqNX6+AAAAAXNSR0IArs4c6QAAAERlWElmTU0AKgAAAAgAAYdpAAQAAAABAAAAGgAAAAAAA6ABAAMAAAABAAEAAKACAAQAAAABAAAAZKADAAQAAAABAAAAMgAAAACHdE+zAAAB8klEQVR4Ae3Xv0scURTH8e9m3c0m0aRSCwtbETuxs7BQLbXyP0gR/AP+BS1iYWVhIdoIWtlYWEhECyv9CVbZ3V0zc7y7ySRmdr248+A9L27e3TPv5jW7s3m7MggEgkAgEAiE/5dAwE1bWvN8j9tqV9786v9y83/d1f8k/9j/e0m3/W0eBAKBQCAQCFx7Au/tq1r9tM3v7Kz/pE1P/6P7e7t6r+91V55n9eO9/q1f2vW3ev4B7rU/38+v5QcBAAAAAADAj5kAAAAAAADA/7M/573N+s5+x73O7q723v6729l/f1f77e6e580/5n3v50eBAAAAAADAj1kAAAAAAADA/7M/573N+s5+x73O7q723v6729l/f1f77e6e580/5n3v50eBAAAAAADAj1kAAAAAAADA/7M/573N+s5+x73O7q723v6729l/f1f77e6e580/5n3v50eBAAAAAADAj1kAAAAAAADA/7M/573N+s5+x73O7q723v6729l/f1f77e6e580/5n3v50eBAAAAAADAj1kAAAAAAADA/7M/573N+s5+x73O7q723v6729l/f1f77e6e580/5n3v50eBAAAAAADAj1kAAAAAAADA/7M="
+    },
+    {
+      "id": "vol-1790806001919",
+      "nome": "Claudio",
+      "cognome": "Simonini",
+      "matricola": "VOL-156",
+      "qualifica": "Autista",
+      "caricaConsiglioDirettivo": "Presidente",
+      "firmaBase64": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAGQAAAAyCAYAAACqNX6+AAAAAXNSR0IArs4c6QAAAERlWElmTU0AKgAAAAgAAYdpAAQAAAABAAAAGgAAAAAAA6ABAAMAAAABAAEAAKACAAQAAAABAAAAZKADAAQAAAABAAAAMgAAAACHdE+zAAAB8klEQVR4Ae3Xv0scURTH8e9m3c0m0aRSCwtbETuxs7BQLbXyP0gR/AP+BS1iYWVhIdoIWtlYWEhECyv9CVbZ3V0zc7y7ySRmdr248+A9L27e3TPv5jW7s3m7MggEgkAgEAiE/5dAwE1bWvN8j9tqV9786v9y83/d1f8k/9j/e0m3/W0eBAKBQCAQCFx7Au/tq1r9tM3v7Kz/pE1P/6P7e7t6r+91V55n9eO9/q1f2vW3ev4B7rU/38+v5QcBAAAAAADAj5kAAAAAAADA/7M/573N+s5+x73O7q723v6729l/f1f77e6e580/5n3v50eBAAAAAADAj1kAAAAAAADA/7M/573N+s5+x73O7q723v6729l/f1f77e6e580/5n3v50eBAAAAAADAj1kAAAAAAADA/7M/573N+s5+x73O7q723v6729l/f1f77e6e580/5n3v50eBAAAAAADAj1kAAAAAAADA/7M/573N+s5+x73O7q723v6729l/f1f77e6e580/5n3v50eBAAAAAADAj1kAAAAAAADA/7M=",
+      "telefono": "333 1234567",
+      "email": "claudio.simonini@croceoromassacarrara.it",
+      "pin": "1234",
+      "dataRegistrazione": "01/10/2026",
+      "inTurno": false,
+      "ultimoAccesso": "20:31:22",
+      "codiceFiscale": "SMNCLD72H14E625U",
+      "indirizzoResidenza": "Via Dorsale 15, 54100 Massa (MS)"
+    },
+    {
+      "id": "vol-1792318394496",
+      "nome": "Mattia",
+      "cognome": "Vignali",
+      "matricola": "VOL-318",
+      "qualifica": "Autista",
+      "telefono": "3770832318",
+      "email": "vignalimattia5@gmail.com",
+      "pin": "8346",
+      "dataRegistrazione": "18/10/2026",
+      "inTurno": false,
+      "codiceFiscale": "VGNMTT10A30F023X",
+      "indirizzoResidenza": "Via Compagni, 12, 54037 Massa (MS)",
+      "dettaglioResidenza": {
+        "indirizzo": "Via Compagni, 12",
+        "comune": "Massa",
+        "cap": "54037",
+        "provincia": "MS",
+        "lat": 44.034467,
+        "lng": 10.079434
+      },
+      "dataNascita": "2010-01-30",
+      "sesso": "M",
+      "comuneNascita": "Massa",
+      "provinciaNascita": "MS",
+      "tesseramento": {
+        "numeroTessera": "VOL-387",
+        "dataPrimaIscrizione": "2026-10-18",
+        "annoRiferimento": 2026,
+        "rinnovata": true,
+        "dataRinnovo": "2026-10-18",
+        "numeroRicevuta": 1,
+        "numeroRicevutaFormattato": "01/2026",
+        "importoVersato": 5,
+        "copertaDaIscrizioneFineAnnoPrec": false,
+        "timbroCartaceoEseguito": false,
+        "ricevutaAttuale": {
+          "id": "ric-1792318394495-2026",
+          "numeroProgressivo": 1,
+          "annoRiferimento": 2026,
+          "numeroRicevutaFormattato": "01/2026",
+          "dataEmissione": "2026-10-18",
+          "importo": 5,
+          "esenteQuotaPrimoAnno": false,
+          "dicituraFiscale": "Documento esente da imposta di bollo ai sensi dell'art. 82, comma 5, del D.Lgs. n. 117/2017",
+          "socioId": "",
+          "nomeSocio": "Mattia",
+          "cognomeSocio": "Vignali",
+          "codiceFiscaleSocio": "VGNMTT10A30F023X",
+          "indirizzoResidenzaSocio": "Via Compagni, 12, 54037 Massa (MS)",
+          "qualificaSocio": "Autista",
+          "numeroTessera": "VOL-387",
+          "tesorieraCarica": "Tesoriera"
+        },
+        "storicoRicevute": [
+          {
+            "id": "ric-1792318394495-2026",
+            "numeroProgressivo": 1,
+            "annoRiferimento": 2026,
+            "numeroRicevutaFormattato": "01/2026",
+            "dataEmissione": "2026-10-18",
+            "importo": 5,
+            "esenteQuotaPrimoAnno": false,
+            "dicituraFiscale": "Documento esente da imposta di bollo ai sensi dell'art. 82, comma 5, del D.Lgs. n. 117/2017",
+            "socioId": "",
+            "nomeSocio": "Mattia",
+            "cognomeSocio": "Vignali",
+            "codiceFiscaleSocio": "VGNMTT10A30F023X",
+            "indirizzoResidenzaSocio": "Via Compagni, 12, 54037 Massa (MS)",
+            "qualificaSocio": "Autista",
+            "numeroTessera": "VOL-387",
+            "tesorieraCarica": "Tesoriera"
+          }
+        ]
+      },
+      "pinProvvisorio": true,
+      "richiedeResetPassword": true,
+      "resetToken": "rst-1792318394495-36y0m1j",
+      "dataRichiestaResetPassword": "18/10/2026, 12:13:14",
+      "dataInvioInvitoReset": "18/10/2026, 12:13:14",
+      "profiloCentrale": false,
+      "approvato": true,
+      "vestiario": {
+        "tshirt": [
+          {
+            "id": 1,
+            "consegnato": true,
+            "dataConsegna": "2026-10-18",
+            "taglia": "M",
+            "isUltimaConsegna": true
+          },
+          {
+            "id": 2,
+            "consegnato": false,
+            "isUltimaConsegna": false
+          },
+          {
+            "id": 3,
+            "consegnato": false,
+            "isUltimaConsegna": false
+          }
+        ],
+        "felpa": {
+          "consegnato": false,
+          "isUltimaConsegna": false
+        },
+        "pile": {
+          "consegnato": false,
+          "isUltimaConsegna": false
+        },
+        "pantaloni": {
+          "consegnato": false,
+          "isUltimaConsegna": false
+        },
+        "giubbetto": {
+          "consegnato": false,
+          "isUltimaConsegna": false
+        },
+        "giubbottoInvernale": {
+          "consegnato": false,
+          "isUltimaConsegna": false
+        },
+        "dataUltimoAggiornamento": "18/10/2026 12:13"
+      }
+    },
+    {
+      "id": "vol-4",
+      "nome": "Sara",
+      "cognome": "Ferretti",
+      "matricola": "VOL-104",
+      "qualifica": "Soccorritore",
+      "caricaConsiglioDirettivo": "Tesoriere",
+      "telefono": "339 4443210",
+      "email": "sara.ferretti@croceoromassacarrara.it",
+      "pin": "4321",
+      "dataRegistrazione": "15/01/2026",
+      "inTurno": false,
+      "codiceFiscale": "FRRSRA92D50E625K",
+      "indirizzoResidenza": "Via delle Alpi Apuane 23, 54033 Carrara (MS)"
+    },
+    {
+      "id": "vol-quattrini",
+      "nome": "Simone",
+      "cognome": "Quattrini",
+      "codiceFiscale": "QTTSMN83L22L833F",
+      "indirizzoResidenza": "Via Fossone Basso 31, 19034 Luni (SP)",
+      "dettaglioResidenza": {
+        "indirizzo": "Via Fossone Basso 31",
+        "comune": "Luni",
+        "cap": "19034",
+        "provincia": "SP"
+      },
+      "telefono": "3284158897",
+      "email": "simone.quattrini@gmail.com",
+      "matricola": "OP-04",
+      "qualifica": "Operatore Centrale",
+      "caricaConsiglioDirettivo": "Segretario",
+      "profiloCentrale": true,
+      "approvato": true,
+      "inTurno": false,
+      "pin": "5678",
+      "dataRegistrazione": "05/11/2026",
+      "firmaBase64": "data:image/png;base64,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",
+      "tesseramento": {
+        "numeroTessera": "VOL-003",
+        "dataPrimaIscrizione": "2026-11-05",
+        "annoRiferimento": 2026,
+        "rinnovata": true,
+        "dataRinnovo": "2026-11-05",
+        "importoVersato": 0,
+        "delibera": "DEL-2026/01 del 2026-11-05",
+        "libroSoci": "LS-2026/003",
+        "copertaDaIscrizioneFineAnnoPrec": false,
+        "timbroCartaceoEseguito": true
+      }
+    },
+    {
+      "id": "vol-ricci",
+      "nome": "Noemi",
+      "cognome": "Ricci",
+      "codiceFiscale": "RCCNMO95H50E625K",
+      "indirizzoResidenza": "Via Giardini 12, 54033 Carrara (MS)",
+      "dettaglioResidenza": {
+        "indirizzo": "Via Giardini 12",
+        "comune": "Carrara",
+        "cap": "54033",
+        "provincia": "MS"
+      },
+      "telefono": "338 9876543",
+      "email": "noemi.ricci@croceoromassacarrara.it",
+      "matricola": "VOL-105",
+      "qualifica": "Soccorritore",
+      "caricaConsiglioDirettivo": "Consigliere",
+      "profiloCentrale": false,
+      "approvato": true,
+      "inTurno": false,
+      "pin": "2345",
+      "dataRegistrazione": "05/11/2026"
+    }
+  ],
+  "activeMission": null,
+  "letturaConfermata": false,
+  "operativeTimes": {},
+  "kmInizio": "",
+  "kmFine": "",
+  "ringing": {
+    "active": false,
+    "source": "",
+    "soundType": "telefono",
+    "timestamp": 0
+  },
+  "gpsPosition": {
+    "lat": 44.06394541121102,
+    "lng": 10.049345796923294,
+    "accuratezza": 74,
+    "velocita": null,
+    "orario": "23:09:43"
+  },
+  "activeShift": {
+    "attivo": false
+  },
+  "notifiche": [
+    {
+      "id": "notif-1790805009404",
+      "orario": "21:50:09",
+      "testo": "DISPATCH: Nuova scheda inviata a bordo mezzo T4607 (VET-2026-0930)",
+      "tipo": "centrale"
+    },
+    {
+      "id": "notif-1790805010807",
+      "orario": "21:50:10",
+      "testo": "⏱️ Registrato orario: [PARTENZA DA SEDE] alle ore 15:03 (VET-2026-0930)",
+      "tipo": "mezzo"
+    },
+    {
+      "id": "notif-1790805011410",
+      "orario": "21:50:11",
+      "testo": "⏱️ Registrato orario: [ARRIVO SUL POSTO] alle ore 15:08 (VET-2026-0930)",
+      "tipo": "mezzo"
+    },
+    {
+      "id": "notif-1790805012012",
+      "orario": "21:50:12",
+      "testo": "⏱️ Registrato orario: [PARTENZA DA OBIETTIVO] alle ore 15:20 (VET-2026-0930)",
+      "tipo": "mezzo"
+    },
+    {
+      "id": "notif-1790805012614",
+      "orario": "21:50:12",
+      "testo": "⏱️ Registrato orario: [ARRIVO IN DESTINAZIONE] alle ore 15:35 (VET-2026-0930)",
+      "tipo": "mezzo"
+    },
+    {
+      "id": "notif-1790805013216",
+      "orario": "21:50:13",
+      "testo": "🚨 ULTIMO ORARIO REGISTRATO: [6. RIENTRO IN SEDE] alle ore 15:55 per VET-2026-0930!",
+      "tipo": "allarme"
+    },
+    {
+      "id": "notif-1790805442983",
+      "orario": "21:57:22",
+      "testo": "🔕 SUONERIA SILENZIATA dall'operatore.",
+      "tipo": "sistema"
+    },
+    {
+      "id": "notif-1790805934167",
+      "orario": "22:05:34",
+      "testo": "🔴 FINE TURNO: Terminale di bordo disconnesso dal servizio.",
+      "tipo": "mezzo"
+    },
+    {
+      "id": "notif-1790805980433",
+      "orario": "22:06:20",
+      "testo": "🔕 SUONERIA SILENZIATA dall'operatore.",
+      "tipo": "sistema"
+    },
+    {
+      "id": "notif-1790806001933",
+      "orario": "22:06:41",
+      "testo": "👤 NUOVO VOLONTARIO: Registrato Claudio Simonini (Autista) con PIN autorizzato",
+      "tipo": "sistema"
+    },
+    {
+      "id": "notif-1790806007449",
+      "orario": "22:06:47",
+      "testo": "🟢 INIZIO TURNO: Claudio Simonini in turno su T4609 (Autista)",
+      "tipo": "mezzo"
+    },
+    {
+      "id": "notif-1790840354299",
+      "orario": "07:39:14",
+      "testo": "DISPATCH: Nuova scheda inviata a bordo mezzo T4609 (CO-VET-ROSSO-2026-002)",
+      "tipo": "centrale"
+    },
+    {
+      "id": "notif-1790840356565",
+      "orario": "07:39:16",
+      "testo": "🔕 SUONERIA SILENZIATA dall'operatore.",
+      "tipo": "sistema"
+    },
+    {
+      "id": "notif-1790840368631",
+      "orario": "07:39:28",
+      "testo": "📖 Equipaggio ha confermato presa visione e lettura della scheda CO-VET-ROSSO-2026-002",
+      "tipo": "mezzo"
+    },
+    {
+      "id": "notif-1790840394898",
+      "orario": "07:39:54",
+      "testo": "🏥 CENTRALE: Trasmissione Destinazione [Clinica Veterinaria Haziel (Pronto Soccorso H24), Via Luigi Camaiora 5, 19037 Santo Stefano di Magra SP] e Codice Rientro [4 = Paziente deceduto quindi rientro in sede] a bordo mezzo.",
+      "tipo": "centrale"
+    },
+    {
+      "id": "notif-1790840398652",
+      "orario": "07:39:58",
+      "testo": "🔕 SUONERIA SILENZIATA dall'operatore.",
+      "tipo": "sistema"
+    },
+    {
+      "id": "notif-1790840405574",
+      "orario": "07:40:05",
+      "testo": "⏱️ Registrato orario: [PARTENZA DA SEDE] alle ore 09:40:05 (CO-VET-ROSSO-2026-002)",
+      "tipo": "mezzo"
+    },
+    {
+      "id": "notif-1790840406039",
+      "orario": "07:40:06",
+      "testo": "⏱️ Registrato orario: [ARRIVO SUL POSTO] alle ore 09:40:05 (CO-VET-ROSSO-2026-002)",
+      "tipo": "mezzo"
+    },
+    {
+      "id": "notif-1790840406765",
+      "orario": "07:40:06",
+      "testo": "⏱️ Registrato orario: [PARTENZA DA OBIETTIVO] alle ore 09:40:06 (CO-VET-ROSSO-2026-002)",
+      "tipo": "mezzo"
+    },
+    {
+      "id": "notif-1790840411953",
+      "orario": "07:40:11",
+      "testo": "⏱️ Registrato orario: [ARRIVO A DESTINAZIONE] alle ore 09:40:11 (CO-VET-ROSSO-2026-002)",
+      "tipo": "mezzo"
+    },
+    {
+      "id": "notif-1790840412882",
+      "orario": "07:40:12",
+      "testo": "⏱️ Registrato orario: [FINE MISSIONE] alle ore 09:40:12 (CO-VET-ROSSO-2026-002)",
+      "tipo": "mezzo"
+    },
+    {
+      "id": "notif-1790841143864",
+      "orario": "07:52:23",
+      "testo": "RADIO [CENTRALE]: prova",
+      "tipo": "centrale"
+    },
+    {
+      "id": "notif-1790841336877",
+      "orario": "07:55:36",
+      "testo": "🚨 ULTIMO ORARIO REGISTRATO: [6. RIENTRO IN SEDE] alle ore 09:55:36 per CO-VET-ROSSO-2026-002!",
+      "tipo": "allarme"
+    },
+    {
+      "id": "notif-1790841336895",
+      "orario": "07:55:36",
+      "testo": "📁 DATABASE: Servizio CO-VET-ROSSO-2026-002 archiviato definitivamente (Anno 2026 - ⚠️ IN ATTESA KM).",
+      "tipo": "sistema"
+    },
+    {
+      "id": "notif-1790841348805",
+      "orario": "07:55:48",
+      "testo": "🔕 SUONERIA SILENZIATA dall'operatore.",
+      "tipo": "sistema"
+    },
+    {
+      "id": "notif-1790841359610",
+      "orario": "07:55:59",
+      "testo": "🔕 SUONERIA SILENZIATA dall'operatore.",
+      "tipo": "sistema"
+    },
+    {
+      "id": "notif-1790841385696",
+      "orario": "07:56:25",
+      "testo": "✅ CENTRALE: Inseriti KM per CO-VET-ROSSO-2026-002 (30 KM). Foglio di Viaggio PDF sbloccato e disponibile!",
+      "tipo": "centrale"
+    },
+    {
+      "id": "notif-1790841436978",
+      "orario": "07:57:16",
+      "testo": "🛣️ Inserito KM Inizio Servizio: 10 KM",
+      "tipo": "mezzo"
+    },
+    {
+      "id": "notif-1790841445629",
+      "orario": "07:57:25",
+      "testo": "🛣️ Inserito KM Fine Servizio: 41 KM (Chilometraggio totale calcolato: 31 KM)",
+      "tipo": "mezzo"
+    },
+    {
+      "id": "notif-1790841453391",
+      "orario": "07:57:33",
+      "testo": "🚨 ULTIMO ORARIO REGISTRATO: [6. RIENTRO IN SEDE] alle ore 09:57:33 per CO-VET-ROSSO-2026-002!",
+      "tipo": "allarme"
+    },
+    {
+      "id": "notif-1790841453392",
+      "orario": "07:57:33",
+      "testo": "📁 DATABASE: Servizio CO-VET-ROSSO-2026-002 archiviato definitivamente (Anno 2026).",
+      "tipo": "sistema"
+    },
+    {
+      "id": "notif-1790841458368",
+      "orario": "07:57:38",
+      "testo": "🔕 SUONERIA SILENZIATA dall'operatore.",
+      "tipo": "sistema"
+    },
+    {
+      "id": "notif-1790841517150",
+      "orario": "07:58:37",
+      "testo": "🔕 SUONERIA SILENZIATA dall'operatore.",
+      "tipo": "sistema"
+    },
+    {
+      "id": "notif-1790842596075",
+      "orario": "08:16:36",
+      "testo": "🔴 FINE TURNO: Terminale di bordo disconnesso dal servizio.",
+      "tipo": "mezzo"
+    },
+    {
+      "id": "notif-1790842603551",
+      "orario": "08:16:43",
+      "testo": "🟢 INIZIO TURNO: Claudio Simonini in turno su T4609 (Autista)",
+      "tipo": "mezzo"
+    },
+    {
+      "id": "notif-1790842640300",
+      "orario": "08:17:20",
+      "testo": "🚨 ULTIMO ORARIO REGISTRATO: [6. RIENTRO IN SEDE] alle ore 10:17:19 per CO-VET-ROSSO-2026-002!",
+      "tipo": "allarme"
+    },
+    {
+      "id": "notif-1790842640301",
+      "orario": "08:17:20",
+      "testo": "🛣️ KM Bordo registrati dall'equipaggio: 10 → 41 (31 KM)",
+      "tipo": "mezzo"
+    },
+    {
+      "id": "notif-1790842640302",
+      "orario": "08:17:20",
+      "testo": "📁 DATABASE: Servizio CO-VET-ROSSO-2026-002 archiviato definitivamente (Anno 2026).",
+      "tipo": "sistema"
+    },
+    {
+      "id": "notif-1790842645418",
+      "orario": "08:17:25",
+      "testo": "🔕 SUONERIA SILENZIATA dall'operatore.",
+      "tipo": "sistema"
+    },
+    {
+      "id": "notif-1790842653311",
+      "orario": "08:17:33",
+      "testo": "🚨 ULTIMO ORARIO REGISTRATO: [6. RIENTRO IN SEDE] alle ore 10:17:32 per CO-VET-ROSSO-2026-002!",
+      "tipo": "allarme"
+    },
+    {
+      "id": "notif-1790842653312",
+      "orario": "08:17:33",
+      "testo": "🛣️ KM Bordo registrati dall'equipaggio: 10 → 41 (31 KM)",
+      "tipo": "mezzo"
+    },
+    {
+      "id": "notif-1790842653313",
+      "orario": "08:17:33",
+      "testo": "📁 DATABASE: Servizio CO-VET-ROSSO-2026-002 archiviato definitivamente (Anno 2026).",
+      "tipo": "sistema"
+    },
+    {
+      "id": "notif-1790842656521",
+      "orario": "08:17:36",
+      "testo": "🔕 SUONERIA SILENZIATA dall'operatore.",
+      "tipo": "sistema"
+    },
+    {
+      "id": "notif-1790842681618",
+      "orario": "08:18:01",
+      "testo": "🛣️ Inserito KM Fine Servizio: 141 KM (Chilometraggio totale calcolato: 131 KM)",
+      "tipo": "mezzo"
+    },
+    {
+      "id": "notif-1790842681648",
+      "orario": "08:18:01",
+      "testo": "🚨 ULTIMO ORARIO REGISTRATO: [6. RIENTRO IN SEDE] alle ore 10:18:01 per CO-VET-ROSSO-2026-002!",
+      "tipo": "allarme"
+    },
+    {
+      "id": "notif-50-081801",
+      "orario": "08:18:01",
+      "testo": "🛣️ KM Bordo registrati dall'equipaggio: 10 → 141 (131 KM)",
+      "tipo": "mezzo"
+    },
+    {
+      "id": "notif-1790842681650",
+      "orario": "08:18:01",
+      "testo": "📁 DATABASE: Servizio CO-VET-ROSSO-2026-002 archiviato definitivamente (Anno 2026).",
+      "tipo": "sistema"
+    },
+    {
+      "id": "notif-1790842686253",
+      "orario": "08:18:06",
+      "testo": "🔕 SUONERIA SILENZIATA dall'operatore.",
+      "tipo": "sistema"
+    },
+    {
+      "id": "notif-1790976339323-1-27jy",
+      "orario": "21:25:39",
+      "testo": "🔴 FINE TURNO: Terminale di bordo disconnesso dal servizio.",
+      "tipo": "mezzo"
+    },
+    {
+      "id": "notif-1790976351197-2-n724",
+      "orario": "21:25:51",
+      "testo": "🟢 INIZIO TURNO: Claudio Simonini in turno su T4609 (Autista)",
+      "tipo": "mezzo"
+    },
+    {
+      "id": "notif-1790978191289-1-0r40",
+      "orario": "21:56:31",
+      "testo": "🔴 FINE TURNO: Terminale di bordo disconnesso dal servizio.",
+      "tipo": "mezzo"
+    },
+    {
+      "id": "notif-1791011620055-1-zmu7",
+      "orario": "07:13:40",
+      "testo": "🔴 FINE TURNO: Terminale di bordo disconnesso dal servizio.",
+      "tipo": "mezzo"
+    },
+    {
+      "id": "notif-1791311468310-1-tpju",
+      "orario": "18:31:08",
+      "testo": "DISPATCH: Nuova scheda inviata a bordo mezzo T4609 (CO-VET-ROSSO-2026-003)",
+      "tipo": "centrale"
+    },
+    {
+      "id": "notif-1791311481899-2-5imm",
+      "orario": "18:31:21",
+      "testo": "🟢 ACCESSO VOLONTARIO: Claudio Simonini ha effettuato l'accesso all'app sul mezzo T4609 (Ambulanza) (Autista)",
+      "tipo": "mezzo"
+    },
+    {
+      "id": "notif-1791311485700-3-sgzy",
+      "orario": "18:31:25",
+      "testo": "🔕 SUONERIA SILENZIATA dall'operatore.",
+      "tipo": "sistema"
+    },
+    {
+      "id": "notif-1791311488723-4-kqe0",
+      "orario": "18:31:28",
+      "testo": "📖 Equipaggio ha confermato presa visione e lettura della scheda CO-VET-ROSSO-2026-003",
+      "tipo": "mezzo"
+    },
+    {
+      "id": "notif-1791311490388-5-dzwz",
+      "orario": "18:31:30",
+      "testo": "⏱️ Registrato orario: [PARTENZA DA SEDE] alle ore 20:31:30 (CO-VET-ROSSO-2026-003)",
+      "tipo": "mezzo"
+    },
+    {
+      "id": "notif-1791311494732-6-m1ft",
+      "orario": "18:31:34",
+      "testo": "⏱️ Registrato orario: [ARRIVO SUL POSTO] alle ore 20:31:34 (CO-VET-ROSSO-2026-003)",
+      "tipo": "mezzo"
+    },
+    {
+      "id": "notif-1791311494733-7-t1ve",
+      "orario": "18:31:34",
+      "testo": "🚨 MEZZO SUL POSTO: Equipaggio T4609 (CO-VET-ROSSO-2026-003) è arrivato sull'obiettivo ed è IN ATTESA DEL LUOGO DI DESTINAZIONE E CODICE DI RIENTRO!",
+      "tipo": "allarme"
+    },
+    {
+      "id": "notif-1791311494787-8-5e2g",
+      "orario": "18:31:34",
+      "testo": "⏱️ Registrato orario: [ARRIVO SUL POSTO] alle ore 20:31:34 (CO-VET-ROSSO-2026-003) [📍 GPS Certificato: Lat 44.063839°, Lng 10.049393° (±8m)]",
+      "tipo": "mezzo"
+    },
+    {
+      "id": "notif-1791311508735-9-yf67",
+      "orario": "18:31:48",
+      "testo": "🔕 SUONERIA SILENZIATA dall'operatore.",
+      "tipo": "sistema"
+    },
+    {
+      "id": "notif-1791311564029-10-l280",
+      "orario": "18:32:44",
+      "testo": "🏥 CENTRALE: Trasmissione Destinazione [Clinica Veterinaria Haziel (Pronto Soccorso H24), Via Luigi Camaiora 5, 19037 Santo Stefano di Magra SP] e Codice Rientro [1 = Codice Verde] a bordo mezzo.",
+      "tipo": "centrale"
+    },
+    {
+      "id": "notif-1791311572353-11-dgsy",
+      "orario": "18:32:52",
+      "testo": "🔕 SUONERIA SILENZIATA dall'operatore.",
+      "tipo": "sistema"
+    },
+    {
+      "id": "notif-1791311574577-12-iaii",
+      "orario": "18:32:54",
+      "testo": "⏱️ Registrato orario: [PARTENZA DA OBIETTIVO] alle ore 20:32:54 (CO-VET-ROSSO-2026-003)",
+      "tipo": "mezzo"
+    },
+    {
+      "id": "notif-1791311579368-13-63a4",
+      "orario": "18:32:59",
+      "testo": "⏱️ Registrato orario: [ARRIVO A DESTINAZIONE] alle ore 20:32:59 (CO-VET-ROSSO-2026-003)",
+      "tipo": "mezzo"
+    },
+    {
+      "id": "notif-1791311579488-14-jg4w",
+      "orario": "18:32:59",
+      "testo": "⏱️ Registrato orario: [ARRIVO A DESTINAZIONE] alle ore 20:32:59 (CO-VET-ROSSO-2026-003) [📍 GPS Certificato: Lat 44.063838°, Lng 10.049389° (±9m)]",
+      "tipo": "mezzo"
+    },
+    {
+      "id": "notif-1791311608351-15-6zrj",
+      "orario": "18:33:28",
+      "testo": "⏱️ Registrato orario: [FINE MISSIONE] alle ore 20:33:28 (CO-VET-ROSSO-2026-003)",
+      "tipo": "mezzo"
+    },
+    {
+      "id": "notif-1791311652018-16-xgg3",
+      "orario": "18:34:12",
+      "testo": "🛣️ KM Bordo registrati dall'equipaggio: 1 → 10 (9 KM)",
+      "tipo": "mezzo"
+    },
+    {
+      "id": "notif-1791311652019-17-eam2",
+      "orario": "18:34:12",
+      "testo": "🚨 ULTIMO ORARIO REGISTRATO: [6. RIENTRO IN SEDE] alle ore 20:34:12 per CO-VET-ROSSO-2026-003!",
+      "tipo": "allarme"
+    },
+    {
+      "id": "notif-1791311652020-18-hzhy",
+      "orario": "18:34:12",
+      "testo": "🛣️ KM Bordo registrati dal capo turno: 1 → 10 (9 KM)",
+      "tipo": "mezzo"
+    },
+    {
+      "id": "notif-1791311652048-19-j8us",
+      "orario": "18:34:12",
+      "testo": "📁 DATABASE: Servizio CO-VET-ROSSO-2026-003 archiviato definitivamente (Anno 2026).",
+      "tipo": "sistema"
+    },
+    {
+      "id": "notif-1791311664489-20-q37p",
+      "orario": "18:34:24",
+      "testo": "✍️ CONSEGNA DESTINAZIONE REGISTRATA (CO-VET-ROSSO-2026-003): Proprietario: Claudio Simonini | Donazione: €10 (Contanti) | Firma proprietario acquisita. Integrati nella scheda e nel PDF.",
+      "tipo": "sistema"
+    },
+    {
+      "id": "notif-1791311822392-21-y1ja",
+      "orario": "18:37:02",
+      "testo": "MISSIONE CONCLUSA: Scheda archiviata e terminali liberati per nuovo servizio.",
+      "tipo": "sistema"
+    },
+    {
+      "id": "notif-1791368942545-1-3pv8",
+      "orario": "10:29:02",
+      "testo": "DISPATCH: Nuova scheda inviata a bordo mezzo T4606 (CO-VET-VERDE-2026-999)",
+      "tipo": "centrale"
+    },
+    {
+      "id": "notif-1791368948896-2-49li",
+      "orario": "10:29:08",
+      "testo": "🔕 SUONERIA SILENZIATA dall'operatore.",
+      "tipo": "sistema"
+    },
+    {
+      "id": "notif-1791368948904-3-68up",
+      "orario": "10:29:08",
+      "testo": "🔕 SUONERIA SILENZIATA dall'operatore.",
+      "tipo": "sistema"
+    },
+    {
+      "id": "notif-1791368956697-4-k8nq",
+      "orario": "10:29:16",
+      "testo": "MISSIONE CONCLUSA: Scheda archiviata e terminali liberati per nuovo servizio.",
+      "tipo": "sistema"
+    },
+    {
+      "id": "notif-1792162120423-1-qdyz",
+      "orario": "14:48:40",
+      "testo": "DISPATCH: Nuova scheda inviata a bordo mezzo T4606 (CO-VET-GIALLO-2026-370)",
+      "tipo": "centrale"
+    },
+    {
+      "id": "notif-1792162121222-2-azoy",
+      "orario": "14:48:41",
+      "testo": "📖 Equipaggio ha confermato presa visione e lettura della scheda CO-VET-GIALLO-2026-370",
+      "tipo": "mezzo"
+    },
+    {
+      "id": "notif-1792162121823-3-zs11",
+      "orario": "14:48:41",
+      "testo": "🚨 ULTIMO ORARIO REGISTRATO: [6. RIENTRO IN SEDE] alle ore 15:22:10 per CO-VET-GIALLO-2026-370!",
+      "tipo": "allarme"
+    },
+    {
+      "id": "notif-1792162122424-4-rr78",
+      "orario": "14:48:42",
+      "testo": "🛣️ KM Registrati per CO-VET-GIALLO-2026-370: Inizio 15420 | Fine 15448 | Totali: 28 KM",
+      "tipo": "mezzo"
+    },
+    {
+      "id": "notif-1792162123026-5-rkv8",
+      "orario": "14:48:43",
+      "testo": "✍️ CONSEGNA DESTINAZIONE REGISTRATA (CO-VET-GIALLO-2026-370): Proprietario: Alessandro Bianchi | Donazione: €50 (POS) | Firma proprietario acquisita. Integrati nella scheda e nel PDF.",
+      "tipo": "sistema"
+    },
+    {
+      "id": "notif-1792162124426-6-rmp6",
+      "orario": "14:48:44",
+      "testo": "📧 TESORERIA: Trasmesso Foglio di Viaggio PDF (CO-VET-GIALLO-2026-370) con donazione di € 50.00 (POS Elettronico) all'indirizzo tesoreria@croceoro.org",
+      "tipo": "sistema"
+    },
+    {
+      "id": "notif-1792162148086-7-8h1d",
+      "orario": "14:49:08",
+      "testo": "DISPATCH: Nuova scheda inviata a bordo mezzo T4606 (CO-VET-GIALLO-2026-421)",
+      "tipo": "centrale"
+    },
+    {
+      "id": "notif-1792162148888-8-himu",
+      "orario": "14:49:08",
+      "testo": "📖 Equipaggio ha confermato presa visione e lettura della scheda CO-VET-GIALLO-2026-421",
+      "tipo": "mezzo"
+    },
+    {
+      "id": "notif-1792162149491-9-3sfu",
+      "orario": "14:49:09",
+      "testo": "🚨 ULTIMO ORARIO REGISTRATO: [6. RIENTRO IN SEDE] alle ore 15:22:10 per CO-VET-GIALLO-2026-421!",
+      "tipo": "allarme"
+    },
+    {
+      "id": "notif-1792162150093-10-th3m",
+      "orario": "14:49:10",
+      "testo": "🛣️ KM Registrati per CO-VET-GIALLO-2026-421: Inizio 15420 | Fine 15448 | Totali: 28 KM",
+      "tipo": "mezzo"
+    },
+    {
+      "id": "notif-1792162150694-11-91nt",
+      "orario": "14:49:10",
+      "testo": "✍️ CONSEGNA DESTINAZIONE REGISTRATA (CO-VET-GIALLO-2026-421): Proprietario: Alessandro Bianchi | Donazione: €50 (POS) | Firma proprietario acquisita. Integrati nella scheda e nel PDF.",
+      "tipo": "sistema"
+    },
+    {
+      "id": "notif-1792162152138-12-ayo0",
+      "orario": "14:49:12",
+      "testo": "📧 TESORERIA: Trasmesso Foglio di Viaggio PDF (CO-VET-GIALLO-2026-421) con donazione di € 50.00 (POS Elettronico) all'indirizzo tesoreria@croceoro.org",
+      "tipo": "sistema"
+    },
+    {
+      "id": "notif-1792162455838-1-62kt",
+      "orario": "14:54:15",
+      "testo": "DISPATCH: Nuova scheda inviata a bordo mezzo T4606 (CO-VET-GIALLO-2026-808)",
+      "tipo": "centrale"
+    },
+    {
+      "id": "notif-1792162456635-2-8zld",
+      "orario": "14:54:16",
+      "testo": "📖 Equipaggio ha confermato presa visione e lettura della scheda CO-VET-GIALLO-2026-808",
+      "tipo": "mezzo"
+    },
+    {
+      "id": "notif-1792162457237-3-5v9s",
+      "orario": "14:54:17",
+      "testo": "🚨 ULTIMO ORARIO REGISTRATO: [6. RIENTRO IN SEDE] alle ore 15:22:10 per CO-VET-GIALLO-2026-808!",
+      "tipo": "allarme"
+    },
+    {
+      "id": "notif-1792162457839-4-8lle",
+      "orario": "14:54:17",
+      "testo": "🛣️ KM Registrati per CO-VET-GIALLO-2026-808: Inizio 15420 | Fine 15448 | Totali: 28 KM",
+      "tipo": "mezzo"
+    },
+    {
+      "id": "notif-1792162458447-5-grfb",
+      "orario": "14:54:18",
+      "testo": "✍️ CONSEGNA DESTINAZIONE REGISTRATA (CO-VET-GIALLO-2026-808): Proprietario: Alessandro Bianchi | Donazione: €50 (POS) | Firma proprietario acquisita. Integrati nella scheda e nel PDF.",
+      "tipo": "sistema"
+    },
+    {
+      "id": "notif-1792162459981-6-e4u7",
+      "orario": "14:54:19",
+      "testo": "📧 TESORERIA: Trasmesso Foglio di Viaggio PDF (CO-VET-GIALLO-2026-808) con donazione di € 50.00 (POS Elettronico) all'indirizzo tesoreria@croceoro.org",
+      "tipo": "sistema"
+    },
+    {
+      "id": "notif-1792277678491-1-44td",
+      "orario": "22:54:38",
+      "testo": "DISPATCH: Nuova scheda inviata a bordo mezzo T4609 (CO-VET-BIANCO-2026-809)",
+      "tipo": "centrale"
+    },
+    {
+      "id": "notif-1792277678767-2-tryq",
+      "orario": "22:54:38",
+      "testo": "DISPATCH: Nuova scheda inviata a bordo mezzo T4609 (CO-VET-BIANCO-2026-809)",
+      "tipo": "centrale"
+    },
+    {
+      "id": "notif-1792277709103-3-uvb4",
+      "orario": "22:55:09",
+      "testo": "📖 Equipaggio ha confermato presa visione e lettura della scheda CO-VET-BIANCO-2026-809",
+      "tipo": "mezzo"
+    },
+    {
+      "id": "notif-1792277709123-4-e5q2",
+      "orario": "22:55:09",
+      "testo": "📖 Equipaggio ha confermato presa visione e lettura della scheda CO-VET-BIANCO-2026-809",
+      "tipo": "mezzo"
+    },
+    {
+      "id": "notif-1792277721459-5-xzvp",
+      "orario": "22:55:21",
+      "testo": "⏱️ Registrato orario: [PARTENZA DA SEDE] alle ore 00:55:15 (CO-VET-BIANCO-2026-809)",
+      "tipo": "mezzo"
+    },
+    {
+      "id": "notif-1792277721558-6-0wrs",
+      "orario": "22:55:21",
+      "testo": "⏱️ Registrato orario: [PARTENZA DA SEDE] alle ore 00:55:15 (CO-VET-BIANCO-2026-809)",
+      "tipo": "mezzo"
+    },
+    {
+      "id": "notif-1792318036178-1-nek1",
+      "orario": "10:07:16",
+      "testo": "⏱️ Registrato orario: [ARRIVO SUL POSTO] alle ore 12:07:16 (CO-VET-BIANCO-2026-809)",
+      "tipo": "mezzo"
+    },
+    {
+      "id": "notif-1792318036184-2-6mko",
+      "orario": "10:07:16",
+      "testo": "🚨 MEZZO SUL POSTO: Equipaggio T4609 (CO-VET-BIANCO-2026-809) è arrivato sull'obiettivo ed è IN ATTESA DEL LUOGO DI DESTINAZIONE E CODICE DI RIENTRO!",
+      "tipo": "allarme"
+    },
+    {
+      "id": "notif-1792318036188-3-mlwr",
+      "orario": "10:07:16",
+      "testo": "⏱️ Registrato orario: [ARRIVO SUL POSTO] alle ore 12:07:16 (CO-VET-BIANCO-2026-809)",
+      "tipo": "mezzo"
+    },
+    {
+      "id": "notif-1792318036194-4-uoko",
+      "orario": "10:07:16",
+      "testo": "🚨 MEZZO SUL POSTO: Equipaggio T4609 (CO-VET-BIANCO-2026-809) è arrivato sull'obiettivo ed è IN ATTESA DEL LUOGO DI DESTINAZIONE E CODICE DI RIENTRO!",
+      "tipo": "allarme"
+    },
+    {
+      "id": "notif-1792318037558-5-7j2h",
+      "orario": "10:07:17",
+      "testo": "⏱️ Registrato orario: [ARRIVO SUL POSTO] alle ore 12:07:18 (CO-VET-BIANCO-2026-809)",
+      "tipo": "mezzo"
+    },
+    {
+      "id": "notif-1792318037560-6-7xb8",
+      "orario": "10:07:17",
+      "testo": "🚨 MEZZO SUL POSTO: Equipaggio T4609 (CO-VET-BIANCO-2026-809) è arrivato sull'obiettivo ed è IN ATTESA DEL LUOGO DI DESTINAZIONE E CODICE DI RIENTRO!",
+      "tipo": "allarme"
+    },
+    {
+      "id": "notif-1792318037567-7-wb70",
+      "orario": "10:07:17",
+      "testo": "🚨 MEZZO SUL POSTO: Equipaggio T4609 (CO-VET-BIANCO-2026-809) è arrivato sull'obiettivo ed è IN ATTESA DEL LUOGO DI DESTINAZIONE E CODICE DI RIENTRO!",
+      "tipo": "allarme"
+    },
+    {
+      "id": "notif-1792318037569-8-j5o8",
+      "orario": "10:07:17",
+      "testo": "⏱️ Registrato orario: [ARRIVO SUL POSTO] alle ore 12:07:18 (CO-VET-BIANCO-2026-809)",
+      "tipo": "mezzo"
+    },
+    {
+      "id": "notif-1792318039700-9-3f8r",
+      "orario": "10:07:19",
+      "testo": "⏱️ Registrato orario: [ARRIVO SUL POSTO] alle ore 12:07:18 (CO-VET-BIANCO-2026-809) [📍 GPS Certificato: Lat 44.063888°, Lng 10.049391° (±10m)]",
+      "tipo": "mezzo"
+    },
+    {
+      "id": "notif-1792318039702-10-51db",
+      "orario": "10:07:19",
+      "testo": "⏱️ Registrato orario: [ARRIVO SUL POSTO] alle ore 12:07:16 (CO-VET-BIANCO-2026-809) [📍 GPS Certificato: Lat 44.063888°, Lng 10.049391° (±10m)]",
+      "tipo": "mezzo"
+    },
+    {
+      "id": "notif-1792318039711-11-o6r9",
+      "orario": "10:07:19",
+      "testo": "⏱️ Registrato orario: [ARRIVO SUL POSTO] alle ore 12:07:16 (CO-VET-BIANCO-2026-809) [📍 GPS Certificato: Lat 44.063888°, Lng 10.049391° (±10m)]",
+      "tipo": "mezzo"
+    },
+    {
+      "id": "notif-1792318039714-12-8g0n",
+      "orario": "10:07:19",
+      "testo": "⏱️ Registrato orario: [ARRIVO SUL POSTO] alle ore 12:07:18 (CO-VET-BIANCO-2026-809) [📍 GPS Certificato: Lat 44.063888°, Lng 10.049391° (±10m)]",
+      "tipo": "mezzo"
+    },
+    {
+      "id": "notif-1792318082412-13-adwb",
+      "orario": "10:08:02",
+      "testo": "🚨 ALLERTA: Intervento CO-VET-BIANCO-2026-809 ANNULLATO dalla Centrale! Motivo: Richiesta annullata dal segnalante/chiamante (Richiesto da: Chiamante / Segnalante privato).",
+      "tipo": "allarme"
+    },
+    {
+      "id": "notif-1792318082421-14-kje9",
+      "orario": "10:08:02",
+      "testo": "🚨 ALLERTA: Intervento CO-VET-BIANCO-2026-809 ANNULLATO dalla Centrale! Motivo: Richiesta annullata dal segnalante/chiamante (Richiesto da: Chiamante / Segnalante privato).",
+      "tipo": "allarme"
+    },
+    {
+      "id": "notif-1792318113652-15-anm4",
+      "orario": "10:08:33",
+      "testo": "⏱️ Registrato orario: [FINE MISSIONE] alle ore 12:08:34 (CO-VET-BIANCO-2026-809)",
+      "tipo": "mezzo"
+    },
+    {
+      "id": "notif-1792318113662-16-wjzf",
+      "orario": "10:08:33",
+      "testo": "⏱️ Registrato orario: [FINE MISSIONE] alle ore 12:08:34 (CO-VET-BIANCO-2026-809)",
+      "tipo": "mezzo"
+    },
+    {
+      "id": "notif-1792318136924-17-h3vh",
+      "orario": "10:08:56",
+      "testo": "🛣️ KM Bordo registrati dall'equipaggio: 10 → 100 (90 KM)",
+      "tipo": "mezzo"
+    },
+    {
+      "id": "notif-1792318136926-18-byon",
+      "orario": "10:08:56",
+      "testo": "🚨 ULTIMO ORARIO REGISTRATO: [6. RIENTRO IN SEDE] alle ore 12:08:57 per CO-VET-BIANCO-2026-809!",
+      "tipo": "allarme"
+    },
+    {
+      "id": "notif-1792318136929-19-q6l5",
+      "orario": "10:08:56",
+      "testo": "🛣️ KM Bordo registrati dal capo turno: 10 → 100 (90 KM)",
+      "tipo": "mezzo"
+    },
+    {
+      "id": "notif-1792318136932-20-akq1",
+      "orario": "10:08:56",
+      "testo": "🛣️ KM Bordo registrati dall'equipaggio: 10 → 100 (90 KM)",
+      "tipo": "mezzo"
+    },
+    {
+      "id": "notif-1792318136940-21-vlj8",
+      "orario": "10:08:56",
+      "testo": "📁 DATABASE: Servizio CO-VET-BIANCO-2026-809 archiviato definitivamente (Anno 2026).",
+      "tipo": "sistema"
+    },
+    {
+      "id": "notif-1792318136947-22-5uyy",
+      "orario": "10:08:56",
+      "testo": "🚨 ULTIMO ORARIO REGISTRATO: [6. RIENTRO IN SEDE] alle ore 12:08:57 per CO-VET-BIANCO-2026-809!",
+      "tipo": "allarme"
+    },
+    {
+      "id": "notif-1792318136949-23-1ltz",
+      "orario": "10:08:56",
+      "testo": "🛣️ KM Bordo registrati dal capo turno: 10 → 100 (90 KM)",
+      "tipo": "mezzo"
+    },
+    {
+      "id": "notif-1792318136954-24-v2a5",
+      "orario": "10:08:56",
+      "testo": "📁 DATABASE: Servizio CO-VET-BIANCO-2026-809 archiviato definitivamente (Anno 2026).",
+      "tipo": "sistema"
+    },
+    {
+      "id": "notif-1792318394815-25-obvr",
+      "orario": "10:13:14",
+      "testo": "📧 ATTIVAZIONE: Inviata email con PIN provvisorio e pulsante reset a Mattia Vignali (vignalimattia5@gmail.com) da sistemiautomatizzati@croceoro.org",
+      "tipo": "sistema"
+    },
+    {
+      "id": "notif-1792318992724-26-kez8",
+      "orario": "10:23:12",
+      "testo": "MISSIONE CONCLUSA: Scheda archiviata e terminali liberati per nuovo servizio.",
+      "tipo": "sistema"
+    },
+    {
+      "id": "notif-1792318992726-27-he6g",
+      "orario": "10:23:12",
+      "testo": "MISSIONE CONCLUSA: Scheda archiviata e terminali liberati per nuovo servizio.",
+      "tipo": "sistema"
+    },
+    {
+      "id": "notif-1792967692889-1-6tk3",
+      "orario": "22:34:52",
+      "testo": "🔴 FINE TURNO: Volontario ha terminato il servizio su mezzo.",
+      "tipo": "mezzo"
+    },
+    {
+      "id": "notif-1792967692945-2-d57q",
+      "orario": "22:34:52",
+      "testo": "🔴 FINE TURNO: Volontario ha terminato il servizio su mezzo.",
+      "tipo": "mezzo"
+    },
+    {
+      "id": "notif-1794129871795-1-4uw1",
+      "orario": "09:24:31",
+      "testo": "📅 PROMEMORIA TURNO DOMANI (Ore 09:00): Notifica inviata a Mario Rossi per turno [Mattina (08:00 - 14:00)] presso Sede Centrale Massa (Autista).",
+      "tipo": "sistema"
+    },
+    {
+      "id": "notif-1794129871795-2-b7k6",
+      "orario": "09:24:31",
+      "testo": "📅 PROMEMORIA TURNO DOMANI (Ore 09:00): Notifica inviata a Luca Bianchi per turno [Mattina (08:00 - 14:00)] presso Sede Centrale Massa (Caposervizio).",
+      "tipo": "sistema"
+    },
+    {
+      "id": "notif-1794131566360-1-nm9n",
+      "orario": "09:52:46",
+      "testo": "📅 PROMEMORIA TURNO DOMANI (Ore 09:00): Notifica inviata su device e via email (centrale@croceoromassacarrara.it) a Amministratore Centrale per turno [Mattina (08:00 - 14:00)] presso Sede Centrale Massa (Autista).",
+      "tipo": "sistema"
+    },
+    {
+      "id": "notif-1794263002819",
+      "orario": "22:23:22",
+      "testo": "🧹 GESTIONALE: Tutte le schede di servizio e missioni in essere e non ancora concluse sono state cancellate. Flotta e terminali liberati.",
+      "tipo": "sistema"
+    },
+    {
+      "id": "notif-1794521389140-3-069c",
+      "orario": "22:09:49",
+      "testo": "🔕 SUONERIA SILENZIATA dall'operatore.",
+      "tipo": "sistema"
+    },
+    {
+      "id": "notif-1794521389181-4-b1s9",
+      "orario": "22:09:49",
+      "testo": "🔕 SUONERIA SILENZIATA dall'operatore.",
+      "tipo": "sistema"
+    }
+  ],
+  "serviziArchivio": [],
+  "cartelleAnniPrecedenti": {},
+  "datiDestinazione": null,
+  "whatsappConfig": {
+    "token": "1692890819217239|BxDCvDgtAFgcqN4E5qVUgQWNo8I",
+    "phoneNumberId": "1692890819217239",
+    "businessNumber": "0585625410"
+  },
+  "turni": [
+    {
+      "id": "turno-oggi-massa-mattina",
+      "sedeId": "sede-massa-lejare",
+      "sedeNome": "Sede Operativa Massa (Le Jare)",
+      "data": "2026-10-24",
+      "fasciaOraria": "Mattina (08:00 - 14:00)",
+      "orarioInizio": "08:00",
+      "orarioFine": "14:00",
+      "mezzoAssegnato": "T4609",
+      "statoCopertura": "Coperto",
+      "autista": {
+        "id": "vol-001",
+        "nome": "Mario Rossi"
+      },
+      "caposervizio": {
+        "id": "vol-002",
+        "nome": "Luca Bianchi"
+      },
+      "soccorritore2": {
+        "id": "vol-005",
+        "nome": "Francesca Esposito"
+      },
+      "operatoreCentrale": {
+        "id": "vol-003",
+        "nome": "Giulia Neri"
+      },
+      "note": "Equipaggio pronto per emergenze primarie H24"
+    },
+    {
+      "id": "turno-oggi-massa-pomeriggio",
+      "sedeId": "sede-massa-lejare",
+      "sedeNome": "Sede Operativa Massa (Le Jare)",
+      "data": "2026-10-24",
+      "fasciaOraria": "Pomeriggio (14:00 - 20:00)",
+      "orarioInizio": "14:00",
+      "orarioFine": "20:00",
+      "mezzoAssegnato": "T4606",
+      "statoCopertura": "Parziale",
+      "autista": {
+        "id": "vol-004",
+        "nome": "Alessandro Conti"
+      },
+      "caposervizio": {
+        "id": "vol-001",
+        "nome": "Mario Rossi"
+      },
+      "operatoreCentrale": {
+        "id": "vol-003",
+        "nome": "Giulia Neri"
+      },
+      "note": "Necessario reperire secondo soccorritore per equipaggio completo"
+    },
+    {
+      "id": "turno-oggi-massa-notte",
+      "sedeId": "sede-massa-lejare",
+      "sedeNome": "Sede Operativa Massa (Le Jare)",
+      "data": "2026-10-24",
+      "fasciaOraria": "Notte (20:00 - 08:00)",
+      "orarioInizio": "20:00",
+      "orarioFine": "08:00",
+      "mezzoAssegnato": "T4609",
+      "statoCopertura": "Coperto",
+      "autista": {
+        "id": "vol-001",
+        "nome": "Mario Rossi"
+      },
+      "caposervizio": {
+        "id": "vol-002",
+        "nome": "Luca Bianchi"
+      },
+      "soccorritore2": {
+        "id": "vol-005",
+        "nome": "Francesca Esposito"
+      },
+      "note": "Turno notturno guardia attiva"
+    },
+    {
+      "id": "turno-oggi-carrara-mattina",
+      "sedeId": "sede-carrara-fossone",
+      "sedeNome": "Sezione Territoriale Carrara (Fossone)",
+      "data": "2026-10-24",
+      "fasciaOraria": "Mattina (08:00 - 14:00)",
+      "orarioInizio": "08:00",
+      "orarioFine": "14:00",
+      "mezzoAssegnato": "T4608",
+      "statoCopertura": "Coperto",
+      "autista": {
+        "id": "vol-004",
+        "nome": "Alessandro Conti"
+      },
+      "caposervizio": {
+        "id": "vol-002",
+        "nome": "Luca Bianchi"
+      },
+      "note": "Presidio e ricognizione territorio di Carrara"
+    },
+    {
+      "id": "turno-domani-carrara-pomeriggio",
+      "sedeId": "sede-carrara-fossone",
+      "sedeNome": "Sezione Territoriale Carrara (Fossone)",
+      "data": "2026-10-25",
+      "fasciaOraria": "Pomeriggio (14:00 - 20:00)",
+      "orarioInizio": "14:00",
+      "orarioFine": "20:00",
+      "mezzoAssegnato": "T4613",
+      "statoCopertura": "Scoperto",
+      "note": "Turno programmato da assegnare urgentemente"
+    }
+  ],
+  "checklistsCompilate": [],
+  "sedi": [
+    {
+      "id": "sede-massa-ronchi",
+      "codice": "SEDE-01-RONCHI",
+      "nome": "Sede Legale & Direzione Generale Massa (Ronchi)",
+      "tipologia": "Sede Legale & Territoriale",
+      "indirizzoCompleto": "Via Como, 12 Località Ronchi",
+      "comune": "Massa",
+      "cap": "54100",
+      "provincia": "MS",
+      "telefonoFisso": "0585 625410",
+      "cellulareEmergenza": "333 4455667",
+      "email": "croceoromassacarrara@gmail.com",
+      "pec": "croceoromassacarrara@pec.it",
+      "responsabileSede": "Presidente del Consiglio Direttivo",
+      "telefonoResponsabile": "0585 625410",
+      "mezziAssegnati": [
+        "T4614",
+        "T4611"
+      ],
+      "dotazioniLocali": [
+        "Uffici Direzione & Presidenza",
+        "Sala Riunioni Consiglio Direttivo",
+        "Aula Corsi Formazione & BLSD",
+        "Archivio Fiscale & Tesseramento",
+        "Defibrillatore DAE Pubblico a Parete"
+      ],
+      "orariOperativita": "Uffici Lun-Ven 09:00 - 18:00 • Presidio 24/7",
+      "note": "Sede Legale e Territoriale di Massa situata dietro il Parco della Comasca a Ronchi",
+      "coordinate": {
+        "lat": 43.99419,
+        "lng": 10.12367
+      },
+      "intestatarioConti": "CROCE ORO MASSA CARRARA ODV",
+      "bancaPoste": "POSTE ITALIANE",
+      "ibanPoste": "IT40P0760113600001007035676",
+      "ccPostale": "00001007035676",
+      "bancaAppoggio": "Credit Agricole",
+      "ibanBanca": "IT79M0623024500000046980317",
+      "contiCorrenti": [
+        {
+          "id": "cc-poste-italiane",
+          "banca": "POSTE ITALIANE",
+          "iban": "IT40P0760113600001007035676",
+          "intestatario": "CROCE ORO MASSA CARRARA ODV",
+          "numeroConto": "00001007035676",
+          "tipo": "postale",
+          "note": "Conto Corrente Postale Ufficiale OdV (C/C n. 00001007035676)"
+        },
+        {
+          "id": "cc-credit-agricole",
+          "banca": "Credit Agricole",
+          "iban": "IT79M0623024500000046980317",
+          "intestatario": "CROCE ORO MASSA CARRARA ODV",
+          "tipo": "bancario",
+          "note": "Conto Corrente Bancario Istituzionale OdV"
+        }
+      ]
+    },
+    {
+      "id": "sede-massa-lejare",
+      "codice": "SEDE-02-LEJARE",
+      "nome": "Sede Operativa H24 & Autoparco Emergenze Massa (Le Jare)",
+      "tipologia": "Sede Operativa H24 & Centrale",
+      "indirizzoCompleto": "Via Delle Jare, 9",
+      "comune": "Massa",
+      "cap": "54100",
+      "provincia": "MS",
+      "telefonoFisso": "0585 625410",
+      "cellulareEmergenza": "333 4455668",
+      "email": "centrale.operativa@croceoromassacarrara.it",
+      "responsabileSede": "Coordinatore Operativo H24",
+      "telefonoResponsabile": "333 4455668",
+      "mezziAssegnati": [
+        "T4609",
+        "T4606",
+        "T4607",
+        "T4615"
+      ],
+      "dotazioniLocali": [
+        "Centrale Operativa Radio & Telecomunicazioni H24",
+        "Autoparco Coperto con colonnine ricarica e ossigeno",
+        "Locale Riposo Equipaggi con letti e spogliatoi",
+        "Magazzino Farmaci, Presidi Sanitari e DPI",
+        "Lavaggio e Sanificazione Mezzi con ozonizzatore"
+      ],
+      "orariOperativita": "Operativo H24 365 Giorni all'Anno",
+      "note": "Cuore operativo delle emergenze, autoparco ambulanze e base radio principale",
+      "coordinate": {
+        "lat": 44.017,
+        "lng": 10.15121
+      },
+      "intestatarioConti": "CROCE ORO MASSA CARRARA ODV",
+      "bancaPoste": "POSTE ITALIANE",
+      "ibanPoste": "IT40P0760113600001007035676",
+      "ccPostale": "00001007035676",
+      "bancaAppoggio": "Credit Agricole",
+      "ibanBanca": "IT79M0623024500000046980317",
+      "contiCorrenti": [
+        {
+          "id": "cc-poste-italiane",
+          "banca": "POSTE ITALIANE",
+          "iban": "IT40P0760113600001007035676",
+          "intestatario": "CROCE ORO MASSA CARRARA ODV",
+          "numeroConto": "00001007035676",
+          "tipo": "postale",
+          "note": "Conto Corrente Postale Ufficiale OdV (C/C n. 00001007035676)"
+        },
+        {
+          "id": "cc-credit-agricole",
+          "banca": "Credit Agricole",
+          "iban": "IT79M0623024500000046980317",
+          "intestatario": "CROCE ORO MASSA CARRARA ODV",
+          "tipo": "bancario",
+          "note": "Conto Corrente Bancario Istituzionale OdV"
+        }
+      ]
+    },
+    {
+      "id": "sede-carrara-fossone",
+      "codice": "SEDE-03-FOSSONE",
+      "nome": "Sezione Territoriale Carrara (Fossone / Monteverde)",
+      "tipologia": "Sezione Territoriale",
+      "indirizzoCompleto": "Strada Comunale di Monteverde, 49 Località Fossone",
+      "comune": "Carrara",
+      "cap": "54033",
+      "provincia": "MS",
+      "telefonoFisso": "0585 625410",
+      "cellulareEmergenza": "333 4455669",
+      "email": "carrara@croceoromassacarrara.it",
+      "responsabileSede": "Referente Sezione Carrara",
+      "telefonoResponsabile": "333 4455669",
+      "mezziAssegnati": [
+        "T4608",
+        "T4613"
+      ],
+      "dotazioniLocali": [
+        "Presidio Territoriale di Soccorso",
+        "Postazione Radio VHF Sincronizzata",
+        "Gabbie Barellate per Ricovero Temporaneo Animali Feriti",
+        "Locale Volontari e Accoglienza Cittadini"
+      ],
+      "orariOperativita": "Presidio Operativo H24",
+      "note": "Presidio strategico per il territorio comunale di Carrara e borghi a monte",
+      "coordinate": {
+        "lat": 44.066716,
+        "lng": 10.049207
+      },
+      "intestatarioConti": "CROCE ORO MASSA CARRARA ODV",
+      "bancaPoste": "POSTE ITALIANE",
+      "ibanPoste": "IT40P0760113600001007035676",
+      "ccPostale": "00001007035676",
+      "bancaAppoggio": "Credit Agricole",
+      "ibanBanca": "IT79M0623024500000046980317",
+      "contiCorrenti": [
+        {
+          "id": "cc-poste-italiane",
+          "banca": "POSTE ITALIANE",
+          "iban": "IT40P0760113600001007035676",
+          "intestatario": "CROCE ORO MASSA CARRARA ODV",
+          "numeroConto": "00001007035676",
+          "tipo": "postale",
+          "note": "Conto Corrente Postale Ufficiale OdV (C/C n. 00001007035676)"
+        },
+        {
+          "id": "cc-credit-agricole",
+          "banca": "Credit Agricole",
+          "iban": "IT79M0623024500000046980317",
+          "intestatario": "CROCE ORO MASSA CARRARA ODV",
+          "tipo": "bancario",
+          "note": "Conto Corrente Bancario Istituzionale OdV"
+        }
+      ]
+    },
+    {
+      "id": "sede-pietrasanta",
+      "codice": "SEDE-04-PIETRASANTA",
+      "nome": "Presidio Territoriale Versilia (Marina di Pietrasanta)",
+      "tipologia": "Sezione Territoriale",
+      "indirizzoCompleto": "Piazza Villeparisis, 14 Località Marina di Pietrasanta",
+      "comune": "Pietrasanta",
+      "cap": "55045",
+      "provincia": "LU",
+      "telefonoFisso": "0585 625410",
+      "cellulareEmergenza": "333 4455670",
+      "email": "versilia@croceoromassacarrara.it",
+      "responsabileSede": "Delegato Territoriale Versilia",
+      "telefonoResponsabile": "333 4455670",
+      "mezziAssegnati": [
+        "T4608"
+      ],
+      "dotazioniLocali": [
+        "Postazione Operativa Territoriale",
+        "Punto Informativo Iscrizioni e Protezione Civile"
+      ],
+      "orariOperativita": "Presidio stagionale ed emergenze convenzionate",
+      "coordinate": {
+        "lat": 43.92771,
+        "lng": 10.20194
+      },
+      "intestatarioConti": "CROCE ORO MASSA CARRARA ODV",
+      "bancaPoste": "POSTE ITALIANE",
+      "ibanPoste": "IT40P0760113600001007035676",
+      "ccPostale": "00001007035676",
+      "bancaAppoggio": "Credit Agricole",
+      "ibanBanca": "IT79M0623024500000046980317",
+      "contiCorrenti": [
+        {
+          "id": "cc-poste-italiane",
+          "banca": "POSTE ITALIANE",
+          "iban": "IT40P0760113600001007035676",
+          "intestatario": "CROCE ORO MASSA CARRARA ODV",
+          "numeroConto": "00001007035676",
+          "tipo": "postale",
+          "note": "Conto Corrente Postale Ufficiale OdV (C/C n. 00001007035676)"
+        },
+        {
+          "id": "cc-credit-agricole",
+          "banca": "Credit Agricole",
+          "iban": "IT79M0623024500000046980317",
+          "intestatario": "CROCE ORO MASSA CARRARA ODV",
+          "tipo": "bancario",
+          "note": "Conto Corrente Bancario Istituzionale OdV"
+        }
+      ]
+    },
+    {
+      "id": "sede-lunigiana",
+      "codice": "SEDE-05-LUNIGIANA",
+      "nome": "Sezione Territoriale Lunigiana (Aulla)",
+      "tipologia": "Sezione Territoriale",
+      "indirizzoCompleto": "Piazza Cavour / Piazza della Vittoria",
+      "comune": "Aulla",
+      "cap": "54011",
+      "provincia": "MS",
+      "telefonoFisso": "0585 625410",
+      "cellulareEmergenza": "333 4455671",
+      "email": "lunigiana@croceoromassacarrara.it",
+      "responsabileSede": "Referente Zona Lunigiana",
+      "telefonoResponsabile": "333 4455671",
+      "mezziAssegnati": [
+        "T4613"
+      ],
+      "dotazioniLocali": [
+        "Presidio Protezione Civile & Monitoraggio Idraulico Magra"
+      ],
+      "orariOperativita": "Attivazione in allerta meteo e interventi programmati",
+      "coordinate": {
+        "lat": 44.21455,
+        "lng": 9.96779
+      },
+      "intestatarioConti": "CROCE ORO MASSA CARRARA ODV",
+      "bancaPoste": "POSTE ITALIANE",
+      "ibanPoste": "IT40P0760113600001007035676",
+      "ccPostale": "00001007035676",
+      "bancaAppoggio": "Credit Agricole",
+      "ibanBanca": "IT79M0623024500000046980317",
+      "contiCorrenti": [
+        {
+          "id": "cc-poste-italiane",
+          "banca": "POSTE ITALIANE",
+          "iban": "IT40P0760113600001007035676",
+          "intestatario": "CROCE ORO MASSA CARRARA ODV",
+          "numeroConto": "00001007035676",
+          "tipo": "postale",
+          "note": "Conto Corrente Postale Ufficiale OdV (C/C n. 00001007035676)"
+        },
+        {
+          "id": "cc-credit-agricole",
+          "banca": "Credit Agricole",
+          "iban": "IT79M0623024500000046980317",
+          "intestatario": "CROCE ORO MASSA CARRARA ODV",
+          "tipo": "bancario",
+          "note": "Conto Corrente Bancario Istituzionale OdV"
+        }
+      ]
+    }
+  ],
+  "datiCartaIntestata": {
+    "denominazione": "CROCE ORO MASSA CARRARA OdV",
+    "sedeLegale": "Via Como, 12 Massa (MS)",
+    "sedeMassa": "Via Delle Jare 9",
+    "sedeCarrara": "Strada Comunale Monteverde 49",
+    "sedePietrasanta": "Piazza Villeparisis, 14",
+    "centraleTel": "0585 625410",
+    "codiceFiscale": "92035360459",
+    "sitoWeb": "www.croceoro.org",
+    "email": "volontari@croceoro.org",
+    "pec": "croceoromassacarrara@pec.it",
+    "socialFacebook": "",
+    "socialInstagram": "",
+    "socialYouTube": "",
+    "socialTikTok": "",
+    "socialLinkedIn": "",
+    "socialAltro": "",
+    "intestatarioConti": "CROCE ORO MASSA CARRARA ODV",
+    "bancaPoste": "POSTE ITALIANE",
+    "ibanPoste": "IT40P0760113600001007035676",
+    "ccPostale": "00001007035676",
+    "bancaAppoggio": "Credit Agricole",
+    "ibanBanca": "IT79M0623024500000046980317"
+  },
+  "luoghiTimbratura": [
+    {
+      "id": "test-1",
+      "nome": "Presidio Test",
+      "raggioMetri": 75,
+      "coordinate": {
+        "lat": 44.03,
+        "lng": 10.14
+      },
+      "attivo": true
+    }
+  ],
+  "promemoriaTurniInviati": {
+    "promemoria_2026-11-08_turno-test-domani_vol-1": "2026-11-08T09:24:31.795Z",
+    "promemoria_2026-11-08_turno-test-domani_vol-2": "2026-11-08T09:24:31.795Z",
+    "promemoria_2026-11-08_turno-test-email_vol-admin": "2026-11-08T09:52:46.360Z"
+  },
+  "promemoriaCompleanniInviati": {},
+  "timbrature": [],
+  "bacheca": [],
+  "giornaleBordo": [],
+  "codiciEliminati": [
+    "CO-VET-ROSSO-2026-001"
+  ],
+  "magazzinoParti": [],
+  "magazzinoMezzi": [],
+  "indirizziCollezionati": [],
+  "radioPtt": {
+    "enabled": false,
+    "activeSpeaker": null
+  },
+  "radioGroups": [],
+  "radioEmergency": {
+    "active": false
+  }
+}

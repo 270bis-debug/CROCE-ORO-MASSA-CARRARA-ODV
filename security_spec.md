@@ -1,0 +1,23 @@
+# Security Specification & Hardened Audit — Croce Oro Massa Carrara Cloud Sync
+
+## 1. Data Invariants
+1. **Fail-Closed Root**: Every unmapped collection/document path is denied by default (`match /{document=**} { allow read, write: if false; }`).
+2. **Shard Containment**: Live synchronized state is strictly confined to allowlisted `sync_shards` document IDs (`mission`, `volontari`, `servizi`, `turni`, `bacheca`, `magazzino`, `timbrature`, `indirizzi`, `checklists`, `config`). No client can list `/sync_shards` or inject arbitrary document IDs.
+3. **Verified Identity**: All reads/writes require Firebase Auth (`request.auth != null`) AND verified email (`request.auth.token.email_verified == true`), AND verified Admin (`270bis@live.it` or `/admins/{uid}`) or active approved `/operators/{uid}`.
+4. **Immutable Temporal & Identity Anchors**: `createdAt` must equal `request.time` on create and remain identical on update. `updatedAt` must equal `request.time` on both create and update. `updatedByUid` must equal `request.auth.uid`.
+5. **Privilege Escalation Prevention**: Non-admin verified users can only submit a `pending` request in `/operator_requests/{request.auth.uid}`. Only `isAdmin()` can create or mutate `/operators/{uid}` or `/admins/{uid}`, or approve/reject requests.
+6. **PII Isolation**: `/operator_requests/{requestUid}` and `/operators/{operatorUid}` reads and queries are isolated strictly to the document owner (`uid == request.auth.uid`) or Admin. No blanket reads exist.
+
+## 2. The "Dirty Dozen" Payloads (Expected Result: PERMISSION_DENIED)
+1. **Unauthenticated Shard Read**: Anonymous caller tries `GET /sync_shards/volontari` -> Denied (`isVerifiedUser()` false).
+2. **Unverified Email Admin Spoof**: Caller has `email: "270bis@live.it"` with `email_verified: false` -> Denied (`isVerifiedUser()` false).
+3. **Shadow Field Injection on SyncShard Create**: Authorized operator sends `extraAdminFlag: true` on `CREATE /sync_shards/mission` -> Denied (`data.keys().hasOnly(...)`).
+4. **Arbitrary Shard ID Poisoning**: Authorized operator creates `/sync_shards/malicious_shard` -> Denied (`isAllowedShardId(shardId)` false).
+5. **Path ID Poisoning (>128 chars / invalid chars)**: Caller targets `/sync_shards/../../etc/passwd` -> Denied (`isValidId` false).
+6. **Identity Spoofing on SyncShard Write**: Operator sends `updatedByUid: "other-uid"` -> Denied (`data.updatedByUid == request.auth.uid` false).
+7. **Timestamp Backdating**: Operator sends custom client timestamp `updatedAt: "2020-01-01T00:00:00Z"` -> Denied (`data.updatedAt == request.time` false).
+8. **Self-Assigned Admin**: Non-admin user tries `CREATE /admins/{ownUid}` -> Denied (`isAdmin()` false).
+9. **Self-Approved Operator Request**: Pending user tries `UPDATE /operator_requests/{ownUid}` changing `status: "approved"` -> Denied (Terminal/Admin gate).
+10. **Collection Scraping List Query**: Operator tries `LIST /sync_shards` or `LIST /admins` -> Denied (`allow list: if false;`).
+11. **Oversized DisplayName Resource Exhaustion**: User sends 5KB `displayName` in `/operator_requests/{uid}` -> Denied (`displayName.size() <= 120`).
+12. **Stale/Downgraded Version Write by Operator**: Operator tries `UPDATE /sync_shards/mission` with `version <= existing().version` -> Denied (`incoming().version > existing().version`).

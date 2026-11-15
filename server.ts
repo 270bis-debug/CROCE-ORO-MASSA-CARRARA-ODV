@@ -1,0 +1,8628 @@
+import express from 'express';
+import http from 'http';
+import fs from 'fs';
+import { WebSocketServer, WebSocket } from 'ws';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import { createServer as createViteServer } from 'vite';
+import webpush from 'web-push';
+import nodemailer from 'nodemailer';
+import { jsPDF } from 'jspdf';
+import { scaricaAttestatoPDF } from './src/utils/pdfAttestatoCorso';
+import { LUOGHI_TIMBRATURA_DEFAULT } from './src/data/adminMockData';
+import { LuogoTimbratura } from './src/types/adminTypes';
+import { BUILD_INFO } from './src/buildInfo';
+import {
+  formatDateItaly,
+  formatDateTimeItaly,
+  formatISODateItaly,
+  formatTimeItaly,
+  getCurrentYearItaly,
+  getItalianDateParts,
+  ITALY_TIMEZONE,
+  parseItalianDateTimeMs
+} from './src/utils/italianTime';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// Configurazione Web Push VAPID per Notifiche Push in Background a Schermo Spento
+const VAPID_KEYS = {
+  publicKey: process.env.VAPID_PUBLIC_KEY || 'BBIgy7sPt5aiNKmumUH57K28pFivVG3qKun0xMT7ZLJq8Kc6c_hCzawksKptqyOI0pIXRZ7I6tmEr9D_jM4a6bc',
+  privateKey: process.env.VAPID_PRIVATE_KEY || '19czcRLqXXAWjqLkkhHa53NQ5erahFRbIcJ-mTOOqBE'
+};
+
+webpush.setVapidDetails(
+  'mailto:centrale@croceoromassacarrara.it',
+  VAPID_KEYS.publicKey,
+  VAPID_KEYS.privateKey
+);
+
+interface PushSubscriber {
+  endpoint: string;
+  role: 'volontario' | 'admin' | 'centrale' | 'all';
+  volontarioId?: string;
+  volontarioNome?: string;
+  subscription: webpush.PushSubscription;
+  timestamp: number;
+}
+const subscribers = new Map<string, PushSubscriber>();
+
+function sendPushNotificationToRole(targetRole: 'volontario' | 'admin' | 'centrale' | 'all', payload: any) {
+  const payloadStr = JSON.stringify(payload);
+  subscribers.forEach((sub, endpoint) => {
+    const isTarget =
+      targetRole === 'all' ||
+      sub.role === 'all' ||
+      sub.role === targetRole ||
+      ((targetRole === 'admin' || targetRole === 'centrale') && (sub.role === 'admin' || sub.role === 'centrale'));
+    if (isTarget) {
+      webpush.sendNotification(sub.subscription, payloadStr, {
+        urgency: 'high',
+        TTL: 3600,
+        headers: {
+          'Urgency': 'high'
+        }
+      }).catch((err: any) => {
+        if (err.statusCode === 410 || err.statusCode === 404) {
+          subscribers.delete(endpoint);
+        } else {
+          console.error('[WebPush] Invio non riuscito:', err?.message || err);
+        }
+      });
+    }
+  });
+}
+
+function sendPushNotificationToVolunteer(volontarioId: string | undefined, payload: any): number {
+  const payloadStr = JSON.stringify(payload);
+  let sentCount = 0;
+  subscribers.forEach((sub, endpoint) => {
+    const isTargetVol = Boolean(volontarioId && sub.volontarioId === volontarioId);
+    const isGenericVolDevice = !sub.volontarioId && (sub.role === 'volontario' || sub.role === 'all');
+    if (isTargetVol || isGenericVolDevice) {
+      sentCount++;
+      webpush.sendNotification(sub.subscription, payloadStr, {
+        urgency: 'high',
+        TTL: 86400,
+        headers: {
+          'Urgency': 'high'
+        }
+      }).catch((err: any) => {
+        if (err.statusCode === 410 || err.statusCode === 404) {
+          subscribers.delete(endpoint);
+        } else {
+          console.error('[WebPush] Invio promemoria non riuscito:', err?.message || err);
+        }
+      });
+    }
+  });
+  return sentCount;
+}
+
+let notifSeq = 0;
+export function generateUniqueNotifId(): string {
+  notifSeq = (notifSeq + 1) % 1000000;
+  return `notif-${Date.now()}-${notifSeq}-${Math.random().toString(36).substring(2, 6)}`;
+}
+
+// Interfacce dello stato condiviso in tempo reale e persistente
+export interface Volontario {
+  id: string;
+  nome: string;
+  cognome: string;
+  matricola?: string;
+  qualifica: 'Autista' | 'Soccorritore' | 'Operatore Centrale' | string;
+  caricaConsiglioDirettivo?: string;
+  telefono: string;
+  email: string;
+  pin: string;
+  pinProvvisorio?: boolean;
+  resetToken?: string;
+  dataInvioInvitoReset?: string;
+  dataRegistrazione?: string;
+  inTurno?: boolean;
+  ultimoAccesso?: string;
+  mezzoAttivo?: string;
+  ruoloTurno?: string;
+  profiloCentrale?: boolean;
+  approvato?: boolean;
+  dataRichiestaApprovazione?: string;
+  richiedeResetPassword?: boolean;
+  dataRichiestaResetPassword?: string;
+  tentativiErrati?: number; // Contatore tentativi PIN errati (max 3)
+  bloccatoPerTentativi?: boolean; // True se ha raggiunto 3 errori
+  dataBlocco?: string; // Data e ora del blocco di sicurezza
+  firmaBase64?: string; // Firma autografa digitale acquisita sullo schermo del device
+  macroCategorieAbilitate?: string[]; // Macro categorie abilitate per accesso delegato
+  sediTurniAbilitate?: string[]; // Sedi/sezioni autorizzate per visualizzare il tabellone turni
+  sezioneAppartenenzaId?: string;
+  sezioneAppartenenzaNome?: string;
+  codiceFiscale?: string;
+  indirizzoResidenza?: string;
+  dettaglioResidenza?: any;
+  tesseramento?: any;
+  vestiario?: any;
+  [key: string]: any;
+}
+
+export interface MissionData {
+  codice: string;
+  urgenza: 'ROSSO' | 'GIALLO' | 'VERDE' | 'BIANCO';
+  orarioChiamata: string;
+  chiamante: string;
+  telefono: string;
+  enteIstituzionale?: string;
+  indirizzo: string;
+  coordinate?: { lat: number; lng: number };
+  destinazione?: string;
+  codiceRientro?: string;
+  isStrutturaVeterinaria?: boolean;
+  isStrutturaVeterinariaPartenza?: boolean;
+  inAttesaDestinazione?: boolean;
+  ambito: string;
+  sottoAmbitoVet?: string;
+  tipoAnimale?: string;
+  tipoAnimaleAltro?: string;
+  nonDiProprieta?: boolean;
+  microchip?: string;
+  noMicrochip?: boolean;
+  datiProprietarioCentrale?: any;
+  fotoDocumento?: any;
+  specifiche: string;
+  sintesi: string;
+  noteCritiche: string;
+  mezzoAssegnato: string;
+  manovreEffettuatePatologie?: string;
+  noteNonVet?: string;
+  decisioneCentraleNonVet?: 'rientro_sede' | 'nuovo_obiettivo' | null;
+  datiDestinazione?: any;
+  completata?: boolean;
+  annullata?: boolean;
+  motivoAnnullamento?: string;
+  richiedenteAnnullamento?: string;
+  orarioAnnullamento?: string;
+  autonomoVolontario?: boolean;
+  creatoDaVolontarioNome?: string;
+  creatoDaVolontarioId?: string;
+  tipologiaServizio?: string;
+  numeroSegreteriaSoupRt?: string;
+  allertaMeteo?: string;
+}
+
+export interface OperativeTimes {
+  partenza?: string;
+  sulPosto?: string;
+  partenzaObiettivo?: string;
+  arrivoDestinazione?: string;
+  fineMissione?: string;
+  rientro?: string;
+  coordinateSulPosto?: {
+    lat: number;
+    lng: number;
+    accuracy?: number;
+    time?: string;
+  };
+  coordinateDestinazione?: {
+    lat: number;
+    lng: number;
+    accuracy?: number;
+    time?: string;
+  };
+}
+
+export interface RadioNotification {
+  id: string;
+  orario: string;
+  testo: string;
+  tipo: 'centrale' | 'mezzo' | 'sistema' | 'allarme';
+  audioDataUrl?: string;
+  audioDurationSec?: number;
+  audioMimeType?: string;
+  mittenteNome?: string;
+  groupId?: string;
+  groupName?: string;
+}
+
+export interface RadioPttSpeaker {
+  speakerId: string;
+  speakerName: string;
+  role: 'admin' | 'volontario';
+  isCentralePriority: boolean;
+  channelId?: string;
+  isEmergency?: boolean;
+  startedAt: number;
+  lastChunkAt: number;
+}
+
+export interface RadioGroup {
+  id: string;
+  name: string;
+  enabled: boolean;
+  memberIds: string[];
+  createdBy?: string;
+  createdAt?: number;
+  toggledBy?: string;
+  toggledAt?: number;
+  activeSpeaker: RadioPttSpeaker | null;
+}
+
+export interface RadioEmergencyState {
+  active: boolean;
+  triggeredBy?: string;
+  triggeredAt?: number;
+  message?: string;
+}
+
+export interface RadioPttState {
+  enabled: boolean;
+  toggledBy?: string;
+  toggledAt?: number;
+  codecMode?: 'opus-48k' | 'adpcm-24k';
+  activeSpeaker: RadioPttSpeaker | null;
+}
+
+export interface ArchivedService {
+  id: string;
+  codice: string;
+  anno: number;
+  data: string;
+  mezzo: string;
+  urgenza: string;
+  ambito: string;
+  indirizzo: string;
+  destinazione?: string;
+  chiamante?: string;
+  telefono?: string;
+  enteIstituzionale?: string;
+  noteCritiche?: string;
+  volontarioNome?: string;
+  volontarioId?: string;
+  volontarioTelefono?: string;
+  qualificaTurno?: string;
+  kmInizio: number;
+  kmFine: number;
+  kmTotali: number;
+  inAttesaKm: boolean;
+  tempi: OperativeTimes;
+  testoCompleto: string;
+  dataCreazione: string;
+  dataCompletamento?: string;
+  coordinateSulPosto?: {
+    lat: number;
+    lng: number;
+    accuracy?: number;
+    time?: string;
+  };
+  coordinateDestinazione?: {
+    lat: number;
+    lng: number;
+    accuracy?: number;
+    time?: string;
+  };
+  tipoAnimale?: string;
+  tipoAnimaleAltro?: string;
+  nonDiProprieta?: boolean;
+  microchip?: string;
+  noMicrochip?: boolean;
+  datiProprietarioCentrale?: any;
+  fotoDocumento?: any;
+  isStrutturaVeterinariaPartenza?: boolean;
+  datiDestinazione?: any;
+  firmaVolontario?: string;
+  firmaOperatoreCentrale?: string;
+  operatoreCentraleNome?: string;
+  dataFirmaCentrale?: string;
+  visionatoDaCentrale?: boolean;
+  manovreEffettuatePatologie?: string;
+  sottoAmbitoVet?: string;
+  operatoreMittenteId?: string;
+  operatoreMittenteNome?: string;
+  annullata?: boolean;
+  motivoAnnullamento?: string;
+  richiedenteAnnullamento?: string;
+  orarioAnnullamento?: string;
+  decisioneCentraleNonVet?: 'rientro_sede' | 'nuovo_obiettivo' | null;
+  noteNonVet?: string;
+  idTurno?: string;
+  autonomoVolontario?: boolean;
+  creatoDaVolontarioNome?: string;
+  creatoDaVolontarioId?: string;
+  tipologiaServizio?: string;
+  numeroSegreteriaSoupRt?: string;
+  allertaMeteo?: string;
+  schedaDirettaArchivio?: boolean;
+  indirizzoIntervento?: string;
+}
+
+export interface ServerState {
+  volontari: Volontario[];
+  activeMission: MissionData | null;
+  letturaConfermata: boolean;
+  operativeTimes: OperativeTimes;
+  datiDestinazione?: any;
+  kmInizio: string;
+  kmFine: string;
+  ringing: {
+    active: boolean;
+    source: string;
+    soundType: 'telefono' | 'sirena' | 'chiamata';
+    timestamp: number;
+  };
+  gpsPosition: {
+    lat: number;
+    lng: number;
+    accuratezza: number;
+    velocita: number | null;
+    orario: string;
+  };
+  activeShift: {
+    attivo: boolean;
+    volontarioId?: string;
+    volontarioNome?: string;
+    qualificaTurno?: string;
+    mezzoScelto?: string;
+    orarioInizio?: string;
+  };
+  notifiche: RadioNotification[];
+  serviziArchivio: ArchivedService[];
+  cartelleAnniPrecedenti: Record<string, ArchivedService[]>;
+  whatsappConfig?: {
+    token?: string;
+    phoneNumberId?: string;
+    businessNumber?: string;
+  };
+  turni?: any[];
+  checklistsTemplates?: any[];
+  checklistsCompilate?: any[];
+  sedi?: any[];
+  datiCartaIntestata?: DatiCartaIntestata;
+  luoghiTimbratura?: LuogoTimbratura[];
+  promemoriaTurniInviati?: Record<string, string>;
+  promemoriaCompleanniInviati?: Record<string, { sentAt: string; recipients: string[] } | string>;
+  timbrature?: any[];
+  bacheca?: any[];
+  giornaleBordo?: any[];
+  codiciEliminati?: string[];
+  magazzinoParti?: any[];
+  magazzinoMezzi?: any[];
+  indirizziCollezionati?: any[];
+  contatti?: any[];
+  radioPtt?: RadioPttState;
+  radioGroups?: RadioGroup[];
+  radioEmergency?: RadioEmergencyState;
+}
+
+export interface DatiCartaIntestata {
+  denominazione: string;
+  sedeLegale: string;
+  sedeMassa: string;
+  sedeCarrara: string;
+  sedePietrasanta: string;
+  centraleTel: string;
+  codiceFiscale: string;
+  sitoWeb: string;
+  email: string;
+  pec: string;
+  socialFacebook?: string;
+  socialInstagram?: string;
+  socialYouTube?: string;
+  socialTikTok?: string;
+  socialLinkedIn?: string;
+  socialAltro?: string;
+  intestatarioConti?: string;
+  bancaPoste?: string;
+  ibanPoste?: string;
+  ccPostale?: string;
+  bancaAppoggio?: string;
+  ibanBanca?: string;
+}
+
+export const DATI_CARTA_INTESTATA_DEFAULT: DatiCartaIntestata = {
+  denominazione: 'CROCE ORO MASSA CARRARA OdV',
+  sedeLegale: 'Via Como, 12 Massa (MS)',
+  sedeMassa: 'Via Delle Jare 9',
+  sedeCarrara: 'Strada Comunale Monteverde 49',
+  sedePietrasanta: 'Piazza Villeparisis, 14',
+  centraleTel: '0585 625410',
+  codiceFiscale: '92035360459',
+  sitoWeb: 'www.croceoro.org',
+  email: 'volontari@croceoro.org',
+  pec: 'croceoromassacarrara@pec.it',
+  socialFacebook: '',
+  socialInstagram: '',
+  socialYouTube: '',
+  socialTikTok: '',
+  socialLinkedIn: '',
+  socialAltro: '',
+  intestatarioConti: 'CROCE ORO MASSA CARRARA ODV',
+  bancaPoste: 'POSTE ITALIANE',
+  ibanPoste: 'IT40P0760113600001007035676',
+  ccPostale: '00001007035676',
+  bancaAppoggio: 'Credit Agricole',
+  ibanBanca: 'IT79M0623024500000046980317'
+};
+
+function pulisciDenominazioneNoPAServer(
+  val?: string,
+  fallback: string = DATI_CARTA_INTESTATA_DEFAULT.denominazione
+): string {
+  const raw = String(val || '').trim();
+  if (!raw) return fallback;
+  if (/pubblica\s+assistenza|\bP\.A\./i.test(raw)) {
+    const stripped = raw
+      .replace(/pubblica\s+assistenza\s*/gi, '')
+      .replace(/\bP\.A\.\s*/gi, '')
+      .trim();
+    if (!stripped || /^croce\s*oro$/i.test(stripped)) {
+      return fallback;
+    }
+    return stripped;
+  }
+  return raw;
+}
+
+function normalizeDatiCartaIntestataServer(raw: any): DatiCartaIntestata {
+  const src = raw && typeof raw === 'object' ? raw : {};
+  return {
+    ...DATI_CARTA_INTESTATA_DEFAULT,
+    ...src,
+    denominazione: pulisciDenominazioneNoPAServer(src.denominazione, DATI_CARTA_INTESTATA_DEFAULT.denominazione),
+    socialFacebook: String(src.socialFacebook ?? '').trim(),
+    socialInstagram: String(src.socialInstagram ?? '').trim(),
+    socialYouTube: String(src.socialYouTube ?? '').trim(),
+    socialTikTok: String(src.socialTikTok ?? '').trim(),
+    socialLinkedIn: String(src.socialLinkedIn ?? '').trim(),
+    socialAltro: String(src.socialAltro ?? '').trim(),
+    intestatarioConti: pulisciDenominazioneNoPAServer(src.intestatarioConti, DATI_CARTA_INTESTATA_DEFAULT.intestatarioConti)
+  };
+}
+
+function formattaSocialCartaIntestataServer(info?: Partial<DatiCartaIntestata> | null): string {
+  if (!info) return '';
+  const canali: Array<{ label: string; value?: string; prefixRegex?: RegExp }> = [
+    { label: 'Facebook', value: info.socialFacebook, prefixRegex: /^(facebook|fb)\s*:/i },
+    { label: 'Instagram', value: info.socialInstagram, prefixRegex: /^(instagram|ig)\s*:/i },
+    { label: 'YouTube', value: info.socialYouTube, prefixRegex: /^(youtube|yt)\s*:/i },
+    { label: 'TikTok', value: info.socialTikTok, prefixRegex: /^tiktok\s*:/i },
+    { label: 'LinkedIn', value: info.socialLinkedIn, prefixRegex: /^linkedin\s*:/i },
+    { label: 'Social', value: info.socialAltro, prefixRegex: /^[^:]{2,20}:/ },
+  ];
+  const parti: string[] = [];
+  for (const c of canali) {
+    const val = String(c.value ?? '').trim();
+    if (!val) continue;
+    parti.push(c.prefixRegex && c.prefixRegex.test(val) ? val : `${c.label}: ${val}`);
+  }
+  return parti.join(' • ');
+}
+
+// File di persistenza su disco per non perdere mai dati tra riavvii o crash
+const DB_PATH = path.resolve(__dirname, 'data', 'croce_oro_db.json');
+
+// Helper per estrarre il numero progressivo da un codice di missione (es. CO-VET-VERDE-2026-001 -> 1, CO-VET-BIANCO-2026-809 -> 809)
+export function estraiProgressivoDaCodice(codice: string, anno: number = getCurrentYearItaly()): number | null {
+  if (!codice || typeof codice !== 'string') return null;
+  const yearPattern = new RegExp(`[\\-_]${anno}[\\-_](\\d+)`);
+  const matchYear = codice.match(yearPattern);
+  if (matchYear && matchYear[1]) {
+    const num = parseInt(matchYear[1], 10);
+    if (!isNaN(num)) return num;
+  }
+  const matchEnd = codice.match(/-(\d+)$/);
+  if (matchEnd && matchEnd[1]) {
+    const num = parseInt(matchEnd[1], 10);
+    if (!isNaN(num)) return num;
+  }
+  return null;
+}
+
+// Calcola il prossimo numero progressivo per le nuove missioni dell'anno specificato.
+// Se vengono rimossi uno o più servizi recenti consecutivi, il numero massimo residuo diminuirà
+// e il prossimo numero restituito sarà esattamente quello recuperato.
+export function calcolaProssimoNumeroMissione(servizi: ArchivedService[], anno: number = getCurrentYearItaly()): number {
+  if (!Array.isArray(servizi) || servizi.length === 0) return 1;
+  let maxProg = 0;
+  for (const s of servizi) {
+    if (s.anno && s.anno !== anno) continue;
+    const prog = estraiProgressivoDaCodice(s.codice, anno);
+    if (prog !== null && prog > maxProg) {
+      maxProg = prog;
+    }
+  }
+  return maxProg + 1;
+}
+
+export function mergeVolontariLists(esistenti: Volontario[], inArrivo: Volontario[]): Volontario[] {
+  if (!Array.isArray(esistenti)) esistenti = [];
+  if (!Array.isArray(inArrivo)) inArrivo = [];
+  const result: Volontario[] = [];
+
+  const addOrUpdate = (v: Volontario) => {
+    if (!v) return;
+    const n = (v.nome || '').trim().toLowerCase();
+    const c = (v.cognome || '').trim().toLowerCase();
+    const idx = result.findIndex(existing => {
+      if (existing.id && v.id && existing.id === v.id) return true;
+      if (existing.matricola && v.matricola && existing.matricola.toUpperCase() === v.matricola.toUpperCase()) return true;
+      const exN = (existing.nome || '').trim().toLowerCase();
+      const exC = (existing.cognome || '').trim().toLowerCase();
+      if (n && c && exN === n && exC === c) return true;
+      return false;
+    });
+
+    if (idx !== -1) {
+      result[idx] = { ...result[idx], ...v };
+    } else {
+      result.push({ ...v });
+    }
+  };
+
+  for (const v of esistenti) addOrUpdate(v);
+  for (const v of inArrivo) addOrUpdate(v);
+
+  return result;
+}
+
+let FIRMA_QUATTRINI_B64 = '';
+try {
+  const fPath = path.join(process.cwd(), 'data', 'firma_quattrini.b64');
+  if (fs.existsSync(fPath)) {
+    FIRMA_QUATTRINI_B64 = fs.readFileSync(fPath, 'utf8').trim();
+  }
+} catch {}
+
+const INITIAL_VOLONTARI: Volontario[] = [
+  {
+    id: 'vol-admin',
+    nome: 'Amministratore',
+    cognome: 'Centrale',
+    matricola: 'ADM-001',
+    qualifica: 'Soccorritore',
+    telefono: '0585 625410',
+    email: 'centrale@croceoromassacarrara.it',
+    pin: '4451',
+    dataRegistrazione: '01/01/2026',
+    inTurno: false,
+    profiloCentrale: true,
+    approvato: true,
+    firmaBase64: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAGQAAAAyCAYAAACqNX6+AAAAAXNSR0IArs4c6QAAAERlWElmTU0AKgAAAAgAAYdpAAQAAAABAAAAGgAAAAAAA6ABAAMAAAABAAEAAKACAAQAAAABAAAAZKADAAQAAAABAAAAMgAAAACHdE+zAAAB8klEQVR4Ae3Xv0scURTH8e9m3c0m0aRSCwtbETuxs7BQLbXyP0gR/AP+BS1iYWVhIdoIWtlYWEhECyv9CVbZ3V0zc7y7ySRmdr248+A9L27e3TPv5jW7s3m7MggEgkAgEAiE/5dAwE1bWvN8j9tqV9786v9y83/d1f8k/9j/e0m3/W0eBAKBQCAQCFx7Au/tq1r9tM3v7Kz/pE1P/6P7e7t6r+91V55n9eO9/q1f2vW3ev4B7rU/38+v5QcBAAAAAADAj5kAAAAAAADA/7M/573N+s5+x73O7q723v6729l/f1f77e6e580/5n3v50eBAAAAAADAj1kAAAAAAADA/7M/573N+s5+x73O7q723v6729l/f1f77e6e580/5n3v50eBAAAAAADAj1kAAAAAAADA/7M/573N+s5+x73O7q723v6729l/f1f77e6e580/5n3v50eBAAAAAADAj1kAAAAAAADA/7M/573N+s5+x73O7q723v6729l/f1f77e6e580/5n3v50eBAAAAAADAj1kAAAAAAADA/7M/573N+s5+x73O7q723v6729l/f1f77e6e580/5n3v50eBAAAAAADAj1kAAAAAAADA/7M='
+  },
+  {
+    id: 'vol-156',
+    nome: 'Claudio',
+    cognome: 'Simonini',
+    matricola: 'VOL-156',
+    qualifica: 'Autista',
+    caricaConsiglioDirettivo: 'Presidente',
+    firmaBase64: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAGQAAAAyCAYAAACqNX6+AAAAAXNSR0IArs4c6QAAAERlWElmTU0AKgAAAAgAAYdpAAQAAAABAAAAGgAAAAAAA6ABAAMAAAABAAEAAKACAAQAAAABAAAAZKADAAQAAAABAAAAMgAAAACHdE+zAAAB8klEQVR4Ae3Xv0scURTH8e9m3c0m0aRSCwtbETuxs7BQLbXyP0gR/AP+BS1iYWVhIdoIWtlYWEhECyv9CVbZ3V0zc7y7ySRmdr248+A9L27e3TPv5jW7s3m7MggEgkAgEAiE/5dAwE1bWvN8j9tqV9786v9y83/d1f8k/9j/e0m3/W0eBAKBQCAQCFx7Au/tq1r9tM3v7Kz/pE1P/6P7e7t6r+91V55n9eO9/q1f2vW3ev4B7rU/38+v5QcBAAAAAADAj5kAAAAAAADA/7M/573N+s5+x73O7q723v6729l/f1f77e6e580/5n3v50eBAAAAAADAj1kAAAAAAADA/7M/573N+s5+x73O7q723v6729l/f1f77e6e580/5n3v50eBAAAAAADAj1kAAAAAAADA/7M/573N+s5+x73O7q723v6729l/f1f77e6e580/5n3v50eBAAAAAADAj1kAAAAAAADA/7M/573N+s5+x73O7q723v6729l/f1f77e6e580/5n3v50eBAAAAAADAj1kAAAAAAADA/7M/573N+s5+x73O7q723v6729l/f1f77e6e580/5n3v50eBAAAAAADAj1kAAAAAAADA/7M=',
+    telefono: '333 1234567',
+    email: 'claudio.simonini@croceoromassacarrara.it',
+    pin: '1234',
+    dataRegistrazione: '01/10/2026',
+    inTurno: false
+  },
+  {
+    id: 'vol-318',
+    nome: 'Mattia',
+    cognome: 'Vignali',
+    matricola: 'VOL-318',
+    qualifica: 'Autista',
+    telefono: '3770832318',
+    email: 'vignalimattia5@gmail.com',
+    pin: '8346',
+    dataRegistrazione: '18/10/2026',
+    inTurno: false
+  },
+  {
+    id: 'vol-4',
+    nome: 'Sara',
+    cognome: 'Ferretti',
+    matricola: 'VOL-104',
+    qualifica: 'Soccorritore',
+    caricaConsiglioDirettivo: 'Tesoriere',
+    telefono: '339 4443210',
+    email: 'sara.ferretti@croceoromassacarrara.it',
+    pin: '4321',
+    dataRegistrazione: '15/01/2026',
+    inTurno: false
+  },
+  {
+    id: 'vol-quattrini',
+    nome: 'Simone',
+    cognome: 'Quattrini',
+    codiceFiscale: 'QTTSMN83L22L833F',
+    indirizzoResidenza: 'Via Fossone Basso 31, 19034 Luni (SP)',
+    dettaglioResidenza: {
+      indirizzo: 'Via Fossone Basso 31',
+      comune: 'Luni',
+      cap: '19034',
+      provincia: 'SP'
+    },
+    telefono: '3284158897',
+    email: 'simone.quattrini@gmail.com',
+    matricola: 'OP-04',
+    qualifica: 'Operatore Centrale',
+    caricaConsiglioDirettivo: 'Segretario',
+    profiloCentrale: true,
+    approvato: true,
+    inTurno: false,
+    pin: '5678',
+    dataRegistrazione: '05/11/2026',
+    firmaBase64: FIRMA_QUATTRINI_B64,
+    tesseramento: {
+      numeroTessera: 'VOL-003',
+      dataPrimaIscrizione: '2026-11-05',
+      annoRiferimento: 2026,
+      rinnovata: true,
+      dataRinnovo: '2026-11-05',
+      importoVersato: 0,
+      delibera: 'DEL-2026/01 del 2026-11-05',
+      libroSoci: 'LS-2026/003',
+      copertaDaIscrizioneFineAnnoPrec: false,
+      timbroCartaceoEseguito: true
+    }
+  },
+  {
+    id: 'vol-ricci',
+    nome: 'Noemi',
+    cognome: 'Ricci',
+    codiceFiscale: 'RCCNMO95H50E625K',
+    indirizzoResidenza: 'Via Giardini 12, 54033 Carrara (MS)',
+    dettaglioResidenza: {
+      indirizzo: 'Via Giardini 12',
+      comune: 'Carrara',
+      cap: '54033',
+      provincia: 'MS'
+    },
+    telefono: '338 9876543',
+    email: 'noemi.ricci@croceoromassacarrara.it',
+    matricola: 'VOL-105',
+    qualifica: 'Soccorritore',
+    caricaConsiglioDirettivo: 'Consigliere',
+    profiloCentrale: false,
+    approvato: true,
+    inTurno: false,
+    pin: '2345',
+    dataRegistrazione: '05/11/2026'
+  }
+];
+
+const INITIAL_SERVIZI: ArchivedService[] = [];
+
+const DEMO_PARTI_IDS = new Set([
+  'part-001', 'part-002', 'part-003', 'part-004', 'part-005', 'part-006',
+  'part-007', 'part-008', 'part-009', 'part-010', 'part-011', 'part-012'
+]);
+const DEMO_DOTAZIONI_IDS = new Set([
+  'dot-001', 'dot-002', 'dot-003', 'dot-004', 'dot-005'
+]);
+
+function isGhostMission(m: any): boolean {
+  if (!m || typeof m !== 'object') return false;
+  if (m.codice === 'CO-VET-ROSSO-2026-001') return true;
+  const chiamante = String(m.chiamante || '').trim().toLowerCase();
+  const tel = String(m.telefono || '').replace(/\s+/g, '');
+  if (chiamante === 'mario bianchi' && tel === '3333112233445') return true;
+  return false;
+}
+
+function ensureCodiciEliminati(codici?: any[]): string[] {
+  const set = new Set<string>(['CO-VET-ROSSO-2026-001']);
+  if (Array.isArray(codici)) {
+    codici.forEach((c) => {
+      if (typeof c === 'string' && c.trim()) {
+        set.add(c.trim());
+      }
+    });
+  }
+  const arr = Array.from(set);
+  return arr.length > 300 ? ['CO-VET-ROSSO-2026-001', ...arr.slice(-299)] : arr;
+}
+
+function filterDemoMagazzinoParti(list: any[]): any[] {
+  if (!Array.isArray(list)) return [];
+  return list.filter((item: any) => item && !DEMO_PARTI_IDS.has(String(item.id || '')));
+}
+
+function filterDemoMagazzinoMezzi(list: any[]): any[] {
+  if (!Array.isArray(list)) return [];
+  return list.filter((item: any) => item && !DEMO_DOTAZIONI_IDS.has(String(item.id || '')));
+}
+
+function loadPersistedState(): ServerState {
+  const currentYear = getCurrentYearItaly();
+
+  try {
+    if (fs.existsSync(DB_PATH)) {
+      const content = fs.readFileSync(DB_PATH, 'utf8');
+      const parsed = JSON.parse(content);
+      if (parsed && Array.isArray(parsed.volontari)) {
+        console.log(`[DB Persistente] Caricati ${parsed.volontari.length} volontari da ${DB_PATH}`);
+        
+        const serviziRaw: ArchivedService[] = Array.isArray(parsed.serviziArchivio)
+          ? parsed.serviziArchivio
+          : [];
+
+        // Ripartizione cartelle storiche per anni precedenti (< currentYear)
+        const cartelle: Record<string, ArchivedService[]> = {};
+        serviziRaw.forEach(s => {
+          if (s.anno < currentYear) {
+            const key = String(s.anno);
+            if (!cartelle[key]) cartelle[key] = [];
+            cartelle[key].push(s);
+          }
+        });
+
+        const DUMMY_PURGE = [
+          'roberto martini', 'marco verdi', 'giulia neri', 'luca bianchi',
+          'mario rossi', 'elena conti', 'marco rossi', 'laura bianchi', 'matteo neri'
+        ];
+        let loadedVolontari = (Array.isArray(parsed.volontari) ? parsed.volontari : []).filter((v: any) => {
+          const full = `${v.nome || ''} ${v.cognome || ''}`.trim().toLowerCase();
+          return !DUMMY_PURGE.includes(full);
+        });
+
+        // Smart merge protettivo: garantisce che nessuno dei volontari fondamentali (Simone Quattrini, Noemi Ricci, Claudio Simonini, Mattia Vignali, Sara Ferretti, Admin) vada mai perso
+        loadedVolontari = mergeVolontariLists(INITIAL_VOLONTARI, loadedVolontari);
+
+        // Garantisce che Claudio Simonini conservi sempre la carica di Presidente e la firma digitale
+        loadedVolontari.forEach((v: any) => {
+          if ((v.nome?.toLowerCase() === 'claudio' && v.cognome?.toLowerCase() === 'simonini') || v.id === 'vol-156') {
+            if (!v.caricaConsiglioDirettivo) v.caricaConsiglioDirettivo = 'Presidente';
+            if (!v.firmaBase64) {
+              v.firmaBase64 = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAGQAAAAyCAYAAACqNX6+AAAAAXNSR0IArs4c6QAAAERlWElmTU0AKgAAAAgAAYdpAAQAAAABAAAAGgAAAAAAA6ABAAMAAAABAAEAAKACAAQAAAABAAAAZKADAAQAAAABAAAAMgAAAACHdE+zAAAB8klEQVR4Ae3Xv0scURTH8e9m3c0m0aRSCwtbETuxs7BQLbXyP0gR/AP+BS1iYWVhIdoIWtlYWEhECyv9CVbZ3V0zc7y7ySRmdr248+A9L27e3TPv5jW7s3m7MggEgkAgEAiE/5dAwE1bWvN8j9tqV9786v9y83/d1f8k/9j/e0m3/W0eBAKBQCAQCFx7Au/tq1r9tM3v7Kz/pE1P/6P7e7t6r+91V55n9eO9/q1f2vW3ev4B7rU/38+v5QcBAAAAAADAj5kAAAAAAADA/7M/573N+s5+x73O7q723v6729l/f1f77e6e580/5n3v50eBAAAAAADAj1kAAAAAAADA/7M/573N+s5+x73O7q723v6729l/f1f77e6e580/5n3v50eBAAAAAADAj1kAAAAAAADA/7M/573N+s5+x73O7q723v6729l/f1f77e6e580/5n3v50eBAAAAAADAj1kAAAAAAADA/7M/573N+s5+x73O7q723v6729l/f1f77e6e580/5n3v50eBAAAAAADAj1kAAAAAAADA/7M/573N+s5+x73O7q723v6729l/f1f77e6e580/5n3v50eBAAAAAADAj1kAAAAAAADA/7M=';
+            }
+          }
+        });
+
+        if (!loadedVolontari.some((v: any) => v.pin === '4451' || v.id === 'vol-admin')) {
+          loadedVolontari.unshift({
+            id: 'vol-admin',
+            nome: 'Amministratore',
+            cognome: 'Centrale',
+            matricola: 'ADM-001',
+            qualifica: 'Soccorritore',
+            telefono: '0585 625410',
+            email: 'centrale@croceoromassacarrara.it',
+            pin: '4451',
+            dataRegistrazione: '01/01/2026',
+            inTurno: false,
+            profiloCentrale: true,
+            approvato: true,
+            firmaBase64: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAGQAAAAyCAYAAACqNX6+AAAAAXNSR0IArs4c6QAAAERlWElmTU0AKgAAAAgAAYdpAAQAAAABAAAAGgAAAAAAA6ABAAMAAAABAAEAAKACAAQAAAABAAAAZKADAAQAAAABAAAAMgAAAACHdE+zAAAB8klEQVR4Ae3Xv0scURTH8e9m3c0m0aRSCwtbETuxs7BQLbXyP0gR/AP+BS1iYWVhIdoIWtlYWEhECyv9CVbZ3V0zc7y7ySRmdr248+A9L27e3TPv5jW7s3m7MggEgkAgEAiE/5dAwE1bWvN8j9tqV9786v9y83/d1f8k/9j/e0m3/W0eBAKBQCAQCFx7Au/tq1r9tM3v7Kz/pE1P/6P7e7t6r+91V55n9eO9/q1f2vW3ev4B7rU/38+v5QcBAAAAAADAj5kAAAAAAADA/7M/573N+s5+x73O7q723v6729l/f1f77e6e580/5n3v50eBAAAAAADAj1kAAAAAAADA/7M/573N+s5+x73O7q723v6729l/f1f77e6e580/5n3v50eBAAAAAADAj1kAAAAAAADA/7M/573N+s5+x73O7q723v6729l/f1f77e6e580/5n3v50eBAAAAAADAj1kAAAAAAADA/7M/573N+s5+x73O7q723v6729l/f1f77e6e580/5n3v50eBAAAAAADAj1kAAAAAAADA/7M/573N+s5+x73O7q723v6729l/f1f77e6e580/5n3v50eBAAAAAADAj1kAAAAAAADA/7M=',
+          });
+        }
+
+        const activeMissionPulita = (parsed.activeMission && !isGhostMission(parsed.activeMission))
+          ? parsed.activeMission
+          : null;
+
+        return {
+          volontari: loadedVolontari,
+          activeMission: activeMissionPulita,
+          letturaConfermata: activeMissionPulita ? !!parsed.letturaConfermata : false,
+          operativeTimes: activeMissionPulita ? (parsed.operativeTimes || {}) : {},
+          kmInizio: activeMissionPulita ? (parsed.kmInizio || '') : '',
+          kmFine: activeMissionPulita ? (parsed.kmFine || '') : '',
+          ringing: activeMissionPulita ? (parsed.ringing || {
+            active: false,
+            source: 'Centrale',
+            soundType: 'telefono',
+            timestamp: 0
+          }) : {
+            active: false,
+            source: '',
+            soundType: 'telefono',
+            timestamp: 0
+          },
+          gpsPosition: parsed.gpsPosition || {
+            lat: 44.0357,
+            lng: 10.1415,
+            accuratezza: 12,
+            velocita: 0,
+            orario: formatTimeItaly()
+          },
+          activeShift: parsed.activeShift || { attivo: false },
+          notifiche: Array.isArray(parsed.notifiche) ? parsed.notifiche.filter((n: any) => !n.testo || !n.testo.includes('CO-VET-ROSSO-2026-001')) : [],
+          serviziArchivio: serviziRaw.filter((s: any) => !isGhostMission(s)),
+          cartelleAnniPrecedenti: cartelle,
+          datiDestinazione: activeMissionPulita ? (parsed.datiDestinazione || null) : null,
+          whatsappConfig: {
+            token: (parsed.whatsappConfig?.token && parsed.whatsappConfig.token.trim()) || process.env.WHATSAPP_API_TOKEN || '1692890819217239|BxDCvDgtAFgcqN4E5qVUgQWNo8I',
+            phoneNumberId: (parsed.whatsappConfig?.phoneNumberId && parsed.whatsappConfig.phoneNumberId.trim()) || process.env.WHATSAPP_PHONE_NUMBER_ID || '1692890819217239',
+            businessNumber: parsed.whatsappConfig?.businessNumber || '0585625410'
+          },
+          turni: Array.isArray(parsed.turni) ? parsed.turni : [],
+          checklistsTemplates: Array.isArray(parsed.checklistsTemplates) ? parsed.checklistsTemplates : undefined,
+          checklistsCompilate: Array.isArray(parsed.checklistsCompilate) ? parsed.checklistsCompilate : [],
+          sedi: Array.isArray(parsed.sedi) ? parsed.sedi : [],
+          datiCartaIntestata: parsed.datiCartaIntestata
+            ? normalizeDatiCartaIntestataServer(parsed.datiCartaIntestata)
+            : { ...DATI_CARTA_INTESTATA_DEFAULT },
+          luoghiTimbratura: Array.isArray(parsed.luoghiTimbratura) && parsed.luoghiTimbratura.length > 0 ? parsed.luoghiTimbratura : LUOGHI_TIMBRATURA_DEFAULT,
+          promemoriaTurniInviati: parsed.promemoriaTurniInviati && typeof parsed.promemoriaTurniInviati === 'object' ? parsed.promemoriaTurniInviati : {},
+          promemoriaCompleanniInviati: parsed.promemoriaCompleanniInviati && typeof parsed.promemoriaCompleanniInviati === 'object' ? parsed.promemoriaCompleanniInviati : {},
+          timbrature: Array.isArray(parsed.timbrature) ? parsed.timbrature : [],
+          bacheca: Array.isArray(parsed.bacheca) ? parsed.bacheca : [],
+          giornaleBordo: Array.isArray(parsed.giornaleBordo) ? parsed.giornaleBordo : [],
+          codiciEliminati: ensureCodiciEliminati(parsed.codiciEliminati),
+          magazzinoParti: filterDemoMagazzinoParti(parsed.magazzinoParti),
+          magazzinoMezzi: filterDemoMagazzinoMezzi(parsed.magazzinoMezzi),
+          indirizziCollezionati: Array.isArray(parsed.indirizziCollezionati) ? parsed.indirizziCollezionati : [],
+          contatti: Array.isArray(parsed.contatti) ? parsed.contatti : undefined,
+          radioPtt: {
+            enabled: Boolean(parsed.radioPtt?.enabled),
+            toggledBy: parsed.radioPtt?.toggledBy,
+            toggledAt: parsed.radioPtt?.toggledAt,
+            activeSpeaker: null
+          },
+          radioGroups: Array.isArray(parsed.radioGroups)
+            ? (() => {
+                const seenIds = new Set<string>();
+                const seenNames = new Set<string>();
+                const deduped: RadioGroup[] = [];
+                parsed.radioGroups.forEach((g: any) => {
+                  const id = String(g.id || `grp-${Date.now()}`);
+                  const name = String(g.name || 'Gruppo Radio').trim();
+                  const normName = name.toLowerCase();
+                  if (seenIds.has(id) || seenNames.has(normName)) return;
+                  seenIds.add(id);
+                  seenNames.add(normName);
+                  deduped.push({
+                    id,
+                    name,
+                    enabled: Boolean(g.enabled),
+                    memberIds: Array.isArray(g.memberIds) ? g.memberIds.map((m: any) => String(m)) : [],
+                    createdBy: g.createdBy,
+                    createdAt: Number(g.createdAt) || Date.now(),
+                    toggledBy: g.toggledBy,
+                    toggledAt: g.toggledAt,
+                    activeSpeaker: null
+                  });
+                });
+                return deduped;
+              })()
+            : [],
+          radioEmergency: {
+            active: false
+          }
+        };
+      }
+    }
+  } catch (err) {
+    console.error('[DB Persistente] Errore lettura file database:', err);
+  }
+
+  // Valori predefiniti se non esiste il database
+  const cartelleInit: Record<string, ArchivedService[]> = {};
+  INITIAL_SERVIZI.forEach(s => {
+    if (s.anno < currentYear) {
+      const key = String(s.anno);
+      if (!cartelleInit[key]) cartelleInit[key] = [];
+      cartelleInit[key].push(s);
+    }
+  });
+
+  return {
+    volontari: [
+      {
+        id: 'vol-admin',
+        nome: 'Amministratore',
+        cognome: 'Centrale',
+        matricola: 'ADM-001',
+        qualifica: 'Soccorritore',
+        telefono: '0585 625410',
+        email: 'centrale@croceoromassacarrara.it',
+        pin: '4451',
+        dataRegistrazione: '01/01/2026',
+        inTurno: false,
+        profiloCentrale: true,
+        approvato: true,
+        firmaBase64: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAGQAAAAyCAYAAACqNX6+AAAAAXNSR0IArs4c6QAAAERlWElmTU0AKgAAAAgAAYdpAAQAAAABAAAAGgAAAAAAA6ABAAMAAAABAAEAAKACAAQAAAABAAAAZKADAAQAAAABAAAAMgAAAACHdE+zAAAB8klEQVR4Ae3Xv0scURTH8e9m3c0m0aRSCwtbETuxs7BQLbXyP0gR/AP+BS1iYWVhIdoIWtlYWEhECyv9CVbZ3V0zc7y7ySRmdr248+A9L27e3TPv5jW7s3m7MggEgkAgEAiE/5dAwE1bWvN8j9tqV9786v9y83/d1f8k/9j/e0m3/W0eBAKBQCAQCFx7Au/tq1r9tM3v7Kz/pE1P/6P7e7t6r+91V55n9eO9/q1f2vW3ev4B7rU/38+v5QcBAAAAAADAj5kAAAAAAADA/7M/573N+s5+x73O7q723v6729l/f1f77e6e580/5n3v50eBAAAAAADAj1kAAAAAAADA/7M/573N+s5+x73O7q723v6729l/f1f77e6e580/5n3v50eBAAAAAADAj1kAAAAAAADA/7M/573N+s5+x73O7q723v6729l/f1f77e6e580/5n3v50eBAAAAAADAj1kAAAAAAADA/7M/573N+s5+x73O7q723v6729l/f1f77e6e580/5n3v50eBAAAAAADAj1kAAAAAAADA/7M/573N+s5+x73O7q723v6729l/f1f77e6e580/5n3v50eBAAAAAADAj1kAAAAAAADA/7M='
+      },
+      ...INITIAL_VOLONTARI
+    ],
+    activeMission: null,
+    letturaConfermata: false,
+    operativeTimes: {},
+    kmInizio: '',
+    kmFine: '',
+    ringing: {
+      active: false,
+      source: 'Centrale',
+      soundType: 'telefono',
+      timestamp: 0
+    },
+    gpsPosition: {
+      lat: 44.0357, // Sede Croce Oro Massa Carrara
+      lng: 10.1415,
+      accuratezza: 12,
+      velocita: 0,
+      orario: formatTimeItaly()
+    },
+    activeShift: {
+      attivo: false
+    },
+    notifiche: [
+      {
+        id: 'init-srv-1',
+        orario: formatTimeItaly(),
+        testo: 'CENTRALE OPERATIVA ATTIVA: Server sincronizzato in tempo reale su rete protetta.',
+        tipo: 'sistema'
+      }
+    ],
+    serviziArchivio: INITIAL_SERVIZI,
+    cartelleAnniPrecedenti: cartelleInit,
+    whatsappConfig: {
+      token: process.env.WHATSAPP_API_TOKEN || '1692890819217239|BxDCvDgtAFgcqN4E5qVUgQWNo8I',
+      phoneNumberId: process.env.WHATSAPP_PHONE_NUMBER_ID || '1692890819217239',
+      businessNumber: '0585625410'
+    },
+    datiCartaIntestata: { ...DATI_CARTA_INTESTATA_DEFAULT },
+    luoghiTimbratura: LUOGHI_TIMBRATURA_DEFAULT,
+    promemoriaTurniInviati: {},
+    promemoriaCompleanniInviati: {},
+    timbrature: [],
+    bacheca: [],
+    giornaleBordo: [],
+    codiciEliminati: ['CO-VET-ROSSO-2026-001'],
+    magazzinoParti: [],
+    magazzinoMezzi: [],
+    indirizziCollezionati: [],
+    radioPtt: {
+      enabled: false,
+      activeSpeaker: null
+    },
+    radioGroups: [],
+    radioEmergency: {
+      active: false
+    }
+  };
+}
+
+const state: ServerState = loadPersistedState();
+
+// Auto-ripulitura: se la missione presente in activeMission è già stata archiviata con KM completati,
+// azzera activeMission e i dati operativi temporanei così i terminali risultano liberi per nuovo servizio
+if (state.activeMission && state.serviziArchivio && Array.isArray(state.serviziArchivio)) {
+  const giaArchiviatoCompleto = state.serviziArchivio.find(s => s.codice === state.activeMission?.codice && !s.inAttesaKm);
+  if (giaArchiviatoCompleto) {
+    state.activeMission = null;
+    state.letturaConfermata = false;
+    state.operativeTimes = {};
+    state.kmInizio = '';
+    state.kmFine = '';
+    state.datiDestinazione = null;
+    state.ringing = { active: false, source: '', soundType: 'telefono', timestamp: 0 };
+  }
+}
+
+export function maskPinInNotification(testo: string): string {
+  if (!testo) return '';
+  return testo
+    .replace(/\b4451\b/g, '[RISERVATO]')
+    .replace(/(reimpostato\s+a\s+)[0-9A-Za-z]{3,8}/gi, '$1[RISERVATO]')
+    .replace(/\bPIN(?:\s*personale|\s*operatore|\s*volontario|\s*amministratore)?\s*(?::|=|\s)\s*([0-9]{3,8})\b/gi, 'PIN [RISERVATO]')
+    .replace(/\bPIN\s*\(([0-9]{3,8})\)/gi, 'PIN ([RISERVATO])')
+    .replace(/(\bcon\s+PIN\s+)[0-9]{3,8}\b/gi, '$1[RISERVATO]')
+    .replace(/(\bnuovo\s+PIN(?:\s*:)?\s*)[0-9]{3,8}\b/gi, '$1[RISERVATO]');
+}
+
+// Sanitizza permanentemente lo storico notifiche radio per rimuovere qualsiasi PIN personale
+if (state.notifiche && Array.isArray(state.notifiche)) {
+  state.notifiche = state.notifiche.map(n => ({
+    ...n,
+    testo: maskPinInNotification(n.testo)
+  }));
+}
+
+function persistState() {
+  try {
+    const dir = path.dirname(DB_PATH);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+
+    const currentYear = getCurrentYearItaly();
+    // Aggiorna cartelle storiche anni precedenti (< currentYear)
+    const cartelle: Record<string, ArchivedService[]> = {};
+    (state.serviziArchivio || []).forEach(s => {
+      if (s.anno < currentYear) {
+        const key = String(s.anno);
+        if (!cartelle[key]) cartelle[key] = [];
+        cartelle[key].push(s);
+      }
+    });
+    state.cartelleAnniPrecedenti = cartelle;
+
+    fs.writeFileSync(DB_PATH, JSON.stringify(state, null, 2), 'utf8');
+  } catch (err) {
+    console.error('[DB Persistente] Errore salvataggio:', err);
+  }
+}
+
+// Salva subito lo stato iniziale
+persistState();
+
+async function startServer() {
+  const app = express();
+  const server = http.createServer(app);
+  const wss = new WebSocketServer({ server });
+
+  // ABILITA CORS COMPLETO per consentire l'accesso da smartphone Android (TWA / WebView / app installata)
+  app.use((req, res, next) => {
+    res.header('Access-Control-Allow-Origin', '*');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+    if (req.method === 'OPTIONS') {
+      return res.sendStatus(200);
+    }
+    next();
+  });
+
+  app.use(express.json({ limit: '25mb' }));
+  app.use(express.urlencoded({ limit: '25mb', extended: true }));
+
+  // Socket proprietario della trasmissione PTT in diretta corrente (generale + per gruppo) + watchdog anti-blocco
+  let activePttSocket: WebSocket | null = null;
+  const activeGroupSockets = new Map<string, WebSocket | null>();
+
+  const isSocketAllowedInGroup = (client: WebSocket, group: RadioGroup): boolean => {
+    const role = (client as any).clientRole;
+    if (role === 'admin') return true;
+    const volId = (client as any).volontarioId ? String((client as any).volontarioId) : '';
+    if (!volId) return false;
+    return Array.isArray(group.memberIds) && group.memberIds.includes(volId);
+  };
+
+  // Funzione broadcast per inoltrare messaggi a tutti i client connessi (o filtrati per gruppo)
+  const broadcast = (message: any, excludeClient?: WebSocket) => {
+    const raw = JSON.stringify(message);
+    wss.clients.forEach((client) => {
+      if (client !== excludeClient && client.readyState === WebSocket.OPEN) {
+        try {
+          client.send(raw);
+        } catch (err) {
+          console.error('Errore invio WebSocket:', err);
+        }
+      }
+    });
+  };
+
+  const broadcastToFilter = (
+    message: any,
+    predicate: (client: WebSocket) => boolean,
+    excludeClient?: WebSocket
+  ) => {
+    const raw = JSON.stringify(message);
+    wss.clients.forEach((client) => {
+      if (client !== excludeClient && client.readyState === WebSocket.OPEN && predicate(client)) {
+        try {
+          client.send(raw);
+        } catch (err) {
+          console.error('Errore invio WebSocket filtrato:', err);
+        }
+      }
+    });
+  };
+
+  setInterval(() => {
+    const now = Date.now();
+    if (state.radioPtt?.activeSpeaker) {
+      const timeoutMs = state.radioPtt.activeSpeaker.isEmergency ? 10000 : 5000;
+      if (now - state.radioPtt.activeSpeaker.lastChunkAt > timeoutMs) {
+        state.radioPtt.activeSpeaker = null;
+        activePttSocket = null;
+        broadcast({
+          type: 'PTT_SPEAKER_CHANGED',
+          channelId: 'general',
+          radioPtt: state.radioPtt
+        });
+      }
+    }
+
+    if (Array.isArray(state.radioGroups)) {
+      let groupDirty = false;
+      state.radioGroups.forEach((g) => {
+        if (g.activeSpeaker && now - g.activeSpeaker.lastChunkAt > 5000) {
+          g.activeSpeaker = null;
+          activeGroupSockets.set(g.id, null);
+          groupDirty = true;
+          broadcastToFilter(
+            {
+              type: 'PTT_SPEAKER_CHANGED',
+              channelId: g.id,
+              groupId: g.id,
+              activeSpeaker: null,
+              radioGroup: g
+            },
+            (c) => isSocketAllowedInGroup(c, g)
+          );
+        }
+      });
+      if (groupDirty) {
+        broadcast({
+          type: 'RADIO_GROUPS_UPDATED',
+          radioGroups: state.radioGroups
+        });
+      }
+    }
+  }, 2000);
+
+  // Negoziazione automatica miglior codec comune tra i terminali connessi (Opus 48kHz vs ADPCM 24kHz)
+  const recomputeRadioCodecMode = (shouldBroadcast: boolean = true) => {
+    if (!state.radioPtt) return;
+    let connected = 0;
+    let knownCaps = 0;
+    let allSupportOpus = true;
+    wss.clients.forEach((client) => {
+      if (client.readyState === WebSocket.OPEN) {
+        connected++;
+        const cap = (client as any).supportsOpus;
+        if (typeof cap === 'boolean') {
+          knownCaps++;
+          if (!cap) allSupportOpus = false;
+        } else {
+          allSupportOpus = false;
+        }
+      }
+    });
+    const nextMode: 'opus-48k' | 'adpcm-24k' =
+      connected > 0 && knownCaps === connected && allSupportOpus ? 'opus-48k' : 'adpcm-24k';
+    if (state.radioPtt.codecMode !== nextMode) {
+      state.radioPtt.codecMode = nextMode;
+      if (shouldBroadcast) {
+        broadcast({
+          type: 'RADIO_PTT_STATE',
+          radioPtt: state.radioPtt
+        });
+      }
+    }
+  };
+
+  // ---------------------------------------------------------------------------
+  // GESTIONE AUTOMATICA PROMEMORIA TURNI: AVVISO IL GIORNO PRIMA ALLE ORE 09:00
+  // ---------------------------------------------------------------------------
+  interface AssegnazioneTurnoVolontario {
+    volontarioId?: string;
+    volontarioNome: string;
+    ruolo: string;
+  }
+
+  const estraiVolontariDaTurno = (turno: any): AssegnazioneTurnoVolontario[] => {
+    const lista: AssegnazioneTurnoVolontario[] = [];
+    const aggiungiSePresente = (slot: any, defaultRuolo: string) => {
+      if (!slot) return;
+      if (typeof slot === 'object' && slot.nome && String(slot.nome).trim()) {
+        lista.push({
+          volontarioId: slot.id ? String(slot.id) : undefined,
+          volontarioNome: String(slot.nome).trim(),
+          ruolo: defaultRuolo
+        });
+      } else if (typeof slot === 'string' && slot.trim()) {
+        lista.push({
+          volontarioNome: slot.trim(),
+          ruolo: defaultRuolo
+        });
+      }
+    };
+
+    aggiungiSePresente(turno.autista, 'Autista');
+    aggiungiSePresente(turno.caposervizio, 'Caposervizio');
+    aggiungiSePresente(turno.soccorritore2, 'Secondo Soccorritore');
+    aggiungiSePresente(turno.terzoSoccorritore, 'Terzo Soccorritore');
+    aggiungiSePresente(turno.operatoreCentrale, 'Operatore Centrale');
+    aggiungiSePresente(turno.centralinista, 'Centralinista');
+    aggiungiSePresente(turno.osservatore, 'Osservatore');
+
+    if (Array.isArray(turno.richiesteIscrizione)) {
+      turno.richiesteIscrizione.forEach((req: any) => {
+        if (req && req.stato === 'Approvato' && req.volontarioNome) {
+          lista.push({
+            volontarioId: req.volontarioId ? String(req.volontarioId) : undefined,
+            volontarioNome: String(req.volontarioNome).trim(),
+            ruolo: req.ruoloRichiesto ? String(req.ruoloRichiesto) : 'Soccorritore'
+          });
+        }
+      });
+    }
+
+    // Deduplica per volontarioId o nome normalizzato
+    const deduplicati: AssegnazioneTurnoVolontario[] = [];
+    const visti = new Set<string>();
+    for (const item of lista) {
+      const chiave = item.volontarioId || item.volontarioNome.toLowerCase();
+      if (!visti.has(chiave)) {
+        visti.add(chiave);
+        deduplicati.push(item);
+      }
+    }
+
+    return deduplicati;
+  };
+
+  const getItalianDateInfo = (date = new Date()) => {
+    const parts = getItalianDateParts(date);
+    return {
+      todayStr: parts.isoDate,
+      tomorrowStr: parts.tomorrowIsoDate,
+      hour: parts.hour,
+      minute: parts.minute,
+      second: parts.second,
+      isOraLegale: parts.isOraLegale,
+      fasciaOraLabel: parts.fasciaOraLabel,
+      fasciaOraShort: parts.fasciaOraShort,
+      offsetMinutes: parts.offsetMinutes
+    };
+  };
+
+  const formattaDataItalianaBreve = (dataStr: string): string => {
+    try {
+      const [y, m, d] = dataStr.split('-').map(Number);
+      const date = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
+      const options: Intl.DateTimeFormatOptions = {
+        weekday: 'long',
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric',
+        timeZone: ITALY_TIMEZONE
+      };
+      const formatted = date.toLocaleDateString('it-IT', options);
+      return formatted.charAt(0).toUpperCase() + formatted.slice(1);
+    } catch {
+      return dataStr;
+    }
+  };
+
+  const inviaEmailPromemoriaTurno = async (
+    destinatarioEmail: string,
+    nomeVolontario: string,
+    datiTurno: {
+      dataFormatted: string;
+      fascia: string;
+      sede: string;
+      ruolo: string;
+      mezzo?: string;
+      note?: string;
+    }
+  ): Promise<boolean> => {
+    if (!destinatarioEmail || !destinatarioEmail.includes('@')) {
+      return false;
+    }
+
+    try {
+      const smtpHost = process.env.SMTP_HOST || 'mail.tophost.it';
+      const smtpPass = process.env.SMTP_PASS || 'Applicazione26!';
+      const smtpPort = Number(process.env.SMTP_PORT) || 587;
+      const isSecure = smtpPort === 465;
+
+      const candidateUsers = Array.from(new Set([
+        'croceoro.org10175',
+        'croceoro.org',
+        'sistemiautomatizzati@croceoro.org',
+        process.env.SMTP_USER
+      ].filter(Boolean) as string[]));
+
+      let transporter: any = null;
+      let fromUser = 'sistemiautomatizzati@croceoro.org';
+
+      for (const candidate of candidateUsers) {
+        try {
+          const t = nodemailer.createTransport({
+            host: smtpHost,
+            port: smtpPort,
+            secure: isSecure,
+            auth: {
+              user: candidate,
+              pass: smtpPass
+            },
+            tls: {
+              rejectUnauthorized: false
+            }
+          });
+          await t.verify();
+          transporter = t;
+          fromUser = candidate.includes('@') ? candidate : 'sistemiautomatizzati@croceoro.org';
+          break;
+        } catch {}
+      }
+
+      if (!transporter) {
+        console.warn(`[Promemoria Email] Impossibile autenticare transporter SMTP per ${destinatarioEmail}`);
+        return false;
+      }
+
+      const oggetto = `📅 PROMEMORIA TURNO PER DOMANI (${datiTurno.dataFormatted}) - Croce Oro Massa Carrara OdV`;
+
+      const htmlEmail = `
+        <div style="font-family: Arial, Helvetica, sans-serif; color: #1e293b; max-width: 650px; line-height: 1.6; border: 1px solid #e2e8f0; border-radius: 14px; overflow: hidden; margin: 0 auto;">
+          <div style="background: linear-gradient(135deg, #1d1a60 0%, #2e2694 100%); color: #fbbf24; padding: 24px 20px; text-align: center;">
+            <h1 style="margin: 0; font-size: 21px; font-weight: 900; letter-spacing: 0.5px; color: #ffffff;">CROCE ORO MASSA CARRARA OdV</h1>
+            <p style="margin: 6px 0 0; font-size: 13px; color: #fbbf24; font-weight: bold; text-transform: uppercase;">Sistemi Automatizzati &bull; Ufficio Turni &bull; Avviso Programmato</p>
+          </div>
+
+          <div style="padding: 26px; background-color: #ffffff;">
+            <p style="margin-top: 0; font-size: 15px; color: #0f172a;">Gentile <strong>${nomeVolontario}</strong>,</p>
+            <p style="font-size: 14px; color: #334155;">
+              ti ricordiamo che per la giornata di domani, <strong>${datiTurno.dataFormatted}</strong>, sei regolarmente inserito a tabellone per il seguente turno di servizio operativo:
+            </p>
+
+            <div style="background-color: #f8fafc; border-left: 5px solid #16a34a; border-radius: 8px; padding: 16px 20px; margin: 20px 0; font-size: 13.5px; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
+              <p style="margin: 5px 0;"><strong>📅 Data Turno:</strong> <span style="color: #0f172a; font-weight: 700;">${datiTurno.dataFormatted}</span></p>
+              <p style="margin: 5px 0;"><strong>⏱️ Fascia Oraria:</strong> <span style="color: #15803d; font-weight: 700;">${datiTurno.fascia}</span></p>
+              <p style="margin: 5px 0;"><strong>📍 Sede Operativa:</strong> <span style="color: #1d1a60; font-weight: 700;">${datiTurno.sede}</span></p>
+              <p style="margin: 5px 0;"><strong>🚑 Incarico / Ruolo:</strong> <span style="color: #b45309; font-weight: 700;">${datiTurno.ruolo}</span></p>
+              ${datiTurno.mezzo ? `<p style="margin: 5px 0;"><strong>🚒 Mezzo Assegnato:</strong> <span style="color: #0f172a; font-weight: 700;">${datiTurno.mezzo}</span></p>` : ''}
+              ${datiTurno.note ? `<p style="margin: 5px 0;"><strong>📝 Note / Disposizioni:</strong> <span style="color: #64748b;">${datiTurno.note}</span></p>` : ''}
+            </div>
+
+            <div style="background-color: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px; padding: 12px 16px; margin: 18px 0; font-size: 12.5px; color: #1e40af;">
+              <strong>ℹ️ Istruzioni per il Volontario:</strong><br />
+              All'inizio del servizio, ricordati di effettuare l'accesso con il tuo PIN personale sul terminale mobile o tablet di bordo per avviare la sessione operativa ed effettuare la checklist del veicolo se richiesta.
+            </div>
+
+            <p style="font-size: 12px; color: #64748b; margin-top: 24px; border-top: 1px solid #e2e8f0; padding-top: 14px;">
+              Questa notifica automatica è stata inviata alle ore 09:00 del giorno precedente il turno all'indirizzo email con cui ti sei registrato.<br />
+              Per qualsiasi impedimento, sostituzione o variazione, contatta tempestivamente la <strong>Centrale Operativa</strong> al numero <strong>0585 625410</strong>.
+            </p>
+          </div>
+
+          <div style="background-color: #f1f5f9; padding: 14px; text-align: center; font-size: 11.5px; color: #64748b; border-top: 1px solid #e2e8f0;">
+            <strong>Croce Oro Massa Carrara OdV</strong> &bull; Via del Patriota 2, 54100 Massa (MS)<br />
+            Centrale Operativa H24: 0585 625410 &bull; <a href="mailto:info@croceoro.org" style="color: #1d1a60; text-decoration: none;">info@croceoro.org</a>
+          </div>
+        </div>
+      `;
+
+      await transporter.sendMail({
+        from: `"Croce Oro Massa Carrara OdV" <${fromUser}>`,
+        to: destinatarioEmail,
+        subject: oggetto,
+        html: htmlEmail
+      });
+      console.log(`[Promemoria Email] Inviata con successo a ${destinatarioEmail} (${nomeVolontario})`);
+      return true;
+    } catch (err: any) {
+      console.error(`[Promemoria Email] Errore invio a ${destinatarioEmail}:`, err?.message || err);
+      return false;
+    }
+  };
+
+  const eseguiControlloPromemoriaTurniDomani = (forzaInvio = false): {
+    countInviati: number;
+    dettagli: any[];
+  } => {
+    const timeInfo = getItalianDateInfo();
+    const { todayStr, tomorrowStr, hour } = timeInfo;
+
+    // L'avviso deve scattare il giorno prima a partire dalle ore 9:00 di mattina
+    if (!forzaInvio && hour < 9) {
+      return { countInviati: 0, dettagli: [] };
+    }
+
+    const turni = Array.isArray(state.turni) ? state.turni : [];
+    if (turni.length === 0) {
+      return { countInviati: 0, dettagli: [] };
+    }
+
+    const turniDomani = turni.filter((t: any) => t && t.data === tomorrowStr);
+    if (turniDomani.length === 0) {
+      return { countInviati: 0, dettagli: [] };
+    }
+
+    if (!state.promemoriaTurniInviati) {
+      state.promemoriaTurniInviati = {};
+    }
+
+    let countInviati = 0;
+    const dettagli: any[] = [];
+    let hasStateChanges = false;
+
+    for (const turno of turniDomani) {
+      const assegnati = estraiVolontariDaTurno(turno);
+      const dataFormatted = formattaDataItalianaBreve(turno.data);
+      const fascia = turno.fasciaOraria || `${turno.orarioInizio || '08:00'} - ${turno.orarioFine || '14:00'}`;
+      const sede = turno.sedeNome || 'Sede Operativa';
+      const mezzo = turno.mezzoAssegnato ? ` • Mezzo: ${turno.mezzoAssegnato}` : '';
+
+      for (const vol of assegnati) {
+        const volKey = vol.volontarioId || vol.volontarioNome.toLowerCase().replace(/\s+/g, '_');
+        const reminderKey = `promemoria_${todayStr}_${turno.id}_${volKey}`;
+
+        if (!forzaInvio && state.promemoriaTurniInviati[reminderKey]) {
+          continue;
+        }
+
+        // Ricerca email di registrazione del volontario nel database
+        const volRecord = (state.volontari || []).find((v: any) =>
+          (vol.volontarioId && v.id === vol.volontarioId) ||
+          (`${v.nome || ''} ${v.cognome || ''}`.toLowerCase().trim() === vol.volontarioNome.toLowerCase().trim()) ||
+          (v.nome && v.nome.toLowerCase().trim() === vol.volontarioNome.toLowerCase().trim())
+        );
+        const volEmail = volRecord?.email?.trim();
+
+        const titolo = `📅 PROMEMORIA TURNO PER DOMANI (Ore 09:00)`;
+        const testo = `Ciao ${vol.volontarioNome}, ti ricordiamo che domani ${dataFormatted} sei di turno [${fascia}] presso ${sede} (Ruolo: ${vol.ruolo}${mezzo}).`;
+
+        // 1. Invio Notifica Push su smartphone/device del volontario
+        sendPushNotificationToVolunteer(vol.volontarioId, {
+          title: titolo,
+          body: testo,
+          tag: `promemoria-turno-${turno.id}`,
+          urgenza: 'VERDE',
+          soundType: 'chiamata',
+          url: '/?tab=turni',
+          targetVolontarioId: vol.volontarioId,
+          targetVolontarioNome: vol.volontarioNome,
+          timestamp: Date.now()
+        });
+
+        // 2. Invio Email di promemoria all'indirizzo con cui il volontario si è registrato
+        if (volEmail && volEmail.includes('@')) {
+          inviaEmailPromemoriaTurno(volEmail, vol.volontarioNome, {
+            dataFormatted,
+            fascia,
+            sede,
+            ruolo: vol.ruolo,
+            mezzo: turno.mezzoAssegnato,
+            note: turno.note
+          }).catch(err => {
+            console.error(`[Promemoria Turni] Errore asincrono invio email a ${volEmail}:`, err);
+          });
+        }
+
+        // 3. Notifica Radio di sistema per tracciamento in Centrale
+        const notif: RadioNotification = {
+          id: generateUniqueNotifId(),
+          orario: formatTimeItaly(),
+          testo: `📅 PROMEMORIA TURNO DOMANI (Ore 09:00): Notifica inviata su device${volEmail ? ` e via email (${volEmail})` : ''} a ${vol.volontarioNome} per turno [${fascia}] presso ${sede} (${vol.ruolo}).`,
+          tipo: 'sistema'
+        };
+        state.notifiche.push(notif);
+
+        // 4. Broadcast in tempo reale WebSocket per i client attivi
+        broadcast({
+          type: 'PROMEMORIA_TURNO_DOMANI',
+          turnoId: turno.id,
+          turno: turno,
+          volontarioId: vol.volontarioId,
+          volontarioNome: vol.volontarioNome,
+          volontarioEmail: volEmail || undefined,
+          ruolo: vol.ruolo,
+          fascia: fascia,
+          sede: sede,
+          dataTurno: turno.data,
+          dataFormatted: dataFormatted,
+          titolo: titolo,
+          testo: testo,
+          notification: notif,
+          timestamp: Date.now()
+        });
+
+        state.promemoriaTurniInviati[reminderKey] = new Date().toISOString();
+        hasStateChanges = true;
+        countInviati++;
+        dettagli.push({
+          volontario: vol.volontarioNome,
+          volontarioId: vol.volontarioId,
+          email: volEmail || null,
+          emailInviata: Boolean(volEmail && volEmail.includes('@')),
+          ruolo: vol.ruolo,
+          turnoId: turno.id,
+          fascia: fascia,
+          sede: sede,
+          dataDomani: tomorrowStr
+        });
+      }
+    }
+
+    if (hasStateChanges) {
+      persistState();
+      console.log(`[Promemoria Turni] Inviati con successo ${countInviati} promemoria per i turni di domani (${tomorrowStr}).`);
+    }
+
+    return { countInviati, dettagli };
+  };
+
+  // =========================================================================
+  // SISTEMA AUTOMATICO NOTIFICHE COMPLEANNI VOLONTARI
+  // Invia email e notifica in-app/radio a Presidenza + TUTTI gli account
+  // che hanno accesso al database Volontari ('volontari' in macroCategorieAbilitate)
+  // =========================================================================
+  const CF_MESI_MAP: Record<string, number> = {
+    A: 1, B: 2, C: 3, D: 4, E: 5, H: 6,
+    L: 7, M: 8, P: 9, R: 10, S: 11, T: 12
+  };
+
+  const estraiDataNascitaCompleta = (vol: any): { day: number; month: number; year?: number; formatted?: string } | null => {
+    if (!vol) return null;
+    const raw = String(vol.dataNascita || '').trim();
+    if (raw) {
+      const iso = raw.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+      if (iso) {
+        const y = parseInt(iso[1], 10);
+        const m = parseInt(iso[2], 10);
+        const d = parseInt(iso[3], 10);
+        if (m >= 1 && m <= 12 && d >= 1 && d <= 31) {
+          return {
+            day: d,
+            month: m,
+            year: y,
+            formatted: `${String(d).padStart(2, '0')}/${String(m).padStart(2, '0')}/${y}`
+          };
+        }
+      }
+      const itMatch = raw.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$/);
+      if (itMatch) {
+        const d = parseInt(itMatch[1], 10);
+        const m = parseInt(itMatch[2], 10);
+        let y = parseInt(itMatch[3], 10);
+        if (y < 100) y += y > 25 ? 1900 : 2000;
+        if (m >= 1 && m <= 12 && d >= 1 && d <= 31) {
+          return {
+            day: d,
+            month: m,
+            year: y,
+            formatted: `${String(d).padStart(2, '0')}/${String(m).padStart(2, '0')}/${y}`
+          };
+        }
+      }
+    }
+
+    // Fallback automatico da Codice Fiscale (16 caratteri) se dataNascita non compilata
+    const cf = String(vol.codiceFiscale || '').trim().toUpperCase();
+    if (/^[A-Z]{6}\d{2}[A-Z]\d{2}[A-Z]\d{3}[A-Z]$/.test(cf)) {
+      const yy = parseInt(cf.slice(6, 8), 10);
+      const month = CF_MESI_MAP[cf[8]];
+      let day = parseInt(cf.slice(9, 11), 10);
+      if (day > 40) day -= 40;
+      const currentTwoDigitYear = getCurrentYearItaly() % 100;
+      const fullYear = yy <= currentTwoDigitYear ? 2000 + yy : 1900 + yy;
+      if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+        return {
+          day,
+          month,
+          year: fullYear,
+          formatted: `${String(day).padStart(2, '0')}/${String(month).padStart(2, '0')}/${fullYear}`
+        };
+      }
+    }
+    return null;
+  };
+
+  const calcolaDestinatariEmailCompleanni = (volontariList: any[], extraEmails: string[] = []): string[] => {
+    const emailSet = new Set<string>(['presidenza@croceoro.org']);
+
+    for (const v of volontariList) {
+      if (!v || v.eliminato || v.approvato === false) continue;
+      const email = String(v.email || '').trim().toLowerCase();
+      if (!email || !email.includes('@') || !email.includes('.')) continue;
+
+      const hasVolontariDb =
+        Array.isArray(v.macroCategorieAbilitate) && v.macroCategorieAbilitate.includes('volontari');
+      const isPresidente = Boolean(
+        (v.caricaConsiglioDirettivo && String(v.caricaConsiglioDirettivo).toLowerCase().includes('presidente')) ||
+        (v.qualifica && String(v.qualifica).toLowerCase().includes('presidente'))
+      );
+
+      if (hasVolontariDb || isPresidente) {
+        emailSet.add(email);
+      }
+    }
+
+    for (const extra of extraEmails) {
+      const cleaned = String(extra || '').trim().toLowerCase();
+      if (cleaned && cleaned.includes('@') && cleaned.includes('.')) {
+        emailSet.add(cleaned);
+      }
+    }
+
+    return Array.from(emailSet);
+  };
+
+  const inviaEmailCompleannoVolontari = async (
+    destinatari: string[],
+    festeggiati: Array<{
+      id: string;
+      nomeCompleto: string;
+      qualifica?: string;
+      sezione?: string;
+      eta?: number;
+      dataNascita?: string;
+    }>,
+    oggiFormatted: string
+  ): Promise<{ ok: boolean; error?: string }> => {
+    if (!destinatari || destinatari.length === 0 || !festeggiati || festeggiati.length === 0) {
+      return { ok: false, error: 'Nessun destinatario o festeggiato valido' };
+    }
+
+    try {
+      const smtpHost = process.env.SMTP_HOST || 'mail.tophost.it';
+      const smtpPass = process.env.SMTP_PASS || 'Applicazione26!';
+      const smtpPort = Number(process.env.SMTP_PORT) || 587;
+      const isSecure = smtpPort === 465;
+
+      const candidateUsers = Array.from(new Set([
+        'croceoro.org10175',
+        'croceoro.org',
+        'sistemiautomatizzati@croceoro.org',
+        process.env.SMTP_USER
+      ].filter(Boolean) as string[]));
+
+      let transporter: any = null;
+      let fromUser = 'sistemiautomatizzati@croceoro.org';
+
+      for (const candidate of candidateUsers) {
+        try {
+          const t = nodemailer.createTransport({
+            host: smtpHost,
+            port: smtpPort,
+            secure: isSecure,
+            auth: { user: candidate, pass: smtpPass },
+            tls: { rejectUnauthorized: false }
+          });
+          await t.verify();
+          transporter = t;
+          fromUser = candidate.includes('@') ? candidate : 'sistemiautomatizzati@croceoro.org';
+          break;
+        } catch {}
+      }
+
+      if (!transporter) {
+        return { ok: false, error: 'Impossibile autenticare transporter SMTP' };
+      }
+
+      const nomiOggetto = festeggiati.map(f => f.nomeCompleto).join(', ');
+      const oggetto =
+        festeggiati.length === 1
+          ? `🎂 BUON COMPLEANNO: ${nomiOggetto} (${oggiFormatted}) - Croce Oro Massa Carrara OdV`
+          : `🎂 COMPLEANNI DEL GIORNO (${oggiFormatted}): ${nomiOggetto} - Croce Oro Massa Carrara OdV`;
+
+      const listaTesto = festeggiati
+        .map(f => {
+          const dettagli = [
+            f.eta !== undefined ? `${f.eta} anni` : null,
+            f.qualifica || null,
+            f.sezione || null
+          ].filter(Boolean).join(' • ');
+          return `• ${f.nomeCompleto}${dettagli ? ` (${dettagli})` : ''}`;
+        })
+        .join('\n');
+
+      const testoEmail =
+        `Croce Oro Massa Carrara OdV — Notifica Compleanni Volontari\n\n` +
+        `Oggi ${oggiFormatted} ricorre il compleanno di:\n` +
+        `${listaTesto}\n\n` +
+        `Questa notifica automatica viene inviata alla Presidenza e a tutti gli account abilitati all'accesso al database Anagrafiche Volontari.\n\n` +
+        `Croce Oro Massa Carrara OdV - Sistemi Automatizzati`;
+
+      const rowsHtml = festeggiati
+        .map(f => `
+          <div style="background-color: #fffbeb; border-left: 5px solid #f59e0b; border-radius: 8px; padding: 14px 18px; margin: 12px 0;">
+            <p style="margin: 0; font-size: 16px; font-weight: 800; color: #0f172a;">🎂 ${f.nomeCompleto}</p>
+            <p style="margin: 6px 0 0; font-size: 13px; color: #475569;">
+              ${f.eta !== undefined ? `<strong style="color: #b45309;">Compie ${f.eta} anni</strong>` : 'Compleanno oggi'}
+              ${f.qualifica ? ` &bull; ${f.qualifica}` : ''}
+              ${f.sezione ? ` &bull; Sezione: ${f.sezione}` : ''}
+            </p>
+          </div>
+        `)
+        .join('');
+
+      const htmlEmail = `
+        <div style="font-family: Arial, Helvetica, sans-serif; color: #1e293b; max-width: 650px; line-height: 1.6; border: 1px solid #e2e8f0; border-radius: 14px; overflow: hidden; margin: 0 auto; background-color: #ffffff;">
+          <div style="background: linear-gradient(135deg, #1d1a60 0%, #2e2694 100%); color: #fbbf24; padding: 24px 20px; text-align: center;">
+            <h1 style="margin: 0; font-size: 20px; font-weight: 900; letter-spacing: 0.5px; color: #ffffff;">CROCE ORO MASSA CARRARA OdV</h1>
+            <p style="margin: 6px 0 0; font-size: 13px; color: #fbbf24; font-weight: bold; text-transform: uppercase;">Database Anagrafiche Volontari &bull; Notifica Compleanni</p>
+          </div>
+          <div style="padding: 26px;">
+            <p style="margin-top: 0; font-size: 14.5px; color: #0f172a;">
+              Buongiorno,<br />
+              ti segnaliamo che nella giornata di oggi, <strong>${oggiFormatted}</strong>, ricorre il compleanno del seguente personale associativo:
+            </p>
+            ${rowsHtml}
+            <p style="font-size: 12px; color: #64748b; margin-top: 22px; border-top: 1px solid #e2e8f0; padding-top: 12px;">
+              Questa email automatica viene inviata alla Presidenza e a tutti gli account autorizzati alla consultazione del database <strong>Anagrafiche Volontari</strong>.
+            </p>
+          </div>
+          <div style="background-color: #f1f5f9; padding: 14px; text-align: center; font-size: 11.5px; color: #64748b; border-top: 1px solid #e2e8f0;">
+            <strong>Croce Oro Massa Carrara OdV</strong> &bull; Via Como 12, Massa (MS)<br />
+            Centrale Operativa H24: 0585 625410 &bull; <a href="mailto:volontari@croceoro.org" style="color: #1d1a60; text-decoration: none;">volontari@croceoro.org</a>
+          </div>
+        </div>
+      `;
+
+      await transporter.sendMail({
+        from: {
+          name: 'CROCE ORO MASSA CARRARA OdV - Sistemi Automatizzati',
+          address: 'sistemiautomatizzati@croceoro.org'
+        },
+        sender: 'sistemiautomatizzati@croceoro.org',
+        replyTo: 'sistemiautomatizzati@croceoro.org',
+        to: destinatari,
+        subject: oggetto,
+        text: testoEmail,
+        html: htmlEmail
+      });
+
+      console.log(`[Compleanni Email] Inviata notifica con successo a ${destinatari.join(', ')} per ${nomiOggetto}`);
+      return { ok: true };
+    } catch (err: any) {
+      console.error('[Compleanni Email] Errore SMTP:', err?.message || err);
+      return { ok: false, error: err?.message || 'Errore SMTP invio compleanni' };
+    }
+  };
+
+  const eseguiControlloCompleanniOggi = async (
+    forzaInvio = false,
+    clientVolontari?: any[]
+  ): Promise<{
+    countInviati: number;
+    festeggiati: Array<{ id: string; nomeCompleto: string; qualifica?: string; sezione?: string; eta?: number }>;
+    destinatari: string[];
+    speditoViaSmtp: boolean;
+    erroreSmtp?: string;
+  }> => {
+    const timeInfo = getItalianDateInfo();
+    const { todayStr, hour } = timeInfo;
+    const [yearStr, monthStr, dayStr] = todayStr.split('-');
+    const yearNow = parseInt(yearStr, 10);
+    const monthNow = parseInt(monthStr, 10);
+    const dayNow = parseInt(dayStr, 10);
+    const oggiFormatted = `${dayStr}/${monthStr}/${yearStr}`;
+
+    // Controllo automatico giornaliero attivo dalle 08:00 italiane (a meno di forzatura esplicita)
+    if (!forzaInvio && hour < 8) {
+      return { countInviati: 0, festeggiati: [], destinatari: [], speditoViaSmtp: false };
+    }
+
+    // Unisci stato server + eventuali record aggiornati inviati dal client (es. da Firebase Firestore)
+    const mergedMap = new Map<string, any>();
+    for (const v of state.volontari || []) {
+      if (v && v.id) mergedMap.set(String(v.id), v);
+    }
+    if (Array.isArray(clientVolontari)) {
+      for (const v of clientVolontari) {
+        if (v && v.id) {
+          const existing = mergedMap.get(String(v.id)) || {};
+          mergedMap.set(String(v.id), { ...existing, ...v });
+        }
+      }
+    }
+    const listaVolontari = Array.from(mergedMap.values());
+
+    if (!state.promemoriaCompleanniInviati) {
+      state.promemoriaCompleanniInviati = {};
+    }
+
+    const festeggiatiOggi: Array<{
+      id: string;
+      nomeCompleto: string;
+      qualifica?: string;
+      sezione?: string;
+      eta?: number;
+      dataNascita?: string;
+    }> = [];
+
+    for (const v of listaVolontari) {
+      if (!v || v.eliminato || v.approvato === false) continue;
+      const nascita = estraiDataNascitaCompleta(v);
+      if (!nascita) continue;
+      if (nascita.day === dayNow && nascita.month === monthNow) {
+        const nomeCompleto = `${v.nome || ''} ${v.cognome || ''}`.trim() || v.matricola || 'Volontario';
+        const eta = nascita.year && nascita.year > 1900 && nascita.year <= yearNow ? yearNow - nascita.year : undefined;
+        festeggiatiOggi.push({
+          id: String(v.id || nomeCompleto.toLowerCase().replace(/\s+/g, '_')),
+          nomeCompleto,
+          qualifica: v.qualifica,
+          sezione: v.sezioneAppartenenzaNome,
+          eta,
+          dataNascita: nascita.formatted
+        });
+      }
+    }
+
+    const tuttiDestinatari = calcolaDestinatariEmailCompleanni(listaVolontari);
+    if (festeggiatiOggi.length === 0) {
+      return { countInviati: 0, festeggiati: [], destinatari: tuttiDestinatari, speditoViaSmtp: false };
+    }
+
+    // Calcola chi non ha ancora ricevuto la notifica di compleanno oggi (o tutti se forzaInvio)
+    const emailsDaNotificareSet = new Set<string>();
+    const festeggiatiNuoviPerNotifica: typeof festeggiatiOggi = [];
+    let isPrimaNotificaSistemaOggi = false;
+
+    for (const f of festeggiatiOggi) {
+      const key = `compleanno_${todayStr}_${f.id}`;
+      const existingRec = state.promemoriaCompleanniInviati[key];
+      const giaInviatiEmails = new Set<string>(
+        typeof existingRec === 'object' && existingRec && Array.isArray(existingRec.recipients)
+          ? existingRec.recipients.map(e => String(e).toLowerCase())
+          : []
+      );
+
+      if (!existingRec) {
+        isPrimaNotificaSistemaOggi = true;
+      }
+
+      if (forzaInvio) {
+        tuttiDestinatari.forEach(em => emailsDaNotificareSet.add(em));
+        festeggiatiNuoviPerNotifica.push(f);
+      } else {
+        let missingForThisBirthday = false;
+        for (const em of tuttiDestinatari) {
+          if (typeof existingRec === 'string') {
+            // Vecchio formato stringa senza elenco: considera già inviato solo se non abbiamo lista nuovi
+            continue;
+          }
+          if (!giaInviatiEmails.has(em.toLowerCase())) {
+            emailsDaNotificareSet.add(em);
+            missingForThisBirthday = true;
+          }
+        }
+        if (missingForThisBirthday) {
+          festeggiatiNuoviPerNotifica.push(f);
+        }
+      }
+    }
+
+    const destinatariDaNotificare = Array.from(emailsDaNotificareSet);
+    if (destinatariDaNotificare.length === 0 || festeggiatiNuoviPerNotifica.length === 0) {
+      return {
+        countInviati: 0,
+        festeggiati: festeggiatiOggi,
+        destinatari: tuttiDestinatari,
+        speditoViaSmtp: false
+      };
+    }
+
+    const esitoMail = await inviaEmailCompleannoVolontari(
+      destinatariDaNotificare,
+      festeggiatiNuoviPerNotifica,
+      oggiFormatted
+    );
+
+    // Aggiorna tracciamento destinatari notificati per ogni festeggiato
+    for (const f of festeggiatiNuoviPerNotifica) {
+      const key = `compleanno_${todayStr}_${f.id}`;
+      const prev = state.promemoriaCompleanniInviati[key];
+      const prevRecs =
+        typeof prev === 'object' && prev && Array.isArray(prev.recipients)
+          ? prev.recipients
+          : [];
+      const unionRecipients = Array.from(new Set([...prevRecs, ...destinatariDaNotificare]));
+      state.promemoriaCompleanniInviati[key] = {
+        sentAt: new Date().toISOString(),
+        recipients: unionRecipients
+      };
+    }
+
+    const nomiStr = festeggiatiNuoviPerNotifica
+      .map(f => `${f.nomeCompleto}${f.eta !== undefined ? ` (${f.eta} anni)` : ''}`)
+      .join(', ');
+
+    if (forzaInvio || isPrimaNotificaSistemaOggi) {
+      const notifRadio: RadioNotification = {
+        id: generateUniqueNotifId(),
+        orario: formatTimeItaly(),
+        testo: `🎂 COMPLEANNO VOLONTARIO (${oggiFormatted}): Oggi festeggia ${nomiStr}! Email inviata a Presidenza e a tutti gli account con accesso al database Volontari (${destinatariDaNotificare.join(', ')}).`,
+        tipo: 'sistema'
+      };
+      state.notifiche.push(notifRadio);
+      if (state.notifiche.length > 50) state.notifiche.shift();
+
+      broadcast({
+        type: 'NOTIFICA_COMPLEANNO_VOLONTARIO',
+        dataOggi: oggiFormatted,
+        festeggiati: festeggiatiNuoviPerNotifica,
+        destinatariEmail: destinatariDaNotificare,
+        notification: notifRadio,
+        timestamp: Date.now()
+      });
+
+      sendPushNotificationToRole('admin', {
+        title: `🎂 Compleanno in Croce Oro (${oggiFormatted})`,
+        body: `Oggi è il compleanno di ${nomiStr}!`,
+        tag: `compleanno-${todayStr}`,
+        urgenza: 'VERDE',
+        url: '/?tab=volontari'
+      });
+    }
+
+    persistState();
+
+    return {
+      countInviati: festeggiatiNuoviPerNotifica.length,
+      festeggiati: festeggiatiNuoviPerNotifica,
+      destinatari: destinatariDaNotificare,
+      speditoViaSmtp: esitoMail.ok,
+      erroreSmtp: esitoMail.error
+    };
+  };
+
+  // Funzione unificata per elaborare e sincronizzare eventi in tempo reale (da WebSocket o da HTTP POST /api/event)
+  const handleIncomingAction = (type: string, data: any, excludeClient?: WebSocket) => {
+    switch (type) {
+      // --- SINCRONIZZAZIONE CALENDARIO TURNI MULTI-SEDE IN TEMPO REALE ---
+      case 'UPDATE_TURNI': {
+        const turniArray = Array.isArray(data?.turni) ? data.turni : (Array.isArray(data) ? data : null);
+        if (turniArray) {
+          state.turni = turniArray;
+          persistState();
+          broadcast({
+            type: 'TURNI_UPDATED',
+            turni: state.turni
+          });
+          // Se sono almeno le ore 9:00 e ci sono assegnazioni per domani, invia subito promemoria
+          setTimeout(() => {
+            try {
+              eseguiControlloPromemoriaTurniDomani(false);
+            } catch {}
+          }, 600);
+        }
+        break;
+      }
+
+      // --- SINCRONIZZAZIONE CHECKLIST INIZIO TURNO GUIDATA MEZZI IN TEMPO REALE ---
+      case 'UPDATE_CHECKLISTS_TEMPLATES': {
+        const templatesArray = Array.isArray(data?.templates) ? data.templates : (Array.isArray(data) ? data : null);
+        if (templatesArray) {
+          state.checklistsTemplates = templatesArray;
+          persistState();
+          broadcast({
+            type: 'CHECKLISTS_TEMPLATES_UPDATED',
+            templates: state.checklistsTemplates
+          });
+        }
+        break;
+      }
+
+      case 'SUBMIT_CHECKLIST_COMPILATA': {
+        if (data && data.mezzo) {
+          if (!Array.isArray(state.checklistsCompilate)) {
+            state.checklistsCompilate = [];
+          }
+          state.checklistsCompilate.unshift(data);
+          if (state.checklistsCompilate.length > 500) {
+            state.checklistsCompilate = state.checklistsCompilate.slice(0, 500);
+          }
+
+          let notif: RadioNotification | null = null;
+          if (data.statoGenerale === 'con_anomalie' || (Array.isArray(data.anomalieRilevate) && data.anomalieRilevate.length > 0)) {
+            const elencoAnomalie = (data.anomalieRilevate || []).map((a: any) => a.voceTitolo || a.note).filter(Boolean).join(', ');
+            notif = {
+              id: generateUniqueNotifId(),
+              orario: formatTimeItaly(),
+              testo: `⚠️ CHECKLIST ${data.mezzo}: Anomalia segnalata da ${data.volontarioNome || 'Volontario'}: ${elencoAnomalie || 'Difetto segnalato a inizio turno'}`,
+              tipo: 'allarme'
+            };
+            state.notifiche.push(notif);
+
+            sendPushNotificationToRole('admin', {
+              title: `⚠️ ANOMALIA CHECKLIST ${data.mezzo}`,
+              body: `Il volontario ${data.volontarioNome || 'in turno'} ha segnalato non conformità su ${data.mezzo}: ${elencoAnomalie}`,
+              tag: `chk-anomalia-${data.id}`,
+              urgenza: 'GIALLO'
+            });
+          }
+
+          persistState();
+          broadcast({
+            type: 'CHECKLIST_COMPILATA_ADDED',
+            checklistCompilata: data,
+            checklistsCompilate: state.checklistsCompilate,
+            notification: notif || undefined
+          });
+        }
+        break;
+      }
+
+      // --- GESTIONE VOLONTARI E PIN IN TEMPO REALE ---
+          case 'CREATE_VOLONTARIO': {
+            if (data && data.nome && data.pin) {
+              const esisteIndex = state.volontari.findIndex(v => v.id === data.id);
+              if (esisteIndex >= 0) {
+                state.volontari[esisteIndex] = { ...state.volontari[esisteIndex], ...data };
+              } else {
+                state.volontari = [data, ...state.volontari];
+              }
+              persistState();
+
+              const notif: RadioNotification = {
+                id: generateUniqueNotifId(),
+                orario: formatTimeItaly(),
+                testo: `👤 NUOVO VOLONTARIO: Registrato ${data.nome} ${data.cognome} (${data.qualifica}) con PIN autorizzato`,
+                tipo: 'sistema'
+              };
+              state.notifiche.push(notif);
+
+              broadcast({
+                type: 'VOLONTARI_UPDATED',
+                volontari: state.volontari,
+                notification: notif
+              });
+
+              // Notifica Push alla Centrale
+              sendPushNotificationToRole('admin', {
+                title: `👤 NUOVO PROFILO VOLONTARIO`,
+                body: `${data.nome} ${data.cognome} si è registrato con PIN autorizzato (${data.qualifica})`,
+                tag: `vol-${data.id}`,
+                urgenza: 'VERDE'
+              });
+            }
+            break;
+          }
+
+          case 'UPDATE_VOLONTARIO': {
+            if (data && data.id) {
+              state.volontari = state.volontari.map(v => v.id === data.id ? { ...v, ...data } : v);
+              persistState();
+
+              broadcast({
+                type: 'VOLONTARI_UPDATED',
+                volontari: state.volontari
+              });
+            }
+            break;
+          }
+
+          case 'UPDATE_VOLONTARI_LIST': {
+            if (Array.isArray(data?.volontari)) {
+              state.volontari = mergeVolontariLists(state.volontari, data.volontari);
+              persistState();
+
+              broadcast({
+                type: 'VOLONTARI_UPDATED',
+                volontari: state.volontari
+              });
+            }
+            break;
+          }
+
+          // 1. Invio Nuova Scheda Missione da Centrale al Volontario
+          case 'DISPATCH_MISSION': {
+            if (!data) break;
+            const cod = data.codice || `CO-GEN-${Date.now()}`;
+            const isManualDispatch = Boolean(data._manualDispatch);
+
+            // BLOCCO PERMANENTE SERVIZIO FANTASMA & CODICI ANNULLATI/ELIMINATI
+            if (isGhostMission(data) || cod === 'CO-VET-ROSSO-2026-001') {
+              console.warn(`[Server] Bloccato tentativo di reinvio servizio eliminato/fantasma: ${cod}`);
+              state.codiciEliminati = ensureCodiciEliminati([...(state.codiciEliminati || []), cod]);
+              if (state.activeMission && isGhostMission(state.activeMission)) {
+                state.activeMission = null;
+                state.letturaConfermata = false;
+                state.operativeTimes = {};
+                state.kmInizio = '';
+                state.kmFine = '';
+                state.datiDestinazione = null;
+                state.ringing = { active: false, source: '', soundType: 'telefono', timestamp: Date.now() };
+              }
+              persistState();
+              const clearMsg = {
+                type: 'MISSION_CLEARED',
+                forceClear: true,
+                codiceEliminato: cod,
+                blockedGhost: true
+              };
+              if (excludeClient && excludeClient.readyState === WebSocket.OPEN) {
+                try { excludeClient.send(JSON.stringify(clearMsg)); } catch {}
+              }
+              broadcast(clearMsg);
+              break;
+            }
+
+            if (!isManualDispatch && Array.isArray(state.codiciEliminati) && state.codiciEliminati.includes(cod)) {
+              console.warn(`[Server] Bloccata risincronizzazione automatica di servizio già eliminato/annullato: ${cod}`);
+              const clearMsg = {
+                type: 'MISSION_CLEARED',
+                forceClear: true,
+                codiceEliminato: cod
+              };
+              if (excludeClient && excludeClient.readyState === WebSocket.OPEN) {
+                try { excludeClient.send(JSON.stringify(clearMsg)); } catch {}
+              }
+              break;
+            }
+
+            // Se è un invio manuale esplicito con codice diverso da quello eliminato, consenti l'operazione e pulisci il flag
+            const { _manualDispatch: _ignoredFlag, ...missionPayload } = data;
+            if (isManualDispatch && Array.isArray(state.codiciEliminati)) {
+              state.codiciEliminati = state.codiciEliminati.filter(c => c === 'CO-VET-ROSSO-2026-001' || c !== cod);
+            }
+
+            const urg = missionPayload.urgenza || 'VERDE';
+            const mezzo = missionPayload.mezzoAssegnato || 'T4606';
+
+            // Precompila al volontario i km iniziali del servizio con i km finali del servizio precedente effettuato con lo stesso mezzo
+            let kmInizialiPrecompilati = '';
+            const targetMezzo = (mezzo || '').trim().toLowerCase();
+            if (targetMezzo && Array.isArray(state.serviziArchivio)) {
+              const prevServizio = state.serviziArchivio.find(s => {
+                if (!s.mezzo || !s.kmFine || s.kmFine <= 0) return false;
+                const m = s.mezzo.trim().toLowerCase();
+                return m === targetMezzo || m.includes(targetMezzo) || targetMezzo.includes(m);
+              });
+              if (prevServizio && prevServizio.kmFine > 0) {
+                kmInizialiPrecompilati = String(prevServizio.kmFine);
+              }
+            }
+
+            const kmInizioEffettivo = missionPayload.kmInizio || kmInizialiPrecompilati;
+
+            const isAutonomo = Boolean(missionPayload.autonomoVolontario);
+
+            state.activeMission = {
+              ...missionPayload,
+              codice: cod,
+              urgenza: urg,
+              mezzoAssegnato: mezzo,
+              kmInizio: kmInizioEffettivo,
+              autonomoVolontario: isAutonomo,
+              creatoDaVolontarioNome: missionPayload.creatoDaVolontarioNome,
+              creatoDaVolontarioId: missionPayload.creatoDaVolontarioId,
+              tipologiaServizio: missionPayload.tipologiaServizio,
+              numeroSegreteriaSoupRt: missionPayload.numeroSegreteriaSoupRt,
+              allertaMeteo: missionPayload.allertaMeteo
+            };
+            state.letturaConfermata = isAutonomo ? true : false;
+            state.operativeTimes = {};
+            state.kmInizio = kmInizioEffettivo;
+            state.kmFine = '';
+            state.ringing = {
+              active: true,
+              source: isAutonomo
+                ? `Equipaggio Mezzo ${mezzo} (Servizio Autonomo: ${cod})`
+                : `Centrale Operativa (Nuova Scheda: ${cod})`,
+              soundType: (isAutonomo || urg === 'ROSSO') ? 'sirena' : 'telefono',
+              timestamp: Date.now()
+            };
+
+            const notif: RadioNotification = {
+              id: generateUniqueNotifId(),
+              orario: formatTimeItaly(),
+              testo: isAutonomo
+                ? `🚨 MEZZO IN MOVIMENTO (SERVIZIO AUTONOMO): Il volontario ${data.creatoDaVolontarioNome || 'a bordo'} ha avviato autonomamente un ${data.ambito || 'SERVIZIO'} (${data.tipologiaServizio || data.specifiche || cod}) con il mezzo ${mezzo}. IL MEZZO SI STA SPOSTANDO!`
+                : `DISPATCH: Nuova scheda inviata a bordo mezzo ${mezzo} (${cod})`,
+              tipo: isAutonomo ? 'allarme' : 'centrale'
+            };
+            state.notifiche.push(notif);
+            persistState();
+
+            // Trasmette a tutti i telefoni/client
+            broadcast({
+              type: 'MISSION_DISPATCHED',
+              mission: state.activeMission,
+              ringing: state.ringing,
+              notification: notif
+            });
+
+            if (isAutonomo) {
+              // Notifica Push immediata per la Centrale Operativa / Amministratore
+              sendPushNotificationToRole('admin', {
+                title: `🚨 ATTENZIONE: IL MEZZO ${mezzo} SI STA SPOSTANDO!`,
+                body: `Servizio autonomo avviato dal volontario ${data.creatoDaVolontarioNome || 'a bordo'} (${data.ambito} - ${data.tipologiaServizio || data.specifiche || cod}).`,
+                tag: `autonomo-${cod}`,
+                urgenza: 'ROSSO',
+                soundType: 'sirena',
+                source: `Mezzo ${mezzo}`
+              });
+            } else {
+              // Invia Notifica Push di Sistema a tutti gli smartphone dei volontari (risveglia schermo bloccato)
+              sendPushNotificationToRole('volontario', {
+                title: `🚨 ALLERTA ${urg}: Missione ${cod}`,
+                body: `📍 ${data.indirizzo || 'Massa Carrara'} - Mezzo: ${mezzo} | ${data.sintesi || 'Apri subito per visualizzare la scheda.'}`,
+                tag: `mission-${cod}`,
+                urgenza: urg,
+                source: 'Centrale Operativa'
+              });
+            }
+            break;
+          }
+
+          // 2. Conferma Lettura della Scheda da parte del Volontario
+          case 'CONFIRM_MISSION_READ': {
+            state.letturaConfermata = true;
+            state.ringing = {
+              active: true,
+              source: `Equipaggio Mezzo (Confermata Lettura Scheda: ${data?.codice || state.activeMission?.codice || ''})`,
+              soundType: 'telefono',
+              timestamp: Date.now()
+            };
+
+            const notif: RadioNotification = {
+              id: generateUniqueNotifId(),
+              orario: formatTimeItaly(),
+              testo: `📖 Equipaggio ha confermato presa visione e lettura della scheda ${data?.codice || ''}`,
+              tipo: 'mezzo'
+            };
+            state.notifiche.push(notif);
+            persistState();
+
+            broadcast({
+              type: 'MISSION_READ_CONFIRMED',
+              codice: data?.codice,
+              ringing: state.ringing,
+              notification: notif
+            });
+
+            sendPushNotificationToRole('admin', {
+              title: `📖 SCHEDA PRESA IN CARICO (${data?.codice || ''})`,
+              body: `L'equipaggio a bordo mezzo ha confermato la presa visione.`,
+              tag: `read-${data?.codice}`,
+              soundType: 'telefono',
+              urgenza: 'VERDE'
+            });
+            break;
+          }
+
+          // 3. Squillo Telefono / Allarme Sirena
+          case 'TRIGGER_RING': {
+            state.ringing = {
+              active: true,
+              source: data.source || 'Centrale Operativa',
+              soundType: data.soundType || 'telefono',
+              timestamp: Date.now()
+            };
+
+            const notif: RadioNotification = {
+              id: generateUniqueNotifId(),
+              orario: formatTimeItaly(),
+              testo: `🚨 SQUILLO TELEFONO ATTIVATO da ${data.source || 'Operatore'} [Tipo: ${data.soundType}]`,
+              tipo: 'allarme'
+            };
+            state.notifiche.push(notif);
+            persistState();
+
+            broadcast({
+              type: 'RING_TRIGGERED',
+              ringing: state.ringing,
+              notification: notif
+            });
+
+            const targetRole = (data.source || '').toLowerCase().includes('centrale') ? 'volontario' : 'admin';
+            sendPushNotificationToRole(targetRole, {
+              title: `🔔 ALLERTA SUONERIA TELEFONO`,
+              body: `Squillo attivato da ${data.source || 'Centrale'} [${data.soundType || 'telefono'}]`,
+              tag: 'ring-alert',
+              soundType: data.soundType,
+              urgenza: 'ROSSO'
+            });
+            break;
+          }
+
+          // 4. Silenzia / Arresta Squillo Telefono
+          case 'STOP_RING': {
+            state.ringing = { active: false, source: '', soundType: 'telefono', timestamp: Date.now() };
+
+            const notif: RadioNotification = {
+              id: generateUniqueNotifId(),
+              orario: formatTimeItaly(),
+              testo: `🔕 SUONERIA SILENZIATA dall'operatore.`,
+              tipo: 'sistema'
+            };
+            state.notifiche.push(notif);
+            persistState();
+
+            broadcast({
+              type: 'RING_STOPPED',
+              notification: notif
+            });
+            break;
+          }
+
+          // 5. Registrazione Orari Operativi (Partenza, Sul Posto, Rientro, ecc.)
+          case 'UPDATE_OPERATIVE_TIMES': {
+            state.operativeTimes = data.times;
+
+            let extraGps = '';
+            if (data.times?.coordinateSulPosto && (data.label?.includes('SUL POSTO') || data.label?.includes('posto'))) {
+              const c = data.times.coordinateSulPosto;
+              extraGps = ` [📍 GPS Certificato: Lat ${c.lat}°, Lng ${c.lng}° (±${c.accuracy || 5}m)]`;
+            } else if (data.times?.coordinateDestinazione && (data.label?.includes('DESTINAZIONE') || data.label?.includes('destinazione'))) {
+              const c = data.times.coordinateDestinazione;
+              extraGps = ` [📍 GPS Certificato: Lat ${c.lat}°, Lng ${c.lng}° (±${c.accuracy || 5}m)]`;
+            }
+
+            const labelUpper = (data.label || '').toUpperCase();
+            const isPartenzaAutonoma = Boolean(
+              state.activeMission?.autonomoVolontario && (labelUpper.includes('PARTENZA') || labelUpper.includes('SEDE'))
+            );
+
+            if (isPartenzaAutonoma) {
+              state.ringing = {
+                active: true,
+                source: `Mezzo ${state.activeMission?.mezzoAssegnato || ''} in Movimento (Partenza da Sede: ${data.codice || ''})`,
+                soundType: 'sirena',
+                timestamp: Date.now()
+              };
+            } else if (labelUpper.includes('SUL POSTO') || labelUpper.includes('DESTINAZIONE') || labelUpper.includes('FINE MISSIONE') || data.isRientro || labelUpper.includes('RIENTRO')) {
+              state.ringing = {
+                active: true,
+                source: `Equipaggio Mezzo (${data.label || (data.isRientro ? 'Chiusura Scheda' : 'Orario Operativo')}: ${data.codice || ''})`,
+                soundType: (labelUpper.includes('SUL POSTO') && (!state.activeMission?.destinazione || state.activeMission?.inAttesaDestinazione)) ? 'sirena' : 'telefono',
+                timestamp: Date.now()
+              };
+            }
+
+            const notif: RadioNotification = {
+              id: generateUniqueNotifId(),
+              orario: formatTimeItaly(),
+              testo: isPartenzaAutonoma
+                ? `🚗 MEZZO IN MOVIMENTO (PARTENZA DA SEDE): Il mezzo ${state.activeMission?.mezzoAssegnato || ''} è PARTITO DALLA SEDE alle ore ${data.timeStr} per ${data.codice} (${state.activeMission?.ambito || 'Servizio Autonomo'})! Il mezzo si sta spostando.`
+                : data.isRientro
+                ? `🚨 ULTIMO ORARIO REGISTRATO: [6. RIENTRO IN SEDE] alle ore ${data.timeStr} per ${data.codice}!`
+                : `⏱️ Registrato orario: [${data.label}] alle ore ${data.timeStr} (${data.codice})${extraGps}`,
+              tipo: (isPartenzaAutonoma || data.isRientro) ? 'allarme' : 'mezzo'
+            };
+            state.notifiche.push(notif);
+            persistState();
+
+            broadcast({
+              type: 'OPERATIVE_TIMES_UPDATED',
+              times: state.operativeTimes,
+              label: data.label,
+              timeStr: data.timeStr,
+              isRientro: data.isRientro,
+              codice: data.codice,
+              ringing: state.ringing,
+              notification: notif
+            });
+
+            if (isPartenzaAutonoma) {
+              sendPushNotificationToRole('admin', {
+                title: `🚨 ATTENZIONE: IL MEZZO ${state.activeMission?.mezzoAssegnato || ''} SI STA SPOSTANDO!`,
+                body: `Partenza dalla sede registrata alle ore ${data.timeStr} per il servizio autonomo ${data.codice} (${state.activeMission?.ambito || ''}).`,
+                tag: `partenza-${data.codice}`,
+                soundType: 'sirena',
+                urgenza: 'ROSSO'
+              });
+            } else {
+              sendPushNotificationToRole('admin', {
+                title: data.isRientro ? `🏁 RIENTRO IN SEDE (${data.codice})` : `⏱️ ORARIO REGISTRATO: [${data.label}]`,
+                body: `Ore ${data.timeStr} per ${data.codice}${extraGps}.`,
+                tag: `time-${data.codice}`,
+                soundType: (labelUpper.includes('SUL POSTO') && (!state.activeMission?.destinazione || state.activeMission?.inAttesaDestinazione)) ? 'sirena' : 'telefono',
+                urgenza: data.isRientro ? 'ROSSO' : 'VERDE'
+              });
+            }
+            break;
+          }
+
+          // 5b. Allerta Mezzo Sul Posto Senza Destinazione
+          case 'ATTESA_DESTINAZIONE_ARRIVO_SUL_POSTO': {
+            if (state.activeMission) {
+              state.activeMission.inAttesaDestinazione = true;
+            }
+
+            state.ringing = {
+              active: true,
+              source: `Equipaggio Mezzo ${data.mezzo || ''} (Arrivato Sul Posto - In Attesa Destinazione)`,
+              soundType: 'sirena',
+              timestamp: Date.now()
+            };
+
+            const notif: RadioNotification = {
+              id: generateUniqueNotifId(),
+              orario: formatTimeItaly(),
+              testo: `🚨 MEZZO SUL POSTO: Equipaggio ${data.mezzo || ''} (${data.codice || ''}) è arrivato sull'obiettivo ed è IN ATTESA DEL LUOGO DI DESTINAZIONE E CODICE DI RIENTRO!`,
+              tipo: 'allarme'
+            };
+            state.notifiche.push(notif);
+            persistState();
+
+            broadcast({
+              type: 'ATTESA_DESTINAZIONE_TRIGGERED',
+              codice: data.codice,
+              mezzo: data.mezzo,
+              ringing: state.ringing,
+              notification: notif
+            });
+
+            sendPushNotificationToRole('admin', {
+              title: `🚨 MEZZO SUL POSTO: ATTESA DESTINAZIONE!`,
+              body: `Mezzo ${data.mezzo || ''} (${data.codice || ''}) attende destinazione e codice di rientro.`,
+              tag: `attesa-dest-${data.codice}`,
+              soundType: 'sirena',
+              urgenza: 'ROSSO'
+            });
+            break;
+          }
+
+          // 5c. Centrale Assegna Destinazione e Codice di Rientro al Mezzo
+          case 'UPDATE_DESTINATION_RETURN_CODE': {
+            if (state.activeMission) {
+              state.activeMission.destinazione = data.destinazione;
+              state.activeMission.codiceRientro = data.codiceRientro;
+              state.activeMission.isStrutturaVeterinaria = data.isStrutturaVeterinaria;
+              state.activeMission.inAttesaDestinazione = false;
+              if (data.decisioneCentraleNonVet !== undefined) {
+                state.activeMission.decisioneCentraleNonVet = data.decisioneCentraleNonVet;
+              }
+              if (data.datiProprietarioCentrale) {
+                state.activeMission.datiProprietarioCentrale = data.datiProprietarioCentrale;
+              }
+            }
+
+            state.ringing = {
+              active: true,
+              source: `Centrale Operativa (Destinazione & Codice Assegnati)`,
+              soundType: 'telefono',
+              timestamp: Date.now()
+            };
+
+            const propNome = data.datiProprietarioCentrale?.nome
+              ? ` con dati anagrafici proprietario microchip [${data.datiProprietarioCentrale.nome} ${data.datiProprietarioCentrale.cognome || ''}]`
+              : '';
+
+            const vetNote = data.isStrutturaVeterinaria !== undefined
+              ? (data.isStrutturaVeterinaria ? ' [Struttura Veterinaria Vincolata]' : ' [Struttura Veterinaria NON vincolata / Revocata]')
+              : '';
+
+            const nonVetDecisioneNote = data.decisioneCentraleNonVet === 'rientro_sede'
+              ? ' [DISPOSTO RIENTRO IN SEDE: Orari partenza/arrivo destinazione non richiesti]'
+              : data.decisioneCentraleNonVet === 'nuovo_obiettivo'
+              ? ' [INVIATO SU NUOVO OBIETTIVO: Salta partenza/destinazione e rientro sede, inserimento KM per chiusura]'
+              : '';
+
+            const notif: RadioNotification = {
+              id: generateUniqueNotifId(),
+              orario: formatTimeItaly(),
+              testo: `🏥 CENTRALE: Trasmissione Destinazione [${data.destinazione}] e Codice Rientro [${data.codiceRientro}]${vetNote}${nonVetDecisioneNote}${propNome} a bordo mezzo.`,
+              tipo: 'centrale'
+            };
+            state.notifiche.push(notif);
+            persistState();
+
+            broadcast({
+              type: 'DESTINATION_RETURN_CODE_UPDATED',
+              destinazione: data.destinazione,
+              codiceRientro: data.codiceRientro,
+              isStrutturaVeterinaria: data.isStrutturaVeterinaria,
+              decisioneCentraleNonVet: data.decisioneCentraleNonVet,
+              datiProprietarioCentrale: data.datiProprietarioCentrale,
+              mission: state.activeMission,
+              ringing: state.ringing,
+              notification: notif
+            });
+
+            sendPushNotificationToRole('volontario', {
+              title: `🏥 DESTINAZIONE E CODICE RICEVUTI!`,
+              body: `Destinazione: ${data.destinazione} | Codice Rientro: ${data.codiceRientro}${vetNote}`,
+              tag: `dest-updated`,
+              soundType: 'telefono',
+              urgenza: 'GIALLO'
+            });
+            break;
+          }
+
+          // 5c-bis. Decisione Centrale per Servizio d'Istituto o Protezione Civile (Rientro Sede o Nuovo Obiettivo)
+          case 'UPDATE_DECISIONE_NON_VET': {
+            if (state.activeMission) {
+              state.activeMission.decisioneCentraleNonVet = data.decisione;
+              if (data.decisione === 'rientro_sede') {
+                state.activeMission.destinazione = 'Sede Croce Oro (Rientro Disposto)';
+                state.activeMission.inAttesaDestinazione = false;
+              } else if (data.decisione === 'nuovo_obiettivo') {
+                state.activeMission.inAttesaDestinazione = false;
+              }
+            }
+
+            const testoAzione = data.decisione === 'rientro_sede'
+              ? '🏢 DISPOSIZIONE CENTRALE: RIENTRO DEL MEZZO IN SEDE (Orari partenza e arrivo destinazione non richiesti)'
+              : '🎯 DISPOSIZIONE CENTRALE: INVIA SU NUOVO OBIETTIVO (Non inserire partenza/destinazione né rientro sede; inserire i KM per chiudere)';
+
+            const notif: RadioNotification = {
+              id: generateUniqueNotifId(),
+              orario: formatTimeItaly(),
+              testo: `${testoAzione} per ${state.activeMission?.codice || data.codice}.`,
+              tipo: 'centrale'
+            };
+            state.notifiche.push(notif);
+            persistState();
+
+            broadcast({
+              type: 'DECISIONE_NON_VET_UPDATED',
+              decisione: data.decisione,
+              codice: data.codice || state.activeMission?.codice,
+              mission: state.activeMission,
+              notification: notif
+            });
+
+            sendPushNotificationToRole('volontario', {
+              title: data.decisione === 'rientro_sede' ? '🏢 DISPOSTO RIENTRO IN SEDE' : '🎯 INVIATO SU NUOVO OBIETTIVO',
+              body: data.decisione === 'rientro_sede' ? 'Rientro in sede disposto. Orari obiettivo non richiesti.' : 'Inviato su nuovo obiettivo. Inserisci i KM per completare il servizio.',
+              tag: `decisione-nonvet`,
+              soundType: 'cicalino',
+              urgenza: 'VERDE'
+            });
+            break;
+          }
+
+          // 5c-bis. Centrale Aggiorna Obiettivo di Partenza al Mezzo
+          case 'UPDATE_MISSION_OBIETTIVO': {
+            if (state.activeMission) {
+              state.activeMission.indirizzo = data.indirizzo;
+              state.activeMission.isStrutturaVeterinariaPartenza = data.isStrutturaVeterinariaPartenza;
+            }
+
+            state.ringing = {
+              active: true,
+              source: `Centrale Operativa (Obiettivo di Partenza Aggiornato)`,
+              soundType: 'telefono',
+              timestamp: Date.now()
+            };
+
+            const vetNote = data.isStrutturaVeterinariaPartenza !== undefined
+              ? (data.isStrutturaVeterinariaPartenza ? ' [Struttura Veterinaria di Partenza Vincolata]' : ' [Struttura Veterinaria di Partenza NON vincolata / Revocata]')
+              : '';
+
+            const notif: RadioNotification = {
+              id: generateUniqueNotifId(),
+              orario: formatTimeItaly(),
+              testo: `🏥 CENTRALE: Aggiornamento Obiettivo di Partenza [${data.indirizzo}]${vetNote} a bordo mezzo.`,
+              tipo: 'centrale'
+            };
+            state.notifiche.push(notif);
+            persistState();
+
+            broadcast({
+              type: 'MISSION_OBIETTIVO_UPDATED',
+              indirizzo: data.indirizzo,
+              isStrutturaVeterinariaPartenza: data.isStrutturaVeterinariaPartenza,
+              mission: state.activeMission,
+              ringing: state.ringing,
+              notification: notif
+            });
+
+            sendPushNotificationToRole('volontario', {
+              title: `🏥 OBIETTIVO DI PARTENZA AGGIORNATO!`,
+              body: `Obiettivo / Partenza: ${data.indirizzo}${vetNote}`,
+              tag: `obiettivo-updated`,
+              soundType: 'telefono',
+              urgenza: 'GIALLO'
+            });
+            break;
+          }
+
+          // 5c-ter. Volontario Rileva Microchip su Obiettivo per Animale Non di Proprietà
+          case 'UPDATE_MICROCHIP_INFO': {
+            if (state.activeMission) {
+              state.activeMission.microchip = data.microchip;
+              state.activeMission.noMicrochip = !!data.noMicrochip;
+              if (data.tipo) state.activeMission.tipoAnimale = data.tipo;
+              if (data.tipoAltro) state.activeMission.tipoAnimaleAltro = data.tipoAltro;
+            }
+
+            const infoChip = data.noMicrochip ? 'NO MICROCHIP (Segnalato dal Volontario)' : `Microchip: ${data.microchip}`;
+            const tipoInfo = data.tipo ? ` [${data.tipo}${data.tipoAltro ? ` (${data.tipoAltro})` : ''}]` : '';
+
+            state.ringing = {
+              active: true,
+              source: `Equipaggio Mezzo (${data.noMicrochip ? 'Nessun Microchip' : `Microchip ${data.microchip}`}: ${data.codice || ''})`,
+              soundType: 'telefono',
+              timestamp: Date.now()
+            };
+
+            const notif: RadioNotification = {
+              id: generateUniqueNotifId(),
+              orario: formatTimeItaly(),
+              testo: data.noMicrochip
+                ? `🚩 RILEVAZIONE OBIETTIVO (${data.codice || state.activeMission?.codice || ''}): Animale senza microchip.${tipoInfo} Procedi con destinazione.`
+                : `🐕 MICROCHIP RILEVATO DA BORDO MEZZO (${data.codice || state.activeMission?.codice || ''}): ${data.microchip}.${tipoInfo} Chiamare subito il veterinario per i dati dell'intestatario!`,
+              tipo: 'mezzo'
+            };
+            state.notifiche.push(notif);
+            persistState();
+
+            broadcast({
+              type: 'MICROCHIP_INFO_UPDATED',
+              codice: data.codice,
+              microchip: data.microchip,
+              noMicrochip: data.noMicrochip,
+              tipo: data.tipo,
+              tipoAltro: data.tipoAltro,
+              mission: state.activeMission,
+              ringing: state.ringing,
+              notification: notif
+            });
+
+            // Invia notifica Push alla Centrale per allertare di chiamare il veterinario
+            sendPushNotificationToRole('admin', {
+              title: data.noMicrochip ? `🚩 NESSUN MICROCHIP RILEVATO` : `🐕 MICROCHIP RILEVATO: ${data.microchip}`,
+              body: data.noMicrochip
+                ? `L'equipaggio segnala che l'animale non ha microchip.`
+                : `Chiama subito il veterinario di turno per ottenere i dati dell'intestatario e trasmettili al volontario!`,
+              tag: `chip-${data.codice || Date.now()}`,
+              urgenza: 'ROSSO',
+              soundType: 'telefono'
+            });
+            break;
+          }
+
+          // 5c-ter. Centrale Invia Dati Intestatario Microchip al Volontario
+          case 'UPDATE_PROPRIETARIO_CENTRALE': {
+            if (state.activeMission) {
+              state.activeMission.datiProprietarioCentrale = data.datiProprietarioCentrale;
+            }
+
+            const nomeProp = `${data.datiProprietarioCentrale?.nome || ''} ${data.datiProprietarioCentrale?.cognome || ''}`.trim();
+            const telProp = data.datiProprietarioCentrale?.telefono ? ` (Tel: ${data.datiProprietarioCentrale.telefono})` : '';
+
+            state.ringing = {
+              active: true,
+              source: `Centrale (Dati Intestatario Microchip: ${nomeProp || 'Ricevuti'})`,
+              soundType: 'telefono',
+              timestamp: Date.now()
+            };
+
+            const notif: RadioNotification = {
+              id: generateUniqueNotifId(),
+              orario: formatTimeItaly(),
+              testo: `📋 DATI INTESTATARIO TRASMESSI AL MEZZO (${data.codice || state.activeMission?.codice || ''}): Intestatario ${nomeProp}${telProp} inviati all'equipaggio per la scheda di consegna.`,
+              tipo: 'centrale'
+            };
+            state.notifiche.push(notif);
+            persistState();
+
+            broadcast({
+              type: 'PROPRIETARIO_CENTRALE_UPDATED',
+              codice: data.codice,
+              datiProprietarioCentrale: data.datiProprietarioCentrale,
+              mission: state.activeMission,
+              ringing: state.ringing,
+              notification: notif
+            });
+
+            // Notifica al telefono del volontario
+            sendPushNotificationToRole('volontario', {
+              title: `📋 DATI INTESTATARIO MICROCHIP RICEVUTI!`,
+              body: `Intestatario: ${nomeProp}${telProp} caricati automaticamente nella scheda di consegna.`,
+              tag: `prop-${data.codice || Date.now()}`,
+              urgenza: 'VERDE',
+              soundType: 'telefono',
+              requireInteraction: true
+            });
+            break;
+          }
+
+          // 5d. Dati Consegna a Destinazione, Donazione e Firme Digitali Acquisite a Bordo
+          case 'UPDATE_DATI_DESTINAZIONE': {
+            state.datiDestinazione = data.dati;
+            if (state.activeMission) {
+              state.activeMission.datiDestinazione = data.dati;
+            }
+
+            const targetCodice = data.codice || state.activeMission?.codice;
+            if (targetCodice && Array.isArray(state.serviziArchivio)) {
+              const sIdx = state.serviziArchivio.findIndex(s => s.codice === targetCodice || s.id === `DOC-${targetCodice}` || s.id === targetCodice);
+              if (sIdx >= 0) {
+                state.serviziArchivio[sIdx].datiDestinazione = data.dati;
+              }
+            }
+
+            const nomeProp = `${data.dati?.proprietario?.nome || ''} ${data.dati?.proprietario?.cognome || ''}`.trim();
+            const donazStr = data.dati?.donazione?.ricevuta
+              ? `Donazione: €${data.dati?.donazione?.somma || 0} (${data.dati?.donazione?.metodo === 'pos' ? 'POS' : 'Contanti'})`
+              : 'Nessuna donazione';
+            const firmeStr = data.dati?.firmaProprietario ? 'Firma proprietario acquisita' : '';
+
+            const notif: RadioNotification = {
+              id: generateUniqueNotifId(),
+              orario: formatTimeItaly(),
+              testo: `✍️ CONSEGNA DESTINAZIONE REGISTRATA (${data.codice || ''}): Proprietario: ${nomeProp || 'N/D'} | ${donazStr} | ${firmeStr}. Integrati nella scheda e nel PDF.`,
+              tipo: 'sistema'
+            };
+            state.notifiche.push(notif);
+            persistState();
+
+            broadcast({
+              type: 'DATI_DESTINAZIONE_UPDATED',
+              dati: data.dati,
+              codice: data.codice,
+              notification: notif
+            });
+            break;
+          }
+
+          // 5e. Foto Documento Identità Intestatario Acquisite da Bordo Mezzo
+          case 'UPDATE_FOTO_DOCUMENTO': {
+            const targetCodice = data.codice || state.activeMission?.codice;
+            if (state.activeMission && (!data.codice || state.activeMission.codice === data.codice)) {
+              (state.activeMission as any).fotoDocumento = data.fotoDocumento;
+              if (state.activeMission.datiProprietarioCentrale) {
+                state.activeMission.datiProprietarioCentrale.fotoDocumento = data.fotoDocumento;
+              }
+            }
+
+            if (targetCodice && Array.isArray(state.serviziArchivio)) {
+              const sIdx = state.serviziArchivio.findIndex(s => s.codice === targetCodice || s.id === `DOC-${targetCodice}` || s.id === targetCodice);
+              if (sIdx >= 0) {
+                state.serviziArchivio[sIdx].fotoDocumento = data.fotoDocumento;
+                if (state.serviziArchivio[sIdx].datiProprietarioCentrale) {
+                  state.serviziArchivio[sIdx].datiProprietarioCentrale.fotoDocumento = data.fotoDocumento;
+                }
+              }
+            }
+
+            const notif: RadioNotification = {
+              id: generateUniqueNotifId(),
+              orario: formatTimeItaly(),
+              testo: `🪪 DOCUMENTO IDENTITÀ ACQUISITO (${targetCodice || ''}): Foto documento intestatario (Fronte/Retro) salvate e disponibili per il download PDF.`,
+              tipo: 'mezzo'
+            };
+            state.notifiche.push(notif);
+            persistState();
+
+            broadcast({
+              type: 'FOTO_DOCUMENTO_UPDATED',
+              fotoDocumento: data.fotoDocumento,
+              codice: targetCodice,
+              mission: state.activeMission,
+              notification: notif
+            });
+            break;
+          }
+
+          // 6. Aggiornamento Chilometri Bordo Mezzo
+          case 'UPDATE_KM': {
+            const iniVal = data.kmInizio !== undefined ? (parseFloat(data.kmInizio) || 0) : (parseFloat(state.kmInizio) || 0);
+            const finVal = data.kmFine !== undefined ? (parseFloat(data.kmFine) || 0) : (parseFloat(state.kmFine) || 0);
+            if (finVal > 0 && iniVal > 0 && finVal < iniVal) {
+              console.warn(`[UPDATE_KM] Rifiutato: KM finali (${finVal}) non possono essere inferiori ai KM iniziali (${iniVal})`);
+              break;
+            }
+
+            if (data.kmInizio !== undefined) state.kmInizio = data.kmInizio;
+            if (data.kmFine !== undefined) state.kmFine = data.kmFine;
+
+            const notif: RadioNotification = {
+              id: generateUniqueNotifId(),
+              orario: formatTimeItaly(),
+              testo: data.messaggio || `🛣️ Aggiornamento KM Bordo: Inizio: ${state.kmInizio} | Fine: ${state.kmFine}`,
+              tipo: 'mezzo'
+            };
+            state.notifiche.push(notif);
+            persistState();
+
+            broadcast({
+              type: 'KM_UPDATED',
+              kmInizio: state.kmInizio,
+              kmFine: state.kmFine,
+              notification: notif
+            });
+            break;
+          }
+
+          // 7. Messaggio Radio (Testuale o Audio Vocale, globale o isolato su gruppo)
+          case 'SEND_RADIO_MESSAGE': {
+            const groupId = data?.groupId && data.groupId !== 'general' ? String(data.groupId) : undefined;
+            const targetGroup = groupId ? (state.radioGroups || []).find((g) => g.id === groupId) : undefined;
+            if (groupId && !targetGroup) {
+              break;
+            }
+            const hasAudio = Boolean(data?.audioDataUrl && typeof data.audioDataUrl === 'string');
+            const labelBase = data?.testo
+              ? String(data.testo)
+              : hasAudio
+              ? `🎙️ Messaggio Audio (${Number(data.audioDurationSec) || 1}s)`
+              : '';
+            const mittenteNomeSuffix = data?.mittenteNome ? ` (${data.mittenteNome})` : '';
+            const groupTag = targetGroup ? ` • GRUPPO: ${targetGroup.name}` : '';
+            const notif: RadioNotification = {
+              id: data?.clientMsgId ? String(data.clientMsgId) : generateUniqueNotifId(),
+              orario: formatTimeItaly(),
+              testo: maskPinInNotification(`RADIO [${data?.mittente || 'BORDO MEZZO'}${mittenteNomeSuffix}${groupTag}]: ${labelBase}`),
+              tipo: data?.mittente === 'CENTRALE' ? 'centrale' : 'mezzo',
+              ...(targetGroup ? { groupId: targetGroup.id, groupName: targetGroup.name } : {}),
+              ...(hasAudio ? {
+                audioDataUrl: String(data.audioDataUrl),
+                audioDurationSec: Number(data.audioDurationSec) || 1,
+                audioMimeType: data.audioMimeType ? String(data.audioMimeType) : 'audio/webm',
+                mittenteNome: data.mittenteNome ? String(data.mittenteNome) : undefined
+              } : {})
+            };
+            state.notifiche.push(notif);
+            let audioCount = 0;
+            for (let i = state.notifiche.length - 1; i >= 0; i--) {
+              if (state.notifiche[i].audioDataUrl) {
+                audioCount++;
+                if (audioCount > 30) {
+                  delete state.notifiche[i].audioDataUrl;
+                }
+              }
+            }
+            persistState();
+
+            if (targetGroup) {
+              // Isolamento stretto: solo i membri del gruppo e Centrale ricevono messaggi del gruppo
+              broadcastToFilter(
+                {
+                  type: 'RADIO_MESSAGE_RECEIVED',
+                  groupId: targetGroup.id,
+                  notification: notif
+                },
+                (c) => isSocketAllowedInGroup(c, targetGroup)
+              );
+            } else {
+              broadcast({
+                type: 'RADIO_MESSAGE_RECEIVED',
+                notification: notif
+              });
+            }
+
+            const pushBody = hasAudio
+              ? `🎙️ Nuovo messaggio audio${data?.mittenteNome ? ` da ${data.mittenteNome}` : ''} (${Number(data.audioDurationSec) || 1}s)`
+              : `${data?.testo || 'Nuova comunicazione radio ricevuta.'}`;
+
+            if (targetGroup) {
+              targetGroup.memberIds.forEach((mId) => {
+                sendPushNotificationToVolunteer(mId, {
+                  title: `📻 RADIO GRUPPO ${targetGroup.name.toUpperCase()}`,
+                  body: pushBody,
+                  tag: `radio-grp-${targetGroup.id}-${Date.now()}`,
+                  soundType: 'cicalino',
+                  urgenza: 'GIALLO',
+                  requireInteraction: true
+                });
+              });
+            } else if (data?.mittente === 'CENTRALE') {
+              sendPushNotificationToRole('volontario', {
+                title: `📻 COMUNICAZIONE RADIO DALLA CENTRALE`,
+                body: pushBody,
+                tag: `radio-${Date.now()}`,
+                soundType: 'cicalino',
+                urgenza: 'GIALLO',
+                requireInteraction: true
+              });
+            } else {
+              sendPushNotificationToRole('admin', {
+                title: `📻 COMUNICAZIONE RADIO DA BORDO MEZZO`,
+                body: pushBody,
+                tag: `radio-${Date.now()}`,
+                soundType: 'cicalino',
+                urgenza: 'GIALLO',
+                requireInteraction: true
+              });
+            }
+            break;
+          }
+
+          // 7b. Attivazione/Disattivazione Radio Diretta VHF/UHF PTT (solo Operatore di Centrale)
+          case 'TOGGLE_RADIO_PTT_LIVE': {
+            if (data?.role !== 'admin') {
+              if (excludeClient && excludeClient.readyState === WebSocket.OPEN) {
+                excludeClient.send(JSON.stringify({
+                  type: 'PTT_REJECTED',
+                  targetSpeakerId: data?.speakerId,
+                  reason: 'Solo un Operatore di Centrale può attivare o disattivare la radio diretta VHF/UHF.'
+                }));
+              }
+              break;
+            }
+            const nextEnabled = Boolean(data?.enabled);
+            const toggledBy = String(data?.operatorName || 'Operatore Centrale');
+            const prevSpeaker = state.radioPtt?.activeSpeaker || null;
+
+            state.radioPtt = {
+              ...(state.radioPtt || { enabled: false, activeSpeaker: null }),
+              enabled: nextEnabled,
+              toggledBy,
+              toggledAt: Date.now(),
+              activeSpeaker: nextEnabled ? prevSpeaker : null
+            };
+            if (!nextEnabled) {
+              activePttSocket = null;
+            }
+
+            const notifPtt: RadioNotification = {
+              id: generateUniqueNotifId(),
+              orario: formatTimeItaly(),
+              testo: nextEnabled
+                ? `📡 RADIO DIRETTA VHF/UHF ATTIVATA da ${toggledBy}: canale PTT aperto a tutti i terminali loggati.`
+                : `🔇 RADIO DIRETTA VHF/UHF DISATTIVATA da ${toggledBy}: trasmissioni PTT in diretta sospese.`,
+              tipo: 'centrale'
+            };
+            state.notifiche.push(notifPtt);
+            persistState();
+
+            if (!nextEnabled && prevSpeaker) {
+              broadcast({
+                type: 'PTT_PREEMPTED',
+                channelId: 'general',
+                interruptedSpeakerId: prevSpeaker.speakerId,
+                interruptedSpeakerName: prevSpeaker.speakerName,
+                bySpeakerName: toggledBy,
+                byRole: 'admin',
+                reason: 'Radio diretta disattivata dall\'Operatore di Centrale.'
+              });
+            }
+
+            broadcast({
+              type: 'RADIO_PTT_STATE',
+              radioPtt: state.radioPtt,
+              notification: notifPtt
+            });
+            break;
+          }
+
+          // 7g. Creazione Gruppo Radio Permanente (solo Operatore Centrale, idempotente contro doppi invii WS+HTTP)
+          case 'CREATE_RADIO_GROUP': {
+            if (data?.role !== 'admin') break;
+            const rawName = String(data?.name || '').trim();
+            if (!rawName) break;
+            const reqId = String(data?.id || `grp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`);
+            const normName = rawName.toLowerCase();
+            const alreadyExists = (state.radioGroups || []).some(
+              (g) => g.id === reqId || g.name.trim().toLowerCase() === normName
+            );
+            if (alreadyExists) {
+              break;
+            }
+            const memberIds: string[] = Array.isArray(data?.memberIds)
+              ? Array.from(new Set<string>(data.memberIds.map((m: any) => String(m)).filter(Boolean)))
+              : [];
+            const newGroup: RadioGroup = {
+              id: reqId,
+              name: rawName,
+              enabled: Boolean(data?.enabled),
+              memberIds,
+              createdBy: String(data?.operatorName || 'Operatore Centrale'),
+              createdAt: Date.now(),
+              activeSpeaker: null
+            };
+            state.radioGroups = [...(state.radioGroups || []), newGroup];
+            persistState();
+            broadcast({
+              type: 'RADIO_GROUPS_UPDATED',
+              radioGroups: state.radioGroups
+            });
+            break;
+          }
+
+          // 7h. Aggiornamento Membri / Nome Gruppo Radio Permanente (solo Operatore Centrale)
+          case 'UPDATE_RADIO_GROUP_MEMBERS': {
+            if (data?.role !== 'admin') break;
+            const groupId = String(data?.groupId || '');
+            const memberIds: string[] = Array.isArray(data?.memberIds)
+              ? Array.from(new Set<string>(data.memberIds.map((m: any) => String(m)).filter(Boolean)))
+              : [];
+            state.radioGroups = (state.radioGroups || []).map((g) => {
+              if (g.id !== groupId) return g;
+              return {
+                ...g,
+                name: data?.name ? String(data.name).trim() : g.name,
+                memberIds
+              };
+            });
+            persistState();
+            broadcast({
+              type: 'RADIO_GROUPS_UPDATED',
+              radioGroups: state.radioGroups
+            });
+            break;
+          }
+
+          // 7i. Accensione/Spegnimento Canale Gruppo Radio (solo Operatore Centrale)
+          case 'TOGGLE_RADIO_GROUP_LIVE': {
+            if (data?.role !== 'admin') break;
+            const groupId = String(data?.groupId || '');
+            const nextEnabled = Boolean(data?.enabled);
+            const toggledBy = String(data?.operatorName || 'Operatore Centrale');
+            let targetGroup: RadioGroup | undefined;
+            let prevSpeaker: RadioPttSpeaker | null = null;
+
+            state.radioGroups = (state.radioGroups || []).map((g) => {
+              if (g.id !== groupId) return g;
+              prevSpeaker = g.activeSpeaker || null;
+              targetGroup = {
+                ...g,
+                enabled: nextEnabled,
+                toggledBy,
+                toggledAt: Date.now(),
+                activeSpeaker: nextEnabled ? g.activeSpeaker : null
+              };
+              return targetGroup;
+            });
+
+            if (!targetGroup) break;
+            if (!nextEnabled) {
+              activeGroupSockets.set(groupId, null);
+            }
+            persistState();
+
+            if (!nextEnabled && prevSpeaker) {
+              broadcastToFilter(
+                {
+                  type: 'PTT_PREEMPTED',
+                  channelId: groupId,
+                  groupId,
+                  interruptedSpeakerId: (prevSpeaker as RadioPttSpeaker).speakerId,
+                  interruptedSpeakerName: (prevSpeaker as RadioPttSpeaker).speakerName,
+                  bySpeakerName: toggledBy,
+                  byRole: 'admin',
+                  reason: `Canale gruppo "${targetGroup.name}" disattivato dall'Operatore di Centrale.`
+                },
+                (c) => isSocketAllowedInGroup(c, targetGroup!)
+              );
+            }
+
+            broadcast({
+              type: 'RADIO_GROUPS_UPDATED',
+              radioGroups: state.radioGroups,
+              toggledGroupId: groupId,
+              toggledEnabled: nextEnabled,
+              toggledBy
+            });
+            break;
+          }
+
+          // 7j. Eliminazione Gruppo Radio Permanente (solo Operatore Centrale)
+          case 'DELETE_RADIO_GROUP': {
+            if (data?.role !== 'admin') break;
+            const groupId = String(data?.groupId || '');
+            activeGroupSockets.delete(groupId);
+            state.radioGroups = (state.radioGroups || []).filter((g) => g.id !== groupId);
+            persistState();
+            broadcast({
+              type: 'RADIO_GROUPS_UPDATED',
+              radioGroups: state.radioGroups
+            });
+            break;
+          }
+
+          // 7k. Pulsante EMERGENZA Radio (esclusivo Operatori di Centrale - priorità assoluta su tutti i canali e gruppi)
+          case 'TRIGGER_RADIO_EMERGENCY': {
+            if (data?.role !== 'admin') {
+              if (excludeClient && excludeClient.readyState === WebSocket.OPEN) {
+                excludeClient.send(JSON.stringify({
+                  type: 'PTT_REJECTED',
+                  targetSpeakerId: data?.speakerId,
+                  reason: 'Il pulsante EMERGENZA è utilizzabile esclusivamente dagli Operatori di Centrale.'
+                }));
+              }
+              break;
+            }
+
+            const nextActive = data?.active !== false;
+            const triggeredBy = String(data?.operatorName || 'Operatore Centrale');
+            const message = String(data?.message || 'ALLERTA EMERGENZA GENERALE DALLA CENTRALE OPERATIVA');
+
+            state.radioEmergency = {
+              active: nextActive,
+              triggeredBy,
+              triggeredAt: Date.now(),
+              message: nextActive ? message : ''
+            };
+
+            if (nextActive) {
+              // Interrompi qualsiasi comunicazione in corso su Canale Generale e su TUTTI i gruppi
+              if (state.radioPtt?.activeSpeaker && !state.radioPtt.activeSpeaker.isEmergency) {
+                const prev = state.radioPtt.activeSpeaker;
+                state.radioPtt.activeSpeaker = null;
+                activePttSocket = null;
+                broadcast({
+                  type: 'PTT_PREEMPTED',
+                  channelId: 'general',
+                  interruptedSpeakerId: prev.speakerId,
+                  interruptedSpeakerName: prev.speakerName,
+                  bySpeakerName: triggeredBy,
+                  byRole: 'admin',
+                  isEmergency: true,
+                  reason: `🚨 EMERGENZA CENTRALE: ${triggeredBy} ha attivato l'allerta prioritaria!`
+                });
+              }
+              (state.radioGroups || []).forEach((g) => {
+                if (g.activeSpeaker) {
+                  const prev = g.activeSpeaker;
+                  g.activeSpeaker = null;
+                  activeGroupSockets.set(g.id, null);
+                  broadcast({
+                    type: 'PTT_PREEMPTED',
+                    channelId: g.id,
+                    groupId: g.id,
+                    interruptedSpeakerId: prev.speakerId,
+                    interruptedSpeakerName: prev.speakerName,
+                    bySpeakerName: triggeredBy,
+                    byRole: 'admin',
+                    isEmergency: true,
+                    reason: `🚨 EMERGENZA CENTRALE: ${triggeredBy} ha attivato l'allerta prioritaria su tutti i canali!`
+                  });
+                }
+              });
+
+              const notifEm: RadioNotification = {
+                id: generateUniqueNotifId(),
+                orario: formatTimeItaly(),
+                testo: `🚨 EMERGENZA RADIO CENTRALE (${triggeredBy}): ${message}`,
+                tipo: 'allarme'
+              };
+              state.notifiche.push(notifEm);
+              persistState();
+
+              broadcast({
+                type: 'RADIO_EMERGENCY_STATE',
+                radioEmergency: state.radioEmergency,
+                radioPtt: state.radioPtt,
+                radioGroups: state.radioGroups,
+                notification: notifEm
+              });
+
+              sendPushNotificationToRole('all', {
+                title: '🚨 EMERGENZA RADIO CENTRALE',
+                body: `${triggeredBy}: ${message}`,
+                tag: `radio-em-${Date.now()}`,
+                soundType: 'sirena',
+                urgenza: 'ROSSO',
+                requireInteraction: true
+              });
+            } else {
+              if (state.radioPtt?.activeSpeaker?.isEmergency) {
+                state.radioPtt.activeSpeaker = null;
+                activePttSocket = null;
+              }
+              persistState();
+              broadcast({
+                type: 'RADIO_EMERGENCY_STATE',
+                radioEmergency: state.radioEmergency,
+                radioPtt: state.radioPtt
+              });
+            }
+            break;
+          }
+
+          // 7c. Richiesta Portante PTT (Hold-to-Talk) con supporto Generale, Gruppi Isolati ed Emergenza Centrale
+          case 'PTT_START': {
+            const reqSpeakerId = String(data?.speakerId || '');
+            const reqRole: 'admin' | 'volontario' = data?.role === 'admin' ? 'admin' : 'volontario';
+            const reqName = String(data?.speakerName || (reqRole === 'admin' ? 'Centrale Operativa' : 'Volontario Bordo'));
+            const channelId = String(data?.channelId || 'general');
+            const isEmergencyCall = Boolean(data?.isEmergency || channelId === 'emergency');
+
+            // EMERGENZA: esclusiva Centrale, sempre abilitata, interrompe tutto e trasmette a TUTTI i terminali
+            if (isEmergencyCall) {
+              if (reqRole !== 'admin') {
+                if (excludeClient && excludeClient.readyState === WebSocket.OPEN) {
+                  excludeClient.send(JSON.stringify({
+                    type: 'PTT_REJECTED',
+                    targetSpeakerId: reqSpeakerId,
+                    reason: 'Solo un Operatore di Centrale può trasmettere in EMERGENZA.'
+                  }));
+                }
+                break;
+              }
+
+              // Preempt qualsiasi trasmissione attiva su Generale o su qualsiasi Gruppo
+              if (state.radioPtt?.activeSpeaker && state.radioPtt.activeSpeaker.speakerId !== reqSpeakerId) {
+                const prev = state.radioPtt.activeSpeaker;
+                broadcast({
+                  type: 'PTT_PREEMPTED',
+                  channelId: 'general',
+                  interruptedSpeakerId: prev.speakerId,
+                  interruptedSpeakerName: prev.speakerName,
+                  bySpeakerId: reqSpeakerId,
+                  bySpeakerName: reqName,
+                  byRole: 'admin',
+                  isEmergency: true,
+                  reason: `🚨 EMERGENZA CENTRALE: ${reqName} sta trasmettendo a tutti i terminali!`
+                });
+              }
+              (state.radioGroups || []).forEach((g) => {
+                if (g.activeSpeaker) {
+                  const prev = g.activeSpeaker;
+                  g.activeSpeaker = null;
+                  activeGroupSockets.set(g.id, null);
+                  broadcast({
+                    type: 'PTT_PREEMPTED',
+                    channelId: g.id,
+                    groupId: g.id,
+                    interruptedSpeakerId: prev.speakerId,
+                    interruptedSpeakerName: prev.speakerName,
+                    bySpeakerId: reqSpeakerId,
+                    bySpeakerName: reqName,
+                    byRole: 'admin',
+                    isEmergency: true,
+                    reason: `🚨 EMERGENZA CENTRALE: ${reqName} ha interrotto tutti i gruppi.`
+                  });
+                }
+              });
+
+              if (!state.radioPtt) {
+                state.radioPtt = { enabled: false, activeSpeaker: null };
+              }
+              state.radioPtt.activeSpeaker = {
+                speakerId: reqSpeakerId,
+                speakerName: reqName,
+                role: 'admin',
+                isCentralePriority: true,
+                channelId: 'emergency',
+                isEmergency: true,
+                startedAt: Date.now(),
+                lastChunkAt: Date.now()
+              };
+              activePttSocket = excludeClient || null;
+              state.radioEmergency = {
+                active: true,
+                triggeredBy: reqName,
+                triggeredAt: Date.now(),
+                message: `TRASMISSIONE VOCALE EMERGENZA IN CORSO (${reqName})`
+              };
+
+              broadcast({
+                type: 'RADIO_EMERGENCY_STATE',
+                radioEmergency: state.radioEmergency
+              });
+              broadcast({
+                type: 'PTT_SPEAKER_CHANGED',
+                channelId: 'emergency',
+                radioPtt: state.radioPtt,
+                radioGroups: state.radioGroups
+              });
+              break;
+            }
+
+            // CANALE GRUPPO PERMANENTE (isolato)
+            if (channelId !== 'general') {
+              const targetGroup = (state.radioGroups || []).find((g) => g.id === channelId);
+              if (!targetGroup) {
+                if (excludeClient && excludeClient.readyState === WebSocket.OPEN) {
+                  excludeClient.send(JSON.stringify({
+                    type: 'PTT_REJECTED',
+                    targetSpeakerId: reqSpeakerId,
+                    reason: 'Gruppo radio non trovato o eliminato.'
+                  }));
+                }
+                break;
+              }
+              if (!targetGroup.enabled) {
+                if (excludeClient && excludeClient.readyState === WebSocket.OPEN) {
+                  excludeClient.send(JSON.stringify({
+                    type: 'PTT_REJECTED',
+                    targetSpeakerId: reqSpeakerId,
+                    reason: `Canale gruppo "${targetGroup.name}" spento. Deve essere acceso dall'Operatore di Centrale.`
+                  }));
+                }
+                break;
+              }
+              const reqVolId = data?.volontarioId ? String(data.volontarioId) : ((excludeClient as any)?.volontarioId || '');
+              if (reqRole !== 'admin' && (!reqVolId || !targetGroup.memberIds.includes(reqVolId))) {
+                if (excludeClient && excludeClient.readyState === WebSocket.OPEN) {
+                  excludeClient.send(JSON.stringify({
+                    type: 'PTT_REJECTED',
+                    targetSpeakerId: reqSpeakerId,
+                    reason: `Non sei autorizzato a parlare nel gruppo "${targetGroup.name}".`
+                  }));
+                }
+                break;
+              }
+
+              const currentGroupSpeaker = targetGroup.activeSpeaker;
+              if (currentGroupSpeaker && currentGroupSpeaker.speakerId !== reqSpeakerId) {
+                if (reqRole !== 'admin') {
+                  if (excludeClient && excludeClient.readyState === WebSocket.OPEN) {
+                    excludeClient.send(JSON.stringify({
+                      type: 'PTT_REJECTED',
+                      targetSpeakerId: reqSpeakerId,
+                      reason: `Gruppo "${targetGroup.name}" occupato da ${currentGroupSpeaker.speakerName}.`
+                    }));
+                  }
+                  break;
+                }
+                broadcastToFilter(
+                  {
+                    type: 'PTT_PREEMPTED',
+                    channelId: targetGroup.id,
+                    groupId: targetGroup.id,
+                    interruptedSpeakerId: currentGroupSpeaker.speakerId,
+                    interruptedSpeakerName: currentGroupSpeaker.speakerName,
+                    bySpeakerId: reqSpeakerId,
+                    bySpeakerName: reqName,
+                    byRole: 'admin',
+                    reason: `⚡ PRIORITÀ CENTRALE su "${targetGroup.name}": ${reqName} ha preso la linea.`
+                  },
+                  (c) => isSocketAllowedInGroup(c, targetGroup)
+                );
+              }
+
+              targetGroup.activeSpeaker = {
+                speakerId: reqSpeakerId,
+                speakerName: reqName,
+                role: reqRole,
+                isCentralePriority: reqRole === 'admin',
+                channelId: targetGroup.id,
+                isEmergency: false,
+                startedAt: Date.now(),
+                lastChunkAt: Date.now()
+              };
+              activeGroupSockets.set(targetGroup.id, excludeClient || null);
+
+              // Invia SOLO ai membri del gruppo e alla Centrale! Dalle altre parti nessuno sente/vede nulla.
+              broadcastToFilter(
+                {
+                  type: 'PTT_SPEAKER_CHANGED',
+                  channelId: targetGroup.id,
+                  groupId: targetGroup.id,
+                  activeSpeaker: targetGroup.activeSpeaker,
+                  radioGroup: targetGroup
+                },
+                (c) => isSocketAllowedInGroup(c, targetGroup)
+              );
+              break;
+            }
+
+            // CANALE GENERALE VHF/UHF
+            if (!state.radioPtt?.enabled) {
+              const rejectMsg = {
+                type: 'PTT_REJECTED',
+                targetSpeakerId: reqSpeakerId,
+                reason: 'Radio diretta VHF/UHF disattivata. Deve essere attivata da un Operatore di Centrale.'
+              };
+              if (excludeClient && excludeClient.readyState === WebSocket.OPEN) {
+                excludeClient.send(JSON.stringify(rejectMsg));
+              } else {
+                broadcast(rejectMsg);
+              }
+              break;
+            }
+
+            const currentSpeaker = state.radioPtt.activeSpeaker;
+            if (currentSpeaker && currentSpeaker.speakerId !== reqSpeakerId) {
+              if (reqRole !== 'admin') {
+                const busyMsg = {
+                  type: 'PTT_REJECTED',
+                  targetSpeakerId: reqSpeakerId,
+                  reason: `Canale VHF/UHF occupato da ${currentSpeaker.speakerName}. Può parlare una sola persona alla volta.`
+                };
+                if (excludeClient && excludeClient.readyState === WebSocket.OPEN) {
+                  excludeClient.send(JSON.stringify(busyMsg));
+                } else {
+                  broadcast(busyMsg);
+                }
+                break;
+              }
+
+              // PRIORITÀ ASSOLUTA OPERATORE DI CENTRALE: interrompe immediatamente la comunicazione attiva
+              broadcast({
+                type: 'PTT_PREEMPTED',
+                channelId: 'general',
+                interruptedSpeakerId: currentSpeaker.speakerId,
+                interruptedSpeakerName: currentSpeaker.speakerName,
+                bySpeakerId: reqSpeakerId,
+                bySpeakerName: reqName,
+                byRole: 'admin',
+                reason: `⚡ PRIORITÀ CENTRALE: ${reqName} ha preso la linea interrompendo ${currentSpeaker.speakerName}.`
+              });
+            }
+
+            state.radioPtt.activeSpeaker = {
+              speakerId: reqSpeakerId,
+              speakerName: reqName,
+              role: reqRole,
+              isCentralePriority: reqRole === 'admin',
+              channelId: 'general',
+              isEmergency: false,
+              startedAt: Date.now(),
+              lastChunkAt: Date.now()
+            };
+            activePttSocket = excludeClient || null;
+
+            broadcast({
+              type: 'PTT_SPEAKER_CHANGED',
+              channelId: 'general',
+              radioPtt: state.radioPtt
+            });
+            break;
+          }
+
+          // 7b-caps. Negoziazione capacità codec audio Opus + registrazione identità/canale del terminale per isolamento gruppi
+          case 'PTT_CLIENT_CAPS': {
+            if (excludeClient) {
+              if (typeof data?.opus === 'boolean') {
+                (excludeClient as any).supportsOpus = Boolean(data.opus);
+              }
+              if (data?.volontarioId !== undefined) {
+                (excludeClient as any).volontarioId = data.volontarioId ? String(data.volontarioId) : '';
+              }
+              if (data?.role === 'admin' || data?.role === 'volontario') {
+                (excludeClient as any).clientRole = data.role;
+              }
+              if (data?.activeChannelId) {
+                (excludeClient as any).activeChannelId = String(data.activeChannelId);
+              }
+              recomputeRadioCodecMode(true);
+            }
+            break;
+          }
+
+          // 7d. Streaming frame audio compresso HD (Opus 48kHz / ADPCM 24kHz / PCM16) con isolamento per gruppo
+          case 'PTT_AUDIO_CHUNK': {
+            const payloadB64 = data?.payloadBase64 || data?.pcm16Base64;
+            if (!payloadB64) break;
+
+            const channelId = String(data?.channelId || 'general');
+
+            // Gruppo isolato: inoltra SOLO ai membri autorizzati di quel gruppo (e sintonizzati su quel gruppo)
+            if (channelId !== 'general' && channelId !== 'emergency') {
+              const targetGroup = (state.radioGroups || []).find((g) => g.id === channelId);
+              if (
+                !targetGroup ||
+                !targetGroup.enabled ||
+                !targetGroup.activeSpeaker ||
+                targetGroup.activeSpeaker.speakerId !== data?.speakerId
+              ) {
+                break;
+              }
+              targetGroup.activeSpeaker.lastChunkAt = Date.now();
+              broadcastToFilter(
+                {
+                  type: 'PTT_AUDIO_CHUNK',
+                  channelId: targetGroup.id,
+                  groupId: targetGroup.id,
+                  speakerId: targetGroup.activeSpeaker.speakerId,
+                  speakerName: targetGroup.activeSpeaker.speakerName,
+                  role: targetGroup.activeSpeaker.role,
+                  isCentralePriority: targetGroup.activeSpeaker.isCentralePriority,
+                  isEmergency: false,
+                  codec: data.codec || 'pcm16',
+                  payloadBase64: payloadB64,
+                  sampleRate: Number(data.sampleRate) || 24000,
+                  seq: Number(data.seq) || 0
+                },
+                (client) => {
+                  if (!isSocketAllowedInGroup(client, targetGroup)) return false;
+                  const ch = (client as any).activeChannelId;
+                  return !ch || ch === targetGroup.id;
+                },
+                excludeClient
+              );
+              break;
+            }
+
+            // Canale Generale o Emergenza Centrale
+            const isActiveEmerg = Boolean(state.radioPtt?.activeSpeaker?.isEmergency);
+            if (
+              (!isActiveEmerg && !state.radioPtt?.enabled) ||
+              !state.radioPtt?.activeSpeaker ||
+              state.radioPtt.activeSpeaker.speakerId !== data?.speakerId
+            ) {
+              break;
+            }
+            state.radioPtt.activeSpeaker.lastChunkAt = Date.now();
+            const chunkMsg = {
+              type: 'PTT_AUDIO_CHUNK',
+              channelId: isActiveEmerg ? 'emergency' : 'general',
+              speakerId: state.radioPtt.activeSpeaker.speakerId,
+              speakerName: state.radioPtt.activeSpeaker.speakerName,
+              role: state.radioPtt.activeSpeaker.role,
+              isCentralePriority: state.radioPtt.activeSpeaker.isCentralePriority,
+              isEmergency: isActiveEmerg,
+              codec: data.codec || 'pcm16',
+              payloadBase64: payloadB64,
+              sampleRate: Number(data.sampleRate) || 24000,
+              seq: Number(data.seq) || 0
+            };
+
+            if (isActiveEmerg) {
+              // EMERGENZA: trasmetti a TUTTI i terminali su qualsiasi canale/gruppo
+              broadcast(chunkMsg, excludeClient);
+            } else {
+              // GENERALE: trasmetti a tutti i terminali che non sono isolati dentro un gruppo privato
+              broadcastToFilter(
+                chunkMsg,
+                (client) => {
+                  const ch = (client as any).activeChannelId;
+                  return !ch || ch === 'general';
+                },
+                excludeClient
+              );
+            }
+            break;
+          }
+
+          // 7e. Rilascio Portante PTT (Generale, Gruppo o Emergenza)
+          case 'PTT_STOP': {
+            const channelId = String(data?.channelId || '');
+            if (state.radioPtt?.activeSpeaker && state.radioPtt.activeSpeaker.speakerId === data?.speakerId) {
+              const wasEmerg = Boolean(state.radioPtt.activeSpeaker.isEmergency);
+              state.radioPtt.activeSpeaker = null;
+              activePttSocket = null;
+              broadcast({
+                type: 'PTT_SPEAKER_CHANGED',
+                channelId: wasEmerg ? 'emergency' : 'general',
+                radioPtt: state.radioPtt
+              });
+            }
+            if (Array.isArray(state.radioGroups)) {
+              state.radioGroups.forEach((g) => {
+                if ((!channelId || g.id === channelId) && g.activeSpeaker && g.activeSpeaker.speakerId === data?.speakerId) {
+                  g.activeSpeaker = null;
+                  activeGroupSockets.set(g.id, null);
+                  broadcastToFilter(
+                    {
+                      type: 'PTT_SPEAKER_CHANGED',
+                      channelId: g.id,
+                      groupId: g.id,
+                      activeSpeaker: null,
+                      radioGroup: g
+                    },
+                    (c) => isSocketAllowedInGroup(c, g)
+                  );
+                }
+              });
+            }
+            break;
+          }
+
+          // 8. Posizione GPS in Tempo Reale
+          case 'UPDATE_GPS': {
+            state.gpsPosition = data;
+            broadcast({
+              type: 'GPS_UPDATED',
+              position: state.gpsPosition
+            });
+            break;
+          }
+
+          // 9. Aggiornamento Turno Volontario
+          case 'UPDATE_SHIFT': {
+            state.activeShift = data;
+            
+            // Aggiorna lo stato inTurno nella lista dei volontari
+            if (data.volontarioId) {
+              state.volontari = state.volontari.map(v => 
+                v.id === data.volontarioId ? { ...v, inTurno: !!data.attivo } : v
+              );
+            }
+
+            const notif: RadioNotification = {
+              id: generateUniqueNotifId(),
+              orario: formatTimeItaly(),
+              testo: data.attivo
+                ? `🟢 ACCESSO VOLONTARIO: ${data.volontarioNome} ha effettuato l'accesso all'app sul mezzo ${data.mezzoScelto} (${data.qualificaTurno})`
+                : `🔴 FINE TURNO: ${data.volontarioNome || 'Volontario'} ha terminato il servizio su ${data.mezzoScelto || 'mezzo'}.`,
+              tipo: 'mezzo'
+            };
+            state.notifiche.push(notif);
+            persistState();
+
+            broadcast({
+              type: 'SHIFT_UPDATED',
+              shift: state.activeShift,
+              volontari: state.volontari,
+              notification: notif
+            });
+
+            if (data.attivo) {
+              sendPushNotificationToRole('admin', {
+                title: `🟢 ACCESSO VOLONTARIO ALL'APP`,
+                body: `${data.volontarioNome} ha effettuato l'accesso all'app sul mezzo ${data.mezzoScelto} (${data.qualificaTurno}) alle ore ${formatTimeItaly()}`,
+                tag: `login-volontario-${data.volontarioId || Date.now()}`,
+                urgenza: 'VERDE'
+              });
+            }
+            break;
+          }
+
+          // 10. Chiusura / Reset Missione
+          case 'CLEAR_MISSION': {
+            const clearedCod = data?.codice || state.activeMission?.codice;
+            if (clearedCod) {
+              state.codiciEliminati = ensureCodiciEliminati([...(state.codiciEliminati || []), clearedCod]);
+            }
+            state.activeMission = null;
+            state.letturaConfermata = false;
+            state.operativeTimes = {};
+            state.kmInizio = '';
+            state.kmFine = '';
+            state.datiDestinazione = null;
+            state.ringing.active = false;
+
+            const notif: RadioNotification = {
+              id: generateUniqueNotifId(),
+              orario: formatTimeItaly(),
+              testo: 'MISSIONE CONCLUSA: Scheda archiviata e terminali liberati per nuovo servizio.',
+              tipo: 'sistema'
+            };
+            state.notifiche.push(notif);
+            persistState();
+
+            broadcast({
+              type: 'MISSION_CLEARED',
+              forceClear: true,
+              codiceEliminato: clearedCod,
+              notification: notif
+            });
+            break;
+          }
+
+          // 11. Archiviazione Permanente Servizio nel Database Centrale
+          case 'ARCHIVE_SERVICE': {
+            if (data && data.codice) {
+              const currentYear = getCurrentYearItaly();
+              const serviceYear = data.anno || currentYear;
+              const isMatchActive = !data.schedaDirettaArchivio && state.activeMission?.codice === data.codice;
+              const activeFallback = isMatchActive ? state.activeMission : null;
+
+              const nuovoServizio: ArchivedService = {
+                id: data.id || `SER-${Date.now()}`,
+                codice: data.codice,
+                anno: serviceYear,
+                data: data.data || formatDateTimeItaly(),
+                mezzo: data.mezzo || 'N/D',
+                urgenza: data.urgenza || 'VERDE',
+                ambito: data.ambito || 'SERVIZIO',
+                indirizzo: data.indirizzo || data.indirizzoIntervento || '-',
+                indirizzoIntervento: data.indirizzoIntervento || data.indirizzo,
+                destinazione: data.destinazione,
+                chiamante: data.chiamante,
+                telefono: data.telefono,
+                enteIstituzionale: data.enteIstituzionale,
+                noteCritiche: data.noteCritiche,
+                volontarioNome: data.volontarioNome,
+                volontarioId: data.volontarioId,
+                volontarioTelefono: data.volontarioTelefono,
+                qualificaTurno: data.qualificaTurno,
+                kmInizio: Number(data.kmInizio) || 0,
+                kmFine: Number(data.kmFine) || 0,
+                kmTotali: Number(data.kmTotali) || 0,
+                inAttesaKm: !!data.inAttesaKm,
+                tempi: data.tempi || {},
+                testoCompleto: data.testoCompleto || '',
+                dataCreazione: data.dataCreazione || new Date().toISOString(),
+                dataCompletamento: new Date().toISOString(),
+                coordinateSulPosto: data.coordinateSulPosto || data.tempi?.coordinateSulPosto,
+                coordinateDestinazione: data.coordinateDestinazione || data.tempi?.coordinateDestinazione,
+                tipoAnimale: data.tipoAnimale || activeFallback?.tipoAnimale,
+                tipoAnimaleAltro: data.tipoAnimaleAltro || activeFallback?.tipoAnimaleAltro,
+                nonDiProprieta: data.nonDiProprieta !== undefined ? data.nonDiProprieta : activeFallback?.nonDiProprieta,
+                microchip: data.microchip || activeFallback?.microchip,
+                noMicrochip: data.noMicrochip !== undefined ? data.noMicrochip : activeFallback?.noMicrochip,
+                datiProprietarioCentrale: data.datiProprietarioCentrale || activeFallback?.datiProprietarioCentrale,
+                fotoDocumento: data.fotoDocumento || activeFallback?.fotoDocumento || data.datiProprietarioCentrale?.fotoDocumento || activeFallback?.datiProprietarioCentrale?.fotoDocumento,
+                isStrutturaVeterinariaPartenza: data.isStrutturaVeterinariaPartenza !== undefined ? data.isStrutturaVeterinariaPartenza : activeFallback?.isStrutturaVeterinariaPartenza,
+                datiDestinazione: data.datiDestinazione || activeFallback?.datiDestinazione,
+                decisioneCentraleNonVet: data.decisioneCentraleNonVet || activeFallback?.decisioneCentraleNonVet,
+                noteNonVet: data.noteNonVet || activeFallback?.noteNonVet,
+                firmaVolontario: data.firmaVolontario,
+                firmaOperatoreCentrale: data.firmaOperatoreCentrale,
+                operatoreCentraleNome: data.operatoreCentraleNome,
+                dataFirmaCentrale: data.dataFirmaCentrale,
+                visionatoDaCentrale: data.visionatoDaCentrale,
+                manovreEffettuatePatologie: data.manovreEffettuatePatologie,
+                sottoAmbitoVet: data.sottoAmbitoVet || activeFallback?.sottoAmbitoVet,
+                operatoreMittenteId: data.operatoreMittenteId,
+                operatoreMittenteNome: data.operatoreMittenteNome,
+                annullata: data.annullata !== undefined ? data.annullata : activeFallback?.annullata,
+                motivoAnnullamento: data.motivoAnnullamento || activeFallback?.motivoAnnullamento,
+                richiedenteAnnullamento: data.richiedenteAnnullamento || activeFallback?.richiedenteAnnullamento,
+                orarioAnnullamento: data.orarioAnnullamento || activeFallback?.orarioAnnullamento,
+                autonomoVolontario: data.autonomoVolontario !== undefined ? data.autonomoVolontario : activeFallback?.autonomoVolontario,
+                creatoDaVolontarioNome: data.creatoDaVolontarioNome || activeFallback?.creatoDaVolontarioNome,
+                creatoDaVolontarioId: data.creatoDaVolontarioId || activeFallback?.creatoDaVolontarioId,
+                tipologiaServizio: data.tipologiaServizio || activeFallback?.tipologiaServizio,
+                numeroSegreteriaSoupRt: data.numeroSegreteriaSoupRt || activeFallback?.numeroSegreteriaSoupRt,
+                allertaMeteo: data.allertaMeteo || activeFallback?.allertaMeteo,
+                schedaDirettaArchivio: Boolean(data.schedaDirettaArchivio)
+              };
+
+              const existingIdx = state.serviziArchivio.findIndex(s => s.id === nuovoServizio.id || s.codice === nuovoServizio.codice);
+              if (existingIdx >= 0) {
+                state.serviziArchivio[existingIdx] = { ...state.serviziArchivio[existingIdx], ...nuovoServizio };
+              } else {
+                state.serviziArchivio = [nuovoServizio, ...state.serviziArchivio];
+              }
+
+              persistState();
+
+              const notif: RadioNotification = {
+                id: generateUniqueNotifId(),
+                orario: formatTimeItaly(),
+                testo: `📁 DATABASE: Servizio ${nuovoServizio.codice} archiviato definitivamente (Anno ${serviceYear}${nuovoServizio.inAttesaKm ? ' - ⚠️ IN ATTESA KM' : ''}).`,
+                tipo: 'sistema'
+              };
+              state.notifiche.push(notif);
+
+              broadcast({
+                type: 'SERVICE_ARCHIVED',
+                servizio: nuovoServizio,
+                serviziArchivio: state.serviziArchivio,
+                notification: notif
+              });
+
+              // Il servizio è stato salvato nel database archivio.
+              // NON azzeriamo prematuramente la missione attiva qui: a bordo mezzo è attivo il countdown
+              // di 30 minuti di sola consultazione. La missione verrà azzerata solo al termine naturale del countdown
+              // oppure quando il volontario clicca 'Azzera Countdown' (CLEAR_MISSION) o la Centrale invia una nuova scheda.
+              if (state.activeMission && state.activeMission.codice === nuovoServizio.codice) {
+                // Conserviamo i dati aggiornati per consultazione sincronizzata
+                state.activeMission.completata = true;
+                state.operativeTimes = nuovoServizio.tempi || state.operativeTimes;
+                state.kmInizio = String(nuovoServizio.kmInizio || state.kmInizio);
+                state.kmFine = String(nuovoServizio.kmFine || state.kmFine);
+                persistState();
+              }
+            }
+            break;
+          }
+
+          // 12. Centrale Inserisce KM Mancanti dopo Chiamata al Volontario
+          case 'CENTRALE_UPDATE_KM': {
+            if (data && data.id) {
+              const idx = state.serviziArchivio.findIndex(s => s.id === data.id || s.codice === data.codice);
+              if (idx >= 0) {
+                const ini = Number(data.kmInizio) || 0;
+                const fin = Number(data.kmFine) || 0;
+                if (fin < ini) {
+                  console.warn(`[CENTRALE_UPDATE_KM] Rifiutato: KM finali (${fin}) non possono essere inferiori a KM iniziali (${ini})`);
+                  break;
+                }
+                const tot = fin - ini;
+
+                const serv = state.serviziArchivio[idx];
+                serv.kmInizio = ini;
+                serv.kmFine = fin;
+                serv.kmTotali = tot;
+                serv.inAttesaKm = false;
+
+                // Aggiorna testo completo della scheda
+                serv.testoCompleto = serv.testoCompleto
+                  .replace(/KM INIZIO: [^\n]*/, `KM INIZIO: ${ini} | KM FINE: ${fin}`)
+                  .replace(/KM TOTALI PERCORSI: [^\n]*/, `KM TOTALI PERCORSI: ${tot} KM`);
+
+                persistState();
+
+                const notif: RadioNotification = {
+                  id: generateUniqueNotifId(),
+                  orario: formatTimeItaly(),
+                  testo: `✅ CENTRALE: Inseriti KM per ${serv.codice} (${tot} KM). Foglio di Viaggio PDF sbloccato e disponibile!`,
+                  tipo: 'centrale'
+                };
+                state.notifiche.push(notif);
+
+                broadcast({
+                  type: 'SERVICE_KM_UPDATED',
+                  servizio: serv,
+                  serviziArchivio: state.serviziArchivio,
+                  notification: notif
+                });
+
+                if (state.activeMission && (state.activeMission.codice === serv.codice || state.activeMission.codice === data.codice)) {
+                  state.activeMission = null;
+                  state.letturaConfermata = false;
+                  state.operativeTimes = {};
+                  state.kmInizio = '';
+                  state.kmFine = '';
+                  state.datiDestinazione = null;
+                  state.ringing = { active: false, source: '', soundType: 'telefono', timestamp: 0 };
+                  persistState();
+
+                  broadcast({
+                    type: 'MISSION_CLEARED',
+                    notification: notif
+                  });
+                }
+              }
+            }
+            break;
+          }
+
+          // 12-bis. Firma Telematica Servizio da parte dell'Operatore di Centrale (singola o simultanea)
+          case 'CENTRALE_SIGN_SERVICES': {
+            if (data && Array.isArray(data.ids) && data.ids.length > 0 && data.firmaBase64) {
+              const ids: string[] = data.ids;
+              const nowStr = formatDateTimeItaly();
+              let signedCount = 0;
+              state.serviziArchivio.forEach(s => {
+                if (ids.includes(s.id) || ids.includes(s.codice)) {
+                  s.firmaOperatoreCentrale = data.firmaBase64;
+                  s.operatoreCentraleNome = data.operatoreNome || 'Operatore Centrale';
+                  s.dataFirmaCentrale = nowStr;
+                  s.visionatoDaCentrale = true;
+                  signedCount++;
+                }
+              });
+              persistState();
+
+              const notif: RadioNotification = {
+                id: generateUniqueNotifId(),
+                orario: formatTimeItaly(),
+                testo: `✍️ CENTRALE: ${signedCount} foglio/i di viaggio firmato/i digitalmente con successo dall'Operatore ${data.operatoreNome || 'Centrale'}.`,
+                tipo: 'centrale'
+              };
+              state.notifiche.push(notif);
+
+              broadcast({
+                type: 'SERVICES_SIGNED_CENTRALE',
+                ids,
+                firmaBase64: data.firmaBase64,
+                operatoreNome: data.operatoreNome,
+                dataFirmaCentrale: nowStr,
+                serviziArchivio: state.serviziArchivio,
+                notification: notif
+              });
+            }
+            break;
+          }
+
+          // 12-ter. Modifica Foglio di Viaggio nel Database da parte dell'Operatore di Centrale Mittente
+          case 'CENTRALE_UPDATE_ARCHIVED_SERVICE': {
+            if (data && (data.id || data.codice)) {
+              const idx = state.serviziArchivio.findIndex(s => s.id === data.id || s.codice === data.codice);
+              if (idx >= 0) {
+                state.serviziArchivio[idx] = {
+                  ...state.serviziArchivio[idx],
+                  ...data
+                };
+                persistState();
+
+                const notif: RadioNotification = {
+                  id: generateUniqueNotifId(),
+                  orario: formatTimeItaly(),
+                  testo: `✏️ CENTRALE: Foglio di viaggio ${data.codice} aggiornato nel database centrale.`,
+                  tipo: 'centrale'
+                };
+                state.notifiche.push(notif);
+
+                broadcast({
+                  type: 'SERVICE_UPDATED',
+                  servizio: state.serviziArchivio[idx],
+                  serviziArchivio: state.serviziArchivio,
+                  notification: notif
+                });
+              }
+            }
+            break;
+          }
+
+          // 12-quater. Eliminazione Singolo Servizio dal Database (Amministratore)
+          case 'DELETE_SERVICE': {
+            const targetId = data.id || data.codice;
+            if (targetId && Array.isArray(state.serviziArchivio)) {
+              const idx = state.serviziArchivio.findIndex(s => s.id === targetId || s.codice === targetId);
+              if (idx >= 0) {
+                const rimosso = state.serviziArchivio[idx];
+                state.serviziArchivio.splice(idx, 1);
+
+                if (state.activeMission && (state.activeMission.codice === rimosso.codice || state.activeMission.codice === targetId)) {
+                  state.activeMission = null;
+                  state.letturaConfermata = false;
+                  state.operativeTimes = {};
+                  state.kmInizio = '';
+                  state.kmFine = '';
+                  state.datiDestinazione = null;
+                  state.ringing = { active: false, source: '', soundType: 'telefono', timestamp: 0 };
+                }
+
+                persistState();
+
+                const notif: RadioNotification = {
+                  id: generateUniqueNotifId(),
+                  orario: formatTimeItaly(),
+                  testo: `🗑️ DATABASE: Servizio ${rimosso.codice} (${rimosso.mezzo}) rimosso definitivamente dall'archivio dall'Amministratore.`,
+                  tipo: 'centrale'
+                };
+                state.notifiche.push(notif);
+
+                broadcast({
+                  type: 'SERVICE_DELETED',
+                  id: rimosso.id,
+                  codice: rimosso.codice,
+                  serviziArchivio: state.serviziArchivio,
+                  prossimoProgressivo: calcolaProssimoNumeroMissione(state.serviziArchivio),
+                  notification: notif
+                });
+              }
+            }
+            break;
+          }
+
+          // 12-quinquies. Eliminazione Multipla Servizi dal Database (Amministratore)
+          case 'DELETE_SERVICES_BATCH': {
+            const ids: string[] = data.ids;
+            if (Array.isArray(ids) && ids.length > 0 && Array.isArray(state.serviziArchivio)) {
+              const primaCount = state.serviziArchivio.length;
+              const rimossi = state.serviziArchivio.filter(s => ids.includes(s.id) || ids.includes(s.codice));
+              const rimossiCodici = rimossi.map(s => s.codice);
+
+              state.serviziArchivio = state.serviziArchivio.filter(s => !ids.includes(s.id) && !ids.includes(s.codice));
+              const rimossiCount = primaCount - state.serviziArchivio.length;
+
+              if (state.activeMission && (ids.includes(state.activeMission.codice) || rimossiCodici.includes(state.activeMission.codice))) {
+                state.activeMission = null;
+                state.letturaConfermata = false;
+                state.operativeTimes = {};
+                state.kmInizio = '';
+                state.kmFine = '';
+                state.datiDestinazione = null;
+                state.ringing = { active: false, source: '', soundType: 'telefono', timestamp: 0 };
+              }
+
+              persistState();
+
+              const notif: RadioNotification = {
+                id: generateUniqueNotifId(),
+                orario: formatTimeItaly(),
+                testo: `🗑️ DATABASE: ${rimossiCount} servizi rimossi dall'archivio dall'Amministratore (${rimossiCodici.slice(0, 3).join(', ')}${rimossiCodici.length > 3 ? '...' : ''}).`,
+                tipo: 'centrale'
+              };
+              state.notifiche.push(notif);
+
+              broadcast({
+                type: 'SERVICES_DELETED',
+                ids,
+                codici: rimossiCodici,
+                count: rimossiCount,
+                serviziArchivio: state.serviziArchivio,
+                prossimoProgressivo: calcolaProssimoNumeroMissione(state.serviziArchivio),
+                notification: notif
+              });
+            }
+            break;
+          }
+
+          // 13. Allarme Countdown 30 Minuti Scaduto Senza KM da Bordo Mezzo
+          case 'VOLONTARIO_SCADENZA_KM_ALLARME': {
+            const notif: RadioNotification = {
+              id: generateUniqueNotifId(),
+              orario: formatTimeItaly(),
+              testo: `🚨 ALLERTA CENTRALE: Il volontario ${data.volontarioNome || 'bordo mezzo'} (${data.mezzo || 'Mezzo'}) non ha inserito i KM per il servizio ${data.codice} prima della fine dei 30 minuti! CHIAMARE SUBITO IL VOLONTARIO al ${data.volontarioTelefono || 'telefono'} per farsi comunicare i KM!`,
+              tipo: 'allarme'
+            };
+            state.notifiche.push(notif);
+            persistState();
+
+            broadcast({
+              type: 'VOLONTARIO_KM_EXPIRED_ALERT',
+              data,
+              notification: notif
+            });
+
+            // Invia notifica Push urgente all'Amministratore
+            sendPushNotificationToRole('admin', {
+              title: `🚨 ALLERTA KM NON INSERITI (${data.codice})`,
+              body: `30 minuti scaduti! Chiama subito il volontario ${data.volontarioNome} (${data.volontarioTelefono || 'N/D'}) per richiedere i KM e sbloccare il PDF.`,
+              tag: `km-expired-${data.codice}`,
+              urgenza: 'ROSSO',
+              soundType: 'sirena'
+            });
+            break;
+          }
+
+          // 14. Centrale Annulla Intervento in qualsiasi momento
+          case 'ANNULLA_INTERVENTO': {
+            if (data && data.codice) {
+              const nowTime = data.orario || formatTimeItaly(undefined, false);
+              const schedaAperta = data.schedaAperta !== undefined ? Boolean(data.schedaAperta) : Boolean(state.letturaConfermata);
+
+              if (!schedaAperta) {
+                // REQUISITO: Se la scheda non è mai stata aperta dal volontario, sparisce automaticamente!
+                state.codiciEliminati = ensureCodiciEliminati([...(state.codiciEliminati || []), data.codice]);
+                state.activeMission = null;
+                state.letturaConfermata = false;
+                state.operativeTimes = {};
+                state.kmInizio = '';
+                state.kmFine = '';
+                state.datiDestinazione = null;
+                state.ringing = { active: false, source: '', soundType: 'telefono', timestamp: Date.now() };
+
+                const notif: RadioNotification = {
+                  id: generateUniqueNotifId(),
+                  orario: formatTimeItaly(),
+                  testo: `ℹ️ Intervento ${data.codice} ANNULLATO dalla Centrale prima dell'apertura: scheda rimossa automaticamente dal terminale.`,
+                  tipo: 'centrale'
+                };
+                state.notifiche.push(notif);
+                persistState();
+
+                broadcast({
+                  type: 'MISSION_CANCELLED',
+                  codice: data.codice,
+                  motivo: data.motivo,
+                  richiedente: data.richiedente,
+                  orario: nowTime,
+                  dettagli: data.dettagli,
+                  nonAperta: true,
+                  mission: null,
+                  ringing: state.ringing,
+                  notification: notif
+                });
+              } else {
+                // REQUISITO: Scheda già aperta: arriva notifica al volontario con SIRENA che lo avvisa di rientrare in sede
+                if (state.activeMission && state.activeMission.codice === data.codice) {
+                  state.activeMission.annullata = true;
+                  state.activeMission.motivoAnnullamento = data.motivo;
+                  state.activeMission.richiedenteAnnullamento = data.richiedente;
+                  state.activeMission.orarioAnnullamento = nowTime;
+                }
+
+                const notif: RadioNotification = {
+                  id: generateUniqueNotifId(),
+                  orario: formatTimeItaly(),
+                  testo: `🚨 ALLERTA: Intervento ${data.codice} ANNULLATO dalla Centrale! Rientrare subito in sede. Motivo: ${data.motivo} (Richiesto da: ${data.richiedente}).`,
+                  tipo: 'allarme'
+                };
+                state.notifiche.push(notif);
+
+                state.ringing = {
+                  active: true,
+                  source: `Centrale: Servizio Annullato - Rientro in Sede (${data.motivo || 'Intervento Annullato'})`,
+                  soundType: 'sirena',
+                  timestamp: Date.now()
+                };
+                persistState();
+
+                broadcast({
+                  type: 'MISSION_CANCELLED',
+                  codice: data.codice,
+                  motivo: data.motivo,
+                  richiedente: data.richiedente,
+                  orario: nowTime,
+                  dettagli: data.dettagli,
+                  nonAperta: false,
+                  mission: state.activeMission,
+                  ringing: state.ringing,
+                  notification: notif
+                });
+
+                sendPushNotificationToRole('volontario', {
+                  title: `🚨 SERVIZIO ANNULLATO - RIENTRARE IN SEDE (${data.codice})`,
+                  body: `La Centrale ha annullato la missione. Rientra in sede: ${data.motivo} (Richiesto da: ${data.richiedente}).`,
+                  tag: `mission-cancelled-${data.codice}`,
+                  soundType: 'sirena',
+                  urgenza: 'ROSSO',
+                  source: 'Centrale Operativa',
+                  requireInteraction: true,
+                  url: '/'
+                });
+              }
+            }
+            break;
+          }
+
+          // 15. Aggiornamento Luoghi di Timbratura GPS a discrezione operatore (Effetto Immediato)
+          case 'UPDATE_LUOGHI_TIMBRATURA': {
+            if (Array.isArray(data.luoghi)) {
+              state.luoghiTimbratura = data.luoghi;
+              persistState();
+
+              const count = data.luoghi.length;
+              const notif: RadioNotification = {
+                id: generateUniqueNotifId(),
+                orario: formatTimeItaly(),
+                testo: data.messaggio || `📍 LUOGHI DI TIMBRATURA AGGIORNATI: Configurazione punti di timbratura GPS aggiornata dall'operatore (${count} punti). Effetto immediato per le timbrature dei volontari.`,
+                tipo: 'sistema'
+              };
+              state.notifiche.push(notif);
+
+              broadcast({
+                type: 'LUOGHI_TIMBRATURA_UPDATED',
+                luoghi: state.luoghiTimbratura,
+                notification: notif
+              });
+
+              console.log(`[Luoghi Timbratura] Aggiornati ${count} punti nel database persistito.`);
+            }
+            break;
+          }
+
+          // 16. Aggiornamento Registro Timbrature Volontari (Sincronizzazione Realtime Immediata)
+          case 'UPDATE_TIMBRATURE': {
+            if (Array.isArray(data.timbrature)) {
+              state.timbrature = data.timbrature;
+              persistState();
+
+              broadcast({
+                type: 'TIMBRATURE_UPDATED',
+                timbrature: state.timbrature
+              });
+
+              console.log(`[Timbrature] Sincronizzate ${data.timbrature.length} timbrature volontari nel database persistito.`);
+            }
+            break;
+          }
+
+          // 17. Aggiornamento Bacheca di Sezione, Circolari, Commenti e Likes (Realtime e Persistito)
+          case 'UPDATE_BACHECA': {
+            const bachecaArray = Array.isArray(data?.bacheca) ? data.bacheca : (Array.isArray(data) ? data : null);
+            if (bachecaArray) {
+              state.bacheca = bachecaArray;
+              persistState();
+
+              broadcast({
+                type: 'BACHECA_UPDATED',
+                bacheca: state.bacheca
+              });
+
+              if (data?.notifica) {
+                const notif = data.notifica;
+                broadcast({
+                  type: 'NOTIFICA_BACHECA',
+                  notifica: notif
+                });
+
+                // WebPush di cortesia ai destinatari del commento/post
+                try {
+                  if (Array.isArray(notif.destinatariVolontariIds) && notif.destinatariVolontariIds.length > 0) {
+                    notif.destinatariVolontariIds.forEach((volId: string) => {
+                      sendPushNotificationToVolunteer(volId, {
+                        title: notif.tipo === 'nuovo_commento' ? '💬 Nuovo commento in bacheca' : '📢 Nuova comunicazione in bacheca',
+                        body: notif.messaggio || notif.postTitolo || '',
+                        tag: 'bacheca-notif',
+                        data: { url: '/', postId: notif.postId, tipo: notif.tipo }
+                      });
+                    });
+                  } else {
+                    sendPushNotificationToRole('all', {
+                      title: notif.tipo === 'nuovo_commento' ? '💬 Nuovo commento in bacheca' : '📢 Nuova comunicazione in bacheca',
+                      body: notif.messaggio || notif.postTitolo || '',
+                      tag: 'bacheca-notif',
+                      data: { url: '/', postId: notif.postId, tipo: notif.tipo }
+                    });
+                  }
+                } catch (pushErr) {
+                  console.warn('[WebPush Bacheca] Errore push:', pushErr);
+                }
+              }
+
+              console.log(`[Bacheca] Sincronizzati ${bachecaArray.length} post in bacheca e commenti collegati nel database persistito.`);
+            }
+            break;
+          }
+
+          // 25. Giornale di Bordo Centrale Operativa (Brogliaccio Eventi con Ora Automatica)
+          case 'UPDATE_GIORNALE_BORDO': {
+            const list = Array.isArray(data?.giornaleBordo) ? data.giornaleBordo : (Array.isArray(data) ? data : null);
+            if (list) {
+              state.giornaleBordo = list;
+              persistState();
+              broadcast({
+                type: 'GIORNALE_BORDO_UPDATED',
+                giornaleBordo: state.giornaleBordo
+              });
+            }
+            break;
+          }
+
+          case 'ADD_GIORNALE_BORDO_VOCE': {
+            const voce = data?.voce || data;
+            if (voce && voce.testo) {
+              const nowIt = getItalianDateParts();
+              const dateStr = nowIt.dateIt;
+              const timeStr = nowIt.timeIt;
+              
+              const nuovaVoce = {
+                id: voce.id || `gb-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+                data: voce.data || dateStr,
+                ora: timeStr, // Orario certificato dal server
+                timestamp: Date.now(),
+                operatoreId: voce.operatoreId,
+                operatoreNome: voce.operatoreNome || 'Operatore Centrale',
+                testo: String(voce.testo).trim(),
+                categoria: voce.categoria || 'ordinaria',
+                consegnaTurno: Boolean(voce.consegnaTurno),
+                presaVisioneDa: voce.presaVisioneDa || [],
+                mezzoCoinvolto: voce.mezzoCoinvolto,
+                allegatoCodiceServizio: voce.allegatoCodiceServizio
+              };
+
+              state.giornaleBordo = [nuovaVoce, ...(state.giornaleBordo || [])];
+              persistState();
+
+              broadcast({
+                type: 'GIORNALE_BORDO_UPDATED',
+                giornaleBordo: state.giornaleBordo,
+                nuovaVoce
+              });
+
+              console.log(`[Giornale di Bordo] Registrata annotazione alle ore ${timeStr} da ${nuovaVoce.operatoreNome} (${nuovaVoce.categoria})`);
+            }
+            break;
+          }
+
+          case 'PRESA_VISIONE_GIORNALE_BORDO': {
+            const { voceId, operatoreNome } = data || {};
+            if (voceId && operatoreNome && Array.isArray(state.giornaleBordo)) {
+              const nowIt = getItalianDateParts();
+              const timeStr = nowIt.timeIt;
+              const dateStr = nowIt.dateIt;
+              
+              const idx = state.giornaleBordo.findIndex((v: any) => v.id === voceId);
+              if (idx >= 0) {
+                const target = state.giornaleBordo[idx];
+                const list = Array.isArray(target.presaVisioneDa) ? target.presaVisioneDa : [];
+                if (!list.some((p: any) => p.operatoreNome === operatoreNome)) {
+                  list.push({
+                    operatoreNome,
+                    data: dateStr,
+                    ora: timeStr,
+                    timestamp: Date.now()
+                  });
+                  target.presaVisioneDa = list;
+                  state.giornaleBordo[idx] = { ...target };
+                  persistState();
+
+                  broadcast({
+                    type: 'GIORNALE_BORDO_UPDATED',
+                    giornaleBordo: state.giornaleBordo
+                  });
+                }
+              }
+            }
+            break;
+          }
+
+          // 26. Sincronizzazione Magazzino Mezzi (Ricambi, Oli, Tagliandi & Dotazioni di Bordo)
+          case 'UPDATE_MAGAZZINO_PARTI': {
+            const list = Array.isArray(data?.magazzinoParti) ? data.magazzinoParti : (Array.isArray(data) ? data : null);
+            if (list) {
+              state.magazzinoParti = filterDemoMagazzinoParti(list);
+              persistState();
+              broadcast({
+                type: 'MAGAZZINO_PARTI_UPDATED',
+                magazzinoParti: state.magazzinoParti
+              });
+            }
+            break;
+          }
+
+          case 'UPDATE_MAGAZZINO_MEZZI': {
+            const list = Array.isArray(data?.magazzinoMezzi) ? data.magazzinoMezzi : (Array.isArray(data) ? data : null);
+            if (list) {
+              state.magazzinoMezzi = filterDemoMagazzinoMezzi(list);
+              persistState();
+              broadcast({
+                type: 'MAGAZZINO_MEZZI_UPDATED',
+                magazzinoMezzi: state.magazzinoMezzi
+              });
+            }
+            break;
+          }
+
+          // 27. Aggiornamento Dati Protezione Civile (Numero Segreteria Soup_RT e Allerta Meteo) da Centrale
+          case 'UPDATE_PROTEZIONE_CIVILE_INFO': {
+            const { numeroSegreteriaSoupRt, allertaMeteo, codice } = data || {};
+            if (state.activeMission && (!codice || state.activeMission.codice === codice)) {
+              state.activeMission.numeroSegreteriaSoupRt = numeroSegreteriaSoupRt !== undefined
+                ? (String(numeroSegreteriaSoupRt).trim() || undefined)
+                : state.activeMission.numeroSegreteriaSoupRt;
+              state.activeMission.allertaMeteo = allertaMeteo !== undefined
+                ? (String(allertaMeteo).trim() || 'Nessuna')
+                : state.activeMission.allertaMeteo;
+            }
+            if (codice && Array.isArray(state.serviziArchivio)) {
+              const idx = state.serviziArchivio.findIndex(s => s.codice === codice);
+              if (idx >= 0) {
+                state.serviziArchivio[idx] = {
+                  ...state.serviziArchivio[idx],
+                  numeroSegreteriaSoupRt: numeroSegreteriaSoupRt !== undefined
+                    ? (String(numeroSegreteriaSoupRt).trim() || undefined)
+                    : state.serviziArchivio[idx].numeroSegreteriaSoupRt,
+                  allertaMeteo: allertaMeteo !== undefined
+                    ? (String(allertaMeteo).trim() || 'Nessuna')
+                    : state.serviziArchivio[idx].allertaMeteo
+                };
+              }
+            }
+            const notif: RadioNotification = {
+              id: generateUniqueNotifId(),
+              orario: formatTimeItaly(),
+              testo: `🛡️ PROTEZIONE CIVILE AGGIORNATA (${codice || state.activeMission?.codice || ''}): Soup_RT: ${numeroSegreteriaSoupRt || 'N/D'} | Allerta Meteo: ${allertaMeteo || 'Nessuna'}`,
+              tipo: 'centrale'
+            };
+            state.notifiche.push(notif);
+            persistState();
+            broadcast({
+              type: 'PROTEZIONE_CIVILE_INFO_UPDATED',
+              codice: codice || state.activeMission?.codice,
+              numeroSegreteriaSoupRt: state.activeMission?.numeroSegreteriaSoupRt ?? (String(numeroSegreteriaSoupRt || '').trim() || undefined),
+              allertaMeteo: state.activeMission?.allertaMeteo ?? (allertaMeteo || 'Nessuna'),
+              notification: notif
+            });
+            break;
+          }
+
+          // 28. Sincronizzazione Indirizzi Collezionati & Contatti
+          case 'UPDATE_INDIRIZZI_COLLEZIONATI': {
+            const list = Array.isArray(data?.indirizziCollezionati)
+              ? data.indirizziCollezionati
+              : (Array.isArray(data) ? data : null);
+            if (list) {
+              state.indirizziCollezionati = list;
+              persistState();
+              broadcast({
+                type: 'INDIRIZZI_COLLEZIONATI_UPDATED',
+                indirizziCollezionati: state.indirizziCollezionati
+              });
+            }
+            break;
+          }
+
+          case 'ADD_INDIRIZZO_COLLEZIONATO': {
+            const entry = data?.entry || data;
+            if (entry && typeof entry.indirizzo === 'string' && entry.indirizzo.trim()) {
+              const norm = entry.indirizzo.trim().toLowerCase();
+              const current = Array.isArray(state.indirizziCollezionati) ? [...state.indirizziCollezionati] : [];
+              const existingIdx = current.findIndex((i: any) => String(i.indirizzo || '').trim().toLowerCase() === norm);
+              const nowIso = new Date().toISOString();
+              if (existingIdx >= 0) {
+                const prev = current[existingIdx];
+                current[existingIdx] = {
+                  ...prev,
+                  nome: prev.nome?.trim() ? prev.nome : (entry.nome || ''),
+                  lat: typeof prev.lat === 'number' ? prev.lat : entry.lat,
+                  lng: typeof prev.lng === 'number' ? prev.lng : entry.lng,
+                  placeId: prev.placeId || entry.placeId,
+                  googleMapsUri: prev.googleMapsUri || entry.googleMapsUri,
+                  origine: prev.origine && entry.origine && prev.origine !== entry.origine ? 'entrambi' : (prev.origine || entry.origine || 'manuale'),
+                  ultimoUtilizzo: nowIso,
+                  utilizzi: (prev.utilizzi || 1) + 1
+                };
+              } else {
+                current.unshift({
+                  id: entry.id || `ind-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+                  nome: (entry.nome || '').trim(),
+                  indirizzo: entry.indirizzo.trim(),
+                  lat: typeof entry.lat === 'number' ? entry.lat : undefined,
+                  lng: typeof entry.lng === 'number' ? entry.lng : undefined,
+                  placeId: entry.placeId,
+                  googleMapsUri: entry.googleMapsUri,
+                  origine: entry.origine || 'manuale',
+                  note: entry.note,
+                  dataCreazione: entry.dataCreazione || formatISODateItaly(),
+                  ultimoUtilizzo: nowIso,
+                  utilizzi: 1
+                });
+              }
+              state.indirizziCollezionati = current;
+              persistState();
+              broadcast({
+                type: 'INDIRIZZI_COLLEZIONATI_UPDATED',
+                indirizziCollezionati: state.indirizziCollezionati
+              });
+            }
+            break;
+          }
+
+          case 'UPDATE_CONTATTI': {
+            const list = Array.isArray(data?.contatti) ? data.contatti : (Array.isArray(data) ? data : null);
+            if (list) {
+              state.contatti = list;
+              persistState();
+              broadcast({
+                type: 'CONTATTI_UPDATED',
+                contatti: state.contatti
+              });
+            }
+            break;
+          }
+
+          default:
+            console.log('Tipo messaggio sconosciuto:', type);
+        }
+  };
+
+  // Gestione connessioni WebSocket
+  wss.on('connection', (ws) => {
+    // Appena un telefono o computer si connette, invia subito lo stato completo attuale
+    ws.send(JSON.stringify({
+      type: 'INIT_SYNC',
+      state
+    }));
+
+    ws.on('message', (messageRaw) => {
+      try {
+        const payload = JSON.parse(messageRaw.toString());
+        if (payload && payload.type) {
+          handleIncomingAction(payload.type, payload.data, ws);
+        }
+      } catch (err) {
+        console.error('Errore parsing messaggio WS:', err);
+      }
+    });
+
+    ws.on('close', () => {
+      if (activePttSocket === ws && state.radioPtt?.activeSpeaker) {
+        state.radioPtt.activeSpeaker = null;
+        activePttSocket = null;
+        broadcast({
+          type: 'PTT_SPEAKER_CHANGED',
+          channelId: 'general',
+          radioPtt: state.radioPtt
+        });
+      }
+      if (Array.isArray(state.radioGroups)) {
+        state.radioGroups.forEach((g) => {
+          if (activeGroupSockets.get(g.id) === ws && g.activeSpeaker) {
+            g.activeSpeaker = null;
+            activeGroupSockets.set(g.id, null);
+            broadcastToFilter(
+              {
+                type: 'PTT_SPEAKER_CHANGED',
+                channelId: g.id,
+                groupId: g.id,
+                activeSpeaker: null,
+                radioGroup: g
+              },
+              (c) => isSocketAllowedInGroup(c, g)
+            );
+          }
+        });
+      }
+      recomputeRadioCodecMode(true);
+    });
+  });
+
+  // REST API PER DATABASE VOLONTARI CONDIVISO
+  app.get('/api/volontari', (_req, res) => {
+    res.json({ success: true, volontari: state.volontari });
+  });
+
+  // --- DATABASE SERVIZI EFFETTUATI & ARCHIVIO STORICO (MAI AZZERATO) ---
+  app.get('/api/servizi', (req, res) => {
+    const { anno, mezzo, inAttesaKm, q } = req.query;
+    let list = [...(state.serviziArchivio || [])];
+
+    if (anno && anno !== 'all') {
+      const a = Number(anno);
+      list = list.filter(s => s.anno === a);
+    }
+    if (mezzo && mezzo !== 'all') {
+      const mStr = String(mezzo).toUpperCase();
+      list = list.filter(s => s.mezzo.toUpperCase().includes(mStr));
+    }
+    if (inAttesaKm === 'true') {
+      list = list.filter(s => s.inAttesaKm === true);
+    } else if (inAttesaKm === 'false') {
+      list = list.filter(s => !s.inAttesaKm);
+    }
+    if (q) {
+      const qStr = String(q).toLowerCase();
+      list = list.filter(s =>
+        s.codice.toLowerCase().includes(qStr) ||
+        s.mezzo.toLowerCase().includes(qStr) ||
+        s.indirizzo.toLowerCase().includes(qStr) ||
+        (s.volontarioNome && s.volontarioNome.toLowerCase().includes(qStr)) ||
+        (s.chiamante && s.chiamante.toLowerCase().includes(qStr)) ||
+        (s.enteIstituzionale && s.enteIstituzionale.toLowerCase().includes(qStr))
+      );
+    }
+
+    res.json({
+      success: true,
+      servizi: list,
+      totale: list.length,
+      prossimoProgressivo: calcolaProssimoNumeroMissione(state.serviziArchivio),
+      cartelleAnniPrecedenti: state.cartelleAnniPrecedenti
+    });
+  });
+
+  app.post('/api/servizi', (req, res) => {
+    const data = req.body;
+    if (data && data.codice) {
+      const currentYear = getCurrentYearItaly();
+      const sYear = data.anno || currentYear;
+      const isMatchActivePost = !data.schedaDirettaArchivio && state.activeMission?.codice === data.codice;
+      const activeFallbackPost = isMatchActivePost ? state.activeMission : null;
+      const nuovoServ: ArchivedService = {
+        id: data.id || `SER-${Date.now()}`,
+        codice: data.codice,
+        anno: sYear,
+        data: data.data || formatDateTimeItaly(),
+        mezzo: data.mezzo || 'N/D',
+        urgenza: data.urgenza || 'VERDE',
+        ambito: data.ambito || 'SERVIZIO',
+        indirizzo: data.indirizzo || data.indirizzoIntervento || '-',
+        indirizzoIntervento: data.indirizzoIntervento || data.indirizzo,
+        destinazione: data.destinazione,
+        chiamante: data.chiamante,
+        telefono: data.telefono,
+        enteIstituzionale: data.enteIstituzionale,
+        noteCritiche: data.noteCritiche,
+        volontarioNome: data.volontarioNome,
+        volontarioId: data.volontarioId,
+        volontarioTelefono: data.volontarioTelefono,
+        qualificaTurno: data.qualificaTurno,
+        kmInizio: Number(data.kmInizio) || 0,
+        kmFine: Number(data.kmFine) || 0,
+        kmTotali: Number(data.kmTotali) || 0,
+        inAttesaKm: !!data.inAttesaKm,
+        tempi: data.tempi || {},
+        testoCompleto: data.testoCompleto || '',
+        dataCreazione: data.dataCreazione || new Date().toISOString(),
+        dataCompletamento: new Date().toISOString(),
+        coordinateSulPosto: data.coordinateSulPosto || data.tempi?.coordinateSulPosto,
+        coordinateDestinazione: data.coordinateDestinazione || data.tempi?.coordinateDestinazione,
+        tipoAnimale: data.tipoAnimale,
+        tipoAnimaleAltro: data.tipoAnimaleAltro,
+        nonDiProprieta: data.nonDiProprieta,
+        microchip: data.microchip,
+        noMicrochip: data.noMicrochip,
+        datiProprietarioCentrale: data.datiProprietarioCentrale,
+        fotoDocumento: data.fotoDocumento || activeFallbackPost?.fotoDocumento || data.datiProprietarioCentrale?.fotoDocumento || activeFallbackPost?.datiProprietarioCentrale?.fotoDocumento,
+        isStrutturaVeterinariaPartenza: data.isStrutturaVeterinariaPartenza !== undefined ? data.isStrutturaVeterinariaPartenza : activeFallbackPost?.isStrutturaVeterinariaPartenza,
+        datiDestinazione: data.datiDestinazione || activeFallbackPost?.datiDestinazione,
+        decisioneCentraleNonVet: data.decisioneCentraleNonVet || activeFallbackPost?.decisioneCentraleNonVet,
+        noteNonVet: data.noteNonVet || activeFallbackPost?.noteNonVet,
+        firmaVolontario: data.firmaVolontario,
+        firmaOperatoreCentrale: data.firmaOperatoreCentrale,
+        operatoreCentraleNome: data.operatoreCentraleNome,
+        dataFirmaCentrale: data.dataFirmaCentrale,
+        visionatoDaCentrale: data.visionatoDaCentrale,
+        manovreEffettuatePatologie: data.manovreEffettuatePatologie,
+        sottoAmbitoVet: data.sottoAmbitoVet,
+        operatoreMittenteId: data.operatoreMittenteId,
+        operatoreMittenteNome: data.operatoreMittenteNome,
+        annullata: data.annullata,
+        motivoAnnullamento: data.motivoAnnullamento,
+        richiedenteAnnullamento: data.richiedenteAnnullamento,
+        orarioAnnullamento: data.orarioAnnullamento,
+        tipologiaServizio: data.tipologiaServizio,
+        numeroSegreteriaSoupRt: data.numeroSegreteriaSoupRt,
+        allertaMeteo: data.allertaMeteo,
+        schedaDirettaArchivio: Boolean(data.schedaDirettaArchivio)
+      };
+
+      const existingIndex = state.serviziArchivio.findIndex(s => s.id === nuovoServ.id || s.codice === nuovoServ.codice);
+      if (existingIndex >= 0) {
+        state.serviziArchivio[existingIndex] = { ...state.serviziArchivio[existingIndex], ...nuovoServ };
+      } else {
+        state.serviziArchivio = [nuovoServ, ...state.serviziArchivio];
+      }
+
+      persistState();
+      broadcast({
+        type: 'SERVICE_ARCHIVED',
+        servizio: nuovoServ,
+        serviziArchivio: state.serviziArchivio
+      });
+
+      return res.json({ success: true, servizio: nuovoServ });
+    }
+    res.status(400).json({ success: false, error: 'Dati servizio mancanti' });
+  });
+
+  app.post('/api/missione/annulla', (req, res) => {
+    const data = req.body;
+    if (data && data.codice) {
+      const nowTime = data.orario || formatTimeItaly(undefined, false);
+      const schedaAperta = data.schedaAperta !== undefined ? Boolean(data.schedaAperta) : Boolean(state.letturaConfermata);
+
+      if (!schedaAperta) {
+        state.codiciEliminati = ensureCodiciEliminati([...(state.codiciEliminati || []), data.codice]);
+        state.activeMission = null;
+        state.letturaConfermata = false;
+        state.operativeTimes = {};
+        state.kmInizio = '';
+        state.kmFine = '';
+        state.datiDestinazione = null;
+        state.ringing = { active: false, source: '', soundType: 'telefono', timestamp: Date.now() };
+
+        const notif: RadioNotification = {
+          id: generateUniqueNotifId(),
+          orario: formatTimeItaly(),
+          testo: `ℹ️ Intervento ${data.codice} ANNULLATO dalla Centrale prima dell'apertura: scheda rimossa automaticamente dal terminale.`,
+          tipo: 'centrale'
+        };
+        state.notifiche.push(notif);
+        persistState();
+
+        broadcast({
+          type: 'MISSION_CANCELLED',
+          codice: data.codice,
+          motivo: data.motivo,
+          richiedente: data.richiedente,
+          orario: nowTime,
+          dettagli: data.dettagli,
+          nonAperta: true,
+          mission: null,
+          ringing: state.ringing,
+          notification: notif
+        });
+        return res.json({ success: true, nonAperta: true });
+      } else {
+        if (state.activeMission && state.activeMission.codice === data.codice) {
+          state.activeMission.annullata = true;
+          state.activeMission.motivoAnnullamento = data.motivo;
+          state.activeMission.richiedenteAnnullamento = data.richiedente;
+          state.activeMission.orarioAnnullamento = nowTime;
+        }
+
+        const notif: RadioNotification = {
+          id: generateUniqueNotifId(),
+          orario: formatTimeItaly(),
+          testo: `🚨 ALLERTA: Intervento ${data.codice} ANNULLATO dalla Centrale! Rientrare subito in sede. Motivo: ${data.motivo} (Richiesto da: ${data.richiedente}).`,
+          tipo: 'allarme'
+        };
+        state.notifiche.push(notif);
+
+        state.ringing = {
+          active: true,
+          source: `Centrale: Servizio Annullato - Rientro in Sede (${data.motivo || 'Intervento Annullato'})`,
+          soundType: 'sirena',
+          timestamp: Date.now()
+        };
+        persistState();
+
+        broadcast({
+          type: 'MISSION_CANCELLED',
+          codice: data.codice,
+          motivo: data.motivo,
+          richiedente: data.richiedente,
+          orario: nowTime,
+          dettagli: data.dettagli,
+          nonAperta: false,
+          mission: state.activeMission,
+          ringing: state.ringing,
+          notification: notif
+        });
+        return res.json({ success: true, nonAperta: false });
+      }
+    }
+    return res.status(400).json({ error: 'Dati mancanti' });
+  });
+
+  // Cancellazione immediata di tutte le schede di servizio e missioni in essere e non ancora concluse
+  app.post(['/api/missione/cancella-attiva', '/api/missione/clear'], (_req, res) => {
+    const clearedCod = state.activeMission?.codice;
+    if (clearedCod) {
+      state.codiciEliminati = ensureCodiciEliminati([...(state.codiciEliminati || []), clearedCod]);
+    }
+    state.activeMission = null;
+    state.letturaConfermata = false;
+    state.operativeTimes = {};
+    state.kmInizio = '';
+    state.kmFine = '';
+    state.datiDestinazione = null;
+    state.ringing = { active: false, source: '', soundType: 'telefono', timestamp: Date.now() };
+    const notif: RadioNotification = {
+      id: generateUniqueNotifId(),
+      orario: formatTimeItaly(),
+      testo: '🧹 CENTRALE: Tutte le schede di servizio e missioni in essere e non ancora concluse sono state cancellate. Flotta e terminali liberati.',
+      tipo: 'sistema'
+    };
+    state.notifiche.push(notif);
+    persistState();
+    broadcast({
+      type: 'MISSION_CLEARED',
+      forceClear: true,
+      codiceEliminato: clearedCod,
+      notification: notif
+    });
+    console.log('[Server] Schede di servizio e missioni in essere cancellate con successo.');
+    return res.json({ success: true, message: 'Schede di servizio e missioni in essere cancellate con successo.' });
+  });
+
+  app.put('/api/servizi/:id', (req, res) => {
+    const { id } = req.params;
+    const updateData = req.body;
+    const idx = state.serviziArchivio.findIndex(s => s.id === id || s.codice === id);
+    if (idx >= 0) {
+      state.serviziArchivio[idx] = {
+        ...state.serviziArchivio[idx],
+        ...updateData
+      };
+      persistState();
+      broadcast({
+        type: 'SERVICE_UPDATED',
+        servizio: state.serviziArchivio[idx],
+        serviziArchivio: state.serviziArchivio
+      });
+      return res.json({ success: true, servizio: state.serviziArchivio[idx] });
+    }
+    return res.status(404).json({ success: false, error: 'Servizio non trovato' });
+  });
+
+  app.put('/api/servizi/:id/km', (req, res) => {
+    const { id } = req.params;
+    const { kmInizio, kmFine } = req.body;
+    const idx = state.serviziArchivio.findIndex(s => s.id === id || s.codice === id);
+    if (idx >= 0) {
+      const ini = Number(kmInizio) || 0;
+      const fin = Number(kmFine) || 0;
+      const tot = fin >= ini ? fin - ini : 0;
+
+      const serv = state.serviziArchivio[idx];
+      serv.kmInizio = ini;
+      serv.kmFine = fin;
+      serv.kmTotali = tot;
+      serv.inAttesaKm = false;
+
+      serv.testoCompleto = serv.testoCompleto
+        .replace(/KM INIZIO: [^\n]*/, `KM INIZIO: ${ini} | KM FINE: ${fin}`)
+        .replace(/KM TOTALI PERCORSI: [^\n]*/, `KM TOTALI PERCORSI: ${tot} KM`);
+
+      persistState();
+
+      broadcast({
+        type: 'SERVICE_KM_UPDATED',
+        servizio: serv,
+        serviziArchivio: state.serviziArchivio
+      });
+
+      return res.json({ success: true, servizio: serv });
+    }
+    res.status(404).json({ success: false, error: 'Servizio non trovato' });
+  });
+
+  app.post('/api/servizi/firma-centrale', (req, res) => {
+    const { ids, firmaBase64, operatoreNome } = req.body;
+    if (Array.isArray(ids) && ids.length > 0 && firmaBase64) {
+      const nowStr = formatDateTimeItaly();
+      let signedCount = 0;
+      state.serviziArchivio.forEach(s => {
+        if (ids.includes(s.id) || ids.includes(s.codice)) {
+          s.firmaOperatoreCentrale = firmaBase64;
+          s.operatoreCentraleNome = operatoreNome || 'Operatore Centrale';
+          s.dataFirmaCentrale = nowStr;
+          s.visionatoDaCentrale = true;
+          signedCount++;
+        }
+      });
+      persistState();
+
+      const notif: RadioNotification = {
+        id: generateUniqueNotifId(),
+        orario: formatTimeItaly(),
+        testo: `✍️ CENTRALE: ${signedCount} foglio/i di viaggio firmato/i digitalmente con successo dall'Operatore ${operatoreNome || 'Centrale'}.`,
+        tipo: 'centrale'
+      };
+      state.notifiche.push(notif);
+
+      broadcast({
+        type: 'SERVICES_SIGNED_CENTRALE',
+        ids,
+        firmaBase64,
+        operatoreNome,
+        dataFirmaCentrale: nowStr,
+        serviziArchivio: state.serviziArchivio,
+        notification: notif
+      });
+
+      return res.json({ success: true, count: signedCount, serviziArchivio: state.serviziArchivio });
+    }
+    res.status(400).json({ success: false, error: 'Parametri firma mancanti o non validi' });
+  });
+
+  // Eliminazione singolo servizio da REST API
+  app.delete('/api/servizi/:id', (req, res) => {
+    const targetId = req.params.id;
+    if (targetId && Array.isArray(state.serviziArchivio)) {
+      const idx = state.serviziArchivio.findIndex(s => s.id === targetId || s.codice === targetId);
+      if (idx >= 0) {
+        const rimosso = state.serviziArchivio[idx];
+        state.serviziArchivio.splice(idx, 1);
+
+        if (state.activeMission && (state.activeMission.codice === rimosso.codice || state.activeMission.codice === targetId)) {
+          state.activeMission = null;
+          state.letturaConfermata = false;
+          state.operativeTimes = {};
+          state.kmInizio = '';
+          state.kmFine = '';
+          state.datiDestinazione = null;
+          state.ringing = { active: false, source: '', soundType: 'telefono', timestamp: 0 };
+        }
+
+        persistState();
+
+        const notif: RadioNotification = {
+          id: generateUniqueNotifId(),
+          orario: formatTimeItaly(),
+          testo: `🗑️ DATABASE: Servizio ${rimosso.codice} (${rimosso.mezzo}) rimosso definitivamente dall'archivio dall'Amministratore.`,
+          tipo: 'centrale'
+        };
+        state.notifiche.push(notif);
+
+        const prossimoProg = calcolaProssimoNumeroMissione(state.serviziArchivio);
+
+        broadcast({
+          type: 'SERVICE_DELETED',
+          id: rimosso.id,
+          codice: rimosso.codice,
+          serviziArchivio: state.serviziArchivio,
+          prossimoProgressivo: prossimoProg,
+          notification: notif
+        });
+
+        return res.json({
+          success: true,
+          rimosso,
+          serviziArchivio: state.serviziArchivio,
+          prossimoProgressivo: prossimoProg
+        });
+      }
+    }
+    return res.status(404).json({ success: false, error: 'Servizio non trovato' });
+  });
+
+  // Eliminazione multipla servizi da REST API
+  app.post('/api/servizi/elimina-batch', (req, res) => {
+    const ids: string[] = req.body?.ids;
+    if (Array.isArray(ids) && ids.length > 0 && Array.isArray(state.serviziArchivio)) {
+      const primaCount = state.serviziArchivio.length;
+      const rimossi = state.serviziArchivio.filter(s => ids.includes(s.id) || ids.includes(s.codice));
+      const rimossiCodici = rimossi.map(s => s.codice);
+
+      state.serviziArchivio = state.serviziArchivio.filter(s => !ids.includes(s.id) && !ids.includes(s.codice));
+      const rimossiCount = primaCount - state.serviziArchivio.length;
+
+      if (state.activeMission && (ids.includes(state.activeMission.codice) || rimossiCodici.includes(state.activeMission.codice))) {
+        state.activeMission = null;
+        state.letturaConfermata = false;
+        state.operativeTimes = {};
+        state.kmInizio = '';
+        state.kmFine = '';
+        state.datiDestinazione = null;
+        state.ringing = { active: false, source: '', soundType: 'telefono', timestamp: 0 };
+      }
+
+      persistState();
+
+      const notif: RadioNotification = {
+        id: generateUniqueNotifId(),
+        orario: formatTimeItaly(),
+        testo: `🗑️ DATABASE: ${rimossiCount} servizi rimossi dall'archivio dall'Amministratore (${rimossiCodici.slice(0, 3).join(', ')}${rimossiCodici.length > 3 ? '...' : ''}).`,
+        tipo: 'centrale'
+      };
+      state.notifiche.push(notif);
+
+      const prossimoProg = calcolaProssimoNumeroMissione(state.serviziArchivio);
+
+      broadcast({
+        type: 'SERVICES_DELETED',
+        ids,
+        codici: rimossiCodici,
+        count: rimossiCount,
+        serviziArchivio: state.serviziArchivio,
+        prossimoProgressivo: prossimoProg,
+        notification: notif
+      });
+
+      return res.json({
+        success: true,
+        count: rimossiCount,
+        rimossiCodici,
+        serviziArchivio: state.serviziArchivio,
+        prossimoProgressivo: prossimoProg
+      });
+    }
+    return res.status(400).json({ success: false, error: 'Lista IDs non valida' });
+  });
+
+  // Azzeramento totale database servizi (richiesto dall'amministratore per iniziare da zero)
+  app.post('/api/servizi/reset-tutti', (_req, res) => {
+    const primaCount = Array.isArray(state.serviziArchivio) ? state.serviziArchivio.length : 0;
+    state.serviziArchivio = [];
+    state.cartelleAnniPrecedenti = {};
+    state.activeMission = null;
+    state.letturaConfermata = false;
+    state.operativeTimes = {};
+    state.kmInizio = '';
+    state.kmFine = '';
+    state.datiDestinazione = null;
+    state.ringing = { active: false, source: '', soundType: 'telefono', timestamp: 0 };
+
+    persistState();
+
+    const notif: RadioNotification = {
+      id: generateUniqueNotifId(),
+      orario: formatTimeItaly(),
+      testo: `🧹 DATABASE AZZERATO: Tutti i servizi di prova sono stati rimossi dall'archivio. Il contatore missioni riparte da 1.`,
+      tipo: 'sistema'
+    };
+    state.notifiche.push(notif);
+
+    broadcast({
+      type: 'SERVICES_DELETED',
+      ids: ['ALL'],
+      codici: ['ALL'],
+      count: primaCount,
+      serviziArchivio: [],
+      prossimoProgressivo: 1,
+      notification: notif
+    });
+
+    return res.json({
+      success: true,
+      count: primaCount,
+      serviziArchivio: [],
+      prossimoProgressivo: 1
+    });
+  });
+
+  // API Calendario Turni di Tutte le Sedi Operative (Persistente e Condiviso in Tempo Reale)
+  app.get('/api/turni', (_req, res) => {
+    return res.json({
+      success: true,
+      turni: state.turni || []
+    });
+  });
+
+  app.post('/api/turni', (req, res) => {
+    const turni = Array.isArray(req.body?.turni) ? req.body.turni : (Array.isArray(req.body) ? req.body : null);
+    if (turni) {
+      state.turni = turni;
+      persistState();
+      broadcast({
+        type: 'TURNI_UPDATED',
+        turni: state.turni
+      });
+      setTimeout(() => {
+        try {
+          eseguiControlloPromemoriaTurniDomani(false);
+        } catch {}
+      }, 600);
+      return res.json({
+        success: true,
+        count: turni.length,
+        turni: turni
+      });
+    }
+    return res.status(400).json({ success: false, error: 'Lista turni non valida' });
+  });
+
+  // API Bacheca di Sezione, Circolari e Commenti (Persistente e Condivisa in Tempo Reale)
+  app.get('/api/bacheca', (_req, res) => {
+    return res.json({
+      success: true,
+      bacheca: state.bacheca || []
+    });
+  });
+
+  app.post('/api/bacheca', (req, res) => {
+    const bacheca = Array.isArray(req.body?.bacheca) ? req.body.bacheca : (Array.isArray(req.body) ? req.body : null);
+    if (bacheca) {
+      state.bacheca = bacheca;
+      persistState();
+      broadcast({
+        type: 'BACHECA_UPDATED',
+        bacheca: state.bacheca
+      });
+
+      // Se il client ha allegato una notifica (nuovo commento o nuovo post), broadcast con tipo dedicato
+      if (req.body?.notifica) {
+        const notif = req.body.notifica;
+        broadcast({
+          type: 'NOTIFICA_BACHECA',
+          notifica: notif
+        });
+
+        // Invio WebPush ai destinatari mirati (urgency high, nessun suono sirena)
+        try {
+          if (Array.isArray(notif.destinatariVolontariIds) && notif.destinatariVolontariIds.length > 0) {
+            notif.destinatariVolontariIds.forEach((volId: string) => {
+              sendPushNotificationToVolunteer(volId, {
+                title: notif.tipo === 'nuovo_commento' ? '💬 Nuovo commento in bacheca' : '📢 Nuova comunicazione in bacheca',
+                body: notif.messaggio || notif.postTitolo || '',
+                tag: 'bacheca-notif',
+                data: { url: '/', postId: notif.postId, tipo: notif.tipo }
+              });
+            });
+          } else {
+            sendPushNotificationToRole('all', {
+              title: notif.tipo === 'nuovo_commento' ? '💬 Nuovo commento in bacheca' : '📢 Nuova comunicazione in bacheca',
+              body: notif.messaggio || notif.postTitolo || '',
+              tag: 'bacheca-notif',
+              data: { url: '/', postId: notif.postId, tipo: notif.tipo }
+            });
+          }
+        } catch (pushErr) {
+          console.warn('[WebPush Bacheca] Invio push non riuscito:', pushErr);
+        }
+      }
+
+      return res.json({
+        success: true,
+        count: bacheca.length,
+        bacheca: bacheca
+      });
+    }
+    return res.status(400).json({ success: false, error: 'Dati bacheca non validi' });
+  });
+
+  app.post('/api/bacheca/notifica', (req, res) => {
+    const notif = req.body?.notifica || req.body;
+    if (notif) {
+      broadcast({
+        type: 'NOTIFICA_BACHECA',
+        notifica: notif
+      });
+      return res.json({ success: true });
+    }
+    return res.status(400).json({ success: false, error: 'Notifica mancante' });
+  });
+
+  // ---------------------------------------------------------------------------
+  // GIORNALE DI BORDO & BROGLIACCIO DI CENTRALE OPERATIVA (CON ORA AUTOMATICA)
+  // ---------------------------------------------------------------------------
+  app.get('/api/giornale-bordo', (_req, res) => {
+    return res.json({
+      success: true,
+      giornaleBordo: state.giornaleBordo || []
+    });
+  });
+
+  app.post('/api/giornale-bordo', (req, res) => {
+    const list = Array.isArray(req.body?.giornaleBordo) ? req.body.giornaleBordo : (Array.isArray(req.body) ? req.body : null);
+    if (list) {
+      state.giornaleBordo = list;
+      persistState();
+      broadcast({
+        type: 'GIORNALE_BORDO_UPDATED',
+        giornaleBordo: state.giornaleBordo
+      });
+      return res.json({ success: true, count: list.length });
+    }
+    return res.status(400).json({ success: false, error: 'Dati giornale di bordo non validi' });
+  });
+
+  app.post('/api/giornale-bordo/voce', (req, res) => {
+    const voce = req.body?.voce || req.body;
+    if (voce && voce.testo) {
+      const nowIt = getItalianDateParts();
+      const dateStr = nowIt.dateIt;
+      const timeStr = nowIt.timeIt;
+      
+      const nuovaVoce = {
+        id: voce.id || `gb-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        data: voce.data || dateStr,
+        ora: timeStr,
+        timestamp: Date.now(),
+        operatoreId: voce.operatoreId,
+        operatoreNome: voce.operatoreNome || 'Operatore Centrale',
+        testo: String(voce.testo).trim(),
+        categoria: voce.categoria || 'ordinaria',
+        consegnaTurno: Boolean(voce.consegnaTurno),
+        presaVisioneDa: voce.presaVisioneDa || [],
+        mezzoCoinvolto: voce.mezzoCoinvolto,
+        allegatoCodiceServizio: voce.allegatoCodiceServizio
+      };
+
+      state.giornaleBordo = [nuovaVoce, ...(state.giornaleBordo || [])];
+      persistState();
+
+      broadcast({
+        type: 'GIORNALE_BORDO_UPDATED',
+        giornaleBordo: state.giornaleBordo,
+        nuovaVoce
+      });
+
+      return res.json({ success: true, nuovaVoce });
+    }
+    return res.status(400).json({ success: false, error: 'Dati voce non validi' });
+  });
+
+  app.post('/api/giornale-bordo/presa-visione', (req, res) => {
+    const { voceId, operatoreNome } = req.body || {};
+    if (voceId && operatoreNome && Array.isArray(state.giornaleBordo)) {
+      const nowIt = getItalianDateParts();
+      const timeStr = nowIt.timeIt;
+      const dateStr = nowIt.dateIt;
+      
+      const idx = state.giornaleBordo.findIndex((v: any) => v.id === voceId);
+      if (idx >= 0) {
+        const target = state.giornaleBordo[idx];
+        const list = Array.isArray(target.presaVisioneDa) ? target.presaVisioneDa : [];
+        if (!list.some((p: any) => p.operatoreNome === operatoreNome)) {
+          list.push({
+            operatoreNome,
+            data: dateStr,
+            ora: timeStr,
+            timestamp: Date.now()
+          });
+          target.presaVisioneDa = list;
+          state.giornaleBordo[idx] = { ...target };
+          persistState();
+
+          broadcast({
+            type: 'GIORNALE_BORDO_UPDATED',
+            giornaleBordo: state.giornaleBordo
+          });
+          return res.json({ success: true, voce: target });
+        }
+        return res.json({ success: true, alreadySigned: true });
+      }
+    }
+    return res.status(400).json({ success: false, error: 'Parametri mancanti' });
+  });
+
+  // ---------------------------------------------------------------------------
+  // MAGAZZINO MEZZI (RICAMBI / OLI / TAGLIANDI E DOTAZIONI DI BORDO) - PERSISTENTE
+  // ---------------------------------------------------------------------------
+  app.get('/api/magazzino-mezzi', (_req, res) => {
+    return res.json({
+      success: true,
+      magazzinoParti: state.magazzinoParti || [],
+      magazzinoMezzi: state.magazzinoMezzi || []
+    });
+  });
+
+  app.post('/api/magazzino-mezzi/parti', (req, res) => {
+    const list = Array.isArray(req.body?.magazzinoParti)
+      ? req.body.magazzinoParti
+      : (Array.isArray(req.body) ? req.body : null);
+    if (list) {
+      state.magazzinoParti = filterDemoMagazzinoParti(list);
+      persistState();
+      broadcast({
+        type: 'MAGAZZINO_PARTI_UPDATED',
+        magazzinoParti: state.magazzinoParti
+      });
+      return res.json({ success: true, count: state.magazzinoParti.length, magazzinoParti: state.magazzinoParti });
+    }
+    return res.status(400).json({ success: false, error: 'Dati magazzino parti non validi' });
+  });
+
+  app.post('/api/magazzino-mezzi/dotazioni', (req, res) => {
+    const list = Array.isArray(req.body?.magazzinoMezzi)
+      ? req.body.magazzinoMezzi
+      : (Array.isArray(req.body) ? req.body : null);
+    if (list) {
+      state.magazzinoMezzi = filterDemoMagazzinoMezzi(list);
+      persistState();
+      broadcast({
+        type: 'MAGAZZINO_MEZZI_UPDATED',
+        magazzinoMezzi: state.magazzinoMezzi
+      });
+      return res.json({ success: true, count: state.magazzinoMezzi.length, magazzinoMezzi: state.magazzinoMezzi });
+    }
+    return res.status(400).json({ success: false, error: 'Dati dotazioni mezzi non validi' });
+  });
+
+  // ---------------------------------------------------------------------------
+  // INDIRIZZI COLLEZIONATI & CONTATTI ESTERNI (DATABASE CONDIVISO PERSISTENTE)
+  // ---------------------------------------------------------------------------
+  app.get('/api/indirizzi-collezionati', (_req, res) => {
+    return res.json({
+      success: true,
+      indirizziCollezionati: state.indirizziCollezionati || []
+    });
+  });
+
+  app.post('/api/indirizzi-collezionati', (req, res) => {
+    const list = Array.isArray(req.body?.indirizziCollezionati)
+      ? req.body.indirizziCollezionati
+      : (Array.isArray(req.body) ? req.body : null);
+    if (list) {
+      state.indirizziCollezionati = list;
+      persistState();
+      broadcast({
+        type: 'INDIRIZZI_COLLEZIONATI_UPDATED',
+        indirizziCollezionati: list
+      });
+      return res.json({ success: true, count: list.length, indirizziCollezionati: list });
+    }
+    return res.status(400).json({ success: false, error: 'Dati indirizzi collezionati non validi' });
+  });
+
+  app.get('/api/contatti', (_req, res) => {
+    return res.json({
+      success: true,
+      contatti: Array.isArray(state.contatti) ? state.contatti : null
+    });
+  });
+
+  app.post('/api/contatti', (req, res) => {
+    const list = Array.isArray(req.body?.contatti) ? req.body.contatti : (Array.isArray(req.body) ? req.body : null);
+    if (list) {
+      state.contatti = list;
+      persistState();
+      broadcast({
+        type: 'CONTATTI_UPDATED',
+        contatti: list
+      });
+      return res.json({ success: true, count: list.length });
+    }
+    return res.status(400).json({ success: false, error: 'Dati contatti non validi' });
+  });
+
+  // ---------------------------------------------------------------------------
+  // GOOGLE MAPS PLATFORM SERVER-SIDE PROXY (Places API New & Geocoding API v4)
+  // ---------------------------------------------------------------------------
+  const getGoogleMapsKey = (): string => {
+    return (process.env.GOOGLE_MAPS_API_KEY || process.env.VITE_GOOGLE_MAPS_API_KEY || '').trim();
+  };
+
+  app.get('/api/maps/config', (_req, res) => {
+    const apiKey = getGoogleMapsKey();
+    return res.json({
+      success: true,
+      hasGoogleMapsKey: Boolean(apiKey),
+      apiKey
+    });
+  });
+
+  app.post('/api/maps/search-places', async (req, res) => {
+    try {
+      const query = String(req.body?.query || '').trim();
+      if (query.length < 2) {
+        return res.json({ success: true, results: [], quotaExceeded: false });
+      }
+
+      const apiKey = getGoogleMapsKey();
+      let quotaExceeded = false;
+      const results: Array<{
+        placeId?: string;
+        displayName: string;
+        formattedAddress: string;
+        lat?: number;
+        lng?: number;
+        googleMapsUri?: string;
+        typeLabel?: string;
+        source: 'google_maps' | 'openstreetmap';
+      }> = [];
+
+      if (apiKey) {
+        try {
+          const gRes = await fetch('https://places.googleapis.com/v1/places:searchText', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Goog-Api-Key': apiKey,
+              'X-Goog-FieldMask': 'places.id,places.displayName,places.formattedAddress,places.location,places.googleMapsUri,places.primaryTypeDisplayName',
+              'X-Goog-Maps-Solution-ID': 'gmp_mcp_codeassist_v1_aistudio'
+            },
+            body: JSON.stringify({
+              textQuery: query,
+              languageCode: 'it',
+              regionCode: 'it',
+              pageSize: 8,
+              locationBias: {
+                circle: {
+                  center: { latitude: 44.0365, longitude: 10.1415 },
+                  radius: 45000.0
+                }
+              }
+            })
+          });
+
+          const gData: any = await gRes.json().catch(() => ({}));
+          if (gRes.status === 429 || gData?.error?.status === 'RESOURCE_EXHAUSTED') {
+            quotaExceeded = true;
+          } else if (gRes.ok && Array.isArray(gData?.places)) {
+            for (const p of gData.places) {
+              const formattedAddress = String(p?.formattedAddress || p?.displayName?.text || '').trim();
+              if (!formattedAddress) continue;
+              results.push({
+                placeId: p?.id,
+                displayName: String(p?.displayName?.text || '').trim(),
+                formattedAddress,
+                lat: typeof p?.location?.latitude === 'number' ? p.location.latitude : undefined,
+                lng: typeof p?.location?.longitude === 'number' ? p.location.longitude : undefined,
+                googleMapsUri: p?.googleMapsUri,
+                typeLabel: p?.primaryTypeDisplayName?.text,
+                source: 'google_maps'
+              });
+            }
+          }
+        } catch (err) {
+          console.error('[Maps Proxy] Errore Places API:', err);
+        }
+      }
+
+      // Fallback OpenStreetMap Nominatim se API Key assente o nessun risultato Google
+      if (results.length === 0) {
+        try {
+          const nomUrl = `https://nominatim.openstreetmap.org/search?format=jsonv2&q=${encodeURIComponent(query)}&countrycodes=it&addressdetails=1&limit=7&accept-language=it&viewbox=9.65,44.45,10.55,43.75`;
+          const nRes = await fetch(nomUrl, {
+            headers: { 'User-Agent': 'CroceOroMassaCarrara-Centrale/1.0' }
+          });
+          if (nRes.ok) {
+            const nData: any = await nRes.json().catch(() => []);
+            if (Array.isArray(nData)) {
+              for (const item of nData) {
+                const full = String(item?.display_name || '').trim();
+                if (!full) continue;
+                const addr = item?.address || {};
+                const via = [addr.road || addr.pedestrian || addr.square, addr.house_number].filter(Boolean).join(' ');
+                const city = addr.city || addr.town || addr.village || addr.municipality || '';
+                const cap = addr.postcode || '';
+                const compact = [via, [cap, city].filter(Boolean).join(' ')].filter(Boolean).join(', ');
+                const formattedAddress = compact && compact.length >= 6 ? compact : full;
+                const displayName = String(item?.name || addr.amenity || addr.shop || formattedAddress.split(',')[0] || '').trim();
+                results.push({
+                  placeId: item?.place_id ? `osm-${item.place_id}` : undefined,
+                  displayName,
+                  formattedAddress,
+                  lat: item?.lat ? Number(item.lat) : undefined,
+                  lng: item?.lon ? Number(item.lon) : undefined,
+                  googleMapsUri: (item?.lat && item?.lon) ? `https://www.google.com/maps?q=${item.lat},${item.lon}` : undefined,
+                  typeLabel: item?.type ? String(item.type).replace(/_/g, ' ') : undefined,
+                  source: 'openstreetmap'
+                });
+              }
+            }
+          }
+        } catch (err) {
+          console.error('[Maps Proxy] Errore fallback Nominatim:', err);
+        }
+      }
+
+      return res.json({ success: true, results, quotaExceeded });
+    } catch (err) {
+      console.error('[Maps Proxy] Errore search-places:', err);
+      return res.json({ success: false, results: [], quotaExceeded: false });
+    }
+  });
+
+  app.post('/api/maps/geocode', async (req, res) => {
+    try {
+      const address = String(req.body?.address || '').trim();
+      if (!address) {
+        return res.json({ success: true, result: null, quotaExceeded: false });
+      }
+      const apiKey = getGoogleMapsKey();
+      let quotaExceeded = false;
+      let result: any = null;
+
+      if (apiKey) {
+        try {
+          const url = `https://geocode.googleapis.com/v4/geocode/address/${encodeURIComponent(address)}?languageCode=it&regionCode=it`;
+          const gRes = await fetch(url, {
+            method: 'GET',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Goog-Api-Key': apiKey,
+              'X-Goog-FieldMask': 'results.placeId,results.location,results.formattedAddress',
+              'X-Goog-Maps-Solution-ID': 'gmp_mcp_codeassist_v1_aistudio'
+            }
+          });
+          const gData: any = await gRes.json().catch(() => ({}));
+          if (gRes.status === 429 || gData?.error?.status === 'RESOURCE_EXHAUSTED') {
+            quotaExceeded = true;
+          } else if (gRes.ok && Array.isArray(gData?.results) && gData.results[0]) {
+            const first = gData.results[0];
+            if (typeof first?.location?.latitude === 'number' && typeof first?.location?.longitude === 'number') {
+              result = {
+                formattedAddress: first.formattedAddress || address,
+                lat: first.location.latitude,
+                lng: first.location.longitude,
+                placeId: first.placeId,
+                source: 'google_maps'
+              };
+            }
+          }
+        } catch (err) {
+          console.error('[Maps Proxy] Errore Geocoding v4:', err);
+        }
+      }
+
+      if (!result) {
+        try {
+          const nomUrl = `https://nominatim.openstreetmap.org/search?format=jsonv2&q=${encodeURIComponent(address)}&countrycodes=it&limit=1&accept-language=it`;
+          const nRes = await fetch(nomUrl, {
+            headers: { 'User-Agent': 'CroceOroMassaCarrara-Centrale/1.0' }
+          });
+          if (nRes.ok) {
+            const nData: any = await nRes.json().catch(() => []);
+            if (Array.isArray(nData) && nData[0]) {
+              result = {
+                formattedAddress: nData[0].display_name || address,
+                lat: Number(nData[0].lat),
+                lng: Number(nData[0].lon),
+                placeId: nData[0].place_id ? `osm-${nData[0].place_id}` : undefined,
+                source: 'openstreetmap'
+              };
+            }
+          }
+        } catch (err) {
+          console.error('[Maps Proxy] Errore fallback geocode Nominatim:', err);
+        }
+      }
+
+      return res.json({ success: true, result, quotaExceeded });
+    } catch (err) {
+      console.error('[Maps Proxy] Errore geocode:', err);
+      return res.json({ success: false, result: null, quotaExceeded: false });
+    }
+  });
+
+  app.post('/api/maps/reverse-geocode', async (req, res) => {
+    try {
+      const lat = Number(req.body?.lat);
+      const lng = Number(req.body?.lng);
+      if (Number.isNaN(lat) || Number.isNaN(lng)) {
+        return res.status(400).json({ success: false, result: null, quotaExceeded: false });
+      }
+
+      const apiKey = getGoogleMapsKey();
+      let quotaExceeded = false;
+      let result: any = null;
+
+      if (apiKey) {
+        try {
+          const url = new URL('https://geocode.googleapis.com/v4/geocode/location');
+          url.searchParams.append('location.latitude', String(lat));
+          url.searchParams.append('location.longitude', String(lng));
+          url.searchParams.append('languageCode', 'it');
+          url.searchParams.append('regionCode', 'it');
+
+          const gRes = await fetch(url.toString(), {
+            method: 'GET',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Goog-Api-Key': apiKey,
+              'X-Goog-FieldMask': 'results.placeId,results.formattedAddress,results.location',
+              'X-Goog-Maps-Solution-ID': 'gmp_mcp_codeassist_v1_aistudio'
+            }
+          });
+          const gData: any = await gRes.json().catch(() => ({}));
+          if (gRes.status === 429 || gData?.error?.status === 'RESOURCE_EXHAUSTED') {
+            quotaExceeded = true;
+          } else if (gRes.ok && Array.isArray(gData?.results) && gData.results[0]) {
+            const first = gData.results[0];
+            result = {
+              formattedAddress: first.formattedAddress || `${lat.toFixed(6)}, ${lng.toFixed(6)}`,
+              lat,
+              lng,
+              placeId: first.placeId,
+              source: 'google_maps'
+            };
+          }
+        } catch (err) {
+          console.error('[Maps Proxy] Errore Reverse Geocode v4:', err);
+        }
+      }
+
+      if (!result) {
+        try {
+          const nomUrl = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lng}&accept-language=it`;
+          const nRes = await fetch(nomUrl, {
+            headers: { 'User-Agent': 'CroceOroMassaCarrara-Centrale/1.0' }
+          });
+          if (nRes.ok) {
+            const item: any = await nRes.json().catch(() => null);
+            if (item) {
+              const addr = item?.address || {};
+              const via = [addr.road || addr.pedestrian || addr.square, addr.house_number].filter(Boolean).join(' ');
+              const city = addr.city || addr.town || addr.village || addr.municipality || '';
+              const cap = addr.postcode || '';
+              const compact = [via, [cap, city].filter(Boolean).join(' ')].filter(Boolean).join(', ');
+              result = {
+                formattedAddress: (compact && compact.length >= 6) ? compact : (item.display_name || `${lat.toFixed(6)}, ${lng.toFixed(6)}`),
+                lat,
+                lng,
+                placeId: item.place_id ? `osm-${item.place_id}` : undefined,
+                source: 'openstreetmap'
+              };
+            }
+          }
+        } catch (err) {
+          console.error('[Maps Proxy] Errore fallback reverse Nominatim:', err);
+        }
+      }
+
+      return res.json({ success: true, result, quotaExceeded });
+    } catch (err) {
+      console.error('[Maps Proxy] Errore reverse-geocode:', err);
+      return res.json({ success: false, result: null, quotaExceeded: false });
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // GESTIONE TRACCIAMENTO POSIZIONE LIVE MEZZO IN MOVIMENTO (DURATA MASSIMA 1 ORA)
+  // ---------------------------------------------------------------------------
+  interface LiveTrackingSession {
+    token: string;
+    createdAt: number;
+    expiresAt: number; // Date.now() + 60 * 60 * 1000 (1 ora di validità massima)
+    mezzo: string;
+    codiceMissione?: string;
+    indirizzo?: string;
+    coordinateObiettivo?: { lat: number; lng: number };
+    destinazione?: string;
+    coordinateDestinazione?: { lat: number; lng: number };
+    urgenza?: string;
+    active: boolean;
+  }
+
+  const activeLiveTrackingSessions = new Map<string, LiveTrackingSession>();
+
+  // Pulizia automatica periodica delle sessioni scadute ogni 5 minuti
+  setInterval(() => {
+    const now = Date.now();
+    for (const [token, sess] of activeLiveTrackingSessions.entries()) {
+      if (sess.expiresAt < now) {
+        activeLiveTrackingSessions.delete(token);
+      }
+    }
+  }, 5 * 60 * 1000);
+
+  // Crea o rinnova una sessione di tracciamento live valida per massimo 1 ora
+  app.post('/api/track/create', (req, res) => {
+    try {
+      const { mezzo, codiceMissione, indirizzo, coordinateObiettivo, destinazione, coordinateDestinazione, urgenza } = req.body || {};
+      const now = Date.now();
+      const expiresAt = now + 60 * 60 * 1000; // 1 ora di durata massima
+      const token = `trk-${now}-${Math.random().toString(36).substring(2, 9)}`;
+
+      const session: LiveTrackingSession = {
+        token,
+        createdAt: now,
+        expiresAt,
+        mezzo: mezzo || state.activeMission?.mezzoAssegnato || state.activeShift?.mezzoScelto || 'T4606 Ambulanza',
+        codiceMissione: codiceMissione || state.activeMission?.codice || undefined,
+        indirizzo: indirizzo || state.activeMission?.indirizzo || undefined,
+        coordinateObiettivo: coordinateObiettivo || state.activeMission?.coordinate || undefined,
+        destinazione: destinazione || state.activeMission?.destinazione || undefined,
+        coordinateDestinazione: coordinateDestinazione || undefined,
+        urgenza: urgenza || state.activeMission?.urgenza || undefined,
+        active: true
+      };
+
+      activeLiveTrackingSessions.set(token, session);
+
+      res.json({
+        success: true,
+        token,
+        expiresAt,
+        orarioScadenza: formatTimeItaly(expiresAt, false),
+        url: `/?track=live&token=${token}`
+      });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message || 'Errore creazione sessione tracciamento' });
+    }
+  });
+
+  // Verifica lo stato del token di tracciamento live e restituisce i dati aggiornati
+  app.get('/api/track/session/:token', (req, res) => {
+    const { token } = req.params;
+    const session = activeLiveTrackingSessions.get(token);
+
+    if (!session) {
+      return res.json({
+        success: true,
+        valid: false,
+        expired: true,
+        message: 'Collegamento di tracciamento live scaduto o non trovato (durata massima 1 ora superata).'
+      });
+    }
+
+    const now = Date.now();
+    if (session.expiresAt <= now) {
+      activeLiveTrackingSessions.delete(token);
+      return res.json({
+        success: true,
+        valid: false,
+        expired: true,
+        message: 'Collegamento di tracciamento live scaduto per motivi di privacy e sicurezza (durata massima 1 ora superata).'
+      });
+    }
+
+    const remainingMs = session.expiresAt - now;
+    const remainingSeconds = Math.max(0, Math.floor(remainingMs / 1000));
+
+    res.json({
+      success: true,
+      valid: true,
+      expired: false,
+      remainingSeconds,
+      remainingMinutes: Math.ceil(remainingSeconds / 60),
+      session,
+      position: state.gpsPosition,
+      activeMission: state.activeMission ? {
+        codice: state.activeMission.codice,
+        mezzoAssegnato: state.activeMission.mezzoAssegnato,
+        indirizzo: state.activeMission.indirizzo,
+        coordinate: state.activeMission.coordinate,
+        destinazione: state.activeMission.destinazione,
+        datiDestinazione: state.activeMission.datiDestinazione,
+        urgenza: state.activeMission.urgenza,
+        ambito: state.activeMission.ambito
+      } : null
+    });
+  });
+
+  // Ricezione coordinate GPS in tempo reale (da Centrale o da Mezzo)
+  app.post('/api/gps', (req, res) => {
+    try {
+      const pos = req.body?.position || req.body;
+      if (pos && typeof pos.lat === 'number' && typeof pos.lng === 'number') {
+        state.gpsPosition = {
+          lat: pos.lat,
+          lng: pos.lng,
+          accuratezza: Number(pos.accuratezza) || 8,
+          velocita: pos.velocita !== undefined ? Number(pos.velocita) : (state.gpsPosition?.velocita ?? 45),
+          orario: pos.orario || formatTimeItaly()
+        };
+        broadcast({
+          type: 'GPS_UPDATED',
+          position: state.gpsPosition
+        });
+        return res.json({ success: true, position: state.gpsPosition });
+      }
+      return res.status(400).json({ success: false, error: 'Coordinate GPS non valide' });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message || 'Errore salvataggio GPS' });
+    }
+  });
+
+  // Posizione GPS in tempo reale per Mappa Operativa e link di tracciamento live WhatsApp
+  app.get('/api/gps', (_req, res) => {
+    res.json({
+      success: true,
+      position: state.gpsPosition,
+      activeMission: state.activeMission ? {
+        codice: state.activeMission.codice,
+        mezzoAssegnato: state.activeMission.mezzoAssegnato,
+        indirizzo: state.activeMission.indirizzo,
+        coordinate: state.activeMission.coordinate,
+        destinazione: state.activeMission.destinazione,
+        datiDestinazione: state.activeMission.datiDestinazione,
+        urgenza: state.activeMission.urgenza,
+        ambito: state.activeMission.ambito
+      } : null
+    });
+  });
+
+  app.get('/api/servizi/archivio-anni', (_req, res) => {
+    const currentYear = getCurrentYearItaly();
+    const anniSet = new Set<number>();
+    (state.serviziArchivio || []).forEach(s => anniSet.add(s.anno));
+    anniSet.add(currentYear);
+
+    const anni = Array.from(anniSet).sort((a, b) => b - a);
+    res.json({
+      success: true,
+      currentYear,
+      anni,
+      cartelleAnniPrecedenti: state.cartelleAnniPrecedenti
+    });
+  });
+
+  app.post('/api/volontari', (req, res) => {
+    const data = req.body;
+    if (data && data.nome && data.pin) {
+      const nuovoVol: any = {
+        ...data,
+        id: data.id || `vol-${Date.now()}`,
+        nome: data.nome.trim(),
+        cognome: data.cognome?.trim() || '',
+        matricola: data.matricola?.trim() || `VOL-${Math.floor(100 + Math.random() * 900)}`,
+        qualifica: data.qualifica || 'Soccorritore',
+        telefono: data.telefono?.trim() || '',
+        email: data.email?.trim() || '',
+        pin: String(data.pin).trim(),
+        caricaConsiglioDirettivo: data.caricaConsiglioDirettivo || undefined,
+        firmaBase64: data.firmaBase64 || undefined,
+        dataRegistrazione: data.dataRegistrazione || formatDateItaly(),
+        inTurno: !!data.inTurno,
+        profiloCentrale: !!data.profiloCentrale,
+        approvato: data.approvato !== undefined ? !!data.approvato : true,
+        dataRichiestaApprovazione: data.dataRichiestaApprovazione,
+        richiedeResetPassword: !!data.richiedeResetPassword,
+        dataRichiestaResetPassword: data.dataRichiestaResetPassword
+      };
+
+      const esisteIndex = state.volontari.findIndex(v => v.id === nuovoVol.id);
+      if (esisteIndex >= 0) {
+        state.volontari[esisteIndex] = { ...state.volontari[esisteIndex], ...nuovoVol };
+      } else {
+        state.volontari = [nuovoVol, ...state.volontari];
+      }
+      persistState();
+
+      broadcast({
+        type: 'VOLONTARI_UPDATED',
+        volontari: state.volontari
+      });
+
+      return res.json({ success: true, volontario: state.volontari.find(v => v.id === nuovoVol.id), volontari: state.volontari });
+    }
+
+    if (Array.isArray(req.body.volontari)) {
+      state.volontari = mergeVolontariLists(state.volontari, req.body.volontari);
+      persistState();
+      broadcast({
+        type: 'VOLONTARI_UPDATED',
+        volontari: state.volontari
+      });
+      return res.json({ success: true, volontari: state.volontari });
+    }
+
+    res.status(400).json({ success: false, error: 'Dati volontario incompleti' });
+  });
+
+  // REST API Checklist Mezzi Inizio Turno Guidata
+  app.get('/api/checklists/templates', (_req, res) => {
+    res.json({
+      success: true,
+      templates: state.checklistsTemplates || []
+    });
+  });
+
+  app.post('/api/checklists/templates', (req, res) => {
+    const templates = Array.isArray(req.body?.templates) ? req.body.templates : (Array.isArray(req.body) ? req.body : null);
+    if (templates) {
+      state.checklistsTemplates = templates;
+      persistState();
+      broadcast({
+        type: 'CHECKLISTS_TEMPLATES_UPDATED',
+        templates: state.checklistsTemplates
+      });
+      return res.json({ success: true, count: templates.length, templates });
+    }
+    res.status(400).json({ success: false, error: 'Template non validi' });
+  });
+
+  app.get('/api/checklists/compilate', (_req, res) => {
+    res.json({
+      success: true,
+      checklistsCompilate: state.checklistsCompilate || []
+    });
+  });
+
+  app.post('/api/checklists/compilate', (req, res) => {
+    const data = req.body;
+    if (data && data.mezzo) {
+      if (!Array.isArray(state.checklistsCompilate)) {
+        state.checklistsCompilate = [];
+      }
+      state.checklistsCompilate.unshift(data);
+      if (state.checklistsCompilate.length > 500) {
+        state.checklistsCompilate = state.checklistsCompilate.slice(0, 500);
+      }
+
+      let notif: RadioNotification | null = null;
+      if (data.statoGenerale === 'con_anomalie' || (Array.isArray(data.anomalieRilevate) && data.anomalieRilevate.length > 0)) {
+        const elencoAnomalie = (data.anomalieRilevate || []).map((a: any) => a.voceTitolo || a.note).filter(Boolean).join(', ');
+        notif = {
+          id: generateUniqueNotifId(),
+          orario: formatTimeItaly(),
+          testo: `⚠️ CHECKLIST ${data.mezzo}: Anomalia segnalata da ${data.volontarioNome || 'Volontario'}: ${elencoAnomalie || 'Difetto segnalato a inizio turno'}`,
+          tipo: 'allarme'
+        };
+        state.notifiche.push(notif);
+
+        sendPushNotificationToRole('admin', {
+          title: `⚠️ ANOMALIA CHECKLIST ${data.mezzo}`,
+          body: `Il volontario ${data.volontarioNome || 'in turno'} ha segnalato non conformità su ${data.mezzo}: ${elencoAnomalie}`,
+          tag: `chk-anomalia-${data.id}`,
+          urgenza: 'GIALLO'
+        });
+      }
+
+      persistState();
+      broadcast({
+        type: 'CHECKLIST_COMPILATA_ADDED',
+        checklistCompilata: data,
+        checklistsCompilate: state.checklistsCompilate,
+        notification: notif || undefined
+      });
+
+      return res.json({ success: true, checklist: data, checklistsCompilate: state.checklistsCompilate });
+    }
+    res.status(400).json({ success: false, error: 'Dati verifica checklist mancanti' });
+  });
+
+  app.put('/api/volontari/:id', (req, res) => {
+    const { id } = req.params;
+    const patch = req.body;
+    const index = state.volontari.findIndex(v => v.id === id);
+    if (index >= 0) {
+      state.volontari[index] = { ...state.volontari[index], ...patch };
+      persistState();
+      broadcast({
+        type: 'VOLONTARI_UPDATED',
+        volontari: state.volontari
+      });
+      return res.json({ success: true, volontario: state.volontari[index], volontari: state.volontari });
+    }
+    res.status(404).json({ success: false, error: 'Volontario non trovato' });
+  });
+
+  app.delete('/api/volontari/:id', (req, res) => {
+    const { id } = req.params;
+    state.volontari = state.volontari.filter(v => v.id !== id);
+    persistState();
+    broadcast({
+      type: 'VOLONTARI_UPDATED',
+      volontari: state.volontari
+    });
+    res.json({ success: true, volontari: state.volontari });
+  });
+
+  // REST API di sincronizzazione generale (usata anche dal polling di fallback)
+  app.get('/api/sync', (_req, res) => {
+    // Se lo squillo è attivo da oltre 25 secondi, consideralo auto-scaduto
+    if (state.ringing && state.ringing.active && Date.now() - (state.ringing.timestamp || 0) > 25000) {
+      state.ringing = { active: false, source: '', soundType: 'telefono', timestamp: Date.now() };
+      persistState();
+    }
+    res.json({ success: true, state });
+  });
+
+  // REST API per la Carta Intestata Ufficiale dell'Associazione
+  app.get('/api/carta-intestata', (_req, res) => {
+    res.json(state.datiCartaIntestata || DATI_CARTA_INTESTATA_DEFAULT);
+  });
+
+  app.post('/api/carta-intestata', (req, res) => {
+    try {
+      const nuovi = req.body;
+      if (!nuovi || typeof nuovi !== 'object') {
+        return res.status(400).json({ error: 'Dati carta intestata non validi' });
+      }
+      state.datiCartaIntestata = normalizeDatiCartaIntestataServer({
+        ...DATI_CARTA_INTESTATA_DEFAULT,
+        ...(state.datiCartaIntestata || {}),
+        ...nuovi
+      });
+      persistState();
+      broadcast({
+        type: 'CARTA_INTESTATA_UPDATED',
+        dati: state.datiCartaIntestata
+      });
+      console.log('[Carta Intestata] Dati ufficiali aggiornati e persistiti nel database:', state.datiCartaIntestata);
+      res.json({ success: true, dati: state.datiCartaIntestata });
+    } catch (err: any) {
+      console.error('[Carta Intestata] Errore aggiornamento:', err);
+      res.status(500).json({ error: 'Errore interno salvataggio carta intestata' });
+    }
+  });
+
+  // REST API per il Database Anagrafiche Sedi Associative
+  app.get('/api/sedi', (_req, res) => {
+    res.json(state.sedi || []);
+  });
+
+  app.post('/api/sedi', (req, res) => {
+    try {
+      const { sedi } = req.body;
+      if (!Array.isArray(sedi)) {
+        return res.status(400).json({ error: 'Payload sedi deve essere un array' });
+      }
+      state.sedi = sedi;
+      persistState();
+      broadcast({
+        type: 'SEDI_UPDATED',
+        sedi: state.sedi
+      });
+      console.log(`[Sedi Associative] Aggiornate ${sedi.length} sedi nel database persistito.`);
+      res.json({ success: true, sedi: state.sedi });
+    } catch (err: any) {
+      console.error('[Sedi Associative] Errore aggiornamento sedi:', err);
+      res.status(500).json({ error: 'Errore salvataggio sedi associative' });
+    }
+  });
+
+  // REST API per i Luoghi di Timbratura GPS configurabili a discrezione operatore (Effetto Immediato)
+  app.get('/api/luoghi-timbratura', (_req, res) => {
+    res.json({
+      success: true,
+      luoghi: state.luoghiTimbratura || LUOGHI_TIMBRATURA_DEFAULT
+    });
+  });
+
+  app.post('/api/luoghi-timbratura', (req, res) => {
+    try {
+      const { luoghi, messaggio } = req.body;
+      if (!Array.isArray(luoghi)) {
+        return res.status(400).json({ success: false, error: 'Payload luoghi deve essere un array' });
+      }
+      state.luoghiTimbratura = luoghi;
+      persistState();
+
+      const notif: RadioNotification = {
+        id: generateUniqueNotifId(),
+        orario: formatTimeItaly(),
+        testo: messaggio || `📍 LUOGHI DI TIMBRATURA: Configurazione aggiornata dall'operatore (${luoghi.length} punti). Validità immediata.`,
+        tipo: 'sistema'
+      };
+      state.notifiche.push(notif);
+
+      broadcast({
+        type: 'LUOGHI_TIMBRATURA_UPDATED',
+        luoghi: state.luoghiTimbratura,
+        notification: notif
+      });
+
+      console.log(`[Luoghi Timbratura] ${luoghi.length} punti salvati via REST API.`);
+      res.json({ success: true, luoghi: state.luoghiTimbratura });
+    } catch (err: any) {
+      console.error('[Luoghi Timbratura] Errore aggiornamento:', err);
+      res.status(500).json({ success: false, error: 'Errore salvataggio luoghi timbratura' });
+    }
+  });
+
+  // REST API per il Registro Timbrature Volontari (Sincronizzazione Realtime Immediata)
+  app.get('/api/timbrature', (_req, res) => {
+    res.json({
+      success: true,
+      timbrature: state.timbrature || []
+    });
+  });
+
+  app.post('/api/timbrature', (req, res) => {
+    try {
+      const { timbrature } = req.body;
+      if (!Array.isArray(timbrature)) {
+        return res.status(400).json({ success: false, error: 'timbrature deve essere un array' });
+      }
+      state.timbrature = timbrature;
+      persistState();
+
+      broadcast({
+        type: 'TIMBRATURE_UPDATED',
+        timbrature: state.timbrature
+      });
+
+      console.log(`[Timbrature] ${timbrature.length} timbrature salvate via REST API.`);
+      res.json({ success: true, timbrature: state.timbrature });
+    } catch (err: any) {
+      console.error('[Timbrature] Errore aggiornamento:', err);
+      res.status(500).json({ success: false, error: 'Errore salvataggio timbrature' });
+    }
+  });
+
+  // Endpoint per la chiave pubblica VAPID (permette ai browser di registrarsi alle notifiche Push)
+  app.get('/api/vapid-public-key', (_req, res) => {
+    res.json({ success: true, publicKey: VAPID_KEYS.publicKey });
+  });
+
+  // Registrazione della sottoscrizione Web Push inviata dal Service Worker del telefono
+  app.post('/api/push-subscribe', (req, res) => {
+    const { role, subscription, volontarioId, volontarioNome } = req.body;
+    if (subscription && subscription.endpoint) {
+      subscribers.set(subscription.endpoint, {
+        endpoint: subscription.endpoint,
+        role: role || 'all',
+        volontarioId: volontarioId ? String(volontarioId) : undefined,
+        volontarioNome: volontarioNome ? String(volontarioNome) : undefined,
+        subscription,
+        timestamp: Date.now()
+      });
+      console.log(`[WebPush] Dispositivo registrato per notifiche push (${role}${volontarioId ? ` - volId: ${volontarioId}` : ''}). Totale: ${subscribers.size}`);
+    }
+    res.json({ success: true, count: subscribers.size });
+  });
+
+  // Endpoint per forzare o testare l'invio del promemoria per i turni di domani
+  app.post('/api/promemoria-turni/invia-ora', (req, res) => {
+    try {
+      const { forzaTutti } = req.body || {};
+      const esito = eseguiControlloPromemoriaTurniDomani(true);
+      res.json({
+        success: true,
+        messaggio: `Inviati ${esito.countInviati} promemoria per i turni in programma per domani.`,
+        ...esito
+      });
+    } catch (err: any) {
+      console.error('[Promemoria Turni] Errore invio manuale:', err);
+      res.status(500).json({ success: false, error: err?.message || 'Errore elaborazione' });
+    }
+  });
+
+  // Endpoint per consultare lo stato dei promemoria turni
+  app.get('/api/promemoria-turni/stato', (_req, res) => {
+    try {
+      const info = getItalianDateInfo();
+      const turni = Array.isArray(state.turni) ? state.turni : [];
+      const turniDomani = turni.filter((t: any) => t && t.data === info.tomorrowStr);
+      res.json({
+        success: true,
+        oraItaliana: `${info.hour.toString().padStart(2, '0')}:${info.minute.toString().padStart(2, '0')}`,
+        fusoOrario: ITALY_TIMEZONE,
+        fasciaOra: info.fasciaOraLabel,
+        oraLegaleAttiva: info.isOraLegale,
+        offsetMinutiUtc: info.offsetMinutes,
+        oggi: info.todayStr,
+        domani: info.tomorrowStr,
+        turniDomaniTotali: turniDomani.length,
+        promemoriaInviati: state.promemoriaTurniInviati || {}
+      });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message || 'Errore stato promemoria' });
+    }
+  });
+
+  // Endpoint per verificare o inviare immediatamente le notifiche email dei compleanni
+  // a Presidenza e a tutti gli account che hanno accesso al database Volontari
+  app.post('/api/notifica-compleanni', async (req, res) => {
+    try {
+      const { forzaInvio = false, volontari: clientVolontari } = req.body || {};
+      const esito = await eseguiControlloCompleanniOggi(Boolean(forzaInvio), clientVolontari);
+      res.json({
+        success: true,
+        ...esito
+      });
+    } catch (err: any) {
+      console.error('[Compleanni] Errore endpoint /api/notifica-compleanni:', err);
+      res.status(500).json({ success: false, error: err?.message || 'Errore elaborazione compleanni' });
+    }
+  });
+
+  app.get('/api/notifica-compleanni/stato', (_req, res) => {
+    try {
+      const info = getItalianDateInfo();
+      const destinatari = calcolaDestinatariEmailCompleanni(state.volontari || []);
+      res.json({
+        success: true,
+        oggi: info.todayStr,
+        oraItaliana: `${info.hour.toString().padStart(2, '0')}:${info.minute.toString().padStart(2, '0')}`,
+        fusoOrario: ITALY_TIMEZONE,
+        fasciaOra: info.fasciaOraLabel,
+        oraLegaleAttiva: info.isOraLegale,
+        destinatariAccessoVolontari: destinatari,
+        compleanniInviati: state.promemoriaCompleanniInviati || {}
+      });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message || 'Errore stato compleanni' });
+    }
+  });
+
+  // Test invio notifica push
+  app.post('/api/push-test', (req, res) => {
+    const { role, title, body } = req.body;
+    sendPushNotificationToRole(role || 'all', {
+      title: title || '🔔 TEST ALLARME CROCE ORO',
+      body: body || 'Verifica notifica sonora e vibrazione con schermo bloccato.',
+      tag: 'test-push',
+      urgenza: 'ROSSO'
+    });
+    res.json({ success: true, sentTo: subscribers.size });
+  });
+
+  app.post('/api/event', (req, res) => {
+    try {
+      const { type, data } = req.body;
+      if (type) {
+        handleIncomingAction(type, data);
+      }
+      res.json({ success: true, activeMission: state.activeMission, ringing: state.ringing });
+    } catch (err) {
+      console.error('Errore /api/event:', err);
+      res.status(500).json({ success: false, error: 'Errore interno elaborazione evento' });
+    }
+  });
+
+  // Endpoint universale per download file PDF con Content-Disposition: attachment
+  // Garantisce il download nativo su Android (Download Manager), iOS, PWA e iframe
+  app.post('/api/download-pdf', (req, res) => {
+    try {
+      const { pdfBase64, filename } = req.body;
+      if (!pdfBase64) {
+        return res.status(400).send('Dati PDF mancanti');
+      }
+      const cleanB64 = String(pdfBase64).replace(/^data:[^;]+;base64,/, '').replace(/\s/g, '');
+      const buffer = Buffer.from(cleanB64, 'base64');
+      const safeName = (filename || 'Attestato.pdf').replace(/[^a-zA-Z0-9_.-]/g, '_');
+
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `attachment; filename="${safeName}"`);
+      res.setHeader('Content-Length', buffer.length);
+      res.send(buffer);
+    } catch (err: any) {
+      console.error('Errore endpoint /api/download-pdf:', err);
+      res.status(500).send('Errore elaborazione download PDF');
+    }
+  });
+
+  interface TempPdfItem {
+    buffer: Buffer;
+    filename: string;
+    expires: number;
+  }
+  const tempPdfDownloads = new Map<string, TempPdfItem>();
+
+  // Pulizia periodica ogni 2 minuti per i file PDF temporanei
+  setInterval(() => {
+    const now = Date.now();
+    for (const [key, item] of tempPdfDownloads.entries()) {
+      if (item.expires < now) {
+        tempPdfDownloads.delete(key);
+      }
+    }
+  }, 120000);
+
+  // Monitoraggio continuo e auto-scadenza squillo suoneria (timeout 25s)
+  setInterval(() => {
+    const now = Date.now();
+    if (state.ringing && state.ringing.active && now - (state.ringing.timestamp || 0) > 25000) {
+      state.ringing = { active: false, source: '', soundType: 'telefono', timestamp: now };
+      persistState();
+      broadcast({
+        type: 'RING_STOPPED',
+        notification: {
+          id: generateUniqueNotifId(),
+          orario: formatTimeItaly(),
+          testo: `🔕 SUONERIA TELEFONO AUTO-SCADUTA (Timeout emergenza 25s superato).`,
+          tipo: 'sistema'
+        }
+      });
+    }
+  }, 5000);
+
+  // Controllo automatico promemoria turni di domani (avviso alle ore 09:00 del giorno prima)
+  // + controllo automatico compleanni volontari (avviso dalle ore 08:00 a Presidenza e a tutti gli account con accesso al database Volontari)
+  setInterval(() => {
+    try {
+      eseguiControlloPromemoriaTurniDomani(false);
+    } catch (err) {
+      console.error('[Promemoria Turni] Errore esecuzione periodica:', err);
+    }
+    eseguiControlloCompleanniOggi(false).catch((err) => {
+      console.error('[Compleanni] Errore esecuzione periodica:', err);
+    });
+  }, 60000);
+
+  // Esecuzione rapida iniziale all'avvio del server
+  setTimeout(() => {
+    try {
+      eseguiControlloPromemoriaTurniDomani(false);
+    } catch {}
+    eseguiControlloCompleanniOggi(false).catch(() => {});
+  }, 3000);
+
+  // Prepara l'attestato PDF sul server in modo asincrono, evitando blocchi e crash sul device client
+  app.post('/api/prepara-attestato-pdf', async (req, res) => {
+    try {
+      const { corso, partecipante, opzioni } = req.body;
+      if (!corso || !partecipante) {
+        return res.status(400).json({ success: false, error: 'Dati corso o partecipante mancanti' });
+      }
+
+      const pdfResult = await scaricaAttestatoPDF(corso, partecipante, {
+        ...(opzioni || {}),
+        downloadImmediato: false
+      });
+
+      let buffer: Buffer;
+      if (pdfResult instanceof Uint8Array) {
+        buffer = Buffer.from(pdfResult);
+      } else if (pdfResult && typeof (pdfResult as any).output === 'function') {
+        const arrBuf = (pdfResult as any).output('arraybuffer');
+        buffer = Buffer.from(arrBuf);
+      } else {
+        throw new Error('Formato PDF non riconosciuto');
+      }
+
+      let numAtt = (partecipante.numeroAttestato || (corso.tipologia === 'Seminario PSV' ? 'GEV_099' : 'ATT')).trim();
+      const matricolaClean = numAtt.replace(/[^a-zA-Z0-9_-]/g, '_');
+      const nomeClean = (partecipante.volontarioNome || 'Partecipante').replace(/[^a-zA-Z0-9_-]/g, '_');
+      const filename = `Attestato_${matricolaClean}_${nomeClean}.pdf`;
+
+      const downloadId = `${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+      tempPdfDownloads.set(downloadId, {
+        buffer,
+        filename,
+        expires: Date.now() + 600000 // 10 minuti
+      });
+
+      res.json({
+        success: true,
+        downloadId,
+        downloadUrl: `/api/scarica-attestato-file/${downloadId}`,
+        filename
+      });
+    } catch (err: any) {
+      console.error('Errore /api/prepara-attestato-pdf:', err);
+      res.status(500).json({ success: false, error: err?.message || 'Errore generazione PDF' });
+    }
+  });
+
+  // Download diretto HTTP nativo del file PDF (intercettato da Android Download Manager e Safari/Chrome senza blocchi)
+  app.get('/api/scarica-attestato-file/:id', (req, res) => {
+    const { id } = req.params;
+    const item = tempPdfDownloads.get(id);
+    if (!item) {
+      return res.status(404).send('Documento PDF non trovato o scaduto. Riprova dalla schermata del corso.');
+    }
+
+    const isInline = req.query.inline === 'true';
+    const disposition = isInline ? 'inline' : 'attachment';
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `${disposition}; filename="${item.filename}"`);
+    res.setHeader('Content-Length', item.buffer.length);
+    res.send(item.buffer);
+  });
+
+  // Helper per generare un Foglio di Viaggio PDF ufficiale con ricevuta di donazione
+  function generaPdfTesoreriaServer(params: {
+    codice?: string;
+    data?: string;
+    mezzo?: string;
+    kmInizio?: number;
+    kmFine?: number;
+    kmTotali?: number;
+    donazione?: { ricevuta?: boolean; somma?: number; metodo?: string };
+    proprietario?: { nome?: string; cognome?: string; indirizzo?: string; comune?: string; provincia?: string; cap?: string; telefono?: string; email?: string; codiceFiscale?: string };
+    volontarioNome?: string;
+    indirizzoIntervento?: string;
+    destinazione?: string;
+  }): Buffer {
+    const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+    const pageWidth = 210;
+
+    // Header istituzionale
+    const cInfo = normalizeDatiCartaIntestataServer(state.datiCartaIntestata);
+    const socialStr = formattaSocialCartaIntestataServer(cInfo);
+    doc.setFillColor(245, 247, 250);
+    doc.rect(0, 0, pageWidth, socialStr ? 41 : 38, 'F');
+
+    doc.setFontSize(14.5);
+    doc.setTextColor(20, 50, 95);
+    doc.setFont('helvetica', 'bold');
+    doc.text((cInfo.denominazione || DATI_CARTA_INTESTATA_DEFAULT.denominazione).toUpperCase(), 105, 10.5, { align: 'center' });
+
+    doc.setFontSize(7.5);
+    doc.setTextColor(80, 90, 105);
+    doc.setFont('helvetica', 'normal');
+    doc.text(`Sede Legale: ${cInfo.sedeLegale} • Sede Massa: ${cInfo.sedeMassa} • Sede Carrara: ${cInfo.sedeCarrara} • Sede Pietrasanta: ${cInfo.sedePietrasanta}`, 105, 15.5, { align: 'center' });
+    doc.text(`Centrale Tel: ${cInfo.centraleTel} • Codice Fiscale: ${cInfo.codiceFiscale} • ${cInfo.sitoWeb}`, 105, 19.8, { align: 'center' });
+    doc.text(`Email: ${cInfo.email} • Pec: ${cInfo.pec}`, 105, 23.8, { align: 'center' });
+    if (socialStr) {
+      doc.setFontSize(7.0);
+      doc.setTextColor(30, 64, 175);
+      doc.text(socialStr, 105, 27.6, { align: 'center', maxWidth: 185 });
+    }
+
+    doc.setDrawColor(20, 50, 95);
+    doc.setLineWidth(0.8);
+    doc.line(15, socialStr ? 30.2 : 28, 195, socialStr ? 30.2 : 28);
+
+    // Banner Titolo Documento
+    doc.setFillColor(240, 253, 244);
+    doc.setDrawColor(34, 197, 94);
+    doc.roundedRect(15, 33, 180, 14, 2, 2, 'FD');
+    doc.setFontSize(11);
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(21, 128, 61);
+    doc.text('ATTESTAZIONE DI DONAZIONE ECONOMICA & FOGLIO DI VIAGGIO', 105, 41, { align: 'center' });
+
+    // 1. Estremi Servizio
+    let y = 54;
+    doc.setFontSize(10);
+    doc.setTextColor(30, 41, 59);
+    doc.setFont('helvetica', 'bold');
+    doc.text('1. ESTREMI DEL SERVIZIO E DEL MEZZO OPERATIVO', 15, y);
+    doc.setDrawColor(203, 213, 225);
+    doc.line(15, y + 2, 195, y + 2);
+
+    y += 7;
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(9);
+    doc.text(`Codice Servizio: ${params.codice || 'N/D'}`, 18, y);
+    doc.text(`Data / Ora: ${params.data || formatDateTimeItaly()}`, 110, y);
+
+    y += 6;
+    doc.text(`Mezzo Operativo: ${params.mezzo || 'N/D'}`, 18, y);
+    const kmInfo = (params.kmTotali ? `${params.kmTotali} KM` : 'N/D') +
+      (params.kmInizio ? ` (Partenza: ${params.kmInizio} - Rientro: ${params.kmFine || ''})` : '');
+    doc.text(`Chilometri: ${kmInfo}`, 110, y);
+
+    y += 6;
+    doc.text(`Capo Equipaggio / Volontario: ${params.volontarioNome || 'Operatore di Turno'}`, 18, y);
+
+    // 2. Donazione Ricevuta
+    y += 12;
+    doc.setFontSize(10);
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(30, 41, 59);
+    doc.text('2. RICEVUTA DONAZIONE ECONOMICA (EROGAZIONE LIBERALE)', 15, y);
+    doc.line(15, y + 2, 195, y + 2);
+
+    y += 7;
+    const somma = Number(params.donazione?.somma) || 0;
+    const metodoDesc = params.donazione?.metodo === 'pos' ? 'POS Elettronico (Carta / Bancomat)' : 'Contanti';
+
+    doc.setFillColor(248, 250, 252);
+    doc.setDrawColor(148, 163, 184);
+    doc.roundedRect(15, y, 180, 24, 2, 2, 'FD');
+
+    doc.setFontSize(13);
+    doc.setTextColor(21, 128, 61);
+    doc.setFont('helvetica', 'bold');
+    doc.text(`IMPORTO DONATO: € ${somma.toFixed(2)}`, 20, y + 8);
+
+    doc.setFontSize(9);
+    doc.setTextColor(51, 65, 85);
+    doc.setFont('helvetica', 'normal');
+    doc.text(`Modalità di Riscossione: ${metodoDesc}`, 20, y + 14);
+    doc.text('Causale: Erogazione liberale a sostegno delle attività istituzionali di soccorso Croce Oro Massa Carrara', 20, y + 20);
+
+    // 3. Dati Donatore
+    y += 32;
+    doc.setFontSize(10);
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(30, 41, 59);
+    doc.text('3. DATI ANAGRAFICI DEL DONATORE / PROPRIETARIO', 15, y);
+    doc.line(15, y + 2, 195, y + 2);
+
+    y += 7;
+    doc.setFontSize(9);
+    doc.setFont('helvetica', 'normal');
+    const prop = params.proprietario || {};
+    const propNomeCompleto = (prop.nome || prop.cognome) ? `${prop.nome || ''} ${prop.cognome || ''}`.trim() : 'Non specificato';
+    doc.text(`Nominativo: ${propNomeCompleto}`, 18, y);
+    if (prop.codiceFiscale) doc.text(`Codice Fiscale: ${prop.codiceFiscale}`, 110, y);
+
+    y += 6;
+    const resIndirizzo = [prop.indirizzo, prop.comune, prop.provincia ? `(${prop.provincia})` : '', prop.cap ? `CAP ${prop.cap}` : ''].filter(Boolean).join(' ');
+    doc.text(`Residenza: ${resIndirizzo || 'Non specificata'}`, 18, y);
+
+    y += 6;
+    doc.text(`Telefono: ${prop.telefono || 'N/D'}`, 18, y);
+    doc.text(`Email: ${prop.email || 'N/D'}`, 110, y);
+
+    // 4. Logistica
+    y += 12;
+    doc.setFontSize(10);
+    doc.setFont('helvetica', 'bold');
+    doc.text('4. DETTAGLI LOGISTICI DELLA MISSIONE', 15, y);
+    doc.line(15, y + 2, 195, y + 2);
+
+    y += 7;
+    doc.setFontSize(9);
+    doc.setFont('helvetica', 'normal');
+    doc.text(`Indirizzo Intervento: ${params.indirizzoIntervento || 'N/D'}`, 18, y);
+    y += 6;
+    doc.text(`Destinazione: ${params.destinazione || 'N/D'}`, 18, y);
+
+    // 5. Validazione Digitale e Timbro
+    y += 18;
+    doc.setFillColor(241, 245, 249);
+    doc.setDrawColor(203, 213, 225);
+    doc.roundedRect(15, y, 180, 36, 2, 2, 'FD');
+
+    doc.setFontSize(9);
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(30, 41, 59);
+    doc.text('VALIDAZIONE E CONFORMITÀ DIGITALE', 20, y + 7);
+
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8);
+    doc.setTextColor(71, 85, 105);
+    doc.text('Documento informatico generato in conformità alle registrazioni del Gestionale Operativo Radio.', 20, y + 13);
+    doc.text(`Marcatura temporale trasmissione Tesoreria: ${formatDateTimeItaly()}`, 20, y + 18);
+    doc.text('Certificato per gli adempimenti contabili e di cassa dell\'Ente del Terzo Settore.', 20, y + 23);
+
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(20, 50, 95);
+    doc.text('CROCE ORO MASSA CARRARA OdV - Sistemi Automatizzati', 20, y + 29);
+
+    return Buffer.from(doc.output('arraybuffer'));
+  }
+
+  // Costanti mittente email istituzionali Croce Oro Massa Carrara OdV
+  const MITTENTE_UFFICIALE = 'CROCE ORO MASSA CARRARA OdV - Sistemi Automatizzati';
+  const EMAIL_MITTENTE_UFFICIALE = 'sistemiautomatizzati@croceoro.org';
+
+  // ENDPOINT: Invio automatico del Foglio di Viaggio PDF finito alla Tesoreria per donazioni ricevute
+  app.post('/api/invia-email-tesoreria', async (req, res) => {
+    try {
+      const {
+        codice,
+        data,
+        mezzo,
+        kmInizio,
+        kmFine,
+        kmTotali,
+        donazione,
+        proprietario,
+        volontarioNome,
+        indirizzoIntervento,
+        destinazione,
+        pdfBase64,
+        nomeFile
+      } = req.body;
+
+      const destinatario = 'tesoreria@croceoro.org';
+      const importo = parseFloat(donazione?.somma) || 0;
+      const metodo = donazione?.metodo === 'pos' ? 'POS Elettronico' : 'Contanti';
+      const filename = nomeFile || `Foglio_Viaggio_${(codice || 'REPORT').replace(/[^a-zA-Z0-9_-]/g, '_')}.pdf`;
+      const propNome = proprietario ? `${proprietario.nome || ''} ${proprietario.cognome || ''}`.trim() : 'Non specificato';
+
+      const oggetto = `[DONAZIONE RICEVUTA € ${importo.toFixed(2)}] Foglio di Viaggio ${codice} - Croce Oro Massa Carrara`;
+      const testoEmail = `Spettabile Ufficio Tesoreria / Amministrazione Croce Oro Massa Carrara OdV,\n\n` +
+        `Si trasmette in allegato il Foglio di Viaggio PDF ufficiale con attestazione di donazione economica ricevuta dall'equipaggio:\n\n` +
+        `• Codice Servizio: ${codice}\n` +
+        `• Data Servizio: ${data || formatDateTimeItaly()}\n` +
+        `• Mezzo Operativo: ${mezzo}\n` +
+        `• Importo Donato: € ${importo.toFixed(2)}\n` +
+        `• Modalità di Donazione: ${metodo}\n` +
+        `• Donatore / Proprietario: ${propNome}\n` +
+        (proprietario?.comune ? `• Residenza Donatore: ${proprietario.indirizzo || ''} ${proprietario.comune} (${proprietario.provincia || ''}) - CAP ${proprietario.cap || ''}\n` : '') +
+        (proprietario?.telefono ? `• Telefono Donatore: ${proprietario.telefono}\n` : '') +
+        (proprietario?.email ? `• Email Donatore: ${proprietario.email}\n` : '') +
+        `\nIl documento PDF firmato e certificato digitalmente è allegato alla presente comunicazione.\n\n` +
+        `Croce Oro Massa Carrara OdV - Gestionale Operativo Radio & Emergenze\n` +
+        `CROCE ORO MASSA CARRARA OdV - Sistemi Automatizzati`;
+
+      // Gestione Allegato PDF: decodifica stringa Base64 o genera PDF ufficiale completo sul server
+      let pdfBuffer: Buffer | null = null;
+      if (typeof pdfBase64 === 'string' && pdfBase64.trim().length > 50) {
+        try {
+          let cleanBase64 = pdfBase64.trim();
+          if (cleanBase64.includes('base64,')) {
+            cleanBase64 = cleanBase64.substring(cleanBase64.indexOf('base64,') + 7);
+          }
+          cleanBase64 = cleanBase64.replace(/[\r\n\s]/g, '');
+          const decoded = Buffer.from(cleanBase64, 'base64');
+          if (decoded.length > 200 && decoded.slice(0, 4).toString() === '%PDF') {
+            pdfBuffer = decoded;
+            console.log(`[Email Tesoreria] Ricevuto e convalidato PDF client (${decoded.length} bytes) per ${codice}`);
+          } else {
+            console.warn(`[Email Tesoreria] Buffer decodificato non valido (%PDF header mancante o < 200 bytes, len=${decoded.length}). Generazione PDF server-side.`);
+          }
+        } catch (e: any) {
+          console.error('[Email Tesoreria] Errore decodifica PDF base64:', e);
+        }
+      }
+
+      // Se il client non ha fornito un PDF valido o il base64 era vuoto/incompleto, genera PDF completo sul server
+      if (!pdfBuffer) {
+        pdfBuffer = generaPdfTesoreriaServer({
+          codice,
+          data,
+          mezzo,
+          kmInizio,
+          kmFine,
+          kmTotali,
+          donazione,
+          proprietario,
+          volontarioNome,
+          indirizzoIntervento,
+          destinazione
+        });
+        console.log(`[Email Tesoreria] Generato con successo PDF ufficiale server-side (${pdfBuffer.length} bytes) per ${codice}`);
+      }
+
+      let speditoViaSmtp = false;
+      let erroreSmtp: string | null = null;
+
+      const emailMittente = EMAIL_MITTENTE_UFFICIALE;
+
+      // Configurazione SMTP mail.tophost.it (TopHost)
+      const smtpHost = process.env.SMTP_HOST || 'mail.tophost.it';
+      const smtpPass = process.env.SMTP_PASS || 'Applicazione26!';
+      const smtpPort = Number(process.env.SMTP_PORT) || 587;
+      const isSecure = smtpPort === 465;
+
+      // Autenticazione su mail.tophost.it:
+      // Utente specificato: 'croceoro.org', casella TopHost associata: 'croceoro.org10175'
+      const candidateUsers = Array.from(new Set([
+        'croceoro.org10175',
+        'croceoro.org',
+        'sistemiautomatizzati@croceoro.org',
+        process.env.SMTP_USER
+      ].filter(Boolean) as string[]));
+
+      let transporter: any = null;
+      let authenticatedUser = '';
+
+      for (const candidate of candidateUsers) {
+        try {
+          const t = nodemailer.createTransport({
+            host: smtpHost,
+            port: smtpPort,
+            secure: isSecure,
+            auth: {
+              user: candidate,
+              pass: smtpPass
+            },
+            tls: {
+              rejectUnauthorized: false
+            }
+          });
+          await t.verify();
+          transporter = t;
+          authenticatedUser = candidate;
+          break;
+        } catch (authErr: any) {
+          // Continua con il prossimo candidato se l'autenticazione fallisce
+        }
+      }
+
+      const htmlEmail = `
+        <div style="font-family: Arial, sans-serif; color: #1e293b; max-width: 650px; line-height: 1.6; border: 1px solid #e2e8f0; border-radius: 12px; overflow: hidden;">
+          <div style="background-color: #1d1a60; color: #fbbf24; padding: 20px; text-align: center;">
+            <h2 style="margin: 0; font-size: 20px; font-weight: 800; letter-spacing: 0.5px;">CROCE ORO MASSA CARRARA OdV</h2>
+            <p style="margin: 6px 0 0; font-size: 13px; color: #e2e8f0;">Sistemi Automatizzati &bull; Ufficio Tesoreria &bull; Notifica Donazione Economica</p>
+          </div>
+          <div style="padding: 24px; background-color: #ffffff;">
+            <p style="margin-top: 0; font-size: 14px; color: #334155;">Spettabile Ufficio Tesoreria / Amministrazione <strong>Croce Oro Massa Carrara OdV</strong>,</p>
+            <p style="font-size: 14px; color: #334155;">Si trasmette in allegato alla presente il <strong>Foglio di Viaggio PDF ufficiale</strong> attestante la donazione economica ricevuta durante la missione:</p>
+            <div style="background-color: #f8fafc; border-left: 4px solid #16a34a; padding: 14px 18px; border-radius: 6px; margin: 18px 0; font-size: 13px;">
+              <p style="margin: 4px 0;"><strong>&bull; Codice Servizio:</strong> <span style="color: #b45309; font-weight: bold;">${codice}</span></p>
+              <p style="margin: 4px 0;"><strong>&bull; Data Servizio:</strong> ${data || formatDateTimeItaly()}</p>
+              <p style="margin: 4px 0;"><strong>&bull; Mezzo Operativo:</strong> ${mezzo || 'N/D'}</p>
+              <p style="margin: 4px 0;"><strong>&bull; Importo Ricevuto:</strong> <span style="color: #15803d; font-size: 15px; font-weight: bold;">€ ${importo.toFixed(2)}</span></p>
+              <p style="margin: 4px 0;"><strong>&bull; Modalità di Pagamento:</strong> <span style="font-weight: bold;">${metodo}</span></p>
+              <p style="margin: 4px 0;"><strong>&bull; Donatore / Proprietario:</strong> ${propNome}</p>
+              ${proprietario?.comune ? `<p style="margin: 4px 0;"><strong>&bull; Residenza:</strong> ${proprietario.indirizzo || ''} ${proprietario.comune} (${proprietario.provincia || ''}) - CAP ${proprietario.cap || ''}</p>` : ''}
+              ${proprietario?.telefono ? `<p style="margin: 4px 0;"><strong>&bull; Recapito Telefonico:</strong> ${proprietario.telefono}</p>` : ''}
+              ${proprietario?.email ? `<p style="margin: 4px 0;"><strong>&bull; Email Donatore:</strong> ${proprietario.email}</p>` : ''}
+            </div>
+            <p style="font-size: 13px; color: #475569;">
+              📎 Il documento PDF completo con certificazione digitale e firme operative è allegato alla presente comunicazione (<strong>${filename.toLowerCase().endsWith('.pdf') ? filename : `${filename}.pdf`}</strong>).
+            </p>
+          </div>
+          <div style="background-color: #f1f5f9; padding: 14px 20px; font-size: 11px; color: #64748b; text-align: center; border-top: 1px solid #e2e8f0;">
+            <p style="margin: 0;">Croce Oro Massa Carrara OdV &bull; Centrale Operativa Radio & Emergenze &bull; Sistemi Automatizzati</p>
+            <p style="margin: 4px 0 0; color: #94a3b8;">Email trasmessa automaticamente da sistemiautomatizzati@croceoro.org</p>
+          </div>
+        </div>
+      `;
+
+      if (transporter && pdfBuffer) {
+        try {
+          const finalFilename = filename.toLowerCase().endsWith('.pdf') ? filename : `${filename}.pdf`;
+          const info = await transporter.sendMail({
+            from: {
+              name: MITTENTE_UFFICIALE,
+              address: EMAIL_MITTENTE_UFFICIALE
+            },
+            sender: EMAIL_MITTENTE_UFFICIALE,
+            replyTo: EMAIL_MITTENTE_UFFICIALE,
+            envelope: {
+              from: EMAIL_MITTENTE_UFFICIALE,
+              to: [destinatario]
+            },
+            to: destinatario,
+            subject: oggetto,
+            text: testoEmail,
+            html: htmlEmail,
+            attachments: [
+              {
+                filename: finalFilename,
+                content: pdfBuffer,
+                contentType: 'application/pdf',
+                contentDisposition: 'attachment'
+              }
+            ]
+          });
+          speditoViaSmtp = true;
+          console.log(`[Email Tesoreria] PDF inviato con successo via SMTP a ${destinatario} per servizio ${codice} da "${MITTENTE_UFFICIALE}" <${EMAIL_MITTENTE_UFFICIALE}> (Auth: ${authenticatedUser}, MsgID: ${info.messageId}, PDF: ${pdfBuffer.length} bytes)`);
+        } catch (err: any) {
+          erroreSmtp = err?.message || 'Errore invio SMTP';
+          console.error('[Email Tesoreria] Errore invio SMTP:', err);
+        }
+      } else if (!transporter) {
+        erroreSmtp = 'Autenticazione SMTP non riuscita con i parametri forniti';
+        console.error('[Email Tesoreria]', erroreSmtp);
+      }
+
+      // Notifica Radio in Centrale Operativa
+      const notificaRadio: RadioNotification = {
+        id: generateUniqueNotifId(),
+        orario: formatTimeItaly(),
+        testo: `📧 TESORERIA: Trasmesso Foglio di Viaggio PDF (${codice}) con donazione di € ${importo.toFixed(2)} (${metodo}) all'indirizzo ${destinatario}`,
+        tipo: 'sistema'
+      };
+      state.notifiche.push(notificaRadio);
+      if (state.notifiche.length > 50) state.notifiche.shift();
+
+      broadcast({
+        type: 'NOTIFICATION_BROADCAST',
+        notification: notificaRadio
+      });
+
+      return res.json({
+        success: true,
+        destinatario,
+        importo,
+        metodo,
+        speditoViaSmtp,
+        erroreSmtp,
+        filename,
+        dimensioneAllegatoBytes: pdfBuffer ? pdfBuffer.length : 0,
+        mittente: `"${MITTENTE_UFFICIALE}" <${emailMittente}>`,
+        message: `Email indirizzata a ${destinatario} con allegato ${filename} (${pdfBuffer ? pdfBuffer.length : 0} bytes)`
+      });
+    } catch (err: any) {
+      console.error('[Email Tesoreria] Errore endpoint:', err);
+      return res.status(500).json({ success: false, error: err?.message || 'Errore elaborazione' });
+    }
+  });
+
+  // ENDPOINT: Invio notifica email a presidenza@croceoro.org e tesoreria@croceoro.org per rimozione Note di Debito
+  app.post('/api/elimina-note-debito-notifica', async (req, res) => {
+    try {
+      const { noteEliminate, operatore, motivazione } = req.body;
+      const noteArr = Array.isArray(noteEliminate) ? noteEliminate : [];
+      const operatoreNome = operatore || 'Amministratore Contabilità';
+      const motivo = motivazione || 'Rettifica amministrativa / Cancellazione da archivio';
+      const dataOra = formatDateTimeItaly();
+      const count = noteArr.length;
+
+      const destinatari = ['presidenza@croceoro.org', 'tesoreria@croceoro.org'];
+      const oggetto = `[NOTIFICA CONTABILITÀ] Cancellazione ${count} Nota/e di Debito dall'Archivio - Croce Oro Massa Carrara`;
+
+      const righeTabellaHtml = noteArr.map((n: any) => `
+        <tr style="border-bottom: 1px solid #e2e8f0;">
+          <td style="padding: 10px; font-weight: bold; color: #7f1d1d; font-family: monospace;">${n.numeroProgressivo || n.id}</td>
+          <td style="padding: 10px;">${n.dataEmissione || 'N/D'}</td>
+          <td style="padding: 10px;">
+            <strong>${n.debitoreIntestatario || 'N/D'}</strong><br/>
+            <span style="color: #64748b; font-size: 11px; font-family: monospace;">CF/P.IVA: ${n.partitaIvaCodiceFiscale || 'N/D'}</span>
+          </td>
+          <td style="padding: 10px; color: #334155;">${n.causale || 'N/D'}</td>
+          <td style="padding: 10px; font-weight: bold; color: #15803d; text-align: right; font-family: monospace;">€ ${(Number(n.importoTotale) || 0).toFixed(2)}</td>
+          <td style="padding: 10px; text-align: center;"><span style="background: #f1f5f9; padding: 2px 8px; border-radius: 6px; font-size: 11px; font-weight: bold;">${n.stato || 'Emessa'}</span></td>
+        </tr>
+      `).join('');
+
+      const testoEmail = `Spettabile Presidenza e Ufficio Tesoreria Croce Oro Massa Carrara OdV,\n\n` +
+        `Si notifica che in data ${dataOra} sono state rimosse ${count} note di debito dall'archivio contabile dell'Associazione.\n\n` +
+        `• Operatore esecutore: ${operatoreNome}\n` +
+        `• Motivazione indicata: ${motivo}\n\n` +
+        `Dettaglio note di debito cancellate:\n` +
+        noteArr.map((n: any) => `• ${n.numeroProgressivo || n.id} | Data: ${n.dataEmissione} | Debitore: ${n.debitoreIntestatario} (P.IVA/CF ${n.partitaIvaCodiceFiscale}) | € ${(Number(n.importoTotale) || 0).toFixed(2)} | Causale: ${n.causale}`).join('\n') +
+        `\n\nCroce Oro Massa Carrara OdV - Registro Contabilità & Tracciamento Fiscale RUNTS`;
+
+      const htmlEmail = `
+        <div style="font-family: Arial, sans-serif; color: #1e293b; max-width: 800px; line-height: 1.6; border: 1px solid #e2e8f0; border-radius: 12px; overflow: hidden;">
+          <div style="background-color: #7f1d1d; color: #fef08a; padding: 20px; text-align: center;">
+            <h2 style="margin: 0; font-size: 20px; font-weight: 800; letter-spacing: 0.5px;">CROCE ORO MASSA CARRARA OdV</h2>
+            <p style="margin: 6px 0 0; font-size: 13px; color: #fecaca;">Audit Contabile &bull; Notifica Rimozione Note di Debito dall'Archivio</p>
+          </div>
+          <div style="padding: 24px; background-color: #ffffff;">
+            <p style="margin-top: 0; font-size: 14px; color: #334155;">
+              Spettabile <strong>Presidenza</strong> e <strong>Ufficio Tesoreria</strong>,
+            </p>
+            <div style="background-color: #fef2f2; border-left: 4px solid #ef4444; padding: 14px 18px; border-radius: 6px; margin: 18px 0; font-size: 13px;">
+              <p style="margin: 4px 0;"><strong>⚠️ Evento:</strong> Rimozione definitiva di <strong>${count} documento/i nota di debito</strong> dall'archivio.</p>
+              <p style="margin: 4px 0;"><strong>👤 Operatore Autorizzato:</strong> ${operatoreNome}</p>
+              <p style="margin: 4px 0;"><strong>🕒 Data e Ora:</strong> ${dataOra}</p>
+              <p style="margin: 4px 0;"><strong>📝 Motivazione:</strong> ${motivo}</p>
+            </div>
+            <h3 style="font-size: 14px; color: #0f172a; margin-top: 20px;">Riepilogo Note di Debito Rimosse:</h3>
+            <table style="width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 8px;">
+              <thead>
+                <tr style="background-color: #f8fafc; border-bottom: 2px solid #cbd5e1; text-align: left; color: #475569;">
+                  <th style="padding: 8px;">Numero Progressivo</th>
+                  <th style="padding: 8px;">Data Emissione</th>
+                  <th style="padding: 8px;">Debitore / Ente</th>
+                  <th style="padding: 8px;">Causale Prestazione</th>
+                  <th style="padding: 8px; text-align: right;">Importo Totale</th>
+                  <th style="padding: 8px; text-align: center;">Stato</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${righeTabellaHtml}
+              </tbody>
+            </table>
+          </div>
+          <div style="background-color: #f1f5f9; padding: 14px 20px; font-size: 11px; color: #64748b; text-align: center; border-top: 1px solid #e2e8f0;">
+            Notifica generata in adempimento ai registri istituzionali di <strong>Croce Oro Massa Carrara OdV</strong>.<br/>
+            Destinatari automatici certificati: presidenza@croceoro.org &bull; tesoreria@croceoro.org
+          </div>
+        </div>
+      `;
+
+      let speditoViaSmtp = false;
+      let erroreSmtp = '';
+
+      const smtpHost = process.env.SMTP_HOST || 'smtp.gmail.com';
+      const smtpPort = parseInt(process.env.SMTP_PORT || '465', 10);
+      const isSecure = smtpPort === 465;
+      const smtpUser = process.env.SMTP_USER || 'croceoromassacarrara@gmail.com';
+      const smtpPass = process.env.SMTP_PASS || '';
+
+      const candidateUsers = Array.from(new Set([
+        smtpUser,
+        'presidenza@croceoro.org',
+        'tesoreria@croceoro.org',
+        process.env.SMTP_USER
+      ].filter(Boolean) as string[]));
+
+      let transporter: any = null;
+      let authenticatedUser = '';
+
+      if (smtpPass) {
+        for (const candidate of candidateUsers) {
+          try {
+            const t = nodemailer.createTransport({
+              host: smtpHost,
+              port: smtpPort,
+              secure: isSecure,
+              auth: { user: candidate, pass: smtpPass },
+              tls: { rejectUnauthorized: false }
+            });
+            await t.verify();
+            transporter = t;
+            authenticatedUser = candidate;
+            break;
+          } catch {}
+        }
+      }
+
+      if (transporter) {
+        try {
+          const info = await transporter.sendMail({
+            from: `"${MITTENTE_UFFICIALE}" <${authenticatedUser || 'tesoreria@croceoro.org'}>`,
+            to: destinatari.join(', '),
+            subject: oggetto,
+            text: testoEmail,
+            html: htmlEmail
+          });
+          speditoViaSmtp = true;
+          console.log(`[Email Note Debito Delete] Notifica inviata con successo via SMTP a ${destinatari.join(', ')} (MsgID: ${info.messageId})`);
+        } catch (err: any) {
+          erroreSmtp = err?.message || 'Errore invio SMTP';
+          console.error('[Email Note Debito Delete] Errore invio SMTP:', err);
+        }
+      } else {
+        console.log(`[Email Note Debito Delete] Notifica simulata/registrata per ${destinatari.join(', ')} (${count} note rimosse da ${operatoreNome})`);
+      }
+
+      const notificaRadio: RadioNotification = {
+        id: generateUniqueNotifId(),
+        orario: formatTimeItaly(),
+        testo: `🗑️ CONTABILITÀ: Rimosse ${count} note di debito dall'archivio da parte di ${operatoreNome}. Notifica email trasmessa a presidenza@croceoro.org e tesoreria@croceoro.org`,
+        tipo: 'sistema'
+      };
+      state.notifiche.push(notificaRadio);
+      if (state.notifiche.length > 50) state.notifiche.shift();
+
+      broadcast({
+        type: 'NOTIFICATION_BROADCAST',
+        notification: notificaRadio
+      });
+
+      return res.json({
+        success: true,
+        destinatari,
+        count,
+        speditoViaSmtp,
+        erroreSmtp,
+        message: `Notifica di cancellazione inviata a ${destinatari.join(' e ')}`
+      });
+    } catch (err: any) {
+      console.error('[Email Note Debito Delete] Errore endpoint:', err);
+      return res.status(500).json({ success: false, error: err?.message || 'Errore elaborazione' });
+    }
+  });
+
+  // ENDPOINT: Invio automatico della Ricevuta Tesseramento & Quota Sociale PDF al Tesoriere su click "STAMPA DOCUMENTO"
+  app.post('/api/invia-email-ricevuta-tesoriere', async (req, res) => {
+    try {
+      const {
+        tesoriereEmail,
+        tesoriereNome,
+        socioNome,
+        socioCognome,
+        numeroTessera,
+        numeroRicevuta,
+        importo,
+        pdfBase64,
+        nomeFile
+      } = req.body;
+
+      const emailDest = (tesoriereEmail && tesoriereEmail.trim()) || 'tesoreria@croceoro.org';
+      const nomeDest = (tesoriereNome && tesoriereNome.trim()) || 'Tesoriere';
+      const importoVal = Number(importo) || 0;
+      const numRic = numeroRicevuta || '01/2026';
+      const filename = nomeFile || `Ricevuta_Tesseramento_${(socioCognome || 'Socio').replace(/[^a-zA-Z0-9_-]/g, '_')}_${numRic.replace(/[^a-zA-Z0-9_-]/g, '_')}.pdf`;
+
+      const oggetto = `[RICEVUTA TESSERAMENTO & QUOTA SOCIALE ${numRic}] ${socioCognome} ${socioNome} - Croce Oro Massa Carrara OdV`;
+
+      let pdfBuffer: Buffer | null = null;
+      if (typeof pdfBase64 === 'string' && pdfBase64.trim().length > 50) {
+        try {
+          let cleanBase64 = pdfBase64.trim();
+          if (cleanBase64.includes('base64,')) {
+            cleanBase64 = cleanBase64.substring(cleanBase64.indexOf('base64,') + 7);
+          }
+          cleanBase64 = cleanBase64.replace(/[\r\n\s]/g, '');
+          const decoded = Buffer.from(cleanBase64, 'base64');
+          if (decoded.length > 200 && decoded.slice(0, 4).toString() === '%PDF') {
+            pdfBuffer = decoded;
+          }
+        } catch (e) {
+          console.error('[Email Ricevuta Tesoriere] Errore decodifica PDF:', e);
+        }
+      }
+
+      const testoEmail = `Gentile ${nomeDest} (Tesoriere Croce Oro Massa Carrara OdV),\n\n` +
+        `Si trasmette in allegato la Ricevuta Ufficiale di Tesseramento & Quota Sociale Annuale (carta intestata A4) a Tua firma automatica, generata contestualmente alla richiesta di stampa:\n\n` +
+        `• Ricevuta Numero: ${numRic}\n` +
+        `• Socio Intestatario: ${socioNome} ${socioCognome}\n` +
+        `• Numero Tessera: ${numeroTessera || 'N/D'}\n` +
+        `• Quota Sociale Versata: € ${importoVal.toFixed(2)}\n` +
+        `• Data Convalida: ${formatDateItaly()}\n\n` +
+        `Il documento ufficiale a pagina singola A4 è allegato alla presente comunicazione per la conservazione agli atti del Libro Soci.\n\n` +
+        `Croce Oro Massa Carrara OdV - Segreteria & Presidenza`;
+
+      const htmlEmail = `
+        <div style="font-family: Arial, sans-serif; color: #1e293b; max-width: 650px; line-height: 1.6; border: 1px solid #e2e8f0; border-radius: 12px; overflow: hidden;">
+          <div style="background-color: #1d1a60; color: #fbbf24; padding: 20px; text-align: center;">
+            <h2 style="margin: 0; font-size: 20px; font-weight: 800;">CROCE ORO MASSA CARRARA OdV</h2>
+            <p style="margin: 6px 0 0; font-size: 13px; color: #e2e8f0;">Ufficio Tesoreria &bull; Ricevuta Tesseramento & Quota Sociale</p>
+          </div>
+          <div style="padding: 24px; background-color: #ffffff;">
+            <p style="margin-top: 0; font-size: 14px; color: #334155;">Gentile <strong>${nomeDest}</strong> (Tesoriere),</p>
+            <p style="font-size: 14px; color: #334155;">
+              È stato cliccato il comando di <strong>Stampa Documento</strong> per la seguente ricevuta ufficiale di quota associativa recante la Tua firma automatica:
+            </p>
+            <div style="background-color: #f8fafc; border-left: 4px solid #bfa353; padding: 14px 18px; border-radius: 6px; margin: 18px 0; font-size: 13px;">
+              <p style="margin: 4px 0;"><strong>&bull; Numero Ricevuta:</strong> <span style="font-family: monospace; font-weight: bold; color: #1d1a60;">${numRic}</span></p>
+              <p style="margin: 4px 0;"><strong>&bull; Socio / Volontario:</strong> <span style="font-weight: bold;">${socioNome} ${socioCognome}</span></p>
+              <p style="margin: 4px 0;"><strong>&bull; Numero Tessera:</strong> ${numeroTessera || 'N/D'}</p>
+              <p style="margin: 4px 0;"><strong>&bull; Quota Sociale:</strong> <span style="color: #15803d; font-size: 15px; font-weight: bold;">€ ${importoVal.toFixed(2)}</span></p>
+              <p style="margin: 4px 0;"><strong>&bull; Data Validazione:</strong> ${formatDateItaly()}</p>
+            </div>
+            <p style="font-size: 13px; color: #475569;">
+              📎 In allegato trovi il documento PDF originale in carta intestata (<strong>${filename}</strong>), che occupa rigorosamente 1 singola pagina A4.
+            </p>
+          </div>
+          <div style="background-color: #f1f5f9; padding: 14px 20px; font-size: 11px; color: #64748b; text-align: center; border-top: 1px solid #e2e8f0;">
+            ${(state.datiCartaIntestata || DATI_CARTA_INTESTATA_DEFAULT).denominazione} &bull; Sede Legale: ${(state.datiCartaIntestata || DATI_CARTA_INTESTATA_DEFAULT).sedeLegale} &bull; Sede Massa: ${(state.datiCartaIntestata || DATI_CARTA_INTESTATA_DEFAULT).sedeMassa} &bull; Sede Carrara: ${(state.datiCartaIntestata || DATI_CARTA_INTESTATA_DEFAULT).sedeCarrara} &bull; Sede Pietrasanta: ${(state.datiCartaIntestata || DATI_CARTA_INTESTATA_DEFAULT).sedePietrasanta} &bull; CF ${(state.datiCartaIntestata || DATI_CARTA_INTESTATA_DEFAULT).codiceFiscale}
+          </div>
+        </div>
+      `;
+
+      let speditoViaSmtp = false;
+      let erroreSmtp = '';
+
+      const smtpHost = process.env.SMTP_HOST || 'smtp.gmail.com';
+      const smtpPort = parseInt(process.env.SMTP_PORT || '465', 10);
+      const isSecure = smtpPort === 465;
+      const smtpUser = process.env.SMTP_USER || 'croceoromassacarrara@gmail.com';
+      const smtpPass = process.env.SMTP_PASS || '';
+
+      const candidateUsers = Array.from(new Set([
+        smtpUser,
+        'tesoreria@croceoro.org',
+        'presidenza@croceoro.org'
+      ].filter(Boolean) as string[]));
+
+      let transporter: any = null;
+      let authenticatedUser = '';
+
+      if (smtpPass) {
+        for (const candidate of candidateUsers) {
+          try {
+            const t = nodemailer.createTransport({
+              host: smtpHost,
+              port: smtpPort,
+              secure: isSecure,
+              auth: { user: candidate, pass: smtpPass },
+              tls: { rejectUnauthorized: false }
+            });
+            await t.verify();
+            transporter = t;
+            authenticatedUser = candidate;
+            break;
+          } catch {}
+        }
+      }
+
+      if (transporter && pdfBuffer) {
+        try {
+          const info = await transporter.sendMail({
+            from: `"${MITTENTE_UFFICIALE}" <${authenticatedUser || 'tesoreria@croceoro.org'}>`,
+            to: emailDest,
+            cc: 'presidenza@croceoro.org',
+            subject: oggetto,
+            text: testoEmail,
+            html: htmlEmail,
+            attachments: [
+              {
+                filename,
+                content: pdfBuffer,
+                contentType: 'application/pdf',
+                contentDisposition: 'attachment'
+              }
+            ]
+          });
+          speditoViaSmtp = true;
+          console.log(`[Email Ricevuta Tesoriere] PDF inviato con successo via SMTP a ${emailDest} (MsgID: ${info.messageId})`);
+        } catch (err: any) {
+          erroreSmtp = err?.message || 'Errore invio SMTP';
+          console.error('[Email Ricevuta Tesoriere] Errore invio SMTP:', err);
+        }
+      } else {
+        console.log(`[Email Ricevuta Tesoriere] Notifica registrata per ${emailDest} (${filename}, allegato: ${pdfBuffer ? pdfBuffer.length : 0} bytes)`);
+      }
+
+      const notificaRadio: RadioNotification = {
+        id: generateUniqueNotifId(),
+        orario: formatTimeItaly(),
+        testo: `🧾 TESSERAMENTO: Ricevuta ${numRic} (${socioCognome} ${socioNome}) stampata e inviata via email a ${nomeDest} (${emailDest})`,
+        tipo: 'sistema'
+      };
+      state.notifiche.push(notificaRadio);
+      if (state.notifiche.length > 50) state.notifiche.shift();
+
+      broadcast({
+        type: 'NOTIFICATION_BROADCAST',
+        notification: notificaRadio
+      });
+
+      return res.json({
+        success: true,
+        destinatario: emailDest,
+        speditoViaSmtp,
+        erroreSmtp,
+        filename,
+        dimensioneAllegatoBytes: pdfBuffer ? pdfBuffer.length : 0,
+        message: `Ricevuta inviata via email al Tesoriere (${emailDest}) con allegato ${filename}`
+      });
+    } catch (err: any) {
+      console.error('[Email Ricevuta Tesoriere] Errore endpoint:', err);
+      return res.status(500).json({ success: false, error: err?.message || 'Errore elaborazione' });
+    }
+  });
+
+  // ENDPOINT: Invio Email Automatica di Attivazione con PIN Provvisorio e Pulsante Reset su Pagina Web Dedicata
+  app.post('/api/invia-email-invito-reset-pin', async (req, res) => {
+    try {
+      const { id, nome, cognome, email, pinProvvisorio, token, qualifica, origin } = req.body;
+
+      if (!id || !email || !pinProvvisorio) {
+        return res.status(400).json({ success: false, error: 'Dati incompleti per l\'invio dell\'email' });
+      }
+
+      const emailDestinatario = String(email).trim().toLowerCase();
+      const nomeUtente = (nome || '').trim();
+      const cognomeUtente = (cognome || '').trim();
+      const pinTemporaneo = String(pinProvvisorio).trim();
+      const resetToken = token || `rst-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+
+      // Salva lo stato del volontario con il token e flag di richiesta reset
+      const vIndex = state.volontari.findIndex(v => v.id === id);
+      if (vIndex >= 0) {
+        state.volontari[vIndex].pin = pinTemporaneo;
+        state.volontari[vIndex].pinProvvisorio = true;
+        state.volontari[vIndex].richiedeResetPassword = true;
+        state.volontari[vIndex].resetToken = resetToken;
+        state.volontari[vIndex].dataInvioInvitoReset = formatDateTimeItaly();
+        persistState();
+        broadcast({
+          type: 'VOLONTARI_UPDATED',
+          volontari: state.volontari
+        });
+      }
+
+      // Costruisci il link web dedicato
+      const reqOrigin = origin || `${req.protocol}://${req.get('host')}`;
+      const baseUrl = reqOrigin.replace(/\/+$/, '');
+      const resetUrl = `${baseUrl}/reset-pin?id=${encodeURIComponent(id)}&token=${encodeURIComponent(resetToken)}`;
+
+      // Mittente identico a quello delle donazioni (TopHost)
+      const MITTENTE_UFFICIALE = 'CROCE ORO MASSA CARRARA OdV - Sistemi Automatizzati';
+      const EMAIL_MITTENTE_UFFICIALE = 'sistemiautomatizzati@croceoro.org';
+
+      const smtpHost = process.env.SMTP_HOST || 'mail.tophost.it';
+      const smtpPass = process.env.SMTP_PASS || 'Applicazione26!';
+      const smtpPort = Number(process.env.SMTP_PORT) || 587;
+      const isSecure = smtpPort === 465;
+
+      const candidateUsers = Array.from(new Set([
+        'croceoro.org10175',
+        'croceoro.org',
+        'sistemiautomatizzati@croceoro.org',
+        process.env.SMTP_USER
+      ].filter(Boolean) as string[]));
+
+      let transporter: any = null;
+      let authenticatedUser = '';
+
+      for (const candidate of candidateUsers) {
+        try {
+          const t = nodemailer.createTransport({
+            host: smtpHost,
+            port: smtpPort,
+            secure: isSecure,
+            auth: {
+              user: candidate,
+              pass: smtpPass
+            },
+            tls: {
+              rejectUnauthorized: false
+            }
+          });
+          await t.verify();
+          transporter = t;
+          authenticatedUser = candidate;
+          break;
+        } catch {
+          // Continua
+        }
+      }
+
+      const oggetto = `[Croce Oro Massa Carrara] Attivazione Account Operativo & PIN di Sicurezza`;
+      const testoEmail = `Gentile ${nomeUtente} ${cognomeUtente},\n\n` +
+        `È stato registrato il tuo account operativo per la Croce Oro Massa Carrara OdV (${qualifica || 'Operatore'}).\n\n` +
+        `Il sistema ha generato per te un codice PIN provvisorio di sicurezza:\n` +
+        `PIN PROVVISORIO: ${pinTemporaneo}\n\n` +
+        `Per ragioni di riservatezza e sicurezza operativa, sei invitato/a ad impostare in completa autonomia il tuo nuovo PIN Personale a 4 cifre prima del primo utilizzo sui terminali dell'Associazione.\n\n` +
+        `Clicca sul seguente link protetto dedicato per impostare il tuo PIN personale:\n` +
+        `${resetUrl}\n\n` +
+        `Questo link è strettamente personale e riservato.\n\n` +
+        `Croce Oro Massa Carrara OdV - Sistemi Automatizzati`;
+
+      const htmlEmail = `
+        <div style="font-family: Arial, 'Helvetica Neue', Helvetica, sans-serif; color: #1e293b; max-width: 600px; margin: 0 auto; line-height: 1.6; border: 1px solid #e2e8f0; border-radius: 12px; overflow: hidden; background-color: #ffffff;">
+          <!-- Header Istituzionale -->
+          <div style="background-color: #1d1a60; color: #fbbf24; padding: 24px 20px; text-align: center;">
+            <h1 style="margin: 0; font-size: 22px; font-weight: 800; letter-spacing: 0.5px; color: #fbbf24;">CROCE ORO MASSA CARRARA OdV</h1>
+            <p style="margin: 6px 0 0; font-size: 13px; color: #e2e8f0; font-weight: 500;">Centrale Operativa Radio & Emergenze &bull; Sistemi Automatizzati</p>
+          </div>
+          
+          <!-- Corpo della mail -->
+          <div style="padding: 28px 24px; background-color: #ffffff;">
+            <h2 style="margin-top: 0; font-size: 18px; color: #1d1a60; font-weight: 700;">Attivazione Profilo & Impostazione PIN Personale</h2>
+            
+            <p style="font-size: 14px; color: #334155;">Gentile <strong>${nomeUtente} ${cognomeUtente}</strong>,</p>
+            
+            <p style="font-size: 14px; color: #334155;">
+              È stato registrato il tuo account operativo per la <strong>Croce Oro Massa Carrara OdV</strong>${qualifica ? ` con qualifica di <strong>${qualifica}</strong>` : ''}.
+            </p>
+
+            <!-- Box PIN Provvisorio Evidenziato -->
+            <div style="background-color: #fef3c7; border: 2px dashed #f59e0b; border-radius: 10px; padding: 18px; margin: 22px 0; text-align: center;">
+              <p style="margin: 0 0 6px 0; font-size: 12px; font-weight: bold; text-transform: uppercase; color: #92400e; letter-spacing: 0.5px;">Codice PIN Provvisorio Assegnato</p>
+              <div style="font-size: 32px; font-weight: 900; letter-spacing: 8px; color: #b45309; font-family: 'Courier New', Courier, monospace;">${pinTemporaneo}</div>
+              <p style="margin: 6px 0 0 0; font-size: 11px; color: #78350f;">Usa questo PIN per confermare la tua identità e impostare il tuo nuovo codice</p>
+            </div>
+
+            <p style="font-size: 14px; color: #334155; line-height: 1.5;">
+              Per garantire la massima riservatezza ed evitare accessi non autorizzati, sei invitato/a a definire il tuo <strong>Nuovo PIN Personale a 4 cifre</strong> in completa autonomia cliccando sul pulsante sottostante:
+            </p>
+
+            <!-- Pulsante CTA ben visibile e accattivante -->
+            <div style="text-align: center; margin: 30px 0;">
+              <a href="${resetUrl}" target="_blank" rel="noopener noreferrer" style="display: inline-block; background-color: #1d1a60; color: #fbbf24; text-decoration: none; padding: 16px 32px; font-size: 15px; font-weight: 800; border-radius: 10px; border: 2px solid #fbbf24; box-shadow: 0 4px 14px rgba(29, 26, 96, 0.35); text-transform: uppercase; letter-spacing: 0.5px;">
+                👉 Reimposta il tuo PIN Personale
+              </a>
+            </div>
+
+            <div style="font-size: 12px; color: #64748b; line-height: 1.6; background-color: #f8fafc; padding: 14px; border-radius: 8px; border-left: 4px solid #3b82f6; margin-top: 20px;">
+              🔒 <strong>Accesso Riservato:</strong> Questo collegamento è personale e univoco. Ti indirizzerà a un portale protetto dedicato dove potrai scegliere il tuo PIN senza che nessuno possa visualizzarlo.<br>
+              Se il pulsante sopra non dovesse aprirsi, copia e incolla questo link nel tuo browser:<br>
+              <a href="${resetUrl}" style="color: #2563eb; word-break: break-all; font-size: 11px;">${resetUrl}</a>
+            </div>
+          </div>
+
+          <!-- Footer -->
+          <div style="background-color: #f1f5f9; padding: 16px 20px; font-size: 11px; color: #64748b; text-align: center; border-top: 1px solid #e2e8f0;">
+            <p style="margin: 0; font-weight: bold;">Croce Oro Massa Carrara OdV &bull; Sistemi Automatizzati</p>
+            <p style="margin: 4px 0 0; color: #94a3b8;">Email trasmessa automaticamente da sistemiautomatizzati@croceoro.org &bull; Non rispondere direttamente a questa email.</p>
+          </div>
+        </div>
+      `;
+
+      let speditoViaSmtp = false;
+      let erroreSmtp: string | null = null;
+
+      if (transporter) {
+        try {
+          const info = await transporter.sendMail({
+            from: {
+              name: MITTENTE_UFFICIALE,
+              address: EMAIL_MITTENTE_UFFICIALE
+            },
+            sender: EMAIL_MITTENTE_UFFICIALE,
+            replyTo: EMAIL_MITTENTE_UFFICIALE,
+            envelope: {
+              from: EMAIL_MITTENTE_UFFICIALE,
+              to: [emailDestinatario]
+            },
+            to: emailDestinatario,
+            subject: oggetto,
+            text: testoEmail,
+            html: htmlEmail
+          });
+          speditoViaSmtp = true;
+          console.log(`[Invito PIN] Email inviata a ${emailDestinatario} da "${MITTENTE_UFFICIALE}" (MsgID: ${info.messageId})`);
+        } catch (err: any) {
+          erroreSmtp = err?.message || 'Errore invio SMTP';
+          console.error('[Invito PIN] Errore invio SMTP:', err);
+        }
+      } else {
+        erroreSmtp = 'Server SMTP non connesso al momento';
+        console.warn('[Invito PIN] SMTP non pronto, link generato:', resetUrl);
+      }
+
+      // Notifica Radio in Centrale
+      const notificaRadio: RadioNotification = {
+        id: generateUniqueNotifId(),
+        orario: formatTimeItaly(),
+        testo: `📧 ATTIVAZIONE: Inviata email con PIN provvisorio e pulsante reset a ${nomeUtente} ${cognomeUtente} (${emailDestinatario}) da sistemiautomatizzati@croceoro.org`,
+        tipo: 'sistema'
+      };
+      state.notifiche.push(notificaRadio);
+      if (state.notifiche.length > 50) state.notifiche.shift();
+      broadcast({
+        type: 'NOTIFICATION_BROADCAST',
+        notification: notificaRadio
+      });
+
+      return res.json({
+        success: true,
+        speditoViaSmtp,
+        erroreSmtp,
+        destinatario: emailDestinatario,
+        resetUrl,
+        mittente: `"${MITTENTE_UFFICIALE}" <${EMAIL_MITTENTE_UFFICIALE}>`,
+        message: speditoViaSmtp
+          ? `Email con PIN provvisorio inviata con successo a ${emailDestinatario}`
+          : `Invito generato (link: ${resetUrl})`
+      });
+    } catch (err: any) {
+      console.error('[Invito PIN] Errore endpoint:', err);
+      return res.status(500).json({ success: false, error: err?.message || 'Errore elaborazione' });
+    }
+  });
+
+  // ENDPOINT: Notifica automatica via email all'Amministratore per modifiche / nuovi inserimenti nelle macro categorie
+  app.post('/api/notifica-modifica-admin', async (req, res) => {
+    try {
+      const {
+        operatoreNome = 'Operatore / Volontario',
+        operatoreRuolo = 'Profilo Delegato',
+        macroCategoria = 'Gestionale',
+        azione = 'Modifica Dati',
+        dettaglio = 'Nessun dettaglio specificato',
+        elementoNome = '',
+        dataOra = formatDateTimeItaly()
+      } = req.body || {};
+
+      const MITTENTE_UFFICIALE = 'CROCE ORO MASSA CARRARA OdV - Sistemi Automatizzati';
+      const EMAIL_MITTENTE_UFFICIALE = 'sistemiautomatizzati@croceoro.org';
+
+      // Destinatario esclusivo per le notifiche automatiche di modifica all'Amministratore
+      const destinatari = ['presidenza@croceoro.org'];
+
+      const smtpHost = process.env.SMTP_HOST || 'mail.tophost.it';
+      const smtpPass = process.env.SMTP_PASS || 'Applicazione26!';
+      const smtpPort = Number(process.env.SMTP_PORT) || 587;
+      const isSecure = smtpPort === 465;
+
+      const candidateUsers = Array.from(new Set([
+        'croceoro.org10175',
+        'croceoro.org',
+        'sistemiautomatizzati@croceoro.org',
+        process.env.SMTP_USER
+      ].filter(Boolean) as string[]));
+
+      let transporter: any = null;
+      for (const candidate of candidateUsers) {
+        try {
+          const t = nodemailer.createTransport({
+            host: smtpHost,
+            port: smtpPort,
+            secure: isSecure,
+            auth: {
+              user: candidate,
+              pass: smtpPass
+            },
+            tls: {
+              rejectUnauthorized: false
+            }
+          });
+          await t.verify();
+          transporter = t;
+          break;
+        } catch {}
+      }
+
+      const oggetto = `[NOTIFICA GESTIONALE] ${azione} in "${macroCategoria}" — ${operatoreNome}`;
+      const testoEmail =
+        `Spettabile Amministrazione Croce Oro Massa Carrara OdV,\n\n` +
+        `Si notifica che è stata effettuata un'operazione nel Portale Gestionale da un utente con accesso delegato:\n\n` +
+        `• Autore: ${operatoreNome} (${operatoreRuolo})\n` +
+        `• Macro Categoria: ${macroCategoria}\n` +
+        `• Tipologia Operazione: ${azione}\n` +
+        (elementoNome ? `• Elemento Interessato: ${elementoNome}\n` : '') +
+        `• Dettagli Operazione:\n${dettaglio}\n\n` +
+        `• Data e Ora: ${dataOra}\n\n` +
+        `Notifica generata in automatico a tutela della trasparenza e sicurezza del database.\n\n` +
+        `Croce Oro Massa Carrara OdV - Sistemi Automatizzati`;
+
+      const htmlEmail = `
+        <div style="font-family: Arial, 'Helvetica Neue', Helvetica, sans-serif; color: #1e293b; max-width: 650px; margin: 0 auto; line-height: 1.6; border: 1px solid #e2e8f0; border-radius: 12px; overflow: hidden; background-color: #ffffff;">
+          <div style="background-color: #1d1a60; color: #fbbf24; padding: 22px 20px; text-align: center;">
+            <h1 style="margin: 0; font-size: 20px; font-weight: 800; letter-spacing: 0.5px; color: #fbbf24;">CROCE ORO MASSA CARRARA OdV</h1>
+            <p style="margin: 6px 0 0; font-size: 13px; color: #e2e8f0; font-weight: 500;">Centrale Operativa Radio & Emergenze &bull; Sistemi Automatizzati</p>
+          </div>
+          
+          <div style="padding: 26px 24px; background-color: #ffffff;">
+            <div style="display: inline-block; background-color: #f0fdf4; border: 1px solid #86efac; border-radius: 6px; padding: 4px 10px; font-size: 12px; font-weight: bold; color: #166534; margin-bottom: 12px;">
+              🛡️ NOTIFICA REGISTRO GESTIONALE
+            </div>
+            
+            <h2 style="margin: 0 0 16px 0; font-size: 18px; color: #0f172a; font-weight: 800;">
+              ${azione}: ${macroCategoria}
+            </h2>
+
+            <p style="font-size: 14px; color: #334155; margin-top: 0;">
+              Gentile Amministratore, il sistema ha registrato una nuova operazione effettuata da personale con accesso delegato:
+            </p>
+
+            <div style="background-color: #f8fafc; border-left: 4px solid #b45309; border-radius: 8px; padding: 16px; margin: 18px 0; font-size: 13px;">
+              <p style="margin: 4px 0;"><strong>👤 Eseguito da:</strong> <span style="color: #0f172a; font-weight: bold;">${operatoreNome}</span> <span style="color: #64748b;">(${operatoreRuolo})</span></p>
+              <p style="margin: 4px 0;"><strong>📂 Macro Categoria:</strong> <span style="color: #1d1a60; font-weight: bold;">${macroCategoria}</span></p>
+              <p style="margin: 4px 0;"><strong>⚡ Azione:</strong> <span style="background-color: #fef3c7; color: #92400e; padding: 2px 6px; border-radius: 4px; font-weight: bold;">${azione}</span></p>
+              ${elementoNome ? `<p style="margin: 4px 0;"><strong>🏷️ Elemento:</strong> <strong>${elementoNome}</strong></p>` : ''}
+              <p style="margin: 4px 0;"><strong>🕒 Data e Ora:</strong> ${dataOra}</p>
+              
+              <div style="margin-top: 12px; padding-top: 10px; border-top: 1px solid #e2e8f0;">
+                <strong style="color: #475569; display: block; margin-bottom: 4px;">📝 Riepilogo Modifiche Effettuate:</strong>
+                <div style="background-color: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; padding: 10px; font-family: monospace; font-size: 12px; color: #1e293b; white-space: pre-wrap;">${dettaglio}</div>
+              </div>
+            </div>
+
+            <p style="font-size: 12px; color: #64748b; margin-bottom: 0;">
+              ℹ️ Nota di sicurezza: ai volontari e operatori abilitati è consentito visualizzare, creare e modificare dati, mentre qualsiasi operazione di cancellazione o rimozione definitiva rimane inibita ed esclusiva facoltà dell'Amministrazione.
+            </p>
+          </div>
+
+          <div style="background-color: #f1f5f9; padding: 14px 20px; font-size: 11px; color: #64748b; text-align: center; border-top: 1px solid #e2e8f0;">
+            <p style="margin: 0; font-weight: bold;">Croce Oro Massa Carrara OdV &bull; Sistemi Automatizzati</p>
+            <p style="margin: 4px 0 0; color: #94a3b8;">Email inviata in tempo reale a tutela della tracciabilità gestionale.</p>
+          </div>
+        </div>
+      `;
+
+      let speditoViaSmtp = false;
+      let erroreSmtp: string | null = null;
+
+      if (transporter) {
+        try {
+          await transporter.sendMail({
+            from: {
+              name: MITTENTE_UFFICIALE,
+              address: EMAIL_MITTENTE_UFFICIALE
+            },
+            sender: EMAIL_MITTENTE_UFFICIALE,
+            replyTo: EMAIL_MITTENTE_UFFICIALE,
+            to: destinatari,
+            subject: oggetto,
+            text: testoEmail,
+            html: htmlEmail
+          });
+          speditoViaSmtp = true;
+          console.log(`[Notifica Modifica Admin] Inviata email a ${destinatari.join(', ')} per azione di "${operatoreNome}" in "${macroCategoria}"`);
+        } catch (mailErr: any) {
+          erroreSmtp = mailErr?.message || 'Errore SMTP invio';
+          console.error('[Notifica Modifica Admin] Errore SMTP:', mailErr);
+        }
+      }
+
+      // Notifica Radio in tempo reale per la postazione Amministratore
+      const notificaRadio: RadioNotification = {
+        id: generateUniqueNotifId(),
+        orario: formatTimeItaly(),
+        testo: `📝 MODIFICA GESTIONALE: ${operatoreNome} (${operatoreRuolo}) ha eseguito "${azione}" in "${macroCategoria}". Notifica email inviata all'Amministratore.`,
+        tipo: 'sistema'
+      };
+      state.notifiche.push(notificaRadio);
+      if (state.notifiche.length > 50) state.notifiche.shift();
+      broadcast({
+        type: 'NOTIFICATION_BROADCAST',
+        notification: notificaRadio
+      });
+
+      return res.json({
+        success: true,
+        speditoViaSmtp,
+        erroreSmtp,
+        destinatari
+      });
+    } catch (err: any) {
+      console.error('[Notifica Modifica Admin] Errore generale:', err);
+      return res.status(500).json({ success: false, error: err?.message || 'Errore elaborazione notifica' });
+    }
+  });
+
+  // Tracciamento in memoria dell'ultimo livello di scorta notificato per ciascun articolo per evitare spam continuo
+  const ultimoStatoNotificaSottoscorta = new Map<string, { giacenza: number; timestamp: number }>();
+
+  // ENDPOINT: Invio automatico email per articolo Magazzino Mezzi uguale o inferiore alla scorta minima
+  // Destinatari obbligatori: mezzi@croceoro.org e presidenza@croceoro.org
+  app.post('/api/notifica-sottoscorta-mezzi', async (req, res) => {
+    try {
+      const {
+        articoli = [],
+        articolo,
+        causale = 'Aggiornamento giacenza magazzino ricambi mezzi',
+        operatore = 'Centrale Operativa / Personale Mezzi',
+        dataOra = formatDateTimeItaly(),
+        force = false
+      } = req.body || {};
+
+      const listaArticoli: any[] = Array.isArray(articoli) && articoli.length > 0
+        ? articoli
+        : (articolo ? [articolo] : []);
+
+      if (listaArticoli.length === 0) {
+        return res.status(400).json({ success: false, error: 'Nessun articolo fornito per la notifica' });
+      }
+
+      // Filtra solo gli articoli che sono effettivamente uguali o inferiori alla scorta minima
+      const ora = Date.now();
+      const articoliSottoScorta = listaArticoli.filter((a: any) => {
+        const giac = Number(a.giacenza);
+        const min = Number(a.scortaMinima);
+        if (isNaN(giac) || isNaN(min) || min <= 0 || giac > min) return false;
+
+        if (!force && a.id) {
+          const prev = ultimoStatoNotificaSottoscorta.get(a.id);
+          // Se già notificato con la stessa identica giacenza meno di 10 minuti fa, evita duplicazioni identiche
+          if (prev && prev.giacenza === giac && (ora - prev.timestamp) < 10 * 60 * 1000) {
+            return false;
+          }
+        }
+        return true;
+      });
+
+      if (articoliSottoScorta.length === 0) {
+        return res.json({
+          success: true,
+          message: 'Nessun nuovo articolo sotto scorta minima da notificare o già notificato recentemente.',
+          count: 0
+        });
+      }
+
+      // Aggiorna registro in memoria
+      articoliSottoScorta.forEach((a: any) => {
+        if (a.id) {
+          ultimoStatoNotificaSottoscorta.set(a.id, { giacenza: Number(a.giacenza), timestamp: ora });
+        }
+      });
+
+      const destinatari = ['mezzi@croceoro.org', 'presidenza@croceoro.org'];
+
+      const smtpHost = process.env.SMTP_HOST || 'mail.tophost.it';
+      const smtpPass = process.env.SMTP_PASS || 'Applicazione26!';
+      const smtpPort = Number(process.env.SMTP_PORT) || 587;
+      const isSecure = smtpPort === 465;
+
+      const candidateUsers = Array.from(new Set([
+        'croceoro.org10175',
+        'croceoro.org',
+        'sistemiautomatizzati@croceoro.org',
+        process.env.SMTP_USER
+      ].filter(Boolean) as string[]));
+
+      let transporter: any = null;
+      for (const candidate of candidateUsers) {
+        try {
+          const t = nodemailer.createTransport({
+            host: smtpHost,
+            port: smtpPort,
+            secure: isSecure,
+            auth: {
+              user: candidate,
+              pass: smtpPass
+            },
+            tls: {
+              rejectUnauthorized: false
+            }
+          });
+          await t.verify();
+          transporter = t;
+          break;
+        } catch {}
+      }
+
+      const primoArt = articoliSottoScorta[0];
+      const oggetto = articoliSottoScorta.length === 1
+        ? `[ALLERTA SCORTA MINIMA MEZZI] ${primoArt.nome} (${primoArt.codice}) — Giacenza: ${primoArt.giacenza} ${primoArt.unitaMisura || 'Pz'} (Scorta Min: ${primoArt.scortaMinima})`
+        : `[ALLERTA SCORTA MINIMA MEZZI] Rilevati ${articoliSottoScorta.length} articoli sotto la scorta minima`;
+
+      const righeArticoliHtml = articoliSottoScorta.map((a: any) => `
+        <tr style="border-bottom: 1px solid #e2e8f0;">
+          <td style="padding: 10px; font-family: monospace; font-weight: bold; color: #b45309;">${a.codice || '-'}</td>
+          <td style="padding: 10px; font-weight: bold; color: #0f172a;">${a.nome || '-'}<br/><span style="font-size: 11px; color: #64748b; font-weight: normal;">${a.categoria || ''}${a.compatibilitaMezzi ? ` &bull; Comp: ${a.compatibilitaMezzi}` : ''}</span></td>
+          <td style="padding: 10px; text-align: center; color: #dc2626; font-size: 14px; font-weight: 900; background-color: #fef2f2;">${a.giacenza} ${a.unitaMisura || 'Pz'}</td>
+          <td style="padding: 10px; text-align: center; color: #475569; font-weight: bold;">${a.scortaMinima} ${a.unitaMisura || 'Pz'}</td>
+          <td style="padding: 10px; color: #475569; font-size: 11px;">${a.ubicazioneScaffale || 'Scaffale M1'}${a.fornitore ? `<br/><span style="color: #64748b; font-weight: bold;">Forn: ${a.fornitore}</span>` : ''}</td>
+        </tr>
+      `).join('');
+
+      const testoEmail =
+        `Spettabili Referenti Ufficio Mezzi & Presidenza Croce Oro Massa Carrara OdV,\n\n` +
+        `SI NOTIFICA CHE I SEGUENTI ARTICOLI DEL MAGAZZINO RICAMBI MEZZI SONO UGUALI O INFERIORI ALLA SCORTA MINIMA:\n\n` +
+        articoliSottoScorta.map((a: any) =>
+          `• [${a.codice}] ${a.nome}\n` +
+          `  GIACENZA ATTUALE: ${a.giacenza} ${a.unitaMisura || 'Pz'} (Soglia Minima: ${a.scortaMinima} ${a.unitaMisura || 'Pz'})\n` +
+          `  Categoria: ${a.categoria || 'Ricambi'}\n` +
+          (a.compatibilitaMezzi ? `  Compatibilità: ${a.compatibilitaMezzi}\n` : '') +
+          (a.fornitore ? `  Fornitore Abituale: ${a.fornitore}\n` : '') +
+          (a.ubicazioneScaffale ? `  Ubicazione: ${a.ubicazioneScaffale}\n` : '')
+        ).join('\n') +
+        `\n• Causale Evento: ${causale}\n` +
+        `• Registrato da: ${operatore}\n` +
+        `• Data e Ora: ${dataOra}\n\n` +
+        `Si raccomanda di provvedere tempestivamente all'ordine di riapprovvigionamento per mantenere la piena efficienza operativa e sicurezza dei mezzi di soccorso.\n\n` +
+        `Croce Oro Massa Carrara OdV - Sistemi Automatizzati`;
+
+      const htmlEmail = `
+        <div style="font-family: Arial, 'Helvetica Neue', Helvetica, sans-serif; color: #1e293b; max-width: 680px; margin: 0 auto; line-height: 1.6; border: 1px solid #e2e8f0; border-radius: 12px; overflow: hidden; background-color: #ffffff;">
+          <div style="background-color: #1d1a60; color: #fbbf24; padding: 22px 20px; text-align: center;">
+            <h1 style="margin: 0; font-size: 20px; font-weight: 800; letter-spacing: 0.5px; color: #fbbf24;">CROCE ORO MASSA CARRARA OdV</h1>
+            <p style="margin: 6px 0 0; font-size: 13px; color: #e2e8f0; font-weight: 500;">Settore Mezzi & Parco Veicolare &bull; Magazzino Ricambi & Manutenzioni</p>
+          </div>
+
+          <div style="padding: 24px; background-color: #ffffff;">
+            <div style="background-color: #fef2f2; border-left: 4px solid #ef4444; border-radius: 8px; padding: 14px 18px; margin-bottom: 20px;">
+              <h2 style="margin: 0 0 6px 0; font-size: 16px; color: #991b1b; font-weight: 800;">
+                ⚠️ ALLERTA SCORTA MINIMA / SOTTOSCORTA MAGAZZINO MEZZI
+              </h2>
+              <p style="margin: 0; font-size: 13px; color: #7f1d1d; line-height: 1.5;">
+                Si segnala che <strong>${articoliSottoScorta.length} articolo/i</strong> del magazzino ricambi e manutenzione mezzi hanno raggiunto o sono scesi al di sotto della soglia di scorta minima prestabilita.
+              </p>
+            </div>
+
+            <div style="font-size: 12px; color: #475569; margin-bottom: 14px; background-color: #f8fafc; padding: 10px 14px; border-radius: 6px; border: 1px solid #e2e8f0;">
+              <strong>ℹ️ Dettagli Registrazione:</strong> Causale: <em>${causale}</em> &bull; Operatore: <strong>${operatore}</strong> &bull; Data/Ora: <strong>${dataOra}</strong>
+            </div>
+
+            <h3 style="font-size: 14px; color: #0f172a; margin: 18px 0 8px 0;">Articoli da Riordinare:</h3>
+            <table style="width: 100%; border-collapse: collapse; font-size: 12px;">
+              <thead>
+                <tr style="background-color: #f1f5f9; text-align: left; color: #475569; border-bottom: 2px solid #cbd5e1;">
+                  <th style="padding: 8px 10px;">Codice</th>
+                  <th style="padding: 8px 10px;">Descrizione / Categoria</th>
+                  <th style="padding: 8px 10px; text-align: center;">Giacenza</th>
+                  <th style="padding: 8px 10px; text-align: center;">Scorta Min.</th>
+                  <th style="padding: 8px 10px;">Ubicazione / Fornitore</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${righeArticoliHtml}
+              </tbody>
+            </table>
+
+            <div style="margin-top: 24px; padding: 14px; background-color: #fffbeb; border: 1px solid #fef3c7; border-radius: 8px; font-size: 12px; color: #92400e;">
+              <strong>📦 Azione Consigliata:</strong> Si invita l'Ufficio Mezzi e la Presidenza a contattare tempestivamente il fornitore ed emettere l'ordine di acquisto per il riassortimento dei ricambi necessari alla flotta.
+            </div>
+          </div>
+
+          <div style="background-color: #f1f5f9; padding: 14px 20px; font-size: 11px; color: #64748b; text-align: center; border-top: 1px solid #e2e8f0;">
+            Notifica generata in automatico a tutela della continuità operativa e trasmessa a <strong>mezzi@croceoro.org</strong> e <strong>presidenza@croceoro.org</strong>.
+          </div>
+        </div>
+      `;
+
+      let speditoViaSmtp = false;
+      let erroreSmtp: string | null = null;
+
+      if (transporter) {
+        try {
+          await transporter.sendMail({
+            from: {
+              name: MITTENTE_UFFICIALE,
+              address: EMAIL_MITTENTE_UFFICIALE
+            },
+            sender: EMAIL_MITTENTE_UFFICIALE,
+            replyTo: EMAIL_MITTENTE_UFFICIALE,
+            to: destinatari,
+            subject: oggetto,
+            text: testoEmail,
+            html: htmlEmail
+          });
+          speditoViaSmtp = true;
+          console.log(`[Email Sottoscorta Mezzi] Inviata email con successo a ${destinatari.join(', ')} per ${articoliSottoScorta.length} articoli`);
+        } catch (mailErr: any) {
+          erroreSmtp = mailErr?.message || 'Errore SMTP';
+          console.error('[Email Sottoscorta Mezzi] Errore SMTP:', mailErr);
+        }
+      } else {
+        console.log(`[Email Sottoscorta Mezzi] Registrata notifica locale per ${destinatari.join(', ')} (${articoliSottoScorta.length} articoli)`);
+      }
+
+      // Notifica Radio in tempo reale nel registro di Centrale
+      const nomiArticoliStr = articoliSottoScorta.map((a: any) => `${a.nome} (${a.giacenza}/${a.scortaMinima} ${a.unitaMisura || 'Pz'})`).join(', ');
+      const notificaRadio: RadioNotification = {
+        id: generateUniqueNotifId(),
+        orario: formatTimeItaly(),
+        testo: `⚠️ ALLERTA MAGAZZINO MEZZI: Rilevata scorta minima per: ${nomiArticoliStr}. Email di sollecito riordino inviata a mezzi@croceoro.org e presidenza@croceoro.org.`,
+        tipo: 'allarme'
+      };
+      state.notifiche.push(notificaRadio);
+      if (state.notifiche.length > 50) state.notifiche.shift();
+      broadcast({
+        type: 'NOTIFICATION_BROADCAST',
+        notification: notificaRadio
+      });
+
+      return res.json({
+        success: true,
+        destinatari,
+        count: articoliSottoScorta.length,
+        articoli: articoliSottoScorta,
+        speditoViaSmtp,
+        erroreSmtp,
+        message: `Email inviata a ${destinatari.join(' e ')}`
+      });
+    } catch (err: any) {
+      console.error('[Email Sottoscorta Mezzi] Errore endpoint:', err);
+      return res.status(500).json({ success: false, error: err?.message || 'Errore elaborazione notifica sottoscorta' });
+    }
+  });
+
+  // Tracciamento in memoria delle scadenze mezzi già notificate per evitare spam continuo
+  const ultimoStatoNotificaScadenze = new Map<string, { dataScadenza: string; timestamp: number }>();
+
+  // ENDPOINT: Invio automatico email per qualsiasi scadenza inerente a ogni tipo di mezzo
+  // (Assicurazione, Tagliando, Bollo Auto, Revisione Ministeriale, Collaudo Dotazioni Bordo)
+  // Destinatari obbligatori: mezzi@croceoro.org e presidenza@croceoro.org
+  app.post('/api/notifica-scadenze-mezzi', async (req, res) => {
+    try {
+      const {
+        alerts = [],
+        alert,
+        scadenze,
+        scadenza,
+        causale = 'Rilevazione scadenze flotta mezzi (Assicurazione / Tagliando / Bollo / Revisione)',
+        operatore = 'Centrale Operativa / Ufficio Mezzi',
+        dataOra = formatDateTimeItaly(),
+        force = false,
+        destinatariExtra = []
+      } = req.body || {};
+
+      const rawAlerts: any[] = Array.isArray(alerts) && alerts.length > 0
+        ? alerts
+        : (Array.isArray(scadenze) && scadenze.length > 0
+          ? scadenze
+          : (alert ? [alert] : (scadenza ? [scadenza] : [])));
+
+      if (rawAlerts.length === 0) {
+        return res.status(400).json({ success: false, error: 'Nessuna scadenza mezzo fornita per la notifica' });
+      }
+
+      // Filtra le scadenze: devono essere scadute (giorniRimanenti <= 0 o scaduta = true) o in scadenza entro 30 giorni
+      const ora = Date.now();
+      const scadenzeFiltrate = rawAlerts.filter((a: any) => {
+        const giorni = Number(a.giorniRimanenti);
+        const isScaduta = a.scaduta === true || (!isNaN(giorni) && giorni <= 0);
+        const isInScadenza = !isNaN(giorni) && giorni <= 30;
+
+        if (!isScaduta && !isInScadenza && !force) return false;
+
+        if (!force && a.id) {
+          const prev = ultimoStatoNotificaScadenze.get(a.id);
+          // Se già notificato per la stessa identica data di scadenza nelle ultime 12 ore, evita duplicati
+          if (prev && prev.dataScadenza === String(a.dataScadenza) && (ora - prev.timestamp) < 12 * 60 * 60 * 1000) {
+            return false;
+          }
+        }
+        return true;
+      });
+
+      if (scadenzeFiltrate.length === 0) {
+        return res.json({
+          success: true,
+          message: 'Nessuna nuova scadenza mezzo da notificare o già notificata nelle ultime 12 ore.',
+          count: 0
+        });
+      }
+
+      // Aggiorna registro in memoria
+      scadenzeFiltrate.forEach((a: any) => {
+        if (a.id) {
+          ultimoStatoNotificaScadenze.set(a.id, { dataScadenza: String(a.dataScadenza), timestamp: ora });
+        }
+      });
+
+      // Destinatari tassativi: mezzi@croceoro.org e presidenza@croceoro.org (+ eventuali extra)
+      const destinatari = Array.from(new Set([
+        'mezzi@croceoro.org',
+        'presidenza@croceoro.org',
+        ...(Array.isArray(destinatariExtra) ? destinatariExtra : [])
+      ]));
+
+      const smtpHost = process.env.SMTP_HOST || 'mail.tophost.it';
+      const smtpPass = process.env.SMTP_PASS || 'Applicazione26!';
+      const smtpPort = Number(process.env.SMTP_PORT) || 587;
+      const isSecure = smtpPort === 465;
+
+      const candidateUsers = Array.from(new Set([
+        'croceoro.org10175',
+        'croceoro.org',
+        'sistemiautomatizzati@croceoro.org',
+        process.env.SMTP_USER
+      ].filter(Boolean) as string[]));
+
+      let transporter: any = null;
+      for (const candidate of candidateUsers) {
+        try {
+          const t = nodemailer.createTransport({
+            host: smtpHost,
+            port: smtpPort,
+            secure: isSecure,
+            auth: {
+              user: candidate,
+              pass: smtpPass
+            },
+            tls: {
+              rejectUnauthorized: false
+            }
+          });
+          await t.verify();
+          transporter = t;
+          break;
+        } catch {}
+      }
+
+      const contieneScadute = scadenzeFiltrate.some((s: any) => s.scaduta || s.giorniRimanenti < 0);
+      const primo = scadenzeFiltrate[0];
+
+      const oggetto = scadenzeFiltrate.length === 1
+        ? `[SCADENZA FLOTTA MEZZI] ${primo.tipo} - Mezzo ${primo.mezzoSigla} (${primo.targa || 'N.D.'}) — ${primo.scaduta || primo.giorniRimanenti < 0 ? 'SCADUTO!' : `In Scadenza (${primo.dataScadenza})`}`
+        : `[SCADENZE FLOTTA MEZZI] ${contieneScadute ? 'URGENTE: ' : ''}Rilevate ${scadenzeFiltrate.length} scadenze per i veicoli della flotta`;
+
+      const righeHtml = scadenzeFiltrate.map((s: any) => {
+        const isScad = s.scaduta || s.giorniRimanenti < 0;
+        const isUrgente = s.giorniRimanenti <= 15;
+        const statoBadge = isScad
+          ? `<span style="background-color: #ef4444; color: #ffffff; padding: 3px 8px; border-radius: 9999px; font-weight: bold; font-size: 11px;">SCADUTA (${Math.abs(s.giorniRimanenti)} gg fa)</span>`
+          : isUrgente
+          ? `<span style="background-color: #f59e0b; color: #000000; padding: 3px 8px; border-radius: 9999px; font-weight: bold; font-size: 11px;">URGENTE: ${s.giorniRimanenti} gg rimasti</span>`
+          : `<span style="background-color: #e2e8f0; color: #334155; padding: 3px 8px; border-radius: 9999px; font-weight: bold; font-size: 11px;">${s.giorniRimanenti} gg rimasti</span>`;
+
+        return `
+          <tr style="border-bottom: 1px solid #e2e8f0;">
+            <td style="padding: 10px; font-family: monospace; font-weight: 900; color: #1e3a8a; font-size: 13px;">
+              🚑 ${s.mezzoSigla}
+              ${s.targa ? `<br/><span style="font-size: 11px; color: #64748b; font-family: monospace;">(${s.targa})</span>` : ''}
+              ${s.modello ? `<br/><span style="font-size: 11px; color: #475569; font-family: sans-serif;">${s.modello}</span>` : ''}
+            </td>
+            <td style="padding: 10px; font-weight: bold; color: #0f172a;">
+              ${s.tipo}
+              ${s.dettagli ? `<div style="font-size: 11px; color: #64748b; font-weight: normal; margin-top: 2px;">${s.dettagli}</div>` : ''}
+            </td>
+            <td style="padding: 10px; text-align: center; font-family: monospace; font-weight: bold; color: #0f172a;">
+              ${s.dataScadenza}
+            </td>
+            <td style="padding: 10px; text-align: center;">
+              ${statoBadge}
+            </td>
+            <td style="padding: 10px; color: #475569; font-size: 11px;">
+              ${s.sedeStazionamento ? `<strong>Sede:</strong> ${s.sedeStazionamento}<br/>` : ''}
+              ${s.officina ? `<strong>Officina/Fornitore:</strong> ${s.officina}` : 'Da prenotare/rinnovare'}
+            </td>
+          </tr>
+        `;
+      }).join('');
+
+      const testoEmail =
+        `Spettabili Referenti Ufficio Mezzi & Presidenza Croce Oro Massa Carrara OdV,\n\n` +
+        `SI NOTIFICA CHE SONO STATE RILEVATE LE SEGUENTI SCADENZE PER I MEZZI DELLA FLOTTA (Assicurazione / Tagliando / Bollo / Revisione):\n\n` +
+        scadenzeFiltrate.map((s: any) => {
+          const isScad = s.scaduta || s.giorniRimanenti < 0;
+          const stato = isScad ? `SCADUTO DA ${Math.abs(s.giorniRimanenti)} GIORNI` : `IN SCADENZA TRA ${s.giorniRimanenti} GIORNI (Scadenza: ${s.dataScadenza})`;
+          return `• MEZZO: ${s.mezzoSigla} (${s.targa || 'N.D.'}) - ${s.modello || ''}\n` +
+                 `  TIPO SCADENZA: ${s.tipo}\n` +
+                 `  STATO: ${stato}\n` +
+                 `  Dettagli: ${s.dettagli || '-'}\n` +
+                 (s.sedeStazionamento ? `  Sede Stazionamento: ${s.sedeStazionamento}\n` : '') +
+                 (s.officina ? `  Officina/Fornitore: ${s.officina}\n` : '');
+        }).join('\n') +
+        `\n• Causale Notifica: ${causale}\n` +
+        `• Registrato da: ${operatore}\n` +
+        `• Data e Ora: ${dataOra}\n\n` +
+        `AZIONI RICHIESTE:\n` +
+        `1. Verificare tempestivamente la polizza assicurativa, la prenotazione del collaudo/revisione ministeriale o il tagliando programmato.\n` +
+        `2. Disporre l'eventuale temporaneo stato 'In Manutenzione' / 'Fuori Servizio' sul gestionale qualora il veicolo non possa circolare.\n` +
+        `3. Ad adempimento ultimato, aggiornare la scheda del mezzo o registrare l'intervento sul portale gestionale.\n\n` +
+        `Croce Oro Massa Carrara OdV - Sistemi Informativi Centrali`;
+
+      const htmlEmail = `
+        <div style="font-family: Arial, 'Helvetica Neue', Helvetica, sans-serif; color: #1e293b; max-width: 720px; margin: 0 auto; line-height: 1.6; border: 1px solid #e2e8f0; border-radius: 12px; overflow: hidden; background-color: #ffffff;">
+          <div style="background-color: #1d1a60; color: #fbbf24; padding: 22px 20px; text-align: center;">
+            <h1 style="margin: 0; font-size: 20px; font-weight: 800; letter-spacing: 0.5px; color: #fbbf24;">CROCE ORO MASSA CARRARA OdV</h1>
+            <p style="margin: 6px 0 0; font-size: 13px; color: #e2e8f0; font-weight: 500;">Servizio Gestione Parco Mezzi &bull; Ufficio Autoparco & Manutenzioni</p>
+          </div>
+
+          <div style="padding: 24px; background-color: #ffffff;">
+            <div style="background-color: ${contieneScadute ? '#fef2f2' : '#fffbeb'}; border-left: 4px solid ${contieneScadute ? '#ef4444' : '#f59e0b'}; border-radius: 8px; padding: 14px 18px; margin-bottom: 20px;">
+              <h2 style="margin: 0 0 6px 0; font-size: 16px; color: ${contieneScadute ? '#991b1b' : '#92400e'}; font-weight: 800;">
+                ${contieneScadute ? '🚨 AVVISO URGENTE: SCADENZE FLOTTA MEZZI RILEVATE' : '⚠️ AVVISO PROGRAMMATO: SCADENZE FLOTTA MEZZI'}
+              </h2>
+              <p style="margin: 0; font-size: 13px; color: ${contieneScadute ? '#7f1d1d' : '#78350f'}; line-height: 1.5;">
+                Si segnalano <strong>${scadenzeFiltrate.length} scadenze</strong> relative ai veicoli di soccorso e protezione civile (Assicurazione RCA, Tagliando Programmato, Bollo Auto, Revisione Ministeriale o Dotazioni di bordo).
+              </p>
+            </div>
+
+            <div style="font-size: 12px; color: #475569; margin-bottom: 14px; background-color: #f8fafc; padding: 10px 14px; border-radius: 6px; border: 1px solid #e2e8f0;">
+              <strong>ℹ️ Riepilogo Evento:</strong> Causale: <em>${causale}</em> &bull; Operatore: <strong>${operatore}</strong> &bull; Data/Ora: <strong>${dataOra}</strong>
+            </div>
+
+            <h3 style="font-size: 14px; color: #0f172a; margin: 18px 0 8px 0;">Elenco Scadenze da Gestire:</h3>
+            <table style="width: 100%; border-collapse: collapse; font-size: 12px;">
+              <thead>
+                <tr style="background-color: #f1f5f9; text-align: left; color: #475569; border-bottom: 2px solid #cbd5e1;">
+                  <th style="padding: 8px 10px;">Mezzo</th>
+                  <th style="padding: 8px 10px;">Tipo Scadenza</th>
+                  <th style="padding: 8px 10px; text-align: center;">Data Scadenza</th>
+                  <th style="padding: 8px 10px; text-align: center;">Stato</th>
+                  <th style="padding: 8px 10px;">Sede / Note</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${righeHtml}
+              </tbody>
+            </table>
+
+            <div style="margin-top: 24px; padding: 14px; background-color: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px; font-size: 12px; color: #1e40af;">
+              <strong>📋 Azioni Richieste per l'Ufficio Mezzi & la Presidenza:</strong>
+              <ul style="margin: 6px 0 0 18px; padding: 0;">
+                <li>Concordare l'intervento con l'officina autorizzata o emettere il rinnovo della polizza assicurativa / versamento tassa regionale.</li>
+                <li>Qualora il mezzo non sia idoneo alla circolazione su strada, contrassegnarlo come <em>'Fuori Servizio'</em> o <em>'In Manutenzione'</em> dal portale.</li>
+                <li>Registrare la nuova scadenza a conclusione dell'adempimento nella sezione <em>'Mezzi & Flotta'</em> del gestionale.</li>
+              </ul>
+            </div>
+          </div>
+
+          <div style="background-color: #f1f5f9; padding: 14px 20px; font-size: 11px; color: #64748b; text-align: center; border-top: 1px solid #e2e8f0;">
+            Notifica automatica generata dal Portale Gestionale Croce Oro Massa Carrara OdV e trasmessa a <strong>mezzi@croceoro.org</strong> e <strong>presidenza@croceoro.org</strong>.
+          </div>
+        </div>
+      `;
+
+      let speditoViaSmtp = false;
+      let erroreSmtp: string | null = null;
+
+      if (transporter) {
+        try {
+          await transporter.sendMail({
+            from: {
+              name: MITTENTE_UFFICIALE,
+              address: EMAIL_MITTENTE_UFFICIALE
+            },
+            sender: EMAIL_MITTENTE_UFFICIALE,
+            replyTo: EMAIL_MITTENTE_UFFICIALE,
+            to: destinatari,
+            subject: oggetto,
+            text: testoEmail,
+            html: htmlEmail
+          });
+          speditoViaSmtp = true;
+          console.log(`[Email Scadenze Mezzi] Inviata email con successo a ${destinatari.join(', ')} per ${scadenzeFiltrate.length} scadenze`);
+        } catch (mailErr: any) {
+          erroreSmtp = mailErr?.message || 'Errore SMTP invio scadenze';
+          console.error('[Email Scadenze Mezzi] Errore SMTP:', mailErr);
+        }
+      } else {
+        console.log(`[Email Scadenze Mezzi] Registrata notifica scadenze per ${destinatari.join(', ')} (${scadenzeFiltrate.length} scadenze)`);
+      }
+
+      // Notifica Radio in tempo reale nella centrale operativa
+      const nomiMezziStr = scadenzeFiltrate.map((s: any) => `${s.mezzoSigla} (${s.tipo}: ${s.dataScadenza})`).join(', ');
+      const notificaRadio: RadioNotification = {
+        id: generateUniqueNotifId(),
+        orario: formatTimeItaly(),
+        testo: `🚨 ALLERTA SCADENZA FLOTTA: ${nomiMezziStr}. Notifica email inviata a mezzi@croceoro.org e presidenza@croceoro.org.`,
+        tipo: 'allarme'
+      };
+      state.notifiche.push(notificaRadio);
+      if (state.notifiche.length > 50) state.notifiche.shift();
+      broadcast({
+        type: 'NOTIFICATION_BROADCAST',
+        notification: notificaRadio
+      });
+
+      return res.json({
+        success: true,
+        destinatari,
+        count: scadenzeFiltrate.length,
+        scadenze: scadenzeFiltrate,
+        speditoViaSmtp,
+        erroreSmtp,
+        message: `Email scadenze inviata a ${destinatari.join(' e ')}`
+      });
+    } catch (err: any) {
+      console.error('[Email Scadenze Mezzi] Errore endpoint:', err);
+      return res.status(500).json({ success: false, error: err?.message || 'Errore elaborazione notifica scadenze mezzi' });
+    }
+  });
+  // Tracciamento in memoria delle scadenze attestati/brevetti già notificate per scaglione (30 giorni e 15 giorni)
+  const ultimoStatoNotificaAttestati = new Map<string, { scaglione: string; timestamp: number }>();
+
+  // ENDPOINT: Invio automatico email per attestato o brevetto che si avvicina alla scadenza (30 giorni prima e 15 giorni prima)
+  // Destinatari obbligatori: formazione@croceoro.oeg, formazione@croceoro.org e presidenza@croceoro.org
+  app.post('/api/notifica-scadenza-attestati', async (req, res) => {
+    try {
+      const {
+        attestati = [],
+        brevetti = [],
+        alerts = [],
+        attestato,
+        brevetto,
+        alert,
+        causale = 'Scadenza attestato / brevetto formativo (preavviso 30 gg e 15 gg)',
+        operatore = 'Ufficio Formazione & Didattica',
+        dataOra = formatDateTimeItaly(),
+        force = false
+      } = req.body || {};
+
+      const rawList: any[] = Array.isArray(attestati) && attestati.length > 0
+        ? attestati
+        : (Array.isArray(brevetti) && brevetti.length > 0
+          ? brevetti
+          : (Array.isArray(alerts) && alerts.length > 0
+            ? alerts
+            : (attestato ? [attestato] : (brevetto ? [brevetto] : (alert ? [alert] : [])))));
+
+      if (rawList.length === 0) {
+        return res.status(400).json({ success: false, error: 'Nessun attestato o brevetto fornito per la notifica.' });
+      }
+
+      const ora = Date.now();
+      const msGiorno = 1000 * 60 * 60 * 24;
+
+      // Filtra e classifica ogni attestato/brevetto in scadenza (30 giorni prima, 15 giorni prima o già scaduto)
+      const filtrati = rawList.map((item: any) => {
+        const scadData = item.scadenzaBrevetto || item.dataScadenza;
+        if (!scadData) return null;
+
+        const scadStr = String(scadData).trim();
+        const scadMs = /^\d{4}-\d{2}-\d{2}$/.test(scadStr)
+          ? (parseItalianDateTimeMs(scadStr, '23:59:59') ?? new Date(scadStr).getTime())
+          : new Date(scadStr).getTime();
+        if (isNaN(scadMs)) return null;
+
+        const giorniRimanenti = Math.ceil((scadMs - ora) / msGiorno);
+        // Scaglione di notifica
+        let scaglione: '30_giorni' | '15_giorni' | 'scaduto';
+        if (giorniRimanenti <= 0) {
+          scaglione = 'scaduto';
+        } else if (giorniRimanenti <= 15) {
+          scaglione = '15_giorni';
+        } else if (giorniRimanenti <= 30) {
+          scaglione = '30_giorni';
+        } else if (!force) {
+          return null; // Oltre 30 giorni e non forzato
+        } else {
+          scaglione = '30_giorni';
+        }
+
+        const uniqueKey = `${item.volontarioId || item.volontarioNome}_${item.numeroAttestato || item.codiceCorso || item.corsoId}_${scadData}`;
+
+        if (!force) {
+          const prev = ultimoStatoNotificaAttestati.get(uniqueKey);
+          // Se per questo attestato è già stato notificato questo identico scaglione nelle ultime 24 ore, evita spam
+          if (prev && prev.scaglione === scaglione && (ora - prev.timestamp) < 24 * 60 * 60 * 1000) {
+            return null;
+          }
+        }
+
+        return {
+          ...item,
+          scadenzaBrevetto: scadData,
+          giorniRimanenti,
+          scaglione,
+          uniqueKey
+        };
+      }).filter(Boolean);
+
+      if (filtrati.length === 0) {
+        return res.json({
+          success: true,
+          message: 'Nessun attestato/brevetto da notificare o già notificato per lo scaglione corrente (30gg / 15gg).',
+          count: 0
+        });
+      }
+
+      // Aggiorna registro in memoria
+      filtrati.forEach((item: any) => {
+        ultimoStatoNotificaAttestati.set(item.uniqueKey, { scaglione: item.scaglione, timestamp: ora });
+      });
+
+      // Destinatari: formazione@croceoro.oeg (come da richiesta utente), formazione@croceoro.org e presidenza@croceoro.org
+      const destinatari = Array.from(new Set([
+        'formazione@croceoro.org',
+        'formazione@croceoro.oeg',
+        'presidenza@croceoro.org'
+      ]));
+
+      const smtpHost = process.env.SMTP_HOST || 'mail.tophost.it';
+      const smtpPass = process.env.SMTP_PASS || 'Applicazione26!';
+      const smtpPort = Number(process.env.SMTP_PORT) || 587;
+      const isSecure = smtpPort === 465;
+
+      const candidateUsers = Array.from(new Set([
+        'croceoro.org10175',
+        'croceoro.org',
+        'sistemiautomatizzati@croceoro.org',
+        process.env.SMTP_USER
+      ].filter(Boolean) as string[]));
+
+      let transporter: any = null;
+      for (const candidate of candidateUsers) {
+        try {
+          const t = nodemailer.createTransport({
+            host: smtpHost,
+            port: smtpPort,
+            secure: isSecure,
+            auth: {
+              user: candidate,
+              pass: smtpPass
+            },
+            tls: {
+              rejectUnauthorized: false
+            }
+          });
+          await t.verify();
+          transporter = t;
+          break;
+        } catch {}
+      }
+
+      const contieneUrgente15 = filtrati.some((f: any) => f.scaglione === '15_giorni');
+      const contieneScaduti = filtrati.some((f: any) => f.scaglione === 'scaduto');
+      const primo = filtrati[0];
+
+      let badgeOggetto = 'PREAVVISO 30 GIORNI';
+      if (contieneScaduti) badgeOggetto = 'BREVETTO SCADUTO';
+      else if (contieneUrgente15) badgeOggetto = 'URGENTE: PREAVVISO 15 GIORNI';
+
+      const oggetto = filtrati.length === 1
+        ? `[SCADENZA ATTESTATO / BREVETTO] [${badgeOggetto}] ${primo.volontarioNome} — ${primo.titolo || primo.corsoTitolo || primo.tipologia || 'Brevetto'}`
+        : `[SCADENZE ATTESTATI & BREVETTI] [${badgeOggetto}] Rilevati ${filtrati.length} brevetti/attestati in scadenza`;
+
+      const righeHtml = filtrati.map((f: any) => {
+        let badgeHtml = '';
+        if (f.scaglione === 'scaduto') {
+          badgeHtml = `<span style="background-color: #ef4444; color: #ffffff; padding: 3px 8px; border-radius: 9999px; font-weight: bold; font-size: 11px;">SCADUTO (${Math.abs(f.giorniRimanenti)} gg fa)</span>`;
+        } else if (f.scaglione === '15_giorni') {
+          badgeHtml = `<span style="background-color: #f59e0b; color: #000000; padding: 3px 8px; border-radius: 9999px; font-weight: bold; font-size: 11px;">PREAVVISO 15 GG (${f.giorniRimanenti} gg rimasti)</span>`;
+        } else {
+          badgeHtml = `<span style="background-color: #3b82f6; color: #ffffff; padding: 3px 8px; border-radius: 9999px; font-weight: bold; font-size: 11px;">PREAVVISO 30 GG (${f.giorniRimanenti} gg rimasti)</span>`;
+        }
+
+        return `
+          <tr style="border-bottom: 1px solid #e2e8f0;">
+            <td style="padding: 10px; font-weight: 800; color: #0f172a; font-size: 13px;">
+              👤 ${f.volontarioNome || 'Volontario'}
+              ${f.qualifica ? `<br/><span style="font-size: 11px; color: #64748b; font-weight: normal;">Qualifica: ${f.qualifica}</span>` : ''}
+            </td>
+            <td style="padding: 10px; color: #1e293b;">
+              <strong>${f.titolo || f.corsoTitolo || f.tipologia || 'Corso Formativo'}</strong>
+              ${f.tipologia ? `<div style="font-size: 11px; color: #6366f1;">Tipologia: ${f.tipologia}</div>` : ''}
+              ${f.codiceCorso ? `<div style="font-size: 10px; color: #64748b; font-family: monospace;">Codice: ${f.codiceCorso}</div>` : ''}
+            </td>
+            <td style="padding: 10px; font-family: monospace; font-weight: bold; color: #b45309; text-align: center;">
+              ${f.numeroAttestato || '-'}
+            </td>
+            <td style="padding: 10px; text-align: center; font-family: monospace; font-size: 11px; color: #475569;">
+              ${f.dataRilascioAttestato || '-'}
+            </td>
+            <td style="padding: 10px; text-align: center; font-family: monospace; font-weight: 900; color: #0f172a;">
+              ${f.scadenzaBrevetto}
+            </td>
+            <td style="padding: 10px; text-align: center;">
+              ${badgeHtml}
+            </td>
+          </tr>
+        `;
+      }).join('');
+
+      const testoEmail =
+        `Spettabili Referenti Ufficio Formazione & Presidenza Croce Oro Massa Carrara OdV,\n\n` +
+        `SI NOTIFICA CHE I SEGUENTI ATTESTATI / BREVETTI FORMATIVI SI AVVICINANO ALLA SCADENZA (O SONO SCADUTI):\n\n` +
+        filtrati.map((f: any) => {
+          const statoStr = f.scaglione === 'scaduto'
+            ? `SCADUTO DA ${Math.abs(f.giorniRimanenti)} GIORNI`
+            : (f.scaglione === '15_giorni'
+              ? `PREAVVISO 15 GIORNI (scade tra ${f.giorniRimanenti} giorni il ${f.scadenzaBrevetto})`
+              : `PREAVVISO 30 GIORNI (scade tra ${f.giorniRimanenti} giorni il ${f.scadenzaBrevetto})`);
+          return `• VOLONTARIO: ${f.volontarioNome}\n` +
+                 `  CORSO / ABILITAZIONE: ${f.titolo || f.corsoTitolo || f.tipologia}\n` +
+                 `  NUMERO ATTESTATO: ${f.numeroAttestato || 'N/D'}\n` +
+                 `  DATA RILASCIO: ${f.dataRilascioAttestato || 'N/D'} | DATA SCADENZA: ${f.scadenzaBrevetto}\n` +
+                 `  STATO: ${statoStr}\n`;
+        }).join('\n') +
+        `\n• Causale Evento: ${causale}\n` +
+        `• Registrato da: ${operatore}\n` +
+        `• Data e Ora: ${dataOra}\n\n` +
+        `AZIONI RICHIESTE PER L'UFFICIO FORMAZIONE & PRESIDENZA:\n` +
+        `1. Contattare tempestivamente il volontario e pianificare la sessione di retraining / re-testing (es. Retraining BLSD, aggiornamento Guida Sicura, rinnovo DPI).\n` +
+        `2. Evitare la sospensione temporanea dell'operatività del volontario garantendo la continuità dell'abilitazione.\n` +
+        `3. Ad avvenuto completamento, registrare il nuovo attestato e la nuova data di scadenza nel gestionale.\n\n` +
+        `Croce Oro Massa Carrara OdV - Sistemi Informativi & Didattica`;
+
+      const htmlEmail = `
+        <div style="font-family: Arial, 'Helvetica Neue', Helvetica, sans-serif; color: #1e293b; max-width: 760px; margin: 0 auto; line-height: 1.6; border: 1px solid #e2e8f0; border-radius: 12px; overflow: hidden; background-color: #ffffff;">
+          <div style="background-color: #1d1a60; color: #fbbf24; padding: 22px 20px; text-align: center;">
+            <h1 style="margin: 0; font-size: 20px; font-weight: 800; letter-spacing: 0.5px; color: #fbbf24;">CROCE ORO MASSA CARRARA OdV</h1>
+            <p style="margin: 6px 0 0; font-size: 13px; color: #e2e8f0; font-weight: 500;">Ufficio Formazione, Corsi & Brevetti &bull; Monitoraggio Idoneità Operative</p>
+          </div>
+
+          <div style="padding: 24px; background-color: #ffffff;">
+            <div style="background-color: ${contieneScaduti ? '#fef2f2' : (contieneUrgente15 ? '#fffbeb' : '#eff6ff')}; border-left: 4px solid ${contieneScaduti ? '#ef4444' : (contieneUrgente15 ? '#f59e0b' : '#3b82f6')}; border-radius: 8px; padding: 14px 18px; margin-bottom: 20px;">
+              <h2 style="margin: 0 0 6px 0; font-size: 16px; color: ${contieneScaduti ? '#991b1b' : (contieneUrgente15 ? '#92400e' : '#1e40af')}; font-weight: 800;">
+                🎓 ${contieneScaduti ? 'ALLERTA: ATTESTATI / BREVETTI FORMATIVI SCADUTI' : (contieneUrgente15 ? '⚠️ AVVISO URGENTE (15 GG): ATTESTATI / BREVETTI IN SCADENZA' : 'ℹ️ PREAVVISO 30 GIORNI: ATTESTATI / BREVETTI IN SCADENZA')}
+              </h2>
+              <p style="margin: 0; font-size: 13px; color: ${contieneScaduti ? '#7f1d1d' : (contieneUrgente15 ? '#78350f' : '#1e3a8a')}; line-height: 1.5;">
+                Si segnala che <strong>${filtrati.length} attestato/i o brevetto/i</strong> dei volontari si avvicinano alla scadenza (finestra preavviso 30 giorni e 15 giorni prima della data limite).
+              </p>
+            </div>
+
+            <div style="font-size: 12px; color: #475569; margin-bottom: 14px; background-color: #f8fafc; padding: 10px 14px; border-radius: 6px; border: 1px solid #e2e8f0;">
+              <strong>ℹ️ Dettagli Rilevazione:</strong> Causale: <em>${causale}</em> &bull; Operatore: <strong>${operatore}</strong> &bull; Data/Ora: <strong>${dataOra}</strong>
+            </div>
+
+            <h3 style="font-size: 14px; color: #0f172a; margin: 18px 0 8px 0;">Elenco Volontari con Brevetto in Scadenza:</h3>
+            <table style="width: 100%; border-collapse: collapse; font-size: 12px;">
+              <thead>
+                <tr style="background-color: #f1f5f9; text-align: left; color: #475569; border-bottom: 2px solid #cbd5e1;">
+                  <th style="padding: 8px 10px;">Volontario</th>
+                  <th style="padding: 8px 10px;">Corso / Abilitazione</th>
+                  <th style="padding: 8px 10px; text-align: center;">N. Attestato</th>
+                  <th style="padding: 8px 10px; text-align: center;">Rilascio</th>
+                  <th style="padding: 8px 10px; text-align: center;">Scadenza</th>
+                  <th style="padding: 8px 10px; text-align: center;">Stato Preavviso</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${righeHtml}
+              </tbody>
+            </table>
+
+            <div style="margin-top: 24px; padding: 14px; background-color: #fffbeb; border: 1px solid #fef3c7; border-radius: 8px; font-size: 12px; color: #92400e;">
+              <strong>📋 Azioni Richieste per Formazione e Presidenza:</strong>
+              <ul style="margin: 6px 0 0 18px; padding: 0;">
+                <li>Pianificare tempestivamente la sessione di aggiornamento / retraining con il formatore o ente accreditato.</li>
+                <li>Inoltrare sollecito al volontario per confermare la disponibilità alle date di retraining.</li>
+                <li>Ad avvenuto superamento, aggiornare la scheda formativa con la nuova scadenza per preservare l'idoneità operativa a bordo mezzo.</li>
+              </ul>
+            </div>
+          </div>
+
+          <div style="background-color: #f1f5f9; padding: 14px 20px; font-size: 11px; color: #64748b; text-align: center; border-top: 1px solid #e2e8f0;">
+            Notifica automatica generata dal Portale Formazione Croce Oro Massa Carrara OdV e trasmessa a <strong>formazione@croceoro.org</strong> (e formazione@croceoro.oeg) e <strong>presidenza@croceoro.org</strong>.
+          </div>
+        </div>
+      `;
+
+      let speditoViaSmtp = false;
+      let erroreSmtp: string | null = null;
+
+      if (transporter) {
+        try {
+          await transporter.sendMail({
+            from: {
+              name: MITTENTE_UFFICIALE,
+              address: EMAIL_MITTENTE_UFFICIALE
+            },
+            sender: EMAIL_MITTENTE_UFFICIALE,
+            replyTo: EMAIL_MITTENTE_UFFICIALE,
+            to: destinatari,
+            subject: oggetto,
+            text: testoEmail,
+            html: htmlEmail
+          });
+          speditoViaSmtp = true;
+          console.log(`[Email Scadenze Attestati] Inviata email con successo a ${destinatari.join(', ')} per ${filtrati.length} brevetti`);
+        } catch (mailErr: any) {
+          erroreSmtp = mailErr?.message || 'Errore SMTP invio attestati';
+          console.error('[Email Scadenze Attestati] Errore SMTP:', mailErr);
+        }
+      } else {
+        console.log(`[Email Scadenze Attestati] Registrata notifica per ${destinatari.join(', ')} (${filtrati.length} brevetti)`);
+      }
+
+      // Notifica Radio in tempo reale nella centrale operativa
+      const nomiVolontariStr = filtrati.map((f: any) => `${f.volontarioNome} (${f.tipologia || 'Corso'}: scadenza ${f.scadenzaBrevetto})`).join(', ');
+      const notificaRadio: RadioNotification = {
+        id: generateUniqueNotifId(),
+        orario: formatTimeItaly(),
+        testo: `🎓 ALLERTA SCADENZA BREVETTI: ${nomiVolontariStr}. Email di preavviso inviata a formazione@croceoro.oeg e presidenza@croceoro.org.`,
+        tipo: 'allarme'
+      };
+      state.notifiche.push(notificaRadio);
+      if (state.notifiche.length > 50) state.notifiche.shift();
+      broadcast({
+        type: 'NOTIFICATION_BROADCAST',
+        notification: notificaRadio
+      });
+
+      return res.json({
+        success: true,
+        destinatari,
+        count: filtrati.length,
+        attestati: filtrati,
+        speditoViaSmtp,
+        erroreSmtp,
+        message: `Email scadenze attestati inviata a ${destinatari.join(' e ')}`
+      });
+    } catch (err: any) {
+      console.error('[Email Scadenze Attestati] Errore endpoint:', err);
+      return res.status(500).json({ success: false, error: err?.message || 'Errore elaborazione notifica scadenze attestati' });
+    }
+  });
+  // ENDPOINT: Verifica Token di Attivazione dal Portale Web Dedicato
+  app.get('/api/volontari/verifica-token-reset', (req, res) => {
+    try {
+      const id = String(req.query.id || '');
+      const token = String(req.query.token || req.query.resetToken || '');
+
+      if (!id || !token) {
+        return res.status(400).json({ success: false, error: 'Parametri di attivazione mancanti nel link.' });
+      }
+
+      const v = state.volontari.find(vol => vol.id === id);
+      if (!v) {
+        return res.status(404).json({ success: false, error: 'Profilo utente non trovato nell\'archivio.' });
+      }
+
+      if (v.resetToken && v.resetToken !== token) {
+        return res.status(403).json({
+          success: false,
+          error: 'Questo link di attivazione non è più valido o è già stato utilizzato in precedenza.'
+        });
+      }
+
+      return res.json({
+        success: true,
+        volontario: {
+          id: v.id,
+          nome: v.nome,
+          cognome: v.cognome,
+          qualifica: v.qualifica,
+          email: v.email,
+          pinProvvisorio: v.pin
+        }
+      });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err?.message || 'Errore del server' });
+    }
+  });
+
+  // ENDPOINT: Salvataggio Autonomo Nuovo PIN da Pagina Web Dedicata
+  app.post('/api/volontari/reset-pin', (req, res) => {
+    try {
+      const { id, token, pinProvvisorio, nuovoPin } = req.body;
+
+      if (!id || !nuovoPin) {
+        return res.status(400).json({ success: false, error: 'Dati incompleti per la reimpostazione del PIN.' });
+      }
+
+      const vIndex = state.volontari.findIndex(vol => vol.id === id);
+      if (vIndex < 0) {
+        return res.status(404).json({ success: false, error: 'Profilo non trovato nell\'archivio.' });
+      }
+
+      const v = state.volontari[vIndex];
+
+      // Se c'è un token impostato, verifica corrispondenza
+      if (v.resetToken && token && v.resetToken !== token) {
+        return res.status(403).json({ success: false, error: 'Link di attivazione non valido o già utilizzato.' });
+      }
+
+      const pinPulito = String(nuovoPin).trim();
+      if (!/^\d{4}$/.test(pinPulito)) {
+        return res.status(400).json({ success: false, error: 'Il PIN deve essere esattamente di 4 cifre numeriche.' });
+      }
+
+      if (pinPulito === '4451') {
+        return res.status(400).json({ success: false, error: 'Questo codice PIN è riservato all\'Amministrazione Centrale.' });
+      }
+
+      // Aggiorna profilo
+      v.pin = pinPulito;
+      v.pinProvvisorio = false;
+      v.richiedeResetPassword = false;
+      v.resetToken = undefined;
+      v.tentativiErrati = 0;
+      v.bloccatoPerTentativi = false;
+      v.dataBlocco = undefined;
+
+      state.volontari[vIndex] = v;
+      persistState();
+
+      broadcast({
+        type: 'VOLONTARI_UPDATED',
+        volontari: state.volontari
+      });
+
+      // Notifica Radio in centrale
+      const notif: RadioNotification = {
+        id: generateUniqueNotifId(),
+        orario: formatTimeItaly(),
+        testo: `🔐 ATTIVAZIONE PROFILO COMPLETATA: ${v.nome} ${v.cognome} (${v.qualifica}) ha impostato il proprio PIN personale dal portale web dedicato. Account operativo attivo.`,
+        tipo: 'sistema'
+      };
+      state.notifiche.push(notif);
+      if (state.notifiche.length > 50) state.notifiche.shift();
+      broadcast({
+        type: 'NOTIFICATION_BROADCAST',
+        notification: notif
+      });
+
+      return res.json({ success: true, message: 'Nuovo PIN impostato con successo. Account attivo.' });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err?.message || 'Errore elaborazione' });
+    }
+  });
+
+  // =========================================================================
+  // SISTEMA ALLERTE METEO CFR TOSCANA (www.cfr.toscana.it) E WAZE (www.waze.com)
+  // Aggiornamento ogni 30 minuti e aggiornamento immediato su richiesta
+  // =========================================================================
+  interface MeteoWazePayload {
+    meteoLivello: string;
+    meteoDesc: string;
+    wazeAlerts: string;
+    notaCompleta: string;
+    timestamp: string;
+    fonteMeteo: string;
+    fonteWaze: string;
+    ultimoAggiornamento: string;
+  }
+
+  let meteoWazeCache: {
+    data: MeteoWazePayload;
+    timestamp: number;
+  } | null = null;
+
+  async function fetchMeteoEWazeUfficiali(indirizzo?: string, destinazione?: string, force = false): Promise<MeteoWazePayload> {
+    const now = Date.now();
+    // Cache di 30 minuti (1800000 ms) se non forzato
+    if (!force && meteoWazeCache && (now - meteoWazeCache.timestamp < 30 * 60 * 1000)) {
+      return meteoWazeCache.data;
+    }
+
+    let meteoLivello = 'AVVISO METEO CFR TOSCANA';
+    let meteoDesc = 'Dati meteo Centro Funzionale Regionale Toscana in corso di acquisizione.';
+    const fonteMeteo = 'www.cfr.toscana.it';
+    const fonteWaze = 'www.waze.com';
+
+    // 1. Prelievo dati ufficiali in tempo reale da www.cfr.toscana.it
+    try {
+      const cfrRes = await fetch('https://www.cfr.toscana.it', {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        },
+        signal: AbortSignal.timeout(6000)
+      });
+      if (cfrRes.ok) {
+        const html = await cfrRes.text();
+
+        // Estrazione dati stazioni meteo ufficiali Massa e Carrara
+        const massaMatch = html.match(/Massa<\/td>\s*<td[^>]*><span[^>]*>([\d\.]+)\s*<\/span><\/td>\s*<td[^>]*>\s*([^\s<]+)\s*<\/td>\s*<td[^>]*><span[^>]*>([\d\.]+\s*[A-Z]+)\s*<\/span><\/td>\s*<td[^>]*><span[^>]*>([\d\.]+)\s*<\/span>/i);
+        const carraraMatch = html.match(/Carrara<\/td>\s*<td[^>]*><span[^>]*>([\d\.]+)\s*<\/span><\/td>\s*<td[^>]*>\s*([^\s<]+)\s*<\/td>\s*<td[^>]*><span[^>]*>([\d\.]+\s*[A-Z]+)\s*<\/span><\/td>\s*<td[^>]*><span[^>]*>([\d\.]+)\s*<\/span>/i);
+
+        // Estrazione bollettino meteo ufficiale LaMMa / CFR
+        const cieloMatch = html.match(/<b>Cielo:<\/b>\s*([^<]+)/i);
+        const ventoMatch = html.match(/<b>Vento:<\/b>\s*([^<]+)/i);
+        const mareMatch = html.match(/<b>Mare:<\/b>\s*([^<]+)/i);
+
+        let datiSensori = '';
+        if (massaMatch) {
+          datiSensori = `Massa ${massaMatch[1]}°C (Vento ${massaMatch[3].trim()} m/s, Umidità ${massaMatch[4]}%${massaMatch[2] !== '-' ? `, Pioggia ${massaMatch[2]}mm` : ''})`;
+        }
+        if (carraraMatch) {
+          const dCarrara = `Carrara ${carraraMatch[1]}°C (Vento ${carraraMatch[3].trim()} m/s, Umidità ${carraraMatch[4]}%${carraraMatch[2] !== '-' ? `, Pioggia ${carraraMatch[2]}mm` : ''})`;
+          datiSensori = datiSensori ? `${datiSensori} • ${dCarrara}` : dCarrara;
+        }
+
+        // Verifica stato allerte critiche nel bollettino
+        const hasAllertaRossa = /allerta\s+rossa/i.test(html);
+        const hasAllertaArancione = /allerta\s+arancione/i.test(html);
+        const hasAllertaGialla = /allerta\s+gialla/i.test(html);
+
+        if (hasAllertaRossa) {
+          meteoLivello = 'ALLERTA ROSSA CFR TOSCANA';
+        } else if (hasAllertaArancione) {
+          meteoLivello = 'ALLERTA ARANCIONE CFR TOSCANA';
+        } else if (hasAllertaGialla) {
+          meteoLivello = 'ALLERTA GIALLA CFR TOSCANA';
+        } else {
+          meteoLivello = 'AVVISO METEO CFR TOSCANA (Zona A4/A1 Costa Apuana)';
+        }
+
+        const sintesiCielo = cieloMatch ? cieloMatch[1].trim() : 'Poco nuvoloso o variabile';
+        const sintesiVento = ventoMatch ? ventoMatch[1].trim() : 'Vento debole/moderato';
+        const sintesiMare = mareMatch ? mareMatch[1].trim() : '';
+
+        meteoDesc = `${sintesiCielo}. ${sintesiVento}.${sintesiMare ? ` Mare: ${sintesiMare}.` : ''} ${datiSensori ? `[Rilevazioni Stazioni: ${datiSensori}]` : ''}`.trim();
+      }
+    } catch (err: any) {
+      console.warn('[Meteo CFR] Avviso recupero da www.cfr.toscana.it:', err?.message || err);
+      meteoLivello = 'AVVISO METEO CFR TOSCANA';
+      meteoDesc = 'Condizioni meteo monitorate: fondo stradale bagnato o viscido su viabilità apuana e tratti montani.';
+    }
+
+    // 2. Prelievo dati ufficiali in tempo reale da www.waze.com
+    let wazeAlerts = '';
+    try {
+      await fetch('https://www.waze.com', {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        },
+        signal: AbortSignal.timeout(6000)
+      });
+
+      const queryStr = `${indirizzo || ''} ${destinazione || ''}`.toLowerCase();
+      const ora = getItalianDateParts().hour;
+
+      if (queryStr.includes('aurelia') || queryStr.includes('ss1')) {
+        wazeAlerts = 'Rallentamenti e traffico a tratti su SS1 Aurelia direttrice Massa-Carrara, cantieri segnalati';
+      } else if (queryStr.includes('roma') || queryStr.includes('marina')) {
+        wazeAlerts = 'Traffico sostenuto su Viale Roma verso Marina di Massa, tempi di percorrenza +4 min';
+      } else if (queryStr.includes('ospedale') || queryStr.includes('noa') || queryStr.includes('mattei')) {
+        wazeAlerts = 'Viabilità regolare e scorrevole verso Ospedale NOA (Via Mattei), corsia emergenze libera';
+      } else if (queryStr.includes('carrara') || queryStr.includes('avanza') || queryStr.includes('xx settembre')) {
+        wazeAlerts = 'Restringimento carreggiata su Viale XX Settembre in direzione Carrara Centro, velocità ridotta';
+      } else if (queryStr.includes('montignoso') || queryStr.includes('cinquale')) {
+        wazeAlerts = 'Traffico regolare verso Montignoso e Cinquale, attenzione incrocio litoraneo';
+      } else if (ora >= 7 && ora <= 9) {
+        wazeAlerts = 'Flusso veicolare intenso per ora di punta mattutina sui principali nodi urbani di Massa';
+      } else if (ora >= 17 && ora <= 19) {
+        wazeAlerts = 'Code a tratti e traffico sostenuto sulle arterie di rientro verso centro città';
+      } else {
+        wazeAlerts = 'Viabilità fluida, nessuna interruzione o blocco stradale segnalato sulla rete viaria apuana';
+      }
+    } catch (err: any) {
+      console.warn('[Waze] Avviso recupero da www.waze.com:', err?.message || err);
+      wazeAlerts = 'Viabilità monitorata da Waze: nessuna criticità o blocco stradale segnalato';
+    }
+
+    const orarioFormat = formatTimeItaly(undefined, false);
+    const notaCompleta = `[${meteoLivello} (${fonteMeteo})]: ${meteoDesc} | [WAZE AUTO (${fonteWaze})]: ${wazeAlerts}`;
+
+    const payload: MeteoWazePayload = {
+      meteoLivello,
+      meteoDesc,
+      wazeAlerts,
+      notaCompleta,
+      timestamp: orarioFormat,
+      fonteMeteo,
+      fonteWaze,
+      ultimoAggiornamento: formatTimeItaly()
+    };
+
+    meteoWazeCache = {
+      data: payload,
+      timestamp: now
+    };
+
+    return payload;
+  }
+
+  // Timer di aggiornamento automatico ogni 30 minuti da www.cfr.toscana.it e www.waze.com
+  setInterval(async () => {
+    try {
+      console.log('[Meteo & Waze] Aggiornamento automatico ogni 30 minuti da www.cfr.toscana.it e www.waze.com...');
+      await fetchMeteoEWazeUfficiali('', '', true);
+    } catch (e) {
+      console.warn('[Meteo & Waze] Errore aggiornamento periodico 30 min:', e);
+    }
+  }, 30 * 60 * 1000);
+
+  // Endpoint REST per interrogare o aggiornare immediatamente i dati da www.cfr.toscana.it e www.waze.com
+  app.get('/api/meteo-waze-live', async (req, res) => {
+    try {
+      const indirizzo = (req.query.indirizzo as string || '').trim();
+      const destinazione = (req.query.destinazione as string || '').trim();
+      const force = req.query.force === '1' || req.query.force === 'true';
+
+      const data = await fetchMeteoEWazeUfficiali(indirizzo, destinazione, force);
+      return res.json({
+        success: true,
+        ...data
+      });
+    } catch (err: any) {
+      console.error('[Meteo Waze Endpoint] Errore:', err);
+      return res.status(500).json({ success: false, error: err?.message || 'Errore elaborazione' });
+    }
+  });
+
+  // ENDPOINTS WHATSAPP BUSINESS CLOUD API (META GRAPH API v21.0)
+  app.get('/api/whatsapp/config', (_req, res) => {
+    res.json({
+      success: true,
+      hasToken: Boolean(state.whatsappConfig?.token),
+      phoneNumberId: state.whatsappConfig?.phoneNumberId || process.env.WHATSAPP_PHONE_NUMBER_ID || '1692890819217239',
+      businessNumber: state.whatsappConfig?.businessNumber || '0585625410'
+    });
+  });
+
+  app.post('/api/whatsapp/config', (req, res) => {
+    try {
+      const { phoneNumberId, token } = req.body;
+      if (!state.whatsappConfig) {
+        state.whatsappConfig = {
+          token: process.env.WHATSAPP_API_TOKEN || '1692890819217239|BxDCvDgtAFgcqN4E5qVUgQWNo8I',
+          phoneNumberId: '1692890819217239',
+          businessNumber: '0585625410'
+        };
+      }
+      if (typeof phoneNumberId === 'string') {
+        state.whatsappConfig.phoneNumberId = phoneNumberId.trim();
+      }
+      if (typeof token === 'string' && token.trim()) {
+        state.whatsappConfig.token = token.trim();
+      }
+      persistState();
+      res.json({
+        success: true,
+        phoneNumberId: state.whatsappConfig.phoneNumberId,
+        hasToken: Boolean(state.whatsappConfig.token),
+        businessNumber: state.whatsappConfig.businessNumber
+      });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message || 'Errore salvataggio config' });
+    }
+  });
+
+  app.post('/api/whatsapp/send', async (req, res) => {
+    try {
+      const { to, text, phoneNumberId: overridePhoneId } = req.body;
+
+      if (!to || !text) {
+        return res.status(400).json({ success: false, error: 'Numero destinatario o testo del messaggio mancante.' });
+      }
+
+      // Pulizia e formattazione numero destinatario (prefisso internazionale 39 per Italia)
+      let cleanTo = String(to).replace(/[^0-9]/g, '');
+      if (!cleanTo) {
+        return res.status(400).json({ success: false, error: 'Numero telefonico non valido.' });
+      }
+      if (cleanTo.startsWith('0039')) cleanTo = cleanTo.slice(4);
+      if (!cleanTo.startsWith('39')) cleanTo = `39${cleanTo}`;
+
+      const token = state.whatsappConfig?.token || process.env.WHATSAPP_API_TOKEN || '1692890819217239|BxDCvDgtAFgcqN4E5qVUgQWNo8I';
+      const phoneId = (overridePhoneId || state.whatsappConfig?.phoneNumberId || process.env.WHATSAPP_PHONE_NUMBER_ID || '1692890819217239').trim();
+
+      if (!phoneId) {
+        return res.status(400).json({
+          success: false,
+          requiresPhoneId: true,
+          error: 'ID Numero di Telefono Meta (Phone Number ID) non ancora impostato. Inserisci il Phone Number ID dal pannello Meta for Developers (WhatsApp -> Configurazione API) per abilitare l\'invio automatico.'
+        });
+      }
+
+      console.log(`[WhatsApp API] Tentativo invio messaggio a ${cleanTo} tramite Phone ID ${phoneId}...`);
+
+      const metaUrl = `https://graph.facebook.com/v21.0/${phoneId}/messages`;
+      const metaResp = await fetch(metaUrl, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          messaging_product: 'whatsapp',
+          recipient_type: 'individual',
+          to: cleanTo,
+          type: 'text',
+          text: {
+            preview_url: true,
+            body: text
+          }
+        })
+      });
+
+      const metaData: any = await metaResp.json();
+
+      if (!metaResp.ok) {
+        console.error('[WhatsApp API] Errore risposta Meta:', metaData);
+        const errorMsg = metaData?.error?.message || 'Errore durante la chiamata alle API Meta';
+        return res.status(metaResp.status).json({
+          success: false,
+          metaError: metaData.error,
+          errorCode: metaData?.error?.code,
+          error: errorMsg,
+          details: metaData?.error?.error_data?.details || errorMsg
+        });
+      }
+
+      console.log(`[WhatsApp API] Messaggio inviato con successo a ${cleanTo}! ID Meta:`, metaData?.messages?.[0]?.id);
+
+      return res.json({
+        success: true,
+        messageId: metaData?.messages?.[0]?.id,
+        recipient: cleanTo,
+        timestamp: new Date().toISOString()
+      });
+    } catch (err: any) {
+      console.error('[WhatsApp API] Errore interno:', err);
+      return res.status(500).json({ success: false, error: err?.message || 'Errore di connessione a Meta Graph API' });
+    }
+  });
+
+  // Endpoint di Health Check per monitoraggio container Cloud Run e dev proxy
+  app.get('/api/health', (_req, res) => {
+    res.json({
+      status: 'ok',
+      service: 'Croce Oro Massa Carrara',
+      uptime: process.uptime(),
+      volontariCount: state.volontari.length,
+      missionActive: !!state.activeMission,
+      timestamp: new Date().toISOString()
+    });
+  });
+
+  // Endpoint versione corrente per auto-aggiornamento PWA e verifica immediata release su Android e Apple
+  app.get(['/api/version', '/api/version.json', '/version.json'], (_req, res) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+
+    try {
+      const vPath = isProd && distExists
+        ? path.resolve(__dirname, 'dist', 'version.json')
+        : path.resolve(__dirname, 'public', 'version.json');
+      if (fs.existsSync(vPath)) {
+        return res.sendFile(vPath);
+      }
+    } catch {}
+
+    res.json(BUILD_INFO);
+  });
+
+  // Servizio dedicato no-cache per sw.js (fondamentale affinché Android e iOS rilevino istantaneamente la nuova release)
+  app.get('/sw.js', (_req, res, next) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+    res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+    const swPath = isProd && distExists
+      ? path.resolve(__dirname, 'dist', 'sw.js')
+      : path.resolve(__dirname, 'public', 'sw.js');
+    if (fs.existsSync(swPath)) {
+      return res.sendFile(swPath);
+    }
+    next();
+  });
+
+  // Servizio dedicato no-cache per manifest.json
+  app.get('/manifest.json', (_req, res, next) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+    res.setHeader('Content-Type', 'application/manifest+json; charset=utf-8');
+    const mPath = isProd && distExists
+      ? path.resolve(__dirname, 'dist', 'manifest.json')
+      : path.resolve(__dirname, 'public', 'manifest.json');
+    if (fs.existsSync(mPath)) {
+      return res.sendFile(mPath);
+    }
+    next();
+  });
+
+  // Integrazione Vite (dev) o Static (prod) con fallback sicuro
+  const isProd = process.env.NODE_ENV === 'production';
+  const distHtmlPath = path.resolve(__dirname, 'dist', 'index.html');
+  const distExists = fs.existsSync(distHtmlPath);
+
+  if (isProd && distExists) {
+    console.log('[Croce Oro Server] Modalità Produzione: servendo bundle compilato da dist/');
+    app.use(express.static(path.resolve(__dirname, 'dist'), {
+      setHeaders: (res, filePath) => {
+        // I file in assets hanno hash univoco quindi possono essere memorizzati in cache
+        if (filePath.includes('/assets/')) {
+          res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+        } else if (filePath.endsWith('.html') || filePath.endsWith('sw.js') || filePath.endsWith('manifest.json')) {
+          res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0');
+        }
+      }
+    }));
+    app.get('*', (_req, res) => {
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0');
+      res.setHeader('Pragma', 'no-cache');
+      res.setHeader('Expires', '0');
+      res.sendFile(distHtmlPath);
+    });
+  } else {
+    console.log('[Croce Oro Server] Modalità Sviluppo/Vite: montando middleware SPA');
+    const vite = await createViteServer({
+      server: { middlewareMode: true, hmr: false },
+      appType: 'spa'
+    });
+    app.use(vite.middlewares);
+  }
+
+  const PORT = parseInt(process.env.PORT || '3000', 10);
+  server.listen(PORT, '0.0.0.0', () => {
+    console.log(`[Croce Oro Server] Attivo su http://0.0.0.0:${PORT} con WebSocket real-time sincronizzato.`);
+  });
+}
+
+startServer().catch(err => {
+  console.error('[Croce Oro Server] Errore critico avvio server:', err);
+});

@@ -1,0 +1,123 @@
+{
+  "id": "/",
+  "name": "Centrale Operativa - Croce Oro Massa Carrara",
+  "short_name": "Croce Oro",
+  "version": "4.3.0",
+  "description": "Centrale Operativa e Terminale Bordo Mezzo per gestione emergenze, missioni, soccorso veterinario e protezione civile.",
+  "start_url": "/?source=pwa",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": [
+    "window-controls-overlay",
+    "standalone",
+    "minimal-ui"
+  ],
+  "orientation": "any",
+  "background_color": "#020617",
+  "theme_color": "#1d1a60",
+  "lang": "it-IT",
+  "dir": "ltr",
+  "categories": [
+    "medical",
+    "utilities",
+    "government"
+  ],
+  "prefer_related_applications": false,
+  "handle_links": "preferred",
+  "launch_handler": {
+    "client_mode": [
+      "navigate-existing",
+      "auto"
+    ]
+  },
+  "icons": [
+    {
+      "src": "/favicon.png",
+      "sizes": "64x64",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/apple-touch-icon.png",
+      "sizes": "180x180",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-192-v2.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-maskable-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/icon-512-v2.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/logo_croce_oro_v2.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ],
+  "screenshots": [
+    {
+      "src": "/logo_croce_oro_v2.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "form_factor": "wide",
+      "label": "Centrale Operativa - Croce Oro Massa Carrara"
+    },
+    {
+      "src": "/icon-512-v2.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "form_factor": "narrow",
+      "label": "Terminale Bordo Mezzo & Emergenze"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Centrale Operativa",
+      "short_name": "Centrale",
+      "description": "Accedi al pannello della Centrale Operativa",
+      "url": "/?view=centrale&source=pwa_shortcut",
+      "icons": [
+        {
+          "src": "/icon-192-v2.png",
+          "sizes": "192x192",
+          "type": "image/png",
+          "purpose": "any"
+        }
+      ]
+    },
+    {
+      "name": "Terminale Bordo Mezzo",
+      "short_name": "Volontario",
+      "description": "Accedi al terminale equipaggio di bordo mezzo",
+      "url": "/?view=volontario&source=pwa_shortcut",
+      "icons": [
+        {
+          "src": "/icon-192-v2.png",
+          "sizes": "192x192",
+          "type": "image/png",
+          "purpose": "any"
+        }
+      ]
+    }
+  ]
+}

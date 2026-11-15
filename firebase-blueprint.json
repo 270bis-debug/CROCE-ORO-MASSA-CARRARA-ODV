@@ -1,0 +1,185 @@
+{
+  "entities": {
+    "SyncShard": {
+      "title": "SyncShard",
+      "description": "Sharded real-time operational state document synchronized across Centrale Operativa and Volunteer terminals via Cloud Firestore.",
+      "type": "object",
+      "properties": {
+        "shardId": {
+          "type": "string",
+          "description": "Fixed shard identifier (mission, volontari, servizi, turni, bacheca, magazzino, timbrature, indirizzi, checklists, config)",
+          "minLength": 2,
+          "maxLength": 64,
+          "pattern": "^[a-z0-9_\\-]+$"
+        },
+        "version": {
+          "type": "number",
+          "description": "Monotonic numeric revision counter incremented on shard updates"
+        },
+        "payload": {
+          "type": "object",
+          "description": "Native Firestore Map containing domain state fields for this shard"
+        },
+        "updatedByUid": {
+          "type": "string",
+          "description": "Firebase UID of the verified user who last wrote this shard",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "updatedByEmail": {
+          "type": "string",
+          "description": "Verified email of the operator who last updated this shard",
+          "minLength": 3,
+          "maxLength": 200
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp set on shard creation"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp set on every update"
+        }
+      },
+      "required": ["shardId", "version", "payload", "updatedByUid", "updatedByEmail", "createdAt", "updatedAt"]
+    },
+    "AdminEntry": {
+      "title": "AdminEntry",
+      "description": "Administrator authorization record granting full Centrale Operativa Cloud Sync governance.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "email": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 200
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "updatedByUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "email", "displayName", "updatedByUid", "createdAt", "updatedAt"]
+    },
+    "OperatorEntry": {
+      "title": "OperatorEntry",
+      "description": "Approved Croce Oro operator or vehicle terminal account authorized to read and write operational sync shards.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "email": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 200
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "active": {
+          "type": "boolean"
+        },
+        "updatedByUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "email", "displayName", "active", "updatedByUid", "createdAt", "updatedAt"]
+    },
+    "OperatorRequest": {
+      "title": "OperatorRequest",
+      "description": "Self-submitted access request created by a verified Google user awaiting Centrale Admin approval.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "email": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 200
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "status": {
+          "type": "string",
+          "enum": ["pending", "approved", "rejected"],
+          "minLength": 7,
+          "maxLength": 12
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "email", "displayName", "status", "createdAt", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/sync_shards/{shardId}": {
+      "schema": { "$ref": "#/entities/SyncShard" },
+      "description": "Domain-partitioned operational sync shards for missions, volunteers, shifts, vehicles warehouse, logs, addresses, and checklists."
+    },
+    "/admins/{adminUid}": {
+      "schema": { "$ref": "#/entities/AdminEntry" },
+      "description": "Elevated admin identities allowed to manage operators and delete shards."
+    },
+    "/operators/{operatorUid}": {
+      "schema": { "$ref": "#/entities/OperatorEntry" },
+      "description": "Verified operators approved by Admin to participate in live multi-device Firestore sync."
+    },
+    "/operator_requests/{requestUid}": {
+      "schema": { "$ref": "#/entities/OperatorRequest" },
+      "description": "Access request queue from Google-authenticated devices pending Admin approval."
+    }
+  }
+}

@@ -1,0 +1,264 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 1. Global Safety Net (Default Deny)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // 2. Reusable Hardened Primitives
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isBootstrappedAdminEmail() {
+      return isVerifiedUser() && request.auth.token.email == '270bis@live.it';
+    }
+
+    function isAdmin() {
+      return isBootstrappedAdminEmail() ||
+        (isVerifiedUser() && exists(/databases/$(database)/documents/admins/$(request.auth.uid)));
+    }
+
+    function isOperator() {
+      return isAdmin() || (
+        isVerifiedUser() &&
+        exists(/databases/$(database)/documents/operators/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/operators/$(request.auth.uid)).data.active == true
+      );
+    }
+
+    function isAllowedShardId(shardId) {
+      return shardId in [
+        'mission',
+        'volontari',
+        'servizi',
+        'turni',
+        'bacheca',
+        'magazzino',
+        'timbrature',
+        'indirizzi',
+        'checklists',
+        'config'
+      ];
+    }
+
+    // 3. Entity Validation Blueprints (Anti-Update-Gap)
+    function isValidSyncShardData(data, shardId) {
+      return data.keys().hasAll([
+          'shardId',
+          'version',
+          'payload',
+          'updatedByUid',
+          'updatedByEmail',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'shardId',
+          'version',
+          'payload',
+          'updatedByUid',
+          'updatedByEmail',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.shardId is string &&
+        data.shardId == shardId &&
+        data.shardId.size() >= 2 &&
+        data.shardId.size() <= 64 &&
+        data.shardId.matches('^[a-z0-9_\\-]+$') &&
+        data.version is number &&
+        data.version >= 1 &&
+        data.payload is map &&
+        data.updatedByUid is string &&
+        data.updatedByUid == request.auth.uid &&
+        data.updatedByUid.size() >= 1 &&
+        data.updatedByUid.size() <= 128 &&
+        data.updatedByUid.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.updatedByEmail is string &&
+        data.updatedByEmail.size() >= 3 &&
+        data.updatedByEmail.size() <= 200 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp &&
+        data.updatedAt == request.time;
+    }
+
+    function isValidAdminData(data, targetUid) {
+      return data.keys().hasAll(['uid', 'email', 'displayName', 'updatedByUid', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['uid', 'email', 'displayName', 'updatedByUid', 'createdAt', 'updatedAt']) &&
+        data.uid is string &&
+        data.uid == targetUid &&
+        isValidId(data.uid) &&
+        data.email is string &&
+        data.email.size() >= 3 &&
+        data.email.size() <= 200 &&
+        data.displayName is string &&
+        data.displayName.size() >= 1 &&
+        data.displayName.size() <= 120 &&
+        data.updatedByUid is string &&
+        data.updatedByUid == request.auth.uid &&
+        data.updatedByUid.size() <= 128 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp &&
+        data.updatedAt == request.time;
+    }
+
+    function isValidOperatorData(data, targetUid) {
+      return data.keys().hasAll(['uid', 'email', 'displayName', 'active', 'updatedByUid', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['uid', 'email', 'displayName', 'active', 'updatedByUid', 'createdAt', 'updatedAt']) &&
+        data.uid is string &&
+        data.uid == targetUid &&
+        isValidId(data.uid) &&
+        data.email is string &&
+        data.email.size() >= 3 &&
+        data.email.size() <= 200 &&
+        data.displayName is string &&
+        data.displayName.size() >= 1 &&
+        data.displayName.size() <= 120 &&
+        data.active is bool &&
+        data.updatedByUid is string &&
+        data.updatedByUid == request.auth.uid &&
+        data.updatedByUid.size() <= 128 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp &&
+        data.updatedAt == request.time;
+    }
+
+    function isValidOperatorRequestData(data, targetUid) {
+      return data.keys().hasAll(['uid', 'email', 'displayName', 'status', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['uid', 'email', 'displayName', 'status', 'createdAt', 'updatedAt']) &&
+        data.uid is string &&
+        data.uid == targetUid &&
+        isValidId(data.uid) &&
+        data.email is string &&
+        data.email.size() >= 3 &&
+        data.email.size() <= 200 &&
+        data.displayName is string &&
+        data.displayName.size() >= 1 &&
+        data.displayName.size() <= 120 &&
+        data.status is string &&
+        data.status.size() >= 7 &&
+        data.status.size() <= 12 &&
+        data.status in ['pending', 'approved', 'rejected'] &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp &&
+        data.updatedAt == request.time;
+    }
+
+    // 4. Sharded Live Cloud State Collection
+    match /sync_shards/{shardId} {
+      allow get: if isValidId(shardId) && isAllowedShardId(shardId) && isOperator();
+      allow list: if false;
+      allow create: if isValidId(shardId) &&
+        isAllowedShardId(shardId) &&
+        isOperator() &&
+        isValidSyncShardData(incoming(), shardId) &&
+        incoming().createdAt == request.time;
+      allow update: if isValidId(shardId) &&
+        isAllowedShardId(shardId) &&
+        isOperator() &&
+        isValidSyncShardData(incoming(), shardId) &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().shardId == existing().shardId &&
+        (
+          isAdmin() ||
+          (
+            incoming().version > existing().version &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['payload', 'version', 'updatedAt', 'updatedByUid', 'updatedByEmail'])
+          )
+        );
+      allow delete: if isValidId(shardId) && isAdmin();
+    }
+
+    // 5. Admin Registry
+    match /admins/{adminUid} {
+      allow get: if isValidId(adminUid) && (isAdmin() || (isVerifiedUser() && request.auth.uid == adminUid));
+      allow list: if false;
+      allow create: if isValidId(adminUid) &&
+        isAdmin() &&
+        isValidAdminData(incoming(), adminUid) &&
+        incoming().createdAt == request.time;
+      allow update: if isValidId(adminUid) &&
+        isAdmin() &&
+        isValidAdminData(incoming(), adminUid) &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().uid == existing().uid &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['email', 'displayName', 'updatedAt', 'updatedByUid']);
+      allow delete: if isValidId(adminUid) && isAdmin() && adminUid != request.auth.uid;
+    }
+
+    // 6. Approved Operator Terminals
+    match /operators/{operatorUid} {
+      allow get: if isValidId(operatorUid) && (isAdmin() || (isVerifiedUser() && request.auth.uid == operatorUid));
+      allow list: if isVerifiedUser() && (
+        request.auth.token.email == '270bis@live.it' ||
+        resource.data.uid == request.auth.uid
+      );
+      allow create: if isValidId(operatorUid) &&
+        isAdmin() &&
+        isValidOperatorData(incoming(), operatorUid) &&
+        incoming().createdAt == request.time;
+      allow update: if isValidId(operatorUid) &&
+        isAdmin() &&
+        isValidOperatorData(incoming(), operatorUid) &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().uid == existing().uid &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['email', 'displayName', 'active', 'updatedAt', 'updatedByUid']);
+      allow delete: if isValidId(operatorUid) && isAdmin();
+    }
+
+    // 7. Operator Access Requests (PII-isolated to owner + bootstrapped Admin)
+    match /operator_requests/{requestUid} {
+      allow get: if isValidId(requestUid) && (isAdmin() || (isVerifiedUser() && request.auth.uid == requestUid));
+      allow list: if isVerifiedUser() && (
+        request.auth.token.email == '270bis@live.it' ||
+        resource.data.uid == request.auth.uid
+      );
+      allow create: if isValidId(requestUid) &&
+        isVerifiedUser() &&
+        request.auth.uid == requestUid &&
+        isValidOperatorRequestData(incoming(), requestUid) &&
+        incoming().status == 'pending' &&
+        incoming().createdAt == request.time;
+      allow update: if isValidId(requestUid) &&
+        isVerifiedUser() &&
+        isValidOperatorRequestData(incoming(), requestUid) &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().uid == existing().uid &&
+        (
+          isAdmin() ||
+          (
+            request.auth.uid == requestUid &&
+            existing().status == 'pending' &&
+            incoming().status == 'pending' &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'email', 'updatedAt'])
+          )
+        );
+      allow delete: if isValidId(requestUid) && (isAdmin() || (isVerifiedUser() && request.auth.uid == requestUid));
+    }
+
+    // 8. Boot Health Check Doc (no PII)
+    match /test/{docId} {
+      allow get: if isValidId(docId) && docId == 'connection' && isOperator();
+      allow list, write: if false;
+    }
+  }
+}
