@@ -162,6 +162,91 @@
         }
       },
       "required": ["uid", "email", "displayName", "status", "createdAt", "updatedAt"]
+    },
+    "PinResetTicket": {
+      "title": "PinResetTicket",
+      "description": "Zero-PII one-time PIN reset ticket allowing an unauthenticated volunteer with a valid secret token and provisional PIN to define their personal 4-digit access PIN without requiring a Google account.",
+      "type": "object",
+      "properties": {
+        "tokenId": {
+          "type": "string",
+          "description": "High-entropy one-time reset token matching the document ID",
+          "minLength": 12,
+          "maxLength": 96,
+          "pattern": "^rst-[a-zA-Z0-9_\\-]+$"
+        },
+        "volunteerId": {
+          "type": "string",
+          "description": "Internal volunteer identifier in the volunteers shard",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "displayName": {
+          "type": "string",
+          "description": "First and last name shown on the PIN activation screen (zero PII: no email/phone/CF)",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "qualifica": {
+          "type": "string",
+          "description": "Operational qualification badge",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "pinProvvisorio": {
+          "type": "string",
+          "description": "4-digit provisional verification PIN issued by the administrator",
+          "minLength": 4,
+          "maxLength": 4,
+          "pattern": "^[0-9]{4}$"
+        },
+        "pinProvvisorioVerifica": {
+          "type": "string",
+          "description": "Placeholder '----' on creation; matching 4-digit provisional PIN submitted by the volunteer during activation",
+          "minLength": 4,
+          "maxLength": 4,
+          "pattern": "^(----|[0-9]{4})$"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["pending", "completed", "applied"],
+          "minLength": 7,
+          "maxLength": 9
+        },
+        "nuovoPin": {
+          "type": "string",
+          "description": "Empty on creation, set to 4-digit personal PIN (not 4451) upon completion",
+          "minLength": 0,
+          "maxLength": 4,
+          "pattern": "^(|[0-9]{4})$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "completedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "tokenId",
+        "volunteerId",
+        "displayName",
+        "qualifica",
+        "pinProvvisorio",
+        "pinProvvisorioVerifica",
+        "status",
+        "nuovoPin",
+        "createdAt",
+        "updatedAt",
+        "completedAt"
+      ]
     }
   },
   "firestore": {
@@ -180,6 +265,10 @@
     "/operator_requests/{requestUid}": {
       "schema": { "$ref": "#/entities/OperatorRequest" },
       "description": "Access request queue from Google-authenticated devices pending Admin approval."
+    },
+    "/pin_resets/{tokenId}": {
+      "schema": { "$ref": "#/entities/PinResetTicket" },
+      "description": "Zero-PII token-gated one-time PIN reset tickets accessible without Google Auth."
     }
   }
 }

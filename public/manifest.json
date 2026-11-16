@@ -2,7 +2,7 @@
   "id": "/",
   "name": "Centrale Operativa - Croce Oro Massa Carrara",
   "short_name": "Croce Oro",
-  "version": "4.3.9",
+  "version": "4.4.0",
   "description": "Centrale Operativa e Terminale Bordo Mezzo per gestione emergenze, missioni, soccorso veterinario e protezione civile.",
   "start_url": "/?source=pwa",
   "scope": "/",

@@ -46,7 +46,8 @@ import {
   Filter,
   PlusCircle,
   RefreshCw,
-  Save
+  Save,
+  Copy
 } from 'lucide-react';
 import { CroceOroLogo } from './CroceOroLogo';
 import { SignaturePad } from './SignaturePad';
@@ -57,6 +58,13 @@ import { MacroCategoriaId } from '../constants/macroCategorie';
 import { inviaNotificaModificaAdmin } from '../utils/notificaModificaAdmin';
 import { formatDateItaly, formatDateTimeItaly, formatISODateItaly, getCurrentYearItaly } from '../utils/italianTime';
 import { mergeVolontariListsSafe } from '../utils/volontariMerge';
+import { creaTicketResetPinFirestore, generaTokenResetPinSicuro } from '../services/firebase';
+import { realtime } from '../services/realtime';
+import {
+  buildPublicResetUrl,
+  getConfiguredPublicUrl,
+  scaricaPaginaHtmlResetPinPubblica
+} from '../utils/publicUrl';
 import {
   getMansioniCatalogo,
   creaNuovaMansione,
@@ -345,7 +353,12 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
   const [notificaResetInviata, setNotificaResetInviata] = useState<{
     nome: string;
     email: string;
+    resetUrl?: string;
+    pinProvvisorio?: string;
+    isProtectedHost?: boolean;
   } | null>(null);
+  const [publicPortalUrlInput, setPublicPortalUrlInput] = useState(() => realtime.getPublicAppUrl() || getConfiguredPublicUrl());
+  const [linkCopiato, setLinkCopiato] = useState(false);
   const [avvisoTemporaneo, setAvvisoTemporaneo] = useState<string | null>(null);
 
   // Modale Rapida Carica/Aggiorna Firma Trasparente (per account attivi o in secondo momento)
@@ -900,10 +913,12 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
     }
 
     const dataOra = formatDateTimeItaly(undefined, false);
-    const pinProvv = v.pinProvvisorio && v.pin ? v.pin : String(Math.floor(1000 + Math.random() * 9000));
-    const token = v.resetToken || `rst-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+    const pinProvv = v.pinProvvisorio && v.pin && /^\d{4}$/.test(String(v.pin))
+      ? String(v.pin)
+      : String(Math.floor(1000 + Math.random() * 9000));
+    const token = generaTokenResetPinSicuro();
 
-    // 1. Aggiorna lo stato nel database con il flag di richiesta reset password/PIN e token
+    // 1. Aggiorna lo stato nel database con il flag di richiesta reset password/PIN e nuovo token univoco
     const aggiornati = volontari.map(item =>
       item.id === v.id
         ? {
@@ -919,7 +934,27 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
     );
     onAggiornaVolontari(aggiornati);
 
-    // 2. Invia email automatica via server con mittente ufficiale sistemiautomatizzati@croceoro.org
+    // 2. Crea ticket zero-PII su Cloud Firestore (accessibile dal volontario senza account Google / AI Studio)
+    creaTicketResetPinFirestore({
+      tokenId: token,
+      volunteerId: v.id,
+      displayName: `${v.nome} ${v.cognome}`.trim(),
+      qualifica: v.qualifica || 'Operatore',
+      pinProvvisorio: pinProvv,
+    }).catch((err) => {
+      console.warn('[ResetPIN] Creazione ticket Firestore non riuscita (verrà usato backend/locale):', err?.message || err);
+    });
+
+    const publicBaseUrl = realtime.getPublicAppUrl() || getConfiguredPublicUrl();
+    const { url: linkLocaleFallback, isPublicNonGoogle } = buildPublicResetUrl({
+      id: v.id,
+      token,
+      baseUrlOverride: publicBaseUrl
+    });
+
+    let resetUrlFinale = linkLocaleFallback;
+
+    // 3. Invia email automatica via server con mittente ufficiale sistemiautomatizzati@croceoro.org + allegato HTML autonomo
     try {
       const res = await fetch('/api/invia-email-invito-reset-pin', {
         method: 'POST',
@@ -932,30 +967,37 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
           email: v.email,
           pinProvvisorio: pinProvv,
           token: token,
-          origin: window.location.origin
+          origin: window.location.origin,
+          publicBaseUrl
         })
       });
       const data = await res.json();
+      if (data?.resetUrl) {
+        resetUrlFinale = data.resetUrl;
+      }
       if (data.success) {
         onNotificaRadio(
-          `📧 INVITO RESET: Inviata email con PIN provvisorio e pulsante reset a ${v.nome} ${v.cognome} (${v.email}) da sistemiautomatizzati@croceoro.org.`,
+          `📧 INVITO RESET: Inviata email con PIN provvisorio e portale attivazione (no Google richiesto) a ${v.nome} ${v.cognome} (${v.email}) da sistemiautomatizzati@croceoro.org.`,
           'centrale'
         );
-        setAvvisoTemporaneo(`✅ Email con PIN provvisorio inviata con successo a ${v.email}!`);
+        setAvvisoTemporaneo(`✅ Email con PIN provvisorio e portale autonomo inviata con successo a ${v.email}!`);
       } else {
         setAvvisoTemporaneo(`⚠️ Invito generato per ${v.nome} ${v.cognome} (link pronto per il reset).`);
       }
     } catch {
-      setAvvisoTemporaneo(`✅ Invito generato con successo per ${v.nome} ${v.cognome}.`);
+      setAvvisoTemporaneo(`✅ Invito Cloud generato con successo per ${v.nome} ${v.cognome}.`);
     }
 
     setNotificaResetInviata({
       nome: `${v.nome} ${v.cognome}`,
-      email: v.email
+      email: v.email,
+      resetUrl: resetUrlFinale,
+      pinProvvisorio: pinProvv,
+      isProtectedHost: !isPublicNonGoogle
     });
+    setLinkCopiato(false);
 
     setTimeout(() => {
-      setNotificaResetInviata(null);
       setAvvisoTemporaneo(null);
     }, 6000);
   };
@@ -1776,11 +1818,11 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
         });
       }
     } else {
-      // Generazione automatica PIN provvisorio e token univoco per il reset
+      // Generazione automatica PIN provvisorio e token univoco ad alta entropia per il reset
       const pinProvvisorio = formPIN && /^\d{4}$/.test(formPIN) && formPIN !== '4451'
         ? formPIN
         : String(Math.floor(1000 + Math.random() * 9000));
-      const resetTokenGenerato = `rst-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+      const resetTokenGenerato = generaTokenResetPinSicuro();
       const dataOra = formatDateTimeItaly();
 
       // Nuovo volontario o operatore
@@ -1840,7 +1882,18 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
         });
       }
 
-      // Invio automatico email con PIN temporaneo e pulsante dedicato per impostare il nuovo PIN
+      // Crea ticket Cloud Firestore per attivazione autonoma senza Google / AI Studio
+      creaTicketResetPinFirestore({
+        tokenId: resetTokenGenerato,
+        volunteerId: nuovo.id,
+        displayName: `${nuovo.nome} ${nuovo.cognome}`.trim(),
+        qualifica: nuovo.qualifica,
+        pinProvvisorio,
+      }).catch(() => {});
+
+      const publicBaseUrl = realtime.getPublicAppUrl() || getConfiguredPublicUrl();
+
+      // Invio automatico email con PIN temporaneo e pulsante/allegato autonomo per impostare il nuovo PIN
       if (emailPulita && emailPulita.includes('@')) {
         fetch('/api/invia-email-invito-reset-pin', {
           method: 'POST',
@@ -1853,14 +1906,15 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
             email: emailPulita,
             pinProvvisorio: pinProvvisorio,
             token: resetTokenGenerato,
-            origin: window.location.origin
+            origin: window.location.origin,
+            publicBaseUrl
           })
         })
           .then(r => r.json())
           .then(res => {
             if (res.success) {
               onNotificaRadio(
-                `📧 EMAIL ATTIVAZIONE: Inviata email con PIN provvisorio (${pinProvvisorio}) e link reset a ${emailPulita} da sistemiautomatizzati@croceoro.org`,
+                `📧 EMAIL ATTIVAZIONE: Inviata email con PIN provvisorio (${pinProvvisorio}) e portale reset autonomo a ${emailPulita} da sistemiautomatizzati@croceoro.org`,
                 'sistema'
               );
             }
@@ -2832,19 +2886,84 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
 
           {/* Notifica Invito Reset Password o Avvisi */}
           {notificaResetInviata && (
-            <div className="bg-amber-500/15 px-4 py-2.5 flex items-center justify-between text-xs text-amber-300">
-              <div className="flex items-center gap-2">
-                <KeyRound className="w-4 h-4 text-amber-400 shrink-0" />
-                <span>
-                  Invito di reset password/PIN inviato con successo a <strong>{notificaResetInviata.nome}</strong> ({notificaResetInviata.email}).
-                </span>
+            <div className="bg-amber-500/15 border-b border-amber-500/30 px-4 py-3 text-xs text-amber-200 space-y-2">
+              <div className="flex items-start justify-between gap-2">
+                <div className="flex items-start gap-2">
+                  <KeyRound className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                  <div className="space-y-1">
+                    <div>
+                      Invito di reset PIN inviato a <strong>{notificaResetInviata.nome}</strong> ({notificaResetInviata.email}) &bull; PIN provvisorio:{' '}
+                      <span className="font-mono font-black text-amber-300">{notificaResetInviata.pinProvvisorio}</span>
+                    </div>
+                    {notificaResetInviata.resetUrl && (
+                      <div className="flex flex-wrap items-center gap-2 pt-0.5">
+                        <code className="px-2 py-0.5 rounded bg-slate-950/90 border border-slate-700 text-[10px] text-cyan-300 max-w-md truncate">
+                          {notificaResetInviata.resetUrl}
+                        </code>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (notificaResetInviata.resetUrl) {
+                              navigator.clipboard?.writeText(notificaResetInviata.resetUrl).catch(() => {});
+                              setLinkCopiato(true);
+                              setTimeout(() => setLinkCopiato(false), 2500);
+                            }
+                          }}
+                          className="px-2 py-0.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-amber-300 border border-amber-500/30 text-[10px] font-bold flex items-center gap-1 cursor-pointer"
+                        >
+                          <Copy className="w-3 h-3" />
+                          <span>{linkCopiato ? 'Copiato!' : 'Copia Link'}</span>
+                        </button>
+                      </div>
+                    )}
+                    {notificaResetInviata.isProtectedHost && (
+                      <div className="p-2 rounded-xl bg-slate-950/80 border border-amber-500/40 text-[11px] text-amber-200 space-y-1.5 mt-1">
+                        <div>
+                          ℹ️ L&apos;email allega automaticamente <strong>Attivazione_PIN_Croce_Oro.html</strong> (funziona senza account Google / AI Studio). Per far aprire anche il collegamento web diretto su smartphone senza login Google, imposta il dominio pubblico (Vercel o <span className="font-mono">https://www.croceoro.org/reset-pin.html</span>):
+                        </div>
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <input
+                            type="url"
+                            value={publicPortalUrlInput}
+                            onChange={(e) => setPublicPortalUrlInput(e.target.value)}
+                            placeholder="https://www.croceoro.org/reset-pin.html"
+                            className="flex-1 min-w-[200px] px-2 py-1 rounded-lg bg-slate-900 border border-slate-700 text-white text-[11px] font-mono"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const saved = realtime.syncPublicAppUrl(publicPortalUrlInput);
+                              setPublicPortalUrlInput(saved);
+                              setAvvisoTemporaneo(
+                                saved
+                                  ? `✅ URL Pubblico salvato (${saved}): i prossimi link email non richiederanno account Google!`
+                                  : 'URL pubblico rimosso.'
+                              );
+                            }}
+                            className="px-2.5 py-1 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-[10px] uppercase cursor-pointer"
+                          >
+                            Salva URL Pubblico
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => scaricaPaginaHtmlResetPinPubblica()}
+                            className="px-2.5 py-1 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white font-bold text-[10px] cursor-pointer"
+                            title="Scarica il file HTML autonomo da caricare su https://www.croceoro.org/reset-pin.html"
+                          >
+                            Scarica reset-pin.html per croceoro.org
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+                <button
+                  onClick={() => setNotificaResetInviata(null)}
+                  className="text-amber-400 hover:text-white cursor-pointer shrink-0"
+                >
+                  <X className="w-4 h-4" />
+                </button>
               </div>
-              <button
-                onClick={() => setNotificaResetInviata(null)}
-                className="text-amber-400 hover:text-white cursor-pointer"
-              >
-                <X className="w-3.5 h-3.5" />
-              </button>
             </div>
           )}
           {avvisoTemporaneo && (

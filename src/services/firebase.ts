@@ -144,6 +144,20 @@ export interface ApprovedOperatorRecord {
   updatedAt?: any;
 }
 
+export interface PinResetTicketRecord {
+  tokenId: string;
+  volunteerId: string;
+  displayName: string;
+  qualifica: string;
+  pinProvvisorio: string;
+  pinProvvisorioVerifica: string;
+  status: 'pending' | 'completed' | 'applied';
+  nuovoPin: string;
+  createdAt?: any;
+  updatedAt?: any;
+  completedAt?: any;
+}
+
 export function sanitizeForFirestore<T>(input: T): T {
   if (input === undefined) return null as any;
   if (input === null) return input;
@@ -800,3 +814,146 @@ export async function writeShardDoc(
     handleFirestoreError(err, OperationType.WRITE, path);
   }
 }
+
+const PIN_RESET_TOKEN_REGEX = /^rst-[a-zA-Z0-9_\-]+$/;
+
+export function isValidPinResetTokenFormat(tokenId: string): boolean {
+  const t = (tokenId || '').trim();
+  return t.length >= 12 && t.length <= 96 && PIN_RESET_TOKEN_REGEX.test(t);
+}
+
+export function generaTokenResetPinSicuro(): string {
+  const ts = Date.now().toString(36);
+  let rand = '';
+  try {
+    if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
+      const bytes = new Uint8Array(12);
+      crypto.getRandomValues(bytes);
+      rand = Array.from(bytes, (b) => b.toString(36).padStart(2, '0')).join('').slice(0, 16);
+    }
+  } catch {
+    // fallback below
+  }
+  if (!rand) {
+    rand = (Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2)).slice(0, 16);
+  }
+  return `rst-${ts}-${rand}`.slice(0, 64);
+}
+
+export async function creaTicketResetPinFirestore(params: {
+  tokenId: string;
+  volunteerId: string;
+  displayName: string;
+  qualifica: string;
+  pinProvvisorio: string;
+}): Promise<boolean> {
+  const user = auth.currentUser;
+  if (!user || !user.emailVerified) {
+    return false;
+  }
+
+  const tokenId = (params.tokenId || '').trim();
+  const volunteerId = (params.volunteerId || '').trim();
+  const pinProvv = String(params.pinProvvisorio || '').trim();
+  if (!isValidPinResetTokenFormat(tokenId) || !volunteerId || !/^\d{4}$/.test(pinProvv)) {
+    return false;
+  }
+
+  const displayName = (params.displayName || 'Volontario Croce Oro').trim().slice(0, 120) || 'Volontario Croce Oro';
+  const qualifica = (params.qualifica || 'Soccorritore').trim().slice(0, 80) || 'Soccorritore';
+  const path = `pin_resets/${tokenId}`;
+
+  try {
+    await setDoc(doc(db, 'pin_resets', tokenId), {
+      tokenId,
+      volunteerId,
+      displayName,
+      qualifica,
+      pinProvvisorio: pinProvv,
+      pinProvvisorioVerifica: '----',
+      status: 'pending',
+      nuovoPin: '',
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+      completedAt: serverTimestamp(),
+    });
+    return true;
+  } catch (err) {
+    handleFirestoreError(err, OperationType.CREATE, path);
+  }
+}
+
+export async function verificaTicketResetPinFirestore(
+  tokenId: string
+): Promise<{ found: boolean; ticket: PinResetTicketRecord | null }> {
+  const tokenPulito = (tokenId || '').trim();
+  if (!isValidPinResetTokenFormat(tokenPulito)) {
+    return { found: false, ticket: null };
+  }
+  const path = `pin_resets/${tokenPulito}`;
+  try {
+    const snap = await getDocFromServer(doc(db, 'pin_resets', tokenPulito));
+    if (!snap.exists()) {
+      return { found: false, ticket: null };
+    }
+    return {
+      found: true,
+      ticket: snap.data() as PinResetTicketRecord,
+    };
+  } catch (err) {
+    handleFirestoreError(err, OperationType.GET, path);
+  }
+}
+
+export async function completaTicketResetPinFirestore(
+  tokenId: string,
+  pinProvvisorioVerifica: string,
+  nuovoPin: string
+): Promise<void> {
+  const tokenPulito = (tokenId || '').trim();
+  const pinProvv = String(pinProvvisorioVerifica || '').trim();
+  const pinNuovo = String(nuovoPin || '').trim();
+
+  if (!isValidPinResetTokenFormat(tokenPulito)) {
+    throw new Error('Link di attivazione non valido o incompleto.');
+  }
+  if (!/^\d{4}$/.test(pinProvv)) {
+    throw new Error('Inserisci il PIN provvisorio a 4 cifre ricevuto nella email.');
+  }
+  if (!/^\d{4}$/.test(pinNuovo) || pinNuovo === '4451') {
+    throw new Error('Il nuovo PIN deve essere di 4 cifre numeriche e non riservato.');
+  }
+  if (pinNuovo === pinProvv) {
+    throw new Error('Il nuovo PIN deve essere diverso dal PIN provvisorio assegnato.');
+  }
+
+  const path = `pin_resets/${tokenPulito}`;
+  try {
+    await updateDoc(doc(db, 'pin_resets', tokenPulito), {
+      status: 'completed',
+      nuovoPin: pinNuovo,
+      pinProvvisorioVerifica: pinProvv,
+      updatedAt: serverTimestamp(),
+      completedAt: serverTimestamp(),
+    });
+  } catch (err) {
+    handleFirestoreError(err, OperationType.UPDATE, path);
+  }
+}
+
+export async function segnaTicketResetApplicatoFirestore(tokenId: string): Promise<void> {
+  const user = auth.currentUser;
+  if (!user || !user.emailVerified) return;
+  const tokenPulito = (tokenId || '').trim();
+  if (!isValidPinResetTokenFormat(tokenPulito)) return;
+  const path = `pin_resets/${tokenPulito}`;
+  try {
+    await updateDoc(doc(db, 'pin_resets', tokenPulito), {
+      status: 'applied',
+      updatedAt: serverTimestamp(),
+    });
+  } catch (err) {
+    handleFirestoreError(err, OperationType.UPDATE, path);
+  }
+}
+

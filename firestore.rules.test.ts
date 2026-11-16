@@ -103,5 +103,45 @@ export const DIRTY_DOZEN_PAYLOADS = [
     existingVersion: 5,
     payload: { version: 4 },
     expected: 'PERMISSION_DENIED'
+  },
+  {
+    name: '13_pin_resets_collection_list_scraping',
+    path: '/pin_resets',
+    operation: 'list',
+    auth: null,
+    expected: 'PERMISSION_DENIED'
+  },
+  {
+    name: '14_pin_reset_invalid_token_prefix',
+    path: '/pin_resets/arbitrary_doc',
+    operation: 'get',
+    auth: null,
+    expected: 'PERMISSION_DENIED'
+  },
+  {
+    name: '15_pin_reset_wrong_provisional_pin_or_reserved_pin',
+    path: '/pin_resets/rst-validtoken1234',
+    operation: 'update',
+    auth: null,
+    payload: {
+      status: 'completed',
+      pinProvvisorioVerifica: '9999',
+      nuovoPin: '4451'
+    },
+    expected: 'PERMISSION_DENIED'
+  },
+  {
+    name: '16_pin_reset_terminal_replay_after_completed',
+    path: '/pin_resets/rst-validtoken1234',
+    operation: 'update',
+    auth: null,
+    existingStatus: 'completed',
+    payload: {
+      status: 'completed',
+      pinProvvisorioVerifica: '1234',
+      nuovoPin: '5678'
+    },
+    expected: 'PERMISSION_DENIED'
   }
 ];
+

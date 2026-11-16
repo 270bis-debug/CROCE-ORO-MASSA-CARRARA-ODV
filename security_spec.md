@@ -7,6 +7,7 @@
 4. **Immutable Temporal & Identity Anchors**: `createdAt` must equal `request.time` on create and remain identical on update. `updatedAt` must equal `request.time` on both create and update. `updatedByUid` must equal `request.auth.uid`.
 5. **Privilege Escalation Prevention**: Non-admin verified users can only submit a `pending` request in `/operator_requests/{request.auth.uid}`. Only `isAdmin()` can create or mutate `/operators/{uid}` or `/admins/{uid}`, or approve/reject requests.
 6. **PII Isolation**: `/operator_requests/{requestUid}` and `/operators/{operatorUid}` reads and queries are isolated strictly to the document owner (`uid == request.auth.uid`) or Admin. No blanket reads exist.
+7. **Token-Gated Zero-PII PIN Reset Tickets**: `/pin_resets/{tokenId}` contains zero PII (no email, phone, tax ID, or address), strictly forbids collection listing (`allow list: if false;`), enforces `^rst-[a-zA-Z0-9_\-]{8,92}$`, allows unauthenticated single-document update ONLY when `existing().status == 'pending'`, `incoming().status == 'completed'`, `incoming().pinProvvisorioVerifica == existing().pinProvvisorio`, and `nuovoPin` is a valid non-reserved 4-digit PIN different from the provisional PIN.
 
 ## 2. The "Dirty Dozen" Payloads (Expected Result: PERMISSION_DENIED)
 1. **Unauthenticated Shard Read**: Anonymous caller tries `GET /sync_shards/volontari` -> Denied (`isVerifiedUser()` false).
@@ -18,6 +19,9 @@
 7. **Timestamp Backdating**: Operator sends custom client timestamp `updatedAt: "2020-01-01T00:00:00Z"` -> Denied (`data.updatedAt == request.time` false).
 8. **Self-Assigned Admin**: Non-admin user tries `CREATE /admins/{ownUid}` -> Denied (`isAdmin()` false).
 9. **Self-Approved Operator Request**: Pending user tries `UPDATE /operator_requests/{ownUid}` changing `status: "approved"` -> Denied (Terminal/Admin gate).
-10. **Collection Scraping List Query**: Operator tries `LIST /sync_shards` or `LIST /admins` -> Denied (`allow list: if false;`).
+10. **Collection Scraping List Query**: Caller tries `LIST /sync_shards`, `LIST /admins`, or `LIST /pin_resets` -> Denied (`allow list: if false;`).
 11. **Oversized DisplayName Resource Exhaustion**: User sends 5KB `displayName` in `/operator_requests/{uid}` -> Denied (`displayName.size() <= 120`).
 12. **Stale/Downgraded Version Write by Operator**: Operator tries `UPDATE /sync_shards/mission` with `version <= existing().version` -> Denied (`incoming().version > existing().version`).
+13. **PIN Reset Wrong Provisional Verification**: Unauthenticated caller tries `UPDATE /pin_resets/rst-valid12345` with wrong `pinProvvisorioVerifica` -> Denied (`incoming().pinProvvisorioVerifica == existing().pinProvvisorio` false).
+14. **PIN Reset Terminal Replay / Reserved PIN**: Caller tries `UPDATE /pin_resets/rst-valid12345` after `status == 'completed'` or setting `nuovoPin: '4451'` -> Denied (`existing().status == 'pending'` / `!= '4451'`).
+

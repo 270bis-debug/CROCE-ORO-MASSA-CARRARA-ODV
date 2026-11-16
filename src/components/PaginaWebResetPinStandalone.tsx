@@ -1,7 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { ShieldCheck, CheckCircle2, AlertTriangle, KeyRound, Lock, Eye, EyeOff } from 'lucide-react';
+import { ShieldCheck, CheckCircle2, AlertTriangle, KeyRound, Eye, EyeOff } from 'lucide-react';
 import { CroceOroLogo } from './CroceOroLogo';
 import { getCurrentYearItaly } from '../utils/italianTime';
+import {
+  verificaTicketResetPinFirestore,
+  completaTicketResetPinFirestore,
+  isValidPinResetTokenFormat,
+} from '../services/firebase';
 
 interface VolontarioInfo {
   id: string;
@@ -12,10 +17,27 @@ interface VolontarioInfo {
   pinProvvisorio?: string;
 }
 
+function estraiParametriReset(): { id: string; token: string } {
+  const urlParams = new URLSearchParams(window.location.search || '');
+  let id = (urlParams.get('id') || '').trim();
+  let token = (urlParams.get('token') || urlParams.get('resetToken') || urlParams.get('token_reset') || '').trim();
+
+  if ((!id || !token) && window.location.hash.includes('?')) {
+    const hashQuery = window.location.hash.split('?')[1];
+    const hashParams = new URLSearchParams(hashQuery);
+    id = id || (hashParams.get('id') || '').trim();
+    token = token || (hashParams.get('token') || hashParams.get('resetToken') || hashParams.get('token_reset') || '').trim();
+  }
+
+  return { id, token };
+}
+
 export const PaginaWebResetPinStandalone: React.FC = () => {
   const [caricamento, setCaricamento] = useState(true);
   const [volontario, setVolontario] = useState<VolontarioInfo | null>(null);
   const [erroreToken, setErroreToken] = useState<string | null>(null);
+  const [hasFirestoreTicket, setHasFirestoreTicket] = useState(false);
+  const [hasExpressMatch, setHasExpressMatch] = useState(false);
 
   // Form states
   const [pinProvvisorioInput, setPinProvvisorioInput] = useState('');
@@ -26,50 +48,116 @@ export const PaginaWebResetPinStandalone: React.FC = () => {
   const [inviando, setInviando] = useState(false);
   const [successo, setSuccesso] = useState(false);
 
-  // Estrai parametri da URL
+  // Estrai parametri da URL e verifica su Cloud Firestore + Express
   useEffect(() => {
-    try {
-      const urlParams = new URLSearchParams(window.location.search);
-      let id = urlParams.get('id');
-      let token = urlParams.get('token') || urlParams.get('resetToken') || urlParams.get('token_reset');
+    let attivo = true;
 
-      // Se non in search, cerca nel fragment hash (#reset-pin?id=...&token=...)
-      if ((!id || !token) && window.location.hash.includes('?')) {
-        const hashQuery = window.location.hash.split('?')[1];
-        const hashParams = new URLSearchParams(hashQuery);
-        id = id || hashParams.get('id');
-        token = token || hashParams.get('token') || hashParams.get('resetToken');
-      }
-
-      if (!id || !token) {
-        setErroreToken('Link di attivazione non valido o incompleto. Assicurati di aver aperto il link completo ricevuto via email.');
-        setCaricamento(false);
-        return;
-      }
-
-      // Chiama il backend per verificare il token
-      fetch(`/api/volontari/verifica-token-reset?id=${encodeURIComponent(id)}&token=${encodeURIComponent(token)}`)
-        .then(async (res) => {
-          const data = await res.json();
-          if (res.ok && data.success && data.volontario) {
-            setVolontario(data.volontario);
-            if (data.volontario.pinProvvisorio) {
-              setPinProvvisorioInput(data.volontario.pinProvvisorio);
-            }
-          } else {
-            setErroreToken(data.error || 'Il link di attivazione utilizzato non è valido o il PIN personale è già stato impostato.');
+    async function verificaLink() {
+      try {
+        const { id, token } = estraiParametriReset();
+        if (!token) {
+          if (attivo) {
+            setErroreToken('Link di attivazione non valido o incompleto. Assicurati di aver aperto il link completo ricevuto via email.');
+            setCaricamento(false);
           }
-        })
-        .catch(() => {
-          setErroreToken('Impossibile verificare il link con il server. Controlla la connessione ad internet e riprova.');
-        })
-        .finally(() => {
+          return;
+        }
+
+        // 1. Verifica prioritaria su Cloud Firestore (funziona anche su Vercel e senza account Google / AI Studio)
+        let fsFoundPending = false;
+        let fsAlreadyCompleted = false;
+        let fsVol: VolontarioInfo | null = null;
+
+        if (isValidPinResetTokenFormat(token)) {
+          try {
+            const fsRes = await verificaTicketResetPinFirestore(token);
+            if (fsRes.found && fsRes.ticket) {
+              const t = fsRes.ticket;
+              if (t.status === 'completed' || t.status === 'applied') {
+                fsAlreadyCompleted = true;
+                fsVol = {
+                  id: t.volunteerId || id,
+                  nome: t.displayName || 'Volontario',
+                  cognome: '',
+                  qualifica: t.qualifica || 'Operatore',
+                };
+              } else {
+                fsFoundPending = true;
+                fsVol = {
+                  id: t.volunteerId || id,
+                  nome: t.displayName || 'Volontario',
+                  cognome: '',
+                  qualifica: t.qualifica || 'Operatore',
+                };
+              }
+            }
+          } catch {
+            // Prosegue verificando eventuale backend Express locale
+          }
+        }
+
+        // 2. Verifica opzionale su backend Express (ignora catch-all Vercel mode === 'cloud-firestore')
+        let expVol: VolontarioInfo | null = null;
+        let expErrorMsg: string | null = null;
+        if (id) {
+          try {
+            const res = await fetch(`/api/volontari/verifica-token-reset?id=${encodeURIComponent(id)}&token=${encodeURIComponent(token)}`, {
+              cache: 'no-store',
+            });
+            const ct = res.headers.get('content-type') || '';
+            if (ct.includes('application/json')) {
+              const data = await res.json();
+              if (data?.mode !== 'cloud-firestore') {
+                if (res.ok && data.success && data.volontario) {
+                  expVol = data.volontario;
+                } else if (data?.error) {
+                  expErrorMsg = data.error;
+                }
+              }
+            }
+          } catch {
+            // Nessun backend Express attivo (es. hosting statico / Vercel)
+          }
+        }
+
+        if (!attivo) return;
+
+        if (fsAlreadyCompleted && !expVol) {
+          setVolontario(fsVol);
+          setSuccesso(true);
           setCaricamento(false);
-        });
-    } catch {
-      setErroreToken('Errore durante la lettura del link di attivazione.');
-      setCaricamento(false);
+          return;
+        }
+
+        if (fsFoundPending || expVol) {
+          setHasFirestoreTicket(fsFoundPending);
+          setHasExpressMatch(Boolean(expVol));
+          const scelto = expVol || fsVol!;
+          setVolontario(scelto);
+          if (expVol?.pinProvvisorio) {
+            setPinProvvisorioInput(expVol.pinProvvisorio);
+          }
+        } else {
+          setErroreToken(
+            expErrorMsg ||
+              'Il link di attivazione utilizzato non è più valido, è scaduto oppure il PIN personale è già stato impostato.'
+          );
+        }
+      } catch {
+        if (attivo) {
+          setErroreToken('Errore durante la lettura del link di attivazione.');
+        }
+      } finally {
+        if (attivo) {
+          setCaricamento(false);
+        }
+      }
     }
+
+    verificaLink();
+    return () => {
+      attivo = false;
+    };
   }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -84,6 +172,11 @@ export const PaginaWebResetPinStandalone: React.FC = () => {
     const pinProvv = pinProvvisorioInput.trim();
     const pinNuovo = nuovoPin.trim();
     const pinConf = confermaPin.trim();
+
+    if (!/^\d{4}$/.test(pinProvv)) {
+      setErroreForm('Inserisci il PIN provvisorio a 4 cifre ricevuto nella email.');
+      return;
+    }
 
     if (!/^\d{4}$/.test(pinNuovo)) {
       setErroreForm('Il nuovo PIN deve essere composto da esattamente 4 cifre numeriche (es. 2849).');
@@ -100,32 +193,65 @@ export const PaginaWebResetPinStandalone: React.FC = () => {
       return;
     }
 
-    if (pinProvv && pinProvv === pinNuovo) {
+    if (pinProvv === pinNuovo) {
       setErroreForm('Il nuovo PIN deve essere diverso dal PIN provvisorio assegnato.');
       return;
     }
 
     setInviando(true);
     try {
-      const urlParams = new URLSearchParams(window.location.search);
-      const token = urlParams.get('token') || urlParams.get('resetToken') || '';
+      const { token } = estraiParametriReset();
+      let savedInFirestore = false;
+      let savedInExpress = false;
+      let firestoreErrMsg: string | null = null;
+      let expressErrMsg: string | null = null;
 
-      const res = await fetch('/api/volontari/reset-pin', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          id: volontario.id,
-          token,
-          pinProvvisorio: pinProvv,
-          nuovoPin: pinNuovo
-        })
-      });
+      if (hasFirestoreTicket && isValidPinResetTokenFormat(token)) {
+        try {
+          await completaTicketResetPinFirestore(token, pinProvv, pinNuovo);
+          savedInFirestore = true;
+        } catch (fsErr: any) {
+          const msg = String(fsErr?.message || '');
+          if (msg.includes('Missing or insufficient permissions') || msg.includes('PERMISSION_DENIED')) {
+            firestoreErrMsg = 'Il PIN Provvisorio inserito non corrisponde a quello ricevuto nella email oppure il link è già stato utilizzato.';
+          } else {
+            firestoreErrMsg = fsErr?.message || 'Errore salvataggio Cloud.';
+          }
+        }
+      }
 
-      const data = await res.json();
-      if (res.ok && data.success) {
+      if (hasExpressMatch || !savedInFirestore) {
+        try {
+          const res = await fetch('/api/volontari/reset-pin', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              id: volontario.id,
+              token,
+              pinProvvisorio: pinProvv,
+              nuovoPin: pinNuovo
+            })
+          });
+          const ct = res.headers.get('content-type') || '';
+          if (ct.includes('application/json')) {
+            const data = await res.json();
+            if (data?.mode !== 'cloud-firestore') {
+              if (res.ok && data.success) {
+                savedInExpress = true;
+              } else if (data?.error) {
+                expressErrMsg = data.error;
+              }
+            }
+          }
+        } catch {
+          // Express non raggiungibile su hosting statico
+        }
+      }
+
+      if (savedInFirestore || savedInExpress) {
         setSuccesso(true);
       } else {
-        setErroreForm(data.error || 'Errore durante il salvataggio del nuovo PIN. Riprova tra poco.');
+        setErroreForm(firestoreErrMsg || expressErrMsg || 'Errore durante il salvataggio del nuovo PIN. Riprova tra poco.');
       }
     } catch {
       setErroreForm('Errore di connessione con il server. Verifica la connessione e riprova.');
@@ -385,10 +511,10 @@ export const PaginaWebResetPinStandalone: React.FC = () => {
                   data-form-type="other"
                   value={pinProvvisorioInput}
                   onChange={(e) => {
-                    setPinProvvisorioInput(e.target.value);
+                    setPinProvvisorioInput(e.target.value.replace(/\D/g, '').slice(0, 4));
                     setErroreForm(null);
                   }}
-                  placeholder="PIN provvisorio..."
+                  placeholder="••••"
                   style={{
                     width: '100%',
                     padding: '12px',

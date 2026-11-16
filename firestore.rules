@@ -12,6 +12,13 @@ service cloud.firestore {
       return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
     }
 
+    function isValidResetTokenId(tokenId) {
+      return tokenId is string &&
+        tokenId.size() >= 12 &&
+        tokenId.size() <= 96 &&
+        tokenId.matches('^rst-[a-zA-Z0-9_\\-]+$');
+    }
+
     function incoming() {
       return request.resource.data;
     }
@@ -163,6 +170,61 @@ service cloud.firestore {
         data.updatedAt == request.time;
     }
 
+    function isValidPinResetData(data, tokenId) {
+      return data.keys().hasAll([
+          'tokenId',
+          'volunteerId',
+          'displayName',
+          'qualifica',
+          'pinProvvisorio',
+          'pinProvvisorioVerifica',
+          'status',
+          'nuovoPin',
+          'createdAt',
+          'updatedAt',
+          'completedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'tokenId',
+          'volunteerId',
+          'displayName',
+          'qualifica',
+          'pinProvvisorio',
+          'pinProvvisorioVerifica',
+          'status',
+          'nuovoPin',
+          'createdAt',
+          'updatedAt',
+          'completedAt'
+        ]) &&
+        data.tokenId is string &&
+        data.tokenId == tokenId &&
+        isValidResetTokenId(data.tokenId) &&
+        data.volunteerId is string &&
+        isValidId(data.volunteerId) &&
+        data.displayName is string &&
+        data.displayName.size() >= 1 &&
+        data.displayName.size() <= 120 &&
+        data.qualifica is string &&
+        data.qualifica.size() >= 1 &&
+        data.qualifica.size() <= 80 &&
+        data.pinProvvisorio is string &&
+        data.pinProvvisorio.size() == 4 &&
+        data.pinProvvisorio.matches('^[0-9]{4}$') &&
+        data.pinProvvisorioVerifica is string &&
+        data.pinProvvisorioVerifica.size() == 4 &&
+        data.pinProvvisorioVerifica.matches('^(----|[0-9]{4})$') &&
+        data.status is string &&
+        data.status in ['pending', 'completed', 'applied'] &&
+        data.nuovoPin is string &&
+        data.nuovoPin.size() <= 4 &&
+        data.nuovoPin.matches('^(|[0-9]{4})$') &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp &&
+        data.updatedAt == request.time &&
+        data.completedAt is timestamp;
+    }
+
     // 4. Sharded Live Cloud State Collection
     match /sync_shards/{shardId} {
       allow get: if isValidId(shardId) && isAllowedShardId(shardId) && isOperator();
@@ -255,7 +317,52 @@ service cloud.firestore {
       allow delete: if isValidId(requestUid) && (isAdmin() || (isVerifiedUser() && request.auth.uid == requestUid));
     }
 
-    // 8. Boot Health Check Doc (no PII)
+    // 8. Token-Scoped Zero-PII PIN Reset Tickets (works without Google / AI Studio auth)
+    match /pin_resets/{tokenId} {
+      allow get: if isValidResetTokenId(tokenId);
+      allow list: if false;
+      allow create: if isValidResetTokenId(tokenId) &&
+        isOperator() &&
+        isValidPinResetData(incoming(), tokenId) &&
+        incoming().status == 'pending' &&
+        incoming().nuovoPin == '' &&
+        incoming().pinProvvisorioVerifica == '----' &&
+        incoming().createdAt == request.time &&
+        incoming().completedAt == request.time;
+      allow update: if isValidResetTokenId(tokenId) &&
+        isValidPinResetData(incoming(), tokenId) &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().tokenId == existing().tokenId &&
+        incoming().volunteerId == existing().volunteerId &&
+        incoming().displayName == existing().displayName &&
+        incoming().qualifica == existing().qualifica &&
+        incoming().pinProvvisorio == existing().pinProvvisorio &&
+        (
+          (
+            isOperator() &&
+            incoming().status in ['pending', 'completed', 'applied']
+          ) ||
+          (
+            existing().status == 'pending' &&
+            incoming().status == 'completed' &&
+            incoming().pinProvvisorioVerifica == existing().pinProvvisorio &&
+            incoming().nuovoPin.matches('^[0-9]{4}$') &&
+            incoming().nuovoPin != '4451' &&
+            incoming().nuovoPin != existing().pinProvvisorio &&
+            incoming().completedAt == request.time &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'status',
+              'nuovoPin',
+              'pinProvvisorioVerifica',
+              'updatedAt',
+              'completedAt'
+            ])
+          )
+        );
+      allow delete: if isValidResetTokenId(tokenId) && isOperator();
+    }
+
+    // 9. Boot Health Check Doc (no PII)
     match /test/{docId} {
       allow get: if isValidId(docId) && docId == 'connection' && isOperator();
       allow list, write: if false;

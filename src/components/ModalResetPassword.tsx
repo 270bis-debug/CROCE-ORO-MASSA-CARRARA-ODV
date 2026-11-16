@@ -3,6 +3,7 @@ import { KeyRound, ShieldCheck, Mail, Phone, X, CheckCircle2, AlertTriangle, Use
 import { Volontario } from './DatabaseVolontariModal';
 import { CroceOroLogo } from './CroceOroLogo';
 import { isAccessoDaWeb } from '../utils/accessoWeb';
+import { completaTicketResetPinFirestore, isValidPinResetTokenFormat } from '../services/firebase';
 
 interface ModalResetPasswordProps {
   isOpen: boolean;
@@ -27,6 +28,7 @@ export const ModalResetPassword: React.FC<ModalResetPasswordProps> = ({
   const [nuovoPin, setNuovoPin] = useState('');
   const [confermaPin, setConfermaPin] = useState('');
   const [confermaEmail, setConfermaEmail] = useState('');
+  const [pinProvvisorioInput, setPinProvvisorioInput] = useState('');
   const [errore, setErrore] = useState<string | null>(null);
   const [successo, setSuccesso] = useState(false);
 
@@ -50,15 +52,22 @@ export const ModalResetPassword: React.FC<ModalResetPasswordProps> = ({
       return;
     }
 
-    // Se il profilo ha un'email registrata, verifica che corrisponda
-    if (volontarioAttuale.email) {
-      const emailInput = confermaEmail.trim().toLowerCase();
-      if (!emailInput) {
-        setErrore("Inserisci l'indirizzo email associato al tuo profilo per confermare l'identità.");
-        return;
-      }
-      if (emailInput !== volontarioAttuale.email.trim().toLowerCase()) {
-        setErrore("L'indirizzo email inserito non corrisponde a quello registrato nell'archivio per questo account.");
+    const emailRegistrata = (volontarioAttuale.email || '').trim().toLowerCase();
+    const emailInput = confermaEmail.trim().toLowerCase();
+    const pinProvvInputPulito = pinProvvisorioInput.trim();
+    const emailMatch = Boolean(emailRegistrata && emailInput && emailInput === emailRegistrata);
+    const pinProvvMatch = Boolean(
+      volontarioAttuale.pin && pinProvvInputPulito && pinProvvInputPulito === String(volontarioAttuale.pin).trim()
+    );
+
+    // Verifica identità tramite PIN Provvisorio oppure Email registrata (senza bisogno di Google)
+    if (emailRegistrata || volontarioAttuale.pin) {
+      if (!emailMatch && !pinProvvMatch) {
+        if (!emailInput && !pinProvvInputPulito) {
+          setErrore("Inserisci il PIN Provvisorio ricevuto nell'email oppure il tuo indirizzo email registrato.");
+          return;
+        }
+        setErrore("Il PIN Provvisorio o l'indirizzo email inseriti non corrispondono al profilo selezionato.");
         return;
       }
     }
@@ -79,13 +88,18 @@ export const ModalResetPassword: React.FC<ModalResetPasswordProps> = ({
       return;
     }
 
-    // Aggiorna il volontario rimuovendo il flag di richiesta reset
+    const oldToken = volontarioAttuale.resetToken;
+    const oldPin = String(volontarioAttuale.pin || '').trim();
+
+    // Aggiorna il volontario rimuovendo flag di richiesta reset e provvisorio
     const aggiornati = volontari.map(v => {
       if (v.id === volontarioAttuale.id) {
         return {
           ...v,
           pin: pinPulito,
+          pinProvvisorio: false,
           richiedeResetPassword: false,
+          resetToken: undefined,
           dataRichiestaResetPassword: undefined,
           tentativiErrati: 0,
           bloccatoPerTentativi: false,
@@ -96,6 +110,22 @@ export const ModalResetPassword: React.FC<ModalResetPasswordProps> = ({
     });
 
     onAggiornaVolontari(aggiornati);
+
+    if (oldToken && isValidPinResetTokenFormat(oldToken) && /^\d{4}$/.test(oldPin) && oldPin !== pinPulito) {
+      completaTicketResetPinFirestore(oldToken, oldPin, pinPulito).catch(() => {});
+    }
+
+    fetch('/api/volontari/reset-pin', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        id: volontarioAttuale.id,
+        token: oldToken || '',
+        pinProvvisorio: oldPin,
+        nuovoPin: pinPulito
+      })
+    }).catch(() => {});
+
     onNotificaRadio(
       `🔐 RESET PIN COMPLETATO: Il profilo ${volontarioAttuale.nome} ${volontarioAttuale.cognome} (${volontarioAttuale.qualifica}) ha aggiornato con successo il proprio PIN di accesso.`,
       'sistema'
@@ -108,6 +138,7 @@ export const ModalResetPassword: React.FC<ModalResetPasswordProps> = ({
     setNuovoPin('');
     setConfermaPin('');
     setConfermaEmail('');
+    setPinProvvisorioInput('');
     setErrore(null);
     setSuccesso(false);
     onClose();
@@ -207,26 +238,46 @@ export const ModalResetPassword: React.FC<ModalResetPasswordProps> = ({
               </div>
             )}
 
-            {/* Email di verifica */}
-            <div>
-              <label className={`block text-[11px] font-black uppercase mb-1 flex items-center gap-1.5 ${isWeb ? 'text-slate-800' : 'text-slate-300'}`}>
-                <Mail className="w-3.5 h-3.5 text-amber-500" />
-                Verifica Indirizzo Email Registrato *
-              </label>
-              <input
-                type="email"
-                required
-                value={confermaEmail}
-                onChange={(e) => setConfermaEmail(e.target.value)}
-                placeholder="Inserisci la tua email registrata..."
-                style={isWeb ? { backgroundColor: '#ffffff', color: '#0f172a', borderColor: '#94a3b8' } : undefined}
-                className={`w-full p-2.5 rounded-xl text-xs focus:ring-2 focus:ring-amber-500 focus:outline-none ${
-                  isWeb ? 'bg-white border-2 border-slate-400 text-slate-900 placeholder-slate-400' : 'bg-slate-950 border border-slate-700 text-white placeholder-slate-500'
-                }`}
-              />
-              <span className={`text-[10px] mt-1 block font-medium ${isWeb ? 'text-slate-600' : 'text-slate-400'}`}>
-                Inserisci l'indirizzo email memorizzato per questo account per verificare la tua identità.
-              </span>
+            {/* Verifica Identità (PIN Provvisorio dalla mail oppure Email Registrata) */}
+            <div className="space-y-3">
+              <div>
+                <label className={`block text-[11px] font-black uppercase mb-1 flex items-center gap-1.5 ${isWeb ? 'text-slate-800' : 'text-slate-300'}`}>
+                  <KeyRound className="w-3.5 h-3.5 text-amber-500" />
+                  PIN Provvisorio / Attuale (4 cifre)
+                </label>
+                <input
+                  type="password"
+                  inputMode="numeric"
+                  maxLength={4}
+                  value={pinProvvisorioInput}
+                  onChange={(e) => setPinProvvisorioInput(e.target.value.replace(/\D/g, '').slice(0, 4))}
+                  placeholder="•••• (oppure usa Email sotto)"
+                  style={isWeb ? { backgroundColor: '#ffffff', color: '#0f172a', borderColor: '#94a3b8' } : undefined}
+                  className={`w-full p-2.5 rounded-xl font-mono text-sm tracking-widest focus:ring-2 focus:ring-amber-500 focus:outline-none ${
+                    isWeb ? 'bg-white border-2 border-slate-400 text-slate-900 placeholder-slate-400' : 'bg-slate-950 border border-slate-700 text-white placeholder-slate-500'
+                  }`}
+                />
+              </div>
+
+              <div>
+                <label className={`block text-[11px] font-black uppercase mb-1 flex items-center gap-1.5 ${isWeb ? 'text-slate-800' : 'text-slate-300'}`}>
+                  <Mail className="w-3.5 h-3.5 text-amber-500" />
+                  Oppure Indirizzo Email Registrato
+                </label>
+                <input
+                  type="email"
+                  value={confermaEmail}
+                  onChange={(e) => setConfermaEmail(e.target.value)}
+                  placeholder="Inserisci la tua email registrata..."
+                  style={isWeb ? { backgroundColor: '#ffffff', color: '#0f172a', borderColor: '#94a3b8' } : undefined}
+                  className={`w-full p-2.5 rounded-xl text-xs focus:ring-2 focus:ring-amber-500 focus:outline-none ${
+                    isWeb ? 'bg-white border-2 border-slate-400 text-slate-900 placeholder-slate-400' : 'bg-slate-950 border border-slate-700 text-white placeholder-slate-500'
+                  }`}
+                />
+                <span className={`text-[10px] mt-1 block font-medium ${isWeb ? 'text-slate-600' : 'text-slate-400'}`}>
+                  Nessun account Google richiesto: verifica con il PIN provvisorio oppure con la tua email.
+                </span>
+              </div>
             </div>
 
             {/* Nuovo PIN */}

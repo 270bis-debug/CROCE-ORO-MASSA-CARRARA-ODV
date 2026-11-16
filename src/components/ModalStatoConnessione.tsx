@@ -20,6 +20,7 @@ import {
 } from 'lucide-react';
 import { realtime, ConnectionInfo } from '../services/realtime';
 import type { ApprovedOperatorRecord, OperatorRequestRecord } from '../services/firebase';
+import { getConfiguredPublicUrl, scaricaPaginaHtmlResetPinPubblica } from '../utils/publicUrl';
 
 interface ModalStatoConnessioneProps {
   isOpen: boolean;
@@ -39,7 +40,9 @@ export const ModalStatoConnessione: React.FC<ModalStatoConnessioneProps> = ({
   const [testando, setTestando] = useState(false);
   const [esitoTest, setEsitoTest] = useState<string | null>(null);
   const [customUrl, setCustomUrl] = useState(() => localStorage.getItem('CROCE_ORO_SERVER_URL') || '');
+  const [publicUrl, setPublicUrl] = useState(() => realtime.getPublicAppUrl() || getConfiguredPublicUrl());
   const [salvato, setSalvato] = useState(false);
+  const [publicUrlSalvato, setPublicUrlSalvato] = useState(false);
 
   const [authLoading, setAuthLoading] = useState(false);
   const [authMsg, setAuthMsg] = useState<string | null>(null);
@@ -593,6 +596,52 @@ export const ModalStatoConnessione: React.FC<ModalStatoConnessioneProps> = ({
               </span>
             )}
           </form>
+
+          {/* Configurazione URL Pubblico per Email Invito Reset PIN senza Google */}
+          <div className="pt-2 border-t border-slate-800 space-y-2">
+            <label className="text-[11px] font-bold text-amber-300 uppercase flex items-center gap-1.5">
+              <Globe className="w-3.5 h-3.5 text-amber-400" />
+              URL Pubblico Email Reset PIN (Senza Account Google / AI Studio)
+            </label>
+            <p className="text-[10px] text-slate-400 leading-relaxed">
+              Imposta l&apos;indirizzo pubblico esterno (es. Vercel oppure <span className="font-mono text-slate-300">https://www.croceoro.org/reset-pin.html</span>) usato nei link email dei volontari, così non vedranno mai pagine di login Google:
+            </p>
+            <div className="flex gap-2">
+              <input
+                type="url"
+                value={publicUrl}
+                onChange={(e) => setPublicUrl(e.target.value)}
+                placeholder="https://www.croceoro.org/reset-pin.html"
+                className="flex-1 px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-white font-mono text-xs focus:ring-1 focus:ring-amber-500 focus:outline-none"
+              />
+              <button
+                type="button"
+                onClick={() => {
+                  const saved = realtime.syncPublicAppUrl(publicUrl);
+                  setPublicUrl(saved);
+                  setPublicUrlSalvato(true);
+                  setTimeout(() => setPublicUrlSalvato(false), 3000);
+                }}
+                className="px-3 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs cursor-pointer"
+              >
+                Salva
+              </button>
+            </div>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <button
+                type="button"
+                onClick={() => scaricaPaginaHtmlResetPinPubblica()}
+                className="text-[10px] text-cyan-400 hover:underline font-bold cursor-pointer"
+              >
+                ⬇ Scarica file statico reset-pin.html da caricare su www.croceoro.org
+              </button>
+              {publicUrlSalvato && (
+                <span className="text-[10px] text-emerald-400 font-semibold">
+                  ✓ URL Pubblico sincronizzato sul Cloud!
+                </span>
+              )}
+            </div>
+          </div>
         </div>
 
         {/* Footer */}

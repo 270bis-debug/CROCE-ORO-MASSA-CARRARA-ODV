@@ -19,6 +19,8 @@ import {
   revocaOperatoreCloud,
   OperatorRequestRecord,
   ApprovedOperatorRecord,
+  verificaTicketResetPinFirestore,
+  segnaTicketResetApplicatoFirestore,
 } from './firebase';
 import { formatDateTimeItaly, formatTimeItaly } from '../utils/italianTime';
 import { mergeVolontariListsSafe, normalizeDeletedIds } from '../utils/volontariMerge';
@@ -28,6 +30,12 @@ import {
   normalizzaTurniSedi,
   normalizzaComunicazioniBacheca,
 } from '../utils/sediNormalize';
+import {
+  capturePublicUrlIfApplicable,
+  getConfiguredPublicUrl,
+  isProtectedAiStudioHost,
+  saveConfiguredPublicUrlLocal,
+} from '../utils/publicUrl';
 
 type MessageHandler = (data: any) => void;
 
@@ -142,6 +150,8 @@ class RealtimeService {
   private shardRetryCounts: Partial<Record<SyncShardId, number>> = {};
   private lastVolontariRefreshAt: number = 0;
   private lastExpressVolontariSig: string = '';
+  private pinResetCheckInFlight: Set<string> = new Set();
+  private lastPinResetSweepAt: number = 0;
 
   // Cache unificata dello stato cloud tra tutti gli shard / server
   private cloudState: Record<string, any> = {};
@@ -161,6 +171,7 @@ class RealtimeService {
   private readonly DEFAULT_CLOUD_URL = 'https://ais-pre-hbtv34atqqzbpmvu75qbfi-778684122016.europe-west2.run.app';
 
   constructor() {
+    capturePublicUrlIfApplicable();
     this.initFirebaseRealtime();
     this.connect();
     this.startFallbackPolling();
@@ -188,6 +199,7 @@ class RealtimeService {
         if (this.firebaseSession.isAuthorized && now - this.lastVolontariRefreshAt > 15000) {
           this.lastVolontariRefreshAt = now;
           this.refreshShardFromServer('volontari').catch(() => {});
+          this.reconcileCompletedPinResets().catch(() => {});
         }
       }
     });
@@ -355,6 +367,12 @@ class RealtimeService {
 
           if (!this.cloudShardsReadyEmitted && ALL_SHARD_IDS.every((id) => this.shardLoadedFromCloud[id])) {
             this.cloudShardsReadyEmitted = true;
+            if (typeof window !== 'undefined' && !isProtectedAiStudioHost(window.location.origin) && !this.cloudState.publicAppUrl) {
+              const pubOrigin = saveConfiguredPublicUrlLocal(window.location.origin);
+              if (pubOrigin) {
+                this.scheduleShardWrite('config', { publicAppUrl: pubOrigin });
+              }
+            }
             this.emit('cloud_shards_ready', { shardExists: { ...this.shardExists } });
           }
         },
@@ -424,6 +442,9 @@ class RealtimeService {
         volontari: mergedVols,
         volontariEliminatiIds: deletedIds,
       });
+      if (this.firebaseSession.isAuthorized) {
+        this.reconcileCompletedPinResets().catch(() => {});
+      }
     } else {
       Object.assign(this.cloudState, payload);
     }
@@ -500,6 +521,11 @@ class RealtimeService {
       }
       if (payload.datiCartaIntestata && typeof payload.datiCartaIntestata === 'object') {
         this.emit('CARTA_INTESTATA_UPDATED', { dati: payload.datiCartaIntestata });
+      }
+      if (typeof payload.publicAppUrl === 'string' && payload.publicAppUrl.trim() && !isProtectedAiStudioHost(payload.publicAppUrl)) {
+        const saved = saveConfiguredPublicUrlLocal(payload.publicAppUrl);
+        this.cloudState.publicAppUrl = saved;
+        this.emit('PUBLIC_APP_URL_UPDATED', { publicAppUrl: saved });
       }
     }
     if (shardId === 'servizi') {
@@ -699,6 +725,7 @@ class RealtimeService {
           sedi: Array.isArray(this.cloudState.sedi) ? normalizzaListaSediAssociative(this.cloudState.sedi) : [],
           datiCartaIntestata: this.cloudState.datiCartaIntestata || null,
           radioGroups: Array.isArray(this.cloudState.radioGroups) ? this.cloudState.radioGroups : [],
+          publicAppUrl: this.cloudState.publicAppUrl || getConfiguredPublicUrl() || '',
         };
     }
   }
@@ -902,8 +929,11 @@ class RealtimeService {
       },
       {
         id: 'config',
-        hasData: Array.isArray(snapshot.sedi) && snapshot.sedi.length > 0,
-        patch: { sedi: snapshot.sedi || [] },
+        hasData: (Array.isArray(snapshot.sedi) && snapshot.sedi.length > 0) || Boolean(getConfiguredPublicUrl()),
+        patch: {
+          sedi: snapshot.sedi || [],
+          publicAppUrl: this.cloudState.publicAppUrl || getConfiguredPublicUrl() || '',
+        },
       },
     ];
 
@@ -1010,6 +1040,7 @@ class RealtimeService {
         id: 'config',
         patch: {
           sedi: normalizzaListaSediAssociative(snapshot.sedi || this.cloudState.sedi || []),
+          publicAppUrl: this.cloudState.publicAppUrl || getConfiguredPublicUrl() || '',
         },
       },
     ];
@@ -1254,6 +1285,9 @@ class RealtimeService {
 
     const runPoll = async () => {
       pollCount++;
+      if (this.firebaseSession.isAuthorized && pollCount % 8 === 0) {
+        this.reconcileCompletedPinResets().catch(() => {});
+      }
       // Se Firestore Live è attivo ed è su hosting serverless Vercel, non serve polling aggressivo HTTP
       if (this.isServerlessStaticHost() && this.firestoreActive) {
         return;
@@ -1928,6 +1962,106 @@ class RealtimeService {
 
   public syncCartaIntestata(datiCartaIntestata: any) {
     this.scheduleShardWrite('config', { datiCartaIntestata });
+  }
+
+  public syncPublicAppUrl(url: string): string {
+    const saved = saveConfiguredPublicUrlLocal(url);
+    this.cloudState.publicAppUrl = saved;
+    this.scheduleShardWrite('config', { publicAppUrl: saved });
+    this.emit('PUBLIC_APP_URL_UPDATED', { publicAppUrl: saved });
+    return saved;
+  }
+
+  public getPublicAppUrl(): string {
+    const candidate = this.cloudState.publicAppUrl || getConfiguredPublicUrl() || '';
+    return candidate && !isProtectedAiStudioHost(candidate) ? candidate : '';
+  }
+
+  /**
+   * Verifica i ticket /pin_resets/{tokenId} dei volontari con invito reset in sospeso:
+   * quando un volontario completa il reset dal portale web o dall'allegato HTML (senza account Google),
+   * aggiorna automaticamente il PIN nel profilo condiviso (Firestore + Express) e marca il ticket 'applied'.
+   */
+  public async reconcileCompletedPinResets(): Promise<number> {
+    if (!this.firebaseSession.isAuthorized) return 0;
+    const now = Date.now();
+    if (now - this.lastPinResetSweepAt < 6000) return 0;
+    this.lastPinResetSweepAt = now;
+
+    const currentList = Array.isArray(this.cloudState.volontari) ? [...this.cloudState.volontari] : [];
+    const pendingVols = currentList.filter(
+      (v: any) => v && typeof v.resetToken === 'string' && v.resetToken.startsWith('rst-') && v.resetToken.length >= 12
+    );
+    if (pendingVols.length === 0) return 0;
+
+    let appliedCount = 0;
+    const nextList = [...currentList];
+
+    for (const vol of pendingVols) {
+      const tokenId = String(vol.resetToken).trim();
+      if (this.pinResetCheckInFlight.has(tokenId)) continue;
+      this.pinResetCheckInFlight.add(tokenId);
+      try {
+        const res = await verificaTicketResetPinFirestore(tokenId);
+        const ticket = res.ticket;
+        if (
+          res.found &&
+          ticket &&
+          ticket.status === 'completed' &&
+          /^\d{4}$/.test(String(ticket.nuovoPin || '')) &&
+          ticket.nuovoPin !== '4451'
+        ) {
+          const idx = nextList.findIndex(
+            (item: any) => item && (item.id === vol.id || item.id === ticket.volunteerId)
+          );
+          if (idx >= 0) {
+            nextList[idx] = {
+              ...nextList[idx],
+              pin: ticket.nuovoPin,
+              pinProvvisorio: false,
+              richiedeResetPassword: false,
+              resetToken: undefined,
+              tentativiErrati: 0,
+              bloccatoPerTentativi: false,
+              dataBlocco: undefined,
+            };
+            appliedCount++;
+
+            if (!this.isServerlessStaticHost()) {
+              const baseUrl = this.getApiBaseUrl();
+              fetch(`${baseUrl}/api/volontari/reset-pin`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  id: nextList[idx].id,
+                  token: tokenId,
+                  nuovoPin: ticket.nuovoPin,
+                  fromCloudReconciliation: true,
+                }),
+                cache: 'no-store',
+              }).catch(() => {});
+            }
+
+            await segnaTicketResetApplicatoFirestore(tokenId).catch(() => {});
+          }
+        }
+      } catch {
+        // Ignora errori transitori sul singolo ticket
+      } finally {
+        this.pinResetCheckInFlight.delete(tokenId);
+      }
+    }
+
+    if (appliedCount > 0) {
+      const deletedIds = normalizeDeletedIds(this.cloudState.volontariEliminatiIds);
+      this.syncVolontariList(nextList, deletedIds);
+      this.emit('VOLONTARI_UPDATED', {
+        volontari: nextList,
+        volontariEliminatiIds: deletedIds,
+      });
+    }
+
+    return appliedCount;
   }
 
   // --- METODI SPECIFICI PER SINCRONIZZAZIONE VOLONTARI & PIN ---
