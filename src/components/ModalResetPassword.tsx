@@ -1,9 +1,15 @@
 import React, { useState } from 'react';
-import { KeyRound, ShieldCheck, Mail, Phone, X, CheckCircle2, AlertTriangle, User } from 'lucide-react';
+import { KeyRound, Mail, X, CheckCircle2, AlertTriangle, User, Loader2 } from 'lucide-react';
 import { Volontario } from './DatabaseVolontariModal';
 import { CroceOroLogo } from './CroceOroLogo';
 import { isAccessoDaWeb } from '../utils/accessoWeb';
-import { completaTicketResetPinFirestore, isValidPinResetTokenFormat } from '../services/firebase';
+import {
+  completaTicketResetPinFirestore,
+  completaResetPinProfiloFirestore,
+  isValidPinResetTokenFormat
+} from '../services/firebase';
+import { buildEmailResetHash, buildPinResetHash } from '../utils/hashReset';
+import { realtime } from '../services/realtime';
 
 interface ModalResetPasswordProps {
   isOpen: boolean;
@@ -30,6 +36,7 @@ export const ModalResetPassword: React.FC<ModalResetPasswordProps> = ({
   const [confermaEmail, setConfermaEmail] = useState('');
   const [pinProvvisorioInput, setPinProvvisorioInput] = useState('');
   const [errore, setErrore] = useState<string | null>(null);
+  const [salvaInCorso, setSalvaInCorso] = useState(false);
   const [successo, setSuccesso] = useState(false);
 
   // Aggiorna la selezione se viene passato un volontario specifico
@@ -43,8 +50,9 @@ export const ModalResetPassword: React.FC<ModalResetPasswordProps> = ({
 
   const volontarioAttuale = volontari.find(v => v.id === selezionatoId) || volontari[0];
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (salvaInCorso) return;
     setErrore(null);
 
     if (!volontarioAttuale) {
@@ -55,21 +63,10 @@ export const ModalResetPassword: React.FC<ModalResetPasswordProps> = ({
     const emailRegistrata = (volontarioAttuale.email || '').trim().toLowerCase();
     const emailInput = confermaEmail.trim().toLowerCase();
     const pinProvvInputPulito = pinProvvisorioInput.trim();
-    const emailMatch = Boolean(emailRegistrata && emailInput && emailInput === emailRegistrata);
-    const pinProvvMatch = Boolean(
-      volontarioAttuale.pin && pinProvvInputPulito && pinProvvInputPulito === String(volontarioAttuale.pin).trim()
-    );
 
-    // Verifica identità tramite PIN Provvisorio oppure Email registrata (senza bisogno di Google)
-    if (emailRegistrata || volontarioAttuale.pin) {
-      if (!emailMatch && !pinProvvMatch) {
-        if (!emailInput && !pinProvvInputPulito) {
-          setErrore("Inserisci il PIN Provvisorio ricevuto nell'email oppure il tuo indirizzo email registrato.");
-          return;
-        }
-        setErrore("Il PIN Provvisorio o l'indirizzo email inseriti non corrispondono al profilo selezionato.");
-        return;
-      }
+    if (!emailInput && !pinProvvInputPulito) {
+      setErrore("Inserisci il PIN Provvisorio ricevuto nell'email oppure il tuo indirizzo email registrato.");
+      return;
     }
 
     const pinPulito = nuovoPin.trim();
@@ -88,53 +85,122 @@ export const ModalResetPassword: React.FC<ModalResetPasswordProps> = ({
       return;
     }
 
-    const oldToken = volontarioAttuale.resetToken;
-    const oldPin = String(volontarioAttuale.pin || '').trim();
+    setSalvaInCorso(true);
 
-    // Aggiorna il volontario rimuovendo flag di richiesta reset e provvisorio
-    const aggiornati = volontari.map(v => {
-      if (v.id === volontarioAttuale.id) {
-        return {
-          ...v,
-          pin: pinPulito,
-          pinProvvisorio: false,
-          richiedeResetPassword: false,
-          resetToken: undefined,
-          dataRichiestaResetPassword: undefined,
-          tentativiErrati: 0,
-          bloccatoPerTentativi: false,
-          dataBlocco: undefined
-        };
+    try {
+      const oldToken = volontarioAttuale.resetToken;
+      const emailMatch = Boolean(emailRegistrata && emailInput && emailInput === emailRegistrata);
+      const pinProvvMatch = Boolean(
+        volontarioAttuale.pin && pinProvvInputPulito && pinProvvInputPulito === String(volontarioAttuale.pin).trim()
+      );
+      const localMatch = emailMatch || pinProvvMatch;
+
+      let verifiedByFirestoreProfile = false;
+      let emailVerifiedByCloud = false;
+      let verifiedByFirestoreTicket = false;
+      let verifiedByExpress = false;
+
+      // 1. Verifica crittografica zero-PII su Cloud Firestore (funziona anche senza account Google e anche con cache telefono non aggiornata)
+      const candidateProofs: Array<{ hash: string; kind: 'pin' | 'email' }> = [];
+      if (/^\d{4}$/.test(pinProvvInputPulito)) {
+        const pHash = buildPinResetHash(volontarioAttuale.id, pinProvvInputPulito);
+        if (pHash) candidateProofs.push({ hash: pHash, kind: 'pin' });
       }
-      return v;
-    });
+      if (emailInput && emailInput.includes('@')) {
+        const eHash = buildEmailResetHash(emailInput);
+        if (eHash) candidateProofs.push({ hash: eHash, kind: 'email' });
+      }
 
-    onAggiornaVolontari(aggiornati);
+      for (const candidate of candidateProofs) {
+        const res = await completaResetPinProfiloFirestore(volontarioAttuale.id, candidate.hash, pinPulito);
+        if (res.ok) {
+          verifiedByFirestoreProfile = true;
+          if (candidate.kind === 'email') emailVerifiedByCloud = true;
+          break;
+        }
+      }
 
-    if (oldToken && isValidPinResetTokenFormat(oldToken) && /^\d{4}$/.test(oldPin) && oldPin !== pinPulito) {
-      completaTicketResetPinFirestore(oldToken, oldPin, pinPulito).catch(() => {});
+      // 2. Se è presente un ticket token e il PIN provvisorio a 4 cifre, completa anche il ticket one-time
+      if (
+        oldToken &&
+        isValidPinResetTokenFormat(oldToken) &&
+        /^\d{4}$/.test(pinProvvInputPulito) &&
+        pinProvvInputPulito !== pinPulito
+      ) {
+        try {
+          await completaTicketResetPinFirestore(oldToken, pinProvvInputPulito, pinPulito);
+          verifiedByFirestoreTicket = true;
+        } catch {
+          // Ignora se già applicato/scaduto o non combaciante
+        }
+      }
+
+      // 3. Verifica/aggiorna anche su server Express (se non su host statico serverless Vercel)
+      if (!realtime.isServerlessStatic()) {
+        try {
+          const baseUrl = realtime.getApiBaseUrl();
+          const res = await fetch(`${baseUrl}/api/volontari/reset-pin`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              id: volontarioAttuale.id,
+              token: oldToken || '',
+              pinProvvisorio: pinProvvInputPulito,
+              email: emailInput,
+              nuovoPin: pinPulito,
+              fromCloudReconciliation: verifiedByFirestoreProfile || verifiedByFirestoreTicket
+            }),
+            cache: 'no-store'
+          });
+          const data = await res.json().catch(() => null);
+          if (res.ok && data?.success === true && data?.mode !== 'cloud-firestore') {
+            verifiedByExpress = true;
+          }
+        } catch {
+          // Rete non disponibile o solo Cloud Firestore
+        }
+      }
+
+      const isVerified = localMatch || verifiedByFirestoreProfile || verifiedByFirestoreTicket || verifiedByExpress;
+      if (!isVerified) {
+        setErrore("Il PIN Provvisorio o l'indirizzo email inseriti non corrispondono al profilo selezionato.");
+        return;
+      }
+
+      // Aggiorna il volontario rimuovendo flag di richiesta reset e provvisorio
+      const aggiornati = volontari.map(v => {
+        if (v.id === volontarioAttuale.id) {
+          return {
+            ...v,
+            pin: pinPulito,
+            ...(emailVerifiedByCloud && emailInput ? { email: emailInput } : {}),
+            pinProvvisorio: false,
+            richiedeResetPassword: false,
+            resetToken: undefined,
+            dataRichiestaResetPassword: undefined,
+            tentativiErrati: 0,
+            bloccatoPerTentativi: false,
+            dataBlocco: undefined
+          };
+        }
+        return v;
+      });
+
+      onAggiornaVolontari(aggiornati);
+
+      onNotificaRadio(
+        `🔐 RESET PIN COMPLETATO: Il profilo ${volontarioAttuale.nome} ${volontarioAttuale.cognome} (${volontarioAttuale.qualifica}) ha aggiornato con successo il proprio PIN di accesso.`,
+        'sistema'
+      );
+
+      setSuccesso(true);
+    } finally {
+      setSalvaInCorso(false);
     }
-
-    fetch('/api/volontari/reset-pin', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        id: volontarioAttuale.id,
-        token: oldToken || '',
-        pinProvvisorio: oldPin,
-        nuovoPin: pinPulito
-      })
-    }).catch(() => {});
-
-    onNotificaRadio(
-      `🔐 RESET PIN COMPLETATO: Il profilo ${volontarioAttuale.nome} ${volontarioAttuale.cognome} (${volontarioAttuale.qualifica}) ha aggiornato con successo il proprio PIN di accesso.`,
-      'sistema'
-    );
-
-    setSuccesso(true);
   };
 
   const handleChiudi = () => {
+    if (salvaInCorso) return;
     setNuovoPin('');
     setConfermaPin('');
     setConfermaEmail('');
@@ -155,7 +221,8 @@ export const ModalResetPassword: React.FC<ModalResetPasswordProps> = ({
         <button
           type="button"
           onClick={handleChiudi}
-          className={`absolute top-4 right-4 w-8 h-8 rounded-full flex items-center justify-center transition-all cursor-pointer border ${
+          aria-label="Chiudi finestra reset"
+          className={`absolute top-4 right-4 w-8 h-8 rounded-full flex items-center justify-center transition-all cursor-pointer border z-10 ${
             isWeb ? 'bg-slate-200 hover:bg-slate-300 text-slate-800 border-slate-300 font-bold' : 'bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border-slate-700'
           }`}
         >
@@ -163,14 +230,16 @@ export const ModalResetPassword: React.FC<ModalResetPasswordProps> = ({
         </button>
 
         {/* Intestazione */}
-        <div className="flex items-center gap-3 mb-4">
-          <CroceOroLogo size="md" />
-          <div>
-            <h3 className={`text-base font-black uppercase tracking-wide flex items-center gap-2 ${isWeb ? 'text-[#1d1a60]' : 'text-white'}`}>
-              <KeyRound className="w-4 h-4 text-amber-500" />
-              Reimposta Password / PIN
+        <div className="flex items-center gap-3 mb-4 pr-10 min-w-0">
+          <div className="shrink-0">
+            <CroceOroLogo size="md" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <h3 className={`text-sm sm:text-base font-black uppercase tracking-wide flex items-start gap-1.5 leading-tight ${isWeb ? 'text-[#1d1a60]' : 'text-white'}`}>
+              <KeyRound className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
+              <span>Reimposta Password / PIN</span>
             </h3>
-            <p className={`text-xs ${isWeb ? 'text-slate-600 font-medium' : 'text-slate-400'}`}>
+            <p className={`text-xs mt-0.5 leading-snug ${isWeb ? 'text-slate-600 font-medium' : 'text-slate-400'}`}>
               Aggiornamento codice di accesso personale
             </p>
           </div>
@@ -331,13 +400,22 @@ export const ModalResetPassword: React.FC<ModalResetPasswordProps> = ({
             <div className="pt-2 flex items-center gap-2">
               <button
                 type="submit"
-                className="flex-1 py-3 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs uppercase shadow-md active:scale-95 transition-all cursor-pointer border-2 border-amber-700"
+                disabled={salvaInCorso}
+                className="flex-1 py-3 rounded-xl bg-amber-500 hover:bg-amber-400 disabled:opacity-60 text-slate-950 font-black text-xs uppercase shadow-md active:scale-95 transition-all cursor-pointer border-2 border-amber-700 flex items-center justify-center gap-1.5"
                 style={{ backgroundColor: '#f59e0b', color: '#020617', borderColor: '#b45309' }}
               >
-                Conferma Nuovo PIN
+                {salvaInCorso ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>Verifica...</span>
+                  </>
+                ) : (
+                  <span>Conferma Nuovo PIN</span>
+                )}
               </button>
               <button
                 type="button"
+                disabled={salvaInCorso}
                 onClick={handleChiudi}
                 className={`py-3 px-4 rounded-xl text-xs font-bold transition-colors cursor-pointer border ${
                   isWeb ? 'bg-slate-200 hover:bg-slate-300 text-slate-800 border-slate-300' : 'bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-700'

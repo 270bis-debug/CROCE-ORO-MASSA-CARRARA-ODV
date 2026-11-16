@@ -58,7 +58,11 @@ import { MacroCategoriaId } from '../constants/macroCategorie';
 import { inviaNotificaModificaAdmin } from '../utils/notificaModificaAdmin';
 import { formatDateItaly, formatDateTimeItaly, formatISODateItaly, getCurrentYearItaly } from '../utils/italianTime';
 import { mergeVolontariListsSafe } from '../utils/volontariMerge';
-import { creaTicketResetPinFirestore, generaTokenResetPinSicuro } from '../services/firebase';
+import {
+  creaTicketResetPinFirestore,
+  generaTokenResetPinSicuro,
+  syncPinResetProfilesFirestore
+} from '../services/firebase';
 import { realtime } from '../services/realtime';
 import {
   buildPublicResetUrl,
@@ -918,23 +922,23 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
       : String(Math.floor(1000 + Math.random() * 9000));
     const token = generaTokenResetPinSicuro();
 
+    const updatedVol: Volontario = {
+      ...v,
+      pin: pinProvv,
+      pinProvvisorio: true,
+      richiedeResetPassword: true,
+      resetToken: token,
+      dataRichiestaResetPassword: dataOra,
+      dataInvioInvitoReset: dataOra
+    };
+
     // 1. Aggiorna lo stato nel database con il flag di richiesta reset password/PIN e nuovo token univoco
     const aggiornati = volontari.map(item =>
-      item.id === v.id
-        ? {
-            ...item,
-            pin: pinProvv,
-            pinProvvisorio: true,
-            richiedeResetPassword: true,
-            resetToken: token,
-            dataRichiestaResetPassword: dataOra,
-            dataInvioInvitoReset: dataOra
-          }
-        : item
+      item.id === v.id ? updatedVol : item
     );
     onAggiornaVolontari(aggiornati);
 
-    // 2. Crea ticket zero-PII su Cloud Firestore (accessibile dal volontario senza account Google / AI Studio)
+    // 2. Crea ticket zero-PII & aggiorna indice hash verifica profilo su Cloud Firestore (nessun account Google richiesto)
     creaTicketResetPinFirestore({
       tokenId: token,
       volunteerId: v.id,
@@ -944,6 +948,7 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
     }).catch((err) => {
       console.warn('[ResetPIN] Creazione ticket Firestore non riuscita (verrà usato backend/locale):', err?.message || err);
     });
+    syncPinResetProfilesFirestore([updatedVol]).catch(() => {});
 
     const publicBaseUrl = realtime.getPublicAppUrl() || getConfiguredPublicUrl();
     const { url: linkLocaleFallback, isPublicNonGoogle } = buildPublicResetUrl({
@@ -952,7 +957,8 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
       baseUrlOverride: publicBaseUrl
     });
 
-    let resetUrlFinale = linkLocaleFallback;
+    let resetUrlFinale = isPublicNonGoogle ? linkLocaleFallback : '';
+    let resolvedProtectedHost = !isPublicNonGoogle;
 
     // 3. Invia email automatica via server con mittente ufficiale sistemiautomatizzati@croceoro.org + allegato HTML autonomo
     try {
@@ -972,17 +978,22 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
         })
       });
       const data = await res.json();
-      if (data?.resetUrl) {
+      if (typeof data?.isProtectedHost === 'boolean') {
+        resolvedProtectedHost = data.isProtectedHost;
+      }
+      if (!resolvedProtectedHost && data?.resetUrl) {
         resetUrlFinale = data.resetUrl;
+      } else if (resolvedProtectedHost) {
+        resetUrlFinale = '';
       }
       if (data.success) {
         onNotificaRadio(
-          `📧 INVITO RESET: Inviata email con PIN provvisorio e portale attivazione (no Google richiesto) a ${v.nome} ${v.cognome} (${v.email}) da sistemiautomatizzati@croceoro.org.`,
+          `📧 INVITO RESET: Inviata email con PIN provvisorio e attivazione senza account Google a ${v.nome} ${v.cognome} (${v.email}) da sistemiautomatizzati@croceoro.org.`,
           'centrale'
         );
-        setAvvisoTemporaneo(`✅ Email con PIN provvisorio e portale autonomo inviata con successo a ${v.email}!`);
+        setAvvisoTemporaneo(`✅ Email con PIN provvisorio e istruzioni senza Google inviata con successo a ${v.email}!`);
       } else {
-        setAvvisoTemporaneo(`⚠️ Invito generato per ${v.nome} ${v.cognome} (link pronto per il reset).`);
+        setAvvisoTemporaneo(`⚠️ Invito generato per ${v.nome} ${v.cognome}.`);
       }
     } catch {
       setAvvisoTemporaneo(`✅ Invito Cloud generato con successo per ${v.nome} ${v.cognome}.`);
@@ -993,7 +1004,7 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
       email: v.email,
       resetUrl: resetUrlFinale,
       pinProvvisorio: pinProvv,
-      isProtectedHost: !isPublicNonGoogle
+      isProtectedHost: resolvedProtectedHost
     });
     setLinkCopiato(false);
 

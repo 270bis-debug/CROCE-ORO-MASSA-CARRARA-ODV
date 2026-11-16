@@ -8,6 +8,7 @@
 5. **Privilege Escalation Prevention**: Non-admin verified users can only submit a `pending` request in `/operator_requests/{request.auth.uid}`. Only `isAdmin()` can create or mutate `/operators/{uid}` or `/admins/{uid}`, or approve/reject requests.
 6. **PII Isolation**: `/operator_requests/{requestUid}` and `/operators/{operatorUid}` reads and queries are isolated strictly to the document owner (`uid == request.auth.uid`) or Admin. No blanket reads exist.
 7. **Token-Gated Zero-PII PIN Reset Tickets**: `/pin_resets/{tokenId}` contains zero PII (no email, phone, tax ID, or address), strictly forbids collection listing (`allow list: if false;`), enforces `^rst-[a-zA-Z0-9_\-]{8,92}$`, allows unauthenticated single-document update ONLY when `existing().status == 'pending'`, `incoming().status == 'completed'`, `incoming().pinProvvisorioVerifica == existing().pinProvvisorio`, and `nuovoPin` is a valid non-reserved 4-digit PIN different from the provisional PIN.
+8. **Zero-PII Write-Only Profile Reset Index**: `/pin_reset_profiles/{volunteerId}` stores only domain-prefixed SHA-256 digests (`emailHash`, `pinHash`) and denies both `get` and `list` to unauthenticated callers (blocking hash scraping and offline dictionary attacks). Unauthenticated `update` is permitted ONLY when `existing().status in ['ready', 'pending', 'applied']`, `incoming().status == 'completed'`, `incoming().verifyingProofHash` equals `existing().emailHash` or `existing().pinHash`, and `nuovoPin` is a valid non-reserved 4-digit PIN.
 
 ## 2. The "Dirty Dozen" Payloads (Expected Result: PERMISSION_DENIED)
 1. **Unauthenticated Shard Read**: Anonymous caller tries `GET /sync_shards/volontari` -> Denied (`isVerifiedUser()` false).
@@ -19,9 +20,10 @@
 7. **Timestamp Backdating**: Operator sends custom client timestamp `updatedAt: "2020-01-01T00:00:00Z"` -> Denied (`data.updatedAt == request.time` false).
 8. **Self-Assigned Admin**: Non-admin user tries `CREATE /admins/{ownUid}` -> Denied (`isAdmin()` false).
 9. **Self-Approved Operator Request**: Pending user tries `UPDATE /operator_requests/{ownUid}` changing `status: "approved"` -> Denied (Terminal/Admin gate).
-10. **Collection Scraping List Query**: Caller tries `LIST /sync_shards`, `LIST /admins`, or `LIST /pin_resets` -> Denied (`allow list: if false;`).
+10. **Collection Scraping List Query**: Caller tries `LIST /sync_shards`, `LIST /admins`, `LIST /pin_resets`, or unauthenticated `LIST /pin_reset_profiles` -> Denied.
 11. **Oversized DisplayName Resource Exhaustion**: User sends 5KB `displayName` in `/operator_requests/{uid}` -> Denied (`displayName.size() <= 120`).
 12. **Stale/Downgraded Version Write by Operator**: Operator tries `UPDATE /sync_shards/mission` with `version <= existing().version` -> Denied (`incoming().version > existing().version`).
 13. **PIN Reset Wrong Provisional Verification**: Unauthenticated caller tries `UPDATE /pin_resets/rst-valid12345` with wrong `pinProvvisorioVerifica` -> Denied (`incoming().pinProvvisorioVerifica == existing().pinProvvisorio` false).
 14. **PIN Reset Terminal Replay / Reserved PIN**: Caller tries `UPDATE /pin_resets/rst-valid12345` after `status == 'completed'` or setting `nuovoPin: '4451'` -> Denied (`existing().status == 'pending'` / `!= '4451'`).
-
+15. **Unauthenticated Read of Profile Hash Index**: Anonymous caller tries `GET /pin_reset_profiles/vol-ricci` -> Denied (`isOperator()` false).
+16. **PIN Reset Profile Wrong Proof Hash / Hash Tampering**: Unauthenticated caller tries `UPDATE /pin_reset_profiles/vol-ricci` with mismatched `verifyingProofHash` or modified `emailHash` -> Denied.

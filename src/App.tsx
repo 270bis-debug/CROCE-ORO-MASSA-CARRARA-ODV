@@ -111,6 +111,12 @@ import { soundEngine } from './services/soundEngine';
 import { vhfRadioEngine } from './services/vhfRadioEngine';
 import { realtime, ConnectionInfo } from './services/realtime';
 import {
+  creaTicketResetPinFirestore,
+  generaTokenResetPinSicuro,
+  syncPinResetProfilesFirestore
+} from './services/firebase';
+import { getConfiguredPublicUrl } from './utils/publicUrl';
+import {
   RadioPttPanel,
   RadioPttState,
   RadioGroup,
@@ -3995,49 +4001,77 @@ export default function App() {
 
   const handleAzzeraESpedisciInvitoReset = (v: Volontario) => {
     const dataOra = formatDateTimeItaly(undefined, false);
-    const aggiornati = volontari.map(item =>
-      item.id === v.id
-        ? {
-            ...item,
-            tentativiErrati: 0,
-            bloccatoPerTentativi: false,
-            dataBlocco: undefined,
-            richiedeResetPassword: true,
-            dataRichiestaResetPassword: dataOra
-          }
-        : item
-    );
+    const pinProvv = String(Math.floor(1000 + Math.random() * 9000));
+    const token = generaTokenResetPinSicuro();
+
+    const updatedVol: Volontario = {
+      ...v,
+      pin: pinProvv,
+      pinProvvisorio: true,
+      tentativiErrati: 0,
+      bloccatoPerTentativi: false,
+      dataBlocco: undefined,
+      richiedeResetPassword: true,
+      resetToken: token,
+      dataRichiestaResetPassword: dataOra,
+      dataInvioInvitoReset: dataOra
+    };
+
+    const aggiornati = volontari.map(item => (item.id === v.id ? updatedVol : item));
     aggiornaVolontari(aggiornati);
+
+    creaTicketResetPinFirestore({
+      tokenId: token,
+      volunteerId: v.id,
+      displayName: `${v.nome} ${v.cognome}`.trim(),
+      qualifica: v.qualifica || 'Operatore',
+      pinProvvisorio: pinProvv,
+    }).catch(() => {});
+    syncPinResetProfilesFirestore([updatedVol]).catch(() => {});
+
     aggiungiNotifica(
       `🔐 SBLOCCO & RESET: L'Amministratore ha azzerato gli errori e avviato l'invito al reset password/PIN per ${v.nome} ${v.cognome}.`,
       'centrale'
     );
 
     if (v.email && v.email.includes('@')) {
-      const oggetto = encodeURIComponent(`Croce Oro Massa Carrara - Sblocco Account e Invito al Reset della Password / PIN (${v.nome} ${v.cognome})`);
-      const corpo = encodeURIComponent(
-        `Gentile ${v.nome} ${v.cognome},\n\n` +
-        `A seguito del blocco di sicurezza per 3 tentativi PIN errati, l'Amministratore ha sbloccato il tuo account e ti invita a reimpostare il tuo codice PIN personale.\n\n` +
-        `Dettagli Account:\n` +
-        `• Nominativo: ${v.nome} ${v.cognome}\n` +
-        `• Ruolo: ${v.qualifica}\n` +
-        `• Matricola: ${v.matricola || 'N/D'}\n` +
-        `• Data operazione: ${dataOra}\n\n` +
-        `Come reimpostare il tuo PIN:\n` +
-        `1. Apri l'app Croce Oro Massa Carrara\n` +
-        `2. Clicca su "Hai ricevuto un invito a resettare la password/PIN?"\n` +
-        `3. Inserisci la tua email e imposta il tuo nuovo codice a 4 cifre.\n\n` +
-        `Cordiali saluti,\nCentrale Operativa • Croce Oro Massa Carrara OdV`
-      );
-      try {
-        const a = document.createElement('a');
-        a.href = `mailto:${v.email}?subject=${oggetto}&body=${corpo}`;
-        a.target = '_blank';
-        a.rel = 'noopener noreferrer';
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-      } catch {}
+      const publicBaseUrl = realtime.getPublicAppUrl() || getConfiguredPublicUrl();
+      fetch('/api/invia-email-invito-reset-pin', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: v.id,
+          nome: v.nome,
+          cognome: v.cognome,
+          qualifica: v.qualifica,
+          email: v.email,
+          pinProvvisorio: pinProvv,
+          token,
+          origin: window.location.origin,
+          publicBaseUrl
+        })
+      }).catch(() => {
+        const oggetto = encodeURIComponent(`Croce Oro Massa Carrara - Sblocco Account e Invito al Reset della Password / PIN (${v.nome} ${v.cognome})`);
+        const corpo = encodeURIComponent(
+          `Gentile ${v.nome} ${v.cognome},\n\n` +
+          `A seguito del blocco di sicurezza per 3 tentativi PIN errati, l'Amministratore ha sbloccato il tuo account e ti invita a reimpostare il tuo codice PIN personale.\n\n` +
+          `PIN Provvisorio: ${pinProvv}\n\n` +
+          `Come reimpostare il tuo PIN (nessun account Google richiesto):\n` +
+          `1. Apri l'app Croce Oro Massa Carrara\n` +
+          `2. Clicca su "Hai ricevuto un invito a resettare la password/PIN?"\n` +
+          `3. Seleziona il tuo nome, inserisci il PIN provvisorio ${pinProvv} (oppure la tua email) e imposta il nuovo codice a 4 cifre.\n\n` +
+          `Cordiali saluti,\nCentrale Operativa • Croce Oro Massa Carrara OdV`
+        );
+        try {
+          const a = document.createElement('a');
+          a.href = `mailto:${v.email}?subject=${oggetto}&body=${corpo}`;
+          a.target = '_blank';
+          a.rel = 'noopener noreferrer';
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+        } catch {}
+      });
     }
 
     if (accountBloccati.length <= 1) {

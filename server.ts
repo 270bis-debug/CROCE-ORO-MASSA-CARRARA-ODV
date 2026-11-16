@@ -403,6 +403,7 @@ export interface ServerState {
   contatti?: any[];
   radioPtt?: RadioPttState;
   radioGroups?: RadioGroup[];
+  publicAppUrl?: string;
   radioEmergency?: RadioEmergencyState;
 }
 
@@ -882,7 +883,8 @@ function loadPersistedState(): ServerState {
             : [],
           radioEmergency: {
             active: false
-          }
+          },
+          publicAppUrl: typeof parsed.publicAppUrl === 'string' ? parsed.publicAppUrl : ''
         };
       }
     }
@@ -2096,6 +2098,15 @@ async function startServer() {
                 volontari: state.volontari,
                 volontariEliminatiIds: state.volontariEliminatiIds
               });
+            }
+            break;
+          }
+
+          case 'UPDATE_PUBLIC_APP_URL': {
+            const rawUrl = typeof data?.publicAppUrl === 'string' ? data.publicAppUrl.trim() : '';
+            if (!rawUrl || !isProtectedAiStudioHost(rawUrl)) {
+              state.publicAppUrl = rawUrl ? normalizePublicUrlInput(rawUrl) : '';
+              persistState();
             }
             break;
           }
@@ -7066,16 +7077,26 @@ async function startServer() {
 
       // Costruisci il link web privilegiando un eventuale dominio pubblico esterno privo di login Google
       const reqOrigin = origin || `${req.protocol}://${req.get('host')}`;
-      const normPublic = publicBaseUrl ? normalizePublicUrlInput(String(publicBaseUrl)) : '';
-      const candidateBase = normPublic && !isProtectedAiStudioHost(normPublic)
+      const bodyPublic = publicBaseUrl ? normalizePublicUrlInput(String(publicBaseUrl)) : '';
+      const storedPublic = state.publicAppUrl ? normalizePublicUrlInput(String(state.publicAppUrl)) : '';
+      const normPublic = (bodyPublic && !isProtectedAiStudioHost(bodyPublic))
+        ? bodyPublic
+        : ((storedPublic && !isProtectedAiStudioHost(storedPublic)) ? storedPublic : '');
+      if (normPublic && state.publicAppUrl !== normPublic) {
+        state.publicAppUrl = normPublic;
+        persistState();
+      }
+      const candidateBase = normPublic
         ? normPublic
         : reqOrigin.replace(/\/+$/, '');
       const isProtectedOrigin = isProtectedAiStudioHost(candidateBase);
       const lowerBase = candidateBase.toLowerCase();
       const qs = `id=${encodeURIComponent(id)}&token=${encodeURIComponent(resetToken)}`;
-      const resetUrl = (lowerBase.endsWith('.html') || lowerBase.endsWith('.htm'))
-        ? `${candidateBase}?${qs}`
-        : `${candidateBase}/reset-pin?${qs}`;
+      const resetUrl = isProtectedOrigin
+        ? ''
+        : ((lowerBase.endsWith('.html') || lowerBase.endsWith('.htm'))
+            ? `${candidateBase}?${qs}`
+            : `${candidateBase}/reset-pin?${qs}`);
 
       // Genera pagina HTML 100% autonoma allegata all'email (funziona su qualsiasi smartphone/PC senza account Google / AI Studio)
       const standaloneHtml = generaPaginaHtmlResetPinAutonoma({
@@ -7133,14 +7154,15 @@ async function startServer() {
         `Il sistema ha generato per te un codice PIN provvisorio di sicurezza:\n` +
         `PIN PROVVISORIO: ${pinTemporaneo}\n\n` +
         `NON È NECESSARIO ALCUN ACCOUNT GOOGLE PER IMPOSTARE IL NUOVO PIN:\n` +
-        (!isProtectedOrigin
-          ? `1) Apri direttamente questo portale web protetto:\n${resetUrl}\n\n2) In alternativa, apri l'allegato HTML "Attivazione_PIN_Croce_Oro.html" presente in questa email oppure usa l'App dell'Associazione selezionando il tuo nome -> "Reimposta PIN".\n\n`
-          : `1) Apri l'allegato "Attivazione_PIN_Croce_Oro.html" presente in questa email con il browser del tuo telefono/PC (funziona subito senza account Google).\n` +
-            `2) Oppure apri l'App dell'Associazione (o un tablet in sede), seleziona il tuo nome -> "Hai ricevuto un invito a resettare il PIN?" e inserisci il PIN provvisorio ${pinTemporaneo}.\n` +
-            `3) Portale web diretto (solo se accessibile senza filtro AI Studio): ${resetUrl}\n\n`) +
+        (!isProtectedOrigin && resetUrl
+          ? `1) Apri direttamente questo portale web protetto:\n${resetUrl}\n\n` +
+            `2) Oppure apri l'App dell'Associazione sul telefono (o su un tablet in sede), tocca "Hai ricevuto un invito a resettare la password/PIN?" -> seleziona il tuo nome -> inserisci il PIN provvisorio ${pinTemporaneo} o la tua email (${emailDestinatario}).\n` +
+            `3) In alternativa, scarica l'allegato "Attivazione_PIN_Croce_Oro.html" e aprilo nel browser Chrome / Safari.\n\n`
+          : `1) Apri l'App della Croce Oro sul tuo telefono (o su un tablet in sede), tocca "Hai ricevuto un invito a resettare la password/PIN?" -> seleziona il tuo nome -> inserisci il PIN provvisorio ${pinTemporaneo} oppure la tua email (${emailDestinatario}) per impostare subito il tuo nuovo PIN a 4 cifre.\n\n` +
+            `2) In alternativa (da browser), scarica l'allegato "Attivazione_PIN_Croce_Oro.html" presente in questa email e aprilo con Chrome, Safari o Edge (senza usare il visualizzatore interno limitato dell'app email).\n\n`) +
         `Croce Oro Massa Carrara OdV - Sistemi Automatizzati`;
 
-      const ctaBlockHtml = !isProtectedOrigin
+      const ctaBlockHtml = !isProtectedOrigin && resetUrl
         ? `
             <div style="text-align: center; margin: 28px 0;">
               <a href="${resetUrl}" target="_blank" rel="noopener noreferrer" style="display: inline-block; background-color: #1d1a60; color: #fbbf24; text-decoration: none; padding: 16px 32px; font-size: 15px; font-weight: 800; border-radius: 10px; border: 2px solid #fbbf24; box-shadow: 0 4px 14px rgba(29, 26, 96, 0.35); text-transform: uppercase; letter-spacing: 0.5px;">
@@ -7148,25 +7170,21 @@ async function startServer() {
               </a>
             </div>
             <div style="font-size: 12px; color: #475569; line-height: 1.6; background-color: #f8fafc; padding: 14px; border-radius: 8px; border-left: 4px solid #3b82f6; margin-top: 16px;">
-              🔓 <strong>Nessun account Google richiesto:</strong> puoi completare la procedura dal pulsante sopra oppure aprendo l'allegato <strong>Attivazione_PIN_Croce_Oro.html</strong> oppure direttamente sull'App in sede.<br>
+              🔓 <strong>Nessun account Google richiesto:</strong> puoi completare la procedura dal pulsante sopra, direttamente dall&apos;App in sede o aprendo l&apos;allegato <strong>Attivazione_PIN_Croce_Oro.html</strong> in Chrome / Safari.<br>
               Se il pulsante non si apre, copia questo link nel browser:<br>
               <a href="${resetUrl}" style="color: #2563eb; word-break: break-all; font-size: 11px;">${resetUrl}</a>
             </div>`
         : `
             <div style="background-color: #eff6ff; border: 2px solid #2563eb; border-radius: 12px; padding: 18px; margin: 22px 0; text-align: left;">
-              <p style="margin: 0 0 8px 0; font-size: 14px; font-weight: 900; color: #1e3a8a; text-transform: uppercase;">
+              <p style="margin: 0 0 10px 0; font-size: 14px; font-weight: 900; color: #1e3a8a; text-transform: uppercase;">
                 📲 Come reimpostare il PIN SENZA Account Google
               </p>
               <p style="margin: 0 0 10px 0; font-size: 13px; color: #1e293b; line-height: 1.55;">
-                <strong>Opzione 1 (Consigliata da Smartphone / PC):</strong> Apri o scarica l'allegato <strong>Attivazione_PIN_Croce_Oro.html</strong> presente in questa email e aprilo con Chrome / Safari / Edge. Inserisci il PIN provvisorio <strong>${pinTemporaneo}</strong> e scegli il tuo nuovo PIN a 4 cifre (zero login Google).
+                <strong>Opzione 1 (Direttamente sull&apos;App / Tablet di Sede):</strong> Apri l&apos;App Croce Oro sul tuo smartphone o sul tablet associativo, tocca <em>&quot;Hai ricevuto un invito a resettare la password/PIN?&quot;</em>, seleziona il tuo nominativo e inserisci il PIN provvisorio <strong>${pinTemporaneo}</strong> (oppure la tua email <strong>${emailDestinatario}</strong>).
               </p>
               <p style="margin: 0; font-size: 13px; color: #1e293b; line-height: 1.55;">
-                <strong>Opzione 2 (Direttamente sull'App / Tablet di Sede):</strong> Apri l'App Croce Oro, seleziona il tuo nominativo e tocca <em>"Hai ricevuto un invito a resettare il PIN?"</em> inserendo il PIN provvisorio <strong>${pinTemporaneo}</strong>.
+                <strong>Opzione 2 (Modulo HTML Autonomo):</strong> Scarica sul dispositivo l&apos;allegato <strong>Attivazione_PIN_Croce_Oro.html</strong> presente in questa email e aprilo con Chrome / Safari / Edge, quindi inserisci il PIN provvisorio <strong>${pinTemporaneo}</strong> e scegli il tuo nuovo PIN a 4 cifre.
               </p>
-            </div>
-            <div style="text-align: center; margin: 16px 0; font-size: 11px; color: #64748b;">
-              <span>Link tecnico portale di sviluppo (richiede accesso AI Studio se non pubblicato su dominio pubblico):</span><br>
-              <a href="${resetUrl}" style="color: #2563eb; word-break: break-all;">${resetUrl}</a>
             </div>`;
 
       const htmlEmail = `
@@ -7241,14 +7259,14 @@ async function startServer() {
         }
       } else {
         erroreSmtp = 'Server SMTP non connesso al momento';
-        console.warn('[Invito PIN] SMTP non pronto, link generato:', resetUrl);
+        console.warn('[Invito PIN] SMTP non pronto per:', emailDestinatario);
       }
 
       // Notifica Radio in Centrale
       const notificaRadio: RadioNotification = {
         id: generateUniqueNotifId(),
         orario: formatTimeItaly(),
-        testo: `📧 ATTIVAZIONE: Inviata email con PIN provvisorio e pulsante reset a ${nomeUtente} ${cognomeUtente} (${emailDestinatario}) da sistemiautomatizzati@croceoro.org`,
+        testo: `📧 ATTIVAZIONE: Inviata email con PIN provvisorio e procedura attivazione a ${nomeUtente} ${cognomeUtente} (${emailDestinatario}) da sistemiautomatizzati@croceoro.org`,
         tipo: 'sistema'
       };
       state.notifiche.push(notificaRadio);
@@ -7264,10 +7282,11 @@ async function startServer() {
         erroreSmtp,
         destinatario: emailDestinatario,
         resetUrl,
+        isProtectedHost: isProtectedOrigin,
         mittente: `"${MITTENTE_UFFICIALE}" <${EMAIL_MITTENTE_UFFICIALE}>`,
         message: speditoViaSmtp
           ? `Email con PIN provvisorio inviata con successo a ${emailDestinatario}`
-          : `Invito generato (link: ${resetUrl})`
+          : `Invito generato per ${emailDestinatario}`
       });
     } catch (err: any) {
       console.error('[Invito PIN] Errore endpoint:', err);
@@ -8294,10 +8313,10 @@ async function startServer() {
     }
   });
 
-  // ENDPOINT: Salvataggio Autonomo Nuovo PIN da Pagina Web Dedicata / Cloud Reconciliation
+  // ENDPOINT: Salvataggio Autonomo Nuovo PIN da Pagina Web Dedicata / App Mobile / Cloud Reconciliation
   app.post('/api/volontari/reset-pin', (req, res) => {
     try {
-      const { id, token, pinProvvisorio, nuovoPin, fromCloudReconciliation } = req.body;
+      const { id, token, pinProvvisorio, email, nuovoPin, fromCloudReconciliation } = req.body;
 
       if (!id || !nuovoPin) {
         return res.status(400).json({ success: false, error: 'Dati incompleti per la reimpostazione del PIN.' });
@@ -8310,14 +8329,25 @@ async function startServer() {
 
       const v = state.volontari[vIndex];
 
-      // Se c'è un token impostato, verifica corrispondenza
-      if (v.resetToken && token && v.resetToken !== token) {
+      // Se c'è un token impostato, verifica corrispondenza (salvo riconciliazione)
+      if (!fromCloudReconciliation && v.resetToken && token && String(v.resetToken).trim() !== String(token).trim()) {
         return res.status(403).json({ success: false, error: 'Link di attivazione non valido o già utilizzato.' });
       }
 
-      // Verifica PIN provvisorio se fornita dal portale web (salvo riconciliazione già validata da Firestore)
-      if (!fromCloudReconciliation && v.pinProvvisorio && pinProvvisorio && String(pinProvvisorio).trim() !== String(v.pin).trim()) {
-        return res.status(403).json({ success: false, error: 'Il PIN provvisorio inserito non corrisponde a quello assegnato.' });
+      if (!fromCloudReconciliation) {
+        const pinIn = String(pinProvvisorio || '').trim();
+        const emailIn = String(email || '').trim().toLowerCase();
+        const emailStored = String(v.email || '').trim().toLowerCase();
+        const pinStored = String(v.pin || '').trim();
+        const pinMatch = Boolean(pinStored && pinIn && pinIn === pinStored);
+        const emailMatch = Boolean(emailStored && emailIn && emailIn === emailStored);
+
+        if ((pinStored || emailStored) && !pinMatch && !emailMatch) {
+          return res.status(403).json({
+            success: false,
+            error: "Il PIN Provvisorio o l'indirizzo email inseriti non corrispondono al profilo selezionato."
+          });
+        }
       }
 
       const pinPulito = String(nuovoPin).trim();

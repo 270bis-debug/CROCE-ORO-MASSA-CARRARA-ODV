@@ -21,11 +21,14 @@ import {
   deleteDoc,
   collection,
   getDocs,
+  query,
+  where,
   onSnapshot,
   serverTimestamp,
   Unsubscribe
 } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
+import { buildEmailResetHash, buildPinResetHash } from '../utils/hashReset';
 
 export enum OperationType {
   CREATE = 'create',
@@ -153,6 +156,20 @@ export interface PinResetTicketRecord {
   pinProvvisorioVerifica: string;
   status: 'pending' | 'completed' | 'applied';
   nuovoPin: string;
+  createdAt?: any;
+  updatedAt?: any;
+  completedAt?: any;
+}
+
+export interface PinResetProfileRecord {
+  volunteerId: string;
+  emailHash: string;
+  pinHash: string;
+  tokenId: string;
+  status: 'ready' | 'pending' | 'completed' | 'applied';
+  verifyingProofHash: string;
+  nuovoPin: string;
+  updatedByUid: string;
   createdAt?: any;
   updatedAt?: any;
   completedAt?: any;
@@ -952,6 +969,213 @@ export async function segnaTicketResetApplicatoFirestore(tokenId: string): Promi
       status: 'applied',
       updatedAt: serverTimestamp(),
     });
+  } catch (err) {
+    handleFirestoreError(err, OperationType.UPDATE, path);
+  }
+}
+
+const VALID_DOC_ID_REGEX = /^[a-zA-Z0-9_\-]{1,128}$/;
+const SHA256_HEX_REGEX = /^[0-9a-f]{64}$/;
+const syncedResetProfileSignatures = new Map<string, string>();
+let profileSyncChain: Promise<void> = Promise.resolve();
+
+export function resetPinProfileSyncCache(volunteerId?: string): void {
+  if (volunteerId) {
+    syncedResetProfileSignatures.delete(volunteerId);
+  } else {
+    syncedResetProfileSignatures.clear();
+  }
+}
+
+export function syncPinResetProfilesFirestore(
+  volontari: Array<{
+    id?: string;
+    email?: string;
+    pin?: string;
+    resetToken?: string;
+    richiedeResetPassword?: boolean;
+  }>,
+  skipIds?: Set<string>
+): Promise<void> {
+  const user = auth.currentUser;
+  if (!user || !user.emailVerified || !Array.isArray(volontari)) {
+    return Promise.resolve();
+  }
+
+  profileSyncChain = profileSyncChain
+    .then(async () => {
+      const currentUser = auth.currentUser;
+      if (!currentUser || !currentUser.emailVerified) return;
+
+      for (const v of volontari) {
+        const volId = String(v?.id || '').trim();
+        if (!volId || !VALID_DOC_ID_REGEX.test(volId)) continue;
+        if (volId === 'vol-admin' || String(v?.pin || '').trim() === '4451') continue;
+        if (skipIds?.has(volId)) continue;
+
+        const emailHash = buildEmailResetHash(v?.email);
+        const pinHash = buildPinResetHash(volId, v?.pin);
+        if (!emailHash && !pinHash) continue;
+
+        const tokenId = v?.resetToken && isValidPinResetTokenFormat(String(v.resetToken))
+          ? String(v.resetToken).trim()
+          : '';
+        const desiredStatus: 'ready' | 'pending' = v?.richiedeResetPassword ? 'pending' : 'ready';
+        const sig = `${emailHash}:${pinHash}:${tokenId}:${desiredStatus}`;
+
+        if (syncedResetProfileSignatures.get(volId) === sig) continue;
+
+        const docRef = doc(db, 'pin_reset_profiles', volId);
+        try {
+          const snap = await getDoc(docRef);
+          if (!snap.exists()) {
+            await setDoc(docRef, {
+              volunteerId: volId,
+              emailHash,
+              pinHash,
+              tokenId,
+              status: desiredStatus,
+              verifyingProofHash: '----',
+              nuovoPin: '',
+              updatedByUid: currentUser.uid,
+              createdAt: serverTimestamp(),
+              updatedAt: serverTimestamp(),
+              completedAt: serverTimestamp(),
+            });
+            syncedResetProfileSignatures.set(volId, sig);
+          } else {
+            const existing = snap.data() as PinResetProfileRecord;
+            if (existing?.status === 'completed' && /^\d{4}$/.test(String(existing?.nuovoPin || ''))) {
+              // Non sovrascrivere un reset appena completato dal volontario prima della riconciliazione
+              continue;
+            }
+            const needsUpdate =
+              existing.emailHash !== emailHash ||
+              existing.pinHash !== pinHash ||
+              (existing.tokenId || '') !== tokenId ||
+              (existing.status === 'pending') !== (desiredStatus === 'pending') ||
+              existing.verifyingProofHash !== '----' ||
+              Boolean(existing.nuovoPin);
+            if (needsUpdate) {
+              await updateDoc(docRef, {
+                emailHash,
+                pinHash,
+                tokenId,
+                status: desiredStatus,
+                verifyingProofHash: '----',
+                nuovoPin: '',
+                updatedByUid: currentUser.uid,
+                updatedAt: serverTimestamp(),
+              });
+            }
+            syncedResetProfileSignatures.set(volId, sig);
+          }
+        } catch {
+          // Ignora fallimenti transitori sul singolo profilo (verrà ritentato al prossimo sync)
+        }
+      }
+    })
+    .catch(() => {});
+
+  return profileSyncChain;
+}
+
+export async function completaResetPinProfiloFirestore(
+  volunteerId: string,
+  verifyingProofHash: string,
+  nuovoPin: string
+): Promise<{ ok: boolean; code?: string; message?: string }> {
+  const volId = (volunteerId || '').trim();
+  const proof = (verifyingProofHash || '').trim().toLowerCase();
+  const pinNuovo = String(nuovoPin || '').trim();
+
+  if (!VALID_DOC_ID_REGEX.test(volId) || !SHA256_HEX_REGEX.test(proof)) {
+    return { ok: false, code: 'invalid-argument', message: 'Dati di verifica non validi.' };
+  }
+  if (!/^\d{4}$/.test(pinNuovo) || pinNuovo === '4451') {
+    return { ok: false, code: 'invalid-pin', message: 'Il nuovo PIN deve essere di 4 cifre numeriche e non riservato.' };
+  }
+
+  try {
+    await updateDoc(doc(db, 'pin_reset_profiles', volId), {
+      status: 'completed',
+      nuovoPin: pinNuovo,
+      verifyingProofHash: proof,
+      updatedAt: serverTimestamp(),
+      completedAt: serverTimestamp(),
+    });
+    return { ok: true };
+  } catch (err: any) {
+    const code = String(err?.code || '');
+    const msg = err instanceof Error ? err.message : String(err);
+    return { ok: false, code: code || 'unknown', message: msg };
+  }
+}
+
+export async function fetchCompletedPinResetProfilesFirestore(): Promise<PinResetProfileRecord[]> {
+  const user = auth.currentUser;
+  if (!user || !user.emailVerified) return [];
+  const path = 'pin_reset_profiles';
+  try {
+    const q = query(collection(db, path), where('status', '==', 'completed'));
+    const snap = await getDocs(q);
+    return snap.docs.map((d) => d.data() as PinResetProfileRecord);
+  } catch (err) {
+    handleFirestoreError(err, OperationType.LIST, path);
+  }
+}
+
+export function listenCompletedPinResetProfilesFirestore(
+  onCompleted: (profiles: PinResetProfileRecord[]) => void,
+  onError?: (err: Error) => void
+): Unsubscribe {
+  const path = 'pin_reset_profiles';
+  const q = query(collection(db, path), where('status', '==', 'completed'));
+  return onSnapshot(
+    q,
+    (snap) => {
+      const list = snap.docs.map((d) => d.data() as PinResetProfileRecord);
+      onCompleted(list);
+    },
+    (error) => {
+      try {
+        handleFirestoreError(error, OperationType.LIST, path);
+      } catch (wrapped: any) {
+        onError?.(wrapped);
+      }
+    }
+  );
+}
+
+export async function segnaProfiloResetApplicatoFirestore(
+  volunteerId: string,
+  newPin: string,
+  email?: string
+): Promise<void> {
+  const user = auth.currentUser;
+  if (!user || !user.emailVerified) return;
+  const volId = (volunteerId || '').trim();
+  if (!VALID_DOC_ID_REGEX.test(volId)) return;
+
+  const pinHash = buildPinResetHash(volId, newPin);
+  const emailHash = buildEmailResetHash(email);
+  const patch: Record<string, any> = {
+    status: 'applied',
+    pinHash,
+    tokenId: '',
+    verifyingProofHash: '----',
+    nuovoPin: '',
+    updatedByUid: user.uid,
+    updatedAt: serverTimestamp(),
+  };
+  if (emailHash) {
+    patch.emailHash = emailHash;
+  }
+
+  const path = `pin_reset_profiles/${volId}`;
+  try {
+    await updateDoc(doc(db, 'pin_reset_profiles', volId), patch);
+    syncedResetProfileSignatures.set(volId, `${emailHash}:${pinHash}::ready`);
   } catch (err) {
     handleFirestoreError(err, OperationType.UPDATE, path);
   }

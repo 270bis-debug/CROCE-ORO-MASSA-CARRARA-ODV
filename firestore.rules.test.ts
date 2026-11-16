@@ -142,6 +142,24 @@ export const DIRTY_DOZEN_PAYLOADS = [
       nuovoPin: '5678'
     },
     expected: 'PERMISSION_DENIED'
+  },
+  {
+    name: '17_pin_reset_profile_unauthenticated_read',
+    path: '/pin_reset_profiles/vol-ricci',
+    operation: 'get',
+    auth: null,
+    expected: 'PERMISSION_DENIED'
+  },
+  {
+    name: '18_pin_reset_profile_wrong_proof_hash',
+    path: '/pin_reset_profiles/vol-ricci',
+    operation: 'update',
+    auth: null,
+    payload: {
+      status: 'completed',
+      verifyingProofHash: '0'.repeat(64),
+      nuovoPin: '5678'
+    },
+    expected: 'PERMISSION_DENIED'
   }
 ];
-

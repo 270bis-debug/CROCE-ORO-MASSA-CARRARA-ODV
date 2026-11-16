@@ -21,6 +21,11 @@ import {
   ApprovedOperatorRecord,
   verificaTicketResetPinFirestore,
   segnaTicketResetApplicatoFirestore,
+  syncPinResetProfilesFirestore,
+  fetchCompletedPinResetProfilesFirestore,
+  listenCompletedPinResetProfilesFirestore,
+  segnaProfiloResetApplicatoFirestore,
+  PinResetProfileRecord,
 } from './firebase';
 import { formatDateTimeItaly, formatTimeItaly } from '../utils/italianTime';
 import { mergeVolontariListsSafe, normalizeDeletedIds } from '../utils/volontariMerge';
@@ -151,6 +156,8 @@ class RealtimeService {
   private lastVolontariRefreshAt: number = 0;
   private lastExpressVolontariSig: string = '';
   private pinResetCheckInFlight: Set<string> = new Set();
+  private pinResetProfilesReconciling: Set<string> = new Set();
+  private pinResetProfileUnsub: (() => void) | null = null;
   private lastPinResetSweepAt: number = 0;
 
   // Cache unificata dello stato cloud tra tutti gli shard / server
@@ -296,6 +303,12 @@ class RealtimeService {
       } catch {}
     });
     this.shardUnsubscribers = [];
+    if (this.pinResetProfileUnsub) {
+      try {
+        this.pinResetProfileUnsub();
+      } catch {}
+      this.pinResetProfileUnsub = null;
+    }
     this.firestoreActive = false;
     this.cloudShardsReadyEmitted = false;
     this.pendingInitialWrites.clear();
@@ -385,6 +398,17 @@ class RealtimeService {
       this.shardUnsubscribers.push(unsub);
     });
 
+    this.pinResetProfileUnsub = listenCompletedPinResetProfilesFirestore(
+      (completedProfiles) => {
+        if (Array.isArray(completedProfiles) && completedProfiles.length > 0) {
+          this.applyCompletedPinResetProfiles(completedProfiles).catch(() => {});
+        }
+      },
+      (err) => {
+        console.warn('[Realtime] Errore listener pin_reset_profiles:', err?.message);
+      }
+    );
+
     this.firestoreActive = true;
     this.recomputeConnectionStatus();
   }
@@ -443,7 +467,9 @@ class RealtimeService {
         volontariEliminatiIds: deletedIds,
       });
       if (this.firebaseSession.isAuthorized) {
-        this.reconcileCompletedPinResets().catch(() => {});
+        this.reconcileCompletedPinResets()
+          .then(() => syncPinResetProfilesFirestore(mergedVols, this.pinResetProfilesReconciling))
+          .catch(() => {});
       }
     } else {
       Object.assign(this.cloudState, payload);
@@ -525,6 +551,14 @@ class RealtimeService {
       if (typeof payload.publicAppUrl === 'string' && payload.publicAppUrl.trim() && !isProtectedAiStudioHost(payload.publicAppUrl)) {
         const saved = saveConfiguredPublicUrlLocal(payload.publicAppUrl);
         this.cloudState.publicAppUrl = saved;
+        if (!this.isServerlessStaticHost() && saved) {
+          fetch(`${this.getApiBaseUrl()}/api/event`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ type: 'UPDATE_PUBLIC_APP_URL', data: { publicAppUrl: saved } }),
+            cache: 'no-store',
+          }).catch(() => {});
+        }
         this.emit('PUBLIC_APP_URL_UPDATED', { publicAppUrl: saved });
       }
     }
@@ -741,6 +775,9 @@ class RealtimeService {
     );
     this.shardExists[shardId] = true;
     this.shardVersions[shardId] = newVer;
+    if (shardId === 'volontari' && Array.isArray(payload?.volontari)) {
+      syncPinResetProfilesFirestore(payload.volontari, this.pinResetProfilesReconciling).catch(() => {});
+    }
   }
 
   /**
@@ -1968,6 +2005,14 @@ class RealtimeService {
     const saved = saveConfiguredPublicUrlLocal(url);
     this.cloudState.publicAppUrl = saved;
     this.scheduleShardWrite('config', { publicAppUrl: saved });
+    if (!this.isServerlessStaticHost()) {
+      fetch(`${this.getApiBaseUrl()}/api/event`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'UPDATE_PUBLIC_APP_URL', data: { publicAppUrl: saved } }),
+        cache: 'no-store',
+      }).catch(() => {});
+    }
     this.emit('PUBLIC_APP_URL_UPDATED', { publicAppUrl: saved });
     return saved;
   }
@@ -1977,24 +2022,104 @@ class RealtimeService {
     return candidate && !isProtectedAiStudioHost(candidate) ? candidate : '';
   }
 
+  private async applyCompletedPinResetProfiles(profiles: PinResetProfileRecord[]): Promise<number> {
+    if (!this.firebaseSession.isAuthorized || !Array.isArray(profiles) || profiles.length === 0) return 0;
+    const currentList = Array.isArray(this.cloudState.volontari) ? [...this.cloudState.volontari] : [];
+    if (currentList.length === 0) return 0;
+
+    let appliedCount = 0;
+    const nextList = [...currentList];
+
+    for (const prof of profiles) {
+      const volId = String(prof?.volunteerId || '').trim();
+      const nuovoPin = String(prof?.nuovoPin || '').trim();
+      if (!volId || prof.status !== 'completed' || !/^\d{4}$/.test(nuovoPin) || nuovoPin === '4451') continue;
+      if (this.pinResetProfilesReconciling.has(volId)) continue;
+      this.pinResetProfilesReconciling.add(volId);
+
+      try {
+        const idx = nextList.findIndex((item: any) => item && item.id === volId);
+        if (idx >= 0) {
+          const oldToken = nextList[idx].resetToken || prof.tokenId || '';
+          nextList[idx] = {
+            ...nextList[idx],
+            pin: nuovoPin,
+            pinProvvisorio: false,
+            richiedeResetPassword: false,
+            resetToken: undefined,
+            tentativiErrati: 0,
+            bloccatoPerTentativi: false,
+            dataBlocco: undefined,
+          };
+          appliedCount++;
+
+          if (!this.isServerlessStaticHost()) {
+            const baseUrl = this.getApiBaseUrl();
+            fetch(`${baseUrl}/api/volontari/reset-pin`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                id: volId,
+                token: oldToken,
+                nuovoPin,
+                fromCloudReconciliation: true,
+              }),
+              cache: 'no-store',
+            }).catch(() => {});
+          }
+
+          await segnaProfiloResetApplicatoFirestore(volId, nuovoPin, nextList[idx].email).catch(() => {});
+          if (oldToken && oldToken.startsWith('rst-') && oldToken.length >= 12) {
+            await segnaTicketResetApplicatoFirestore(oldToken).catch(() => {});
+          }
+        }
+      } finally {
+        this.pinResetProfilesReconciling.delete(volId);
+      }
+    }
+
+    if (appliedCount > 0) {
+      const deletedIds = normalizeDeletedIds(this.cloudState.volontariEliminatiIds);
+      this.syncVolontariList(nextList, deletedIds);
+      this.emit('VOLONTARI_UPDATED', {
+        volontari: nextList,
+        volontariEliminatiIds: deletedIds,
+      });
+    }
+
+    return appliedCount;
+  }
+
   /**
-   * Verifica i ticket /pin_resets/{tokenId} dei volontari con invito reset in sospeso:
-   * quando un volontario completa il reset dal portale web o dall'allegato HTML (senza account Google),
-   * aggiorna automaticamente il PIN nel profilo condiviso (Firestore + Express) e marca il ticket 'applied'.
+   * Verifica sia i ticket /pin_resets/{tokenId} sia i profili /pin_reset_profiles completati
+   * da terminali o browser senza account Google: applica subito il nuovo PIN nell'archivio condiviso.
    */
   public async reconcileCompletedPinResets(): Promise<number> {
     if (!this.firebaseSession.isAuthorized) return 0;
     const now = Date.now();
-    if (now - this.lastPinResetSweepAt < 6000) return 0;
+    if (now - this.lastPinResetSweepAt < 5000) return 0;
     this.lastPinResetSweepAt = now;
 
+    let appliedCount = 0;
+
+    // 1. Profili completati via app in-app (ModalResetPassword su telefono senza Google Auth)
+    try {
+      const completedProfiles = await fetchCompletedPinResetProfilesFirestore();
+      if (completedProfiles.length > 0) {
+        appliedCount += await this.applyCompletedPinResetProfiles(completedProfiles);
+      }
+    } catch {
+      // Ignora errori transitori
+    }
+
+    // 2. Ticket one-time completati via link email / allegato HTML
     const currentList = Array.isArray(this.cloudState.volontari) ? [...this.cloudState.volontari] : [];
     const pendingVols = currentList.filter(
       (v: any) => v && typeof v.resetToken === 'string' && v.resetToken.startsWith('rst-') && v.resetToken.length >= 12
     );
-    if (pendingVols.length === 0) return 0;
+    if (pendingVols.length === 0) return appliedCount;
 
-    let appliedCount = 0;
+    let ticketAppliedCount = 0;
     const nextList = [...currentList];
 
     for (const vol of pendingVols) {
@@ -2025,7 +2150,7 @@ class RealtimeService {
               bloccatoPerTentativi: false,
               dataBlocco: undefined,
             };
-            appliedCount++;
+            ticketAppliedCount++;
 
             if (!this.isServerlessStaticHost()) {
               const baseUrl = this.getApiBaseUrl();
@@ -2043,6 +2168,7 @@ class RealtimeService {
             }
 
             await segnaTicketResetApplicatoFirestore(tokenId).catch(() => {});
+            await segnaProfiloResetApplicatoFirestore(nextList[idx].id, ticket.nuovoPin, nextList[idx].email).catch(() => {});
           }
         }
       } catch {
@@ -2052,7 +2178,7 @@ class RealtimeService {
       }
     }
 
-    if (appliedCount > 0) {
+    if (ticketAppliedCount > 0) {
       const deletedIds = normalizeDeletedIds(this.cloudState.volontariEliminatiIds);
       this.syncVolontariList(nextList, deletedIds);
       this.emit('VOLONTARI_UPDATED', {
@@ -2061,7 +2187,7 @@ class RealtimeService {
       });
     }
 
-    return appliedCount;
+    return appliedCount + ticketAppliedCount;
   }
 
   // --- METODI SPECIFICI PER SINCRONIZZAZIONE VOLONTARI & PIN ---
