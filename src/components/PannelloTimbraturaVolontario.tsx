@@ -27,7 +27,7 @@ import {
   formatLocalISODate
 } from '../utils/exportTimbrature';
 import { addDaysISODate, formatTimeItaly, getCurrentYearItaly } from '../utils/italianTime';
-import { rilevaAttivitaProgrammataPerTimbratura } from '../utils/turnoVerifica';
+import { rilevaAttivitaProgrammataPerTimbratura, verificaFinestraTimbraturaTurno } from '../utils/turnoVerifica';
 import {
   normalizzaListaLuoghiTimbratura,
   normalizzaListaSediAssociative,
@@ -480,6 +480,20 @@ export const PannelloTimbraturaVolontario: React.FC<PannelloTimbraturaVolontario
         return;
       }
 
+      if (!isPuntoCorso && attivitaRilevata.tipo === 'turno') {
+        const esitoFinestra = verificaFinestraTimbraturaTurno({
+          tipo: 'entrata',
+          volontarioId,
+          volontarioNome,
+          turni,
+          nowMs: now.getTime()
+        });
+        if (!esitoFinestra.consentita) {
+          setErroreGps(esitoFinestra.motivo || '⛔ Timbratura di ingresso non ancora disponibile per questo turno.');
+          return;
+        }
+      }
+
       // -------------------------------------------------------------
       // 1. TIMBRATURA INGRESSO (con secondi HH:MM:SS)
       // -------------------------------------------------------------
@@ -498,6 +512,7 @@ export const PannelloTimbraturaVolontario: React.FC<PannelloTimbraturaVolontario
         modificataDaAdmin: false,
         corsoId: targetCorsoId,
         lezioneId: targetLezioneId,
+        turnoId: !isPuntoCorso && attivitaRilevata.tipo === 'turno' ? attivitaRilevata.turnoId : undefined,
         attivitaSvolta: attivitaEffettiva,
         tipoAttivita: attivitaRilevata.trovata ? (attivitaRilevata.tipo || 'turno') : 'manuale',
         note: isPuntoCorso
@@ -551,6 +566,24 @@ export const PannelloTimbraturaVolontario: React.FC<PannelloTimbraturaVolontario
       const timbCorsoId = timbraturaAttiva.corsoId || targetCorsoId;
       const timbLezioneId = timbraturaAttiva.lezioneId || targetLezioneId;
       const isCorsoAttivo = Boolean(timbCorsoId || isPuntoCorso || timbraturaAttiva.sede?.includes('Corso'));
+
+      if (!isCorsoAttivo) {
+        const esitoFinestraUscita = verificaFinestraTimbraturaTurno({
+          tipo: 'uscita',
+          volontarioId,
+          volontarioNome,
+          turni,
+          timbraturaAperta: timbraturaAttiva,
+          nowMs: now.getTime()
+        });
+        if (!esitoFinestraUscita.consentita) {
+          setErroreGps(
+            esitoFinestraUscita.motivo ||
+            '⛔ Timbratura di uscita non più disponibile: il turno è già terminato. Contatta la Centrale Operativa.'
+          );
+          return;
+        }
+      }
 
       const timbChiusa: TimbraturaVolontario = {
         ...timbraturaAttiva,

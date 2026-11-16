@@ -25,6 +25,7 @@ export interface TimbraturaVolontario {
   operatoreModifica?: string;
   corsoId?: string;
   lezioneId?: string;
+  turnoId?: string;
   oreEMinuti?: string; // es. "2h 30m 15s"
   attivitaSvolta?: string; // Cosa sta facendo il volontario/operatore (turno, corso o descrizione manuale)
   tipoAttivita?: 'turno' | 'corso' | 'manuale';

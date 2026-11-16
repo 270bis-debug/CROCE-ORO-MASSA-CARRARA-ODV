@@ -150,8 +150,8 @@ export interface ValutaPromemoriaParams {
 }
 
 const TEN_MIN_MS = 10 * 60 * 1000;
-const FOUR_HOURS_MS = 4 * 60 * 60 * 1000;
-const ENTRY_MATCH_EARLY_MS = 3 * 60 * 60 * 1000;
+const TWO_HOURS_MS = 120 * 60 * 1000;
+const ENTRY_MATCH_EARLY_MS = 30 * 60 * 1000;
 
 /**
  * Calcola tutti i promemoria timbratura attivi nell'istante corrente per il volontario:
@@ -197,7 +197,7 @@ export function valutaPromemoriaTimbratureAttivi(params: ValutaPromemoriaParams)
       if (t.corsoId) return false;
       const tEntryMs = parseLocalDateTimeMs(t.data, t.orarioIngresso);
       if (tEntryMs !== null) {
-        if (tEntryMs >= startMs - ENTRY_MATCH_EARLY_MS && tEntryMs <= endMs + 15 * 60 * 1000) {
+        if (tEntryMs >= startMs - ENTRY_MATCH_EARLY_MS && tEntryMs <= endMs + TWO_HOURS_MS) {
           return true;
         }
       }
@@ -257,7 +257,7 @@ export function valutaPromemoriaTimbratureAttivi(params: ValutaPromemoriaParams)
     }
 
     // D) 10 min dopo fine turno (entrata ancora aperta senza uscita) -> Notifica diversa (NO sirena)
-    if (timbApertaUscita && nowMs >= endMs + TEN_MIN_MS && nowMs <= endMs + FOUR_HOURS_MS) {
+    if (timbApertaUscita && nowMs >= endMs + TEN_MIN_MS && nowMs <= endMs + TWO_HOURS_MS) {
       risultati.push({
         dedupKey: `turno:${turno.id}:${turno.data}:exit_after:${volId || volNomeNorm}`,
         eventId: turno.id,
@@ -365,7 +365,7 @@ export function valutaPromemoriaTimbratureAttivi(params: ValutaPromemoriaParams)
         if (t.corsoId !== corso.id) return false;
         if (sess.lezioneId && t.lezioneId && t.lezioneId !== sess.lezioneId) return false;
         const tEntryMs = parseLocalDateTimeMs(t.data, t.orarioIngresso);
-        if (tEntryMs !== null && tEntryMs >= startMs - ENTRY_MATCH_EARLY_MS && tEntryMs <= endMs + 15 * 60 * 1000) {
+        if (tEntryMs !== null && tEntryMs >= startMs - ENTRY_MATCH_EARLY_MS && tEntryMs <= endMs + TWO_HOURS_MS) {
           return true;
         }
         return t.data === sess.data;
@@ -429,7 +429,7 @@ export function valutaPromemoriaTimbratureAttivi(params: ValutaPromemoriaParams)
       }
 
       // D) +10 min fine corso/lezione -> Notifica diversa (NO sirena)
-      if (entrataApertaCorso && nowMs >= endMs + TEN_MIN_MS && nowMs <= endMs + FOUR_HOURS_MS) {
+      if (entrataApertaCorso && nowMs >= endMs + TEN_MIN_MS && nowMs <= endMs + TWO_HOURS_MS) {
         risultati.push({
           dedupKey: `corso:${corso.id}:${sess.sessionId}:${sess.data}:exit_after:${volId || volNomeNorm}`,
           eventId: corso.id,

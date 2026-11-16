@@ -95,7 +95,7 @@ import { mergeVolontariListsSafe, normalizeDeletedIds } from './utils/volontariM
 import { ModalDecisioneSbloccoAdmin } from './components/ModalDecisioneSbloccoAdmin';
 import { SchermataTurnoVolontario, SessioneTurno } from './components/SchermataTurnoVolontario';
 import { ModalChecklistInizioTurnoGuidata } from './components/ModalChecklistInizioTurnoGuidata';
-import { verificaVolontarioInTurnoAdesso } from './utils/turnoVerifica';
+import { verificaVolontarioInTurnoAdesso, verificaFinestraTimbraturaTurno } from './utils/turnoVerifica';
 import { TabelloneTurniSettimanale } from './components/TabelloneTurniSettimanale';
 import { SchermataSceltaRuolo } from './components/SchermataSceltaRuolo';
 import { SchermataAccountInAttivazione } from './components/SchermataAccountInAttivazione';
@@ -804,6 +804,22 @@ const VistaDedicataTabelloneSenzaLogin: React.FC<{
     } catch {}
     return normalizzaListaSediAssociative(initialSedi);
   });
+  const [volontari, setVolontari] = useState<any[]>(() => {
+    try {
+      const saved = localStorage.getItem('CROCE_ORO_VOLONTARI');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch {}
+    return Array.isArray(initialVolontari) ? initialVolontari : [];
+  });
+
+  useEffect(() => {
+    if (Array.isArray(initialVolontari) && initialVolontari.length > 0 && volontari.length === 0) {
+      setVolontari(initialVolontari);
+    }
+  }, [initialVolontari]);
 
   const handleAggiornaTurniDiretto = (nuovi: TurnoSedeOperativa[]) => {
     const norm = normalizzaTurniSedi(nuovi);
@@ -826,10 +842,34 @@ const VistaDedicataTabelloneSenzaLogin: React.FC<{
           }
         })
         .catch(() => {});
+      fetch('/api/volontari')
+        .then((res) => res.json())
+        .then((data) => {
+          if (data?.volontari && Array.isArray(data.volontari) && data.volontari.length > 0) {
+            setVolontari(data.volontari);
+            localStorage.setItem('CROCE_ORO_VOLONTARI', JSON.stringify(data.volontari));
+          }
+        })
+        .catch(() => {});
+      fetch('/api/sedi')
+        .then((res) => res.json())
+        .then((data) => {
+          if (data?.sedi && Array.isArray(data.sedi) && data.sedi.length > 0) {
+            const normSedi = normalizzaListaSediAssociative(data.sedi);
+            setSedi(normSedi);
+            localStorage.setItem('CROCE_ORO_SEDI_COMPLETE', JSON.stringify(normSedi));
+          }
+        })
+        .catch(() => {});
       const savedTurni = localStorage.getItem('CROCE_ORO_TURNI_SEDI');
       if (savedTurni) setTurni(normalizzaTurniSedi(JSON.parse(savedTurni)));
       const savedSedi = localStorage.getItem('CROCE_ORO_SEDI_COMPLETE');
       if (savedSedi) setSedi(normalizzaListaSediAssociative(JSON.parse(savedSedi)));
+      const savedVol = localStorage.getItem('CROCE_ORO_VOLONTARI');
+      if (savedVol) {
+        const parsedVol = JSON.parse(savedVol);
+        if (Array.isArray(parsedVol) && parsedVol.length > 0) setVolontari(parsedVol);
+      }
     } catch {}
   };
 
@@ -848,9 +888,34 @@ const VistaDedicataTabelloneSenzaLogin: React.FC<{
       }
     });
 
+    const unsubVolontari = realtime.on('VOLONTARI_UPDATED', (payload: any) => {
+      if (payload?.volontari && Array.isArray(payload.volontari)) {
+        setVolontari(payload.volontari);
+        try {
+          localStorage.setItem('CROCE_ORO_VOLONTARI', JSON.stringify(payload.volontari));
+        } catch {}
+      }
+    });
+
+    const unsubSedi = realtime.on('SEDI_UPDATED', (payload: any) => {
+      if (payload?.sedi && Array.isArray(payload.sedi)) {
+        const norm = normalizzaListaSediAssociative(payload.sedi);
+        setSedi(norm);
+        try {
+          localStorage.setItem('CROCE_ORO_SEDI_COMPLETE', JSON.stringify(norm));
+        } catch {}
+      }
+    });
+
     const unsubSync = realtime.on('INIT_SYNC', (payload: any) => {
       if (payload?.state?.turni && Array.isArray(payload.state.turni)) {
         setTurni(normalizzaTurniSedi(payload.state.turni));
+      }
+      if (payload?.state?.volontari && Array.isArray(payload.state.volontari)) {
+        setVolontari(payload.state.volontari);
+      }
+      if (payload?.state?.sedi && Array.isArray(payload.state.sedi)) {
+        setSedi(normalizzaListaSediAssociative(payload.state.sedi));
       }
       if (payload?.state?.datiCartaIntestata && typeof payload.state.datiCartaIntestata === 'object') {
         applicaDatiCartaIntestataRemoti(payload.state.datiCartaIntestata);
@@ -860,6 +925,12 @@ const VistaDedicataTabelloneSenzaLogin: React.FC<{
     const unsubPoll = realtime.on('POLL_SYNC', (s: any) => {
       if (s?.turni && Array.isArray(s.turni)) {
         setTurni(normalizzaTurniSedi(s.turni));
+      }
+      if (s?.volontari && Array.isArray(s.volontari)) {
+        setVolontari(s.volontari);
+      }
+      if (s?.sedi && Array.isArray(s.sedi)) {
+        setSedi(normalizzaListaSediAssociative(s.sedi));
       }
       if (s?.datiCartaIntestata && typeof s.datiCartaIntestata === 'object') {
         applicaDatiCartaIntestataRemoti(s.datiCartaIntestata);
@@ -871,6 +942,8 @@ const VistaDedicataTabelloneSenzaLogin: React.FC<{
     window.addEventListener('storage', ricaricaDati);
     return () => {
       unsubTurni();
+      unsubVolontari();
+      unsubSedi();
       unsubSync();
       unsubPoll();
       clearInterval(timer);
@@ -884,7 +957,7 @@ const VistaDedicataTabelloneSenzaLogin: React.FC<{
         <TabelloneTurniSettimanale
           turni={turni}
           sedi={sedi}
-          volontari={initialVolontari}
+          volontari={volontari}
           mezzi={initialMezzi}
           isAdmin={false}
           isStandalone={true}
@@ -4350,28 +4423,43 @@ export default function App() {
         );
 
         if (luogoValidoLogout) {
-          const durata = calcolaDurataTimbratura(timbServiceAperta.orarioIngresso, orarioFineTurno);
-          const sedeDifferente = (timbServiceAperta.sede || '').trim().toLowerCase() !== luogoValidoLogout.nome.trim().toLowerCase();
-          const updated = timbratureVolontariRef.current.map(t => {
-            if (t.id === timbServiceAperta.id) {
-              return {
-                ...t,
-                orarioUscita: orarioFineTurno,
-                sedeUscita: luogoValidoLogout.nome,
-                coordinateUscita: { lat: posizioneVolontario.lat, lng: posizioneVolontario.lng },
-                oreTotali: durata.oreDecimali,
-                oreEMinuti: durata.durataTesto,
-                note: (t.note ? t.note + ' • ' : '') + `Fine turno & timbratura USCITA automatica alle ${orarioFineTurno} presso ${luogoValidoLogout.nome}${sedeDifferente ? ` (entrata: ${t.sede})` : ''} (${durata.durataTesto})`
-              };
-            }
-            return t;
+          const esitoFinestraLogout = verificaFinestraTimbraturaTurno({
+            tipo: 'uscita',
+            volontarioId: sessioneCorrente.volontarioId,
+            volontarioNome: nomeUscita,
+            turni: turniSedi,
+            timbraturaAperta: timbServiceAperta
           });
 
-          handleAggiornaTimbrature(updated);
-          notificaDatoAllaCentrale(
-            `🏁 FINE TURNO & TIMBRATURA USCITA: ${nomeUscita} ha concluso il turno alle ore ${orarioFineTurno} presso ${luogoValidoLogout.nome} (${durata.durataTesto}).`,
-            'generico'
-          );
+          if (!esitoFinestraLogout.consentita) {
+            notificaDatoAllaCentrale(
+              `⚠️ FINE TURNO: ${nomeUscita} ha terminato la sessione alle ${orarioFineTurno}; timbratura di uscita da verificare in Centrale.`,
+              'generico'
+            );
+          } else {
+            const durata = calcolaDurataTimbratura(timbServiceAperta.orarioIngresso, orarioFineTurno);
+            const sedeDifferente = (timbServiceAperta.sede || '').trim().toLowerCase() !== luogoValidoLogout.nome.trim().toLowerCase();
+            const updated = timbratureVolontariRef.current.map(t => {
+              if (t.id === timbServiceAperta.id) {
+                return {
+                  ...t,
+                  orarioUscita: orarioFineTurno,
+                  sedeUscita: luogoValidoLogout.nome,
+                  coordinateUscita: { lat: posizioneVolontario.lat, lng: posizioneVolontario.lng },
+                  oreTotali: durata.oreDecimali,
+                  oreEMinuti: durata.durataTesto,
+                  note: (t.note ? t.note + ' • ' : '') + `Fine turno & timbratura USCITA automatica alle ${orarioFineTurno} presso ${luogoValidoLogout.nome}${sedeDifferente ? ` (entrata: ${t.sede})` : ''} (${durata.durataTesto})`
+                };
+              }
+              return t;
+            });
+
+            handleAggiornaTimbrature(updated);
+            notificaDatoAllaCentrale(
+              `🏁 FINE TURNO & TIMBRATURA USCITA: ${nomeUscita} ha concluso il turno alle ore ${orarioFineTurno} presso ${luogoValidoLogout.nome} (${durata.durataTesto}).`,
+              'generico'
+            );
+          }
         } else {
           notificaDatoAllaCentrale(
             `⚠️ USCITA FUORI PERIMETRO: ${nomeUscita} è uscito alle ${orarioFineTurno} fuori dalle posizioni autorizzate. La timbratura di uscita resta aperta finché non viene timbrata in una posizione autorizzata.`,
@@ -20535,7 +20623,7 @@ KM TOTALI: ${kmTot} KM`;
       {/* MODALE TABELLONE TURNI SETTIMANALE PER VOLONTARIO */}
       {/* ------------------------------------------------------------- */}
       {modalTabelloneTurniVolontario && (
-        <div className="fixed inset-0 bg-slate-950/85 backdrop-blur-md z-[130] flex items-center justify-center p-2 sm:p-4 animate-in fade-in overflow-y-auto">
+        <div className="fixed inset-0 bg-slate-950/85 backdrop-blur-md z-[130] flex items-start sm:items-center justify-center p-2 sm:p-4 animate-in fade-in overflow-y-auto">
           <div className="max-w-7xl w-full my-auto">
             <TabelloneTurniSettimanale
               turni={turniSedi}

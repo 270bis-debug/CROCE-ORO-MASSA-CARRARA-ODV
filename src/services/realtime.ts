@@ -26,6 +26,10 @@ import {
   listenCompletedPinResetProfilesFirestore,
   segnaProfiloResetApplicatoFirestore,
   PinResetProfileRecord,
+  ShiftSignupRecord,
+  salvaCandidaturaTurnoFirestore,
+  listenPendingShiftSignupsFirestore,
+  segnaCandidaturaTurnoApplicataFirestore,
 } from './firebase';
 import { formatDateTimeItaly, formatTimeItaly } from '../utils/italianTime';
 import { mergeVolontariListsSafe, normalizeDeletedIds } from '../utils/volontariMerge';
@@ -159,6 +163,9 @@ class RealtimeService {
   private pinResetProfilesReconciling: Set<string> = new Set();
   private pinResetProfileUnsub: (() => void) | null = null;
   private lastPinResetSweepAt: number = 0;
+  private shiftSignupsUnsub: (() => void) | null = null;
+  private shiftSignupsReconciling: Set<string> = new Set();
+  private pendingShiftSignupsQueue: ShiftSignupRecord[] = [];
 
   // Cache unificata dello stato cloud tra tutti gli shard / server
   private cloudState: Record<string, any> = {};
@@ -309,6 +316,12 @@ class RealtimeService {
       } catch {}
       this.pinResetProfileUnsub = null;
     }
+    if (this.shiftSignupsUnsub) {
+      try {
+        this.shiftSignupsUnsub();
+      } catch {}
+      this.shiftSignupsUnsub = null;
+    }
     this.firestoreActive = false;
     this.cloudShardsReadyEmitted = false;
     this.pendingInitialWrites.clear();
@@ -409,6 +422,17 @@ class RealtimeService {
       }
     );
 
+    this.shiftSignupsUnsub = listenPendingShiftSignupsFirestore(
+      (pendingSignups) => {
+        if (Array.isArray(pendingSignups) && pendingSignups.length > 0) {
+          this.applyPendingShiftSignups(pendingSignups).catch(() => {});
+        }
+      },
+      (err) => {
+        console.warn('[Realtime] Errore listener shift_signups:', err?.message);
+      }
+    );
+
     this.firestoreActive = true;
     this.recomputeConnectionStatus();
   }
@@ -478,6 +502,11 @@ class RealtimeService {
       const turniNorm = normalizzaTurniSedi(payload.turni);
       this.cloudState.turni = turniNorm;
       this.emit('TURNI_UPDATED', { turni: turniNorm });
+      if (this.firebaseSession.isAuthorized && this.pendingShiftSignupsQueue.length > 0) {
+        const queued = [...this.pendingShiftSignupsQueue];
+        this.pendingShiftSignupsQueue = [];
+        this.applyPendingShiftSignups(queued).catch(() => {});
+      }
     }
     if (shardId === 'bacheca') {
       if (Array.isArray(payload.bacheca)) {
@@ -1773,6 +1802,28 @@ class RealtimeService {
           this.scheduleShardWrite('turni', { turni: data.turni });
         }
         break;
+      case 'SUBMIT_CANDIDATURA_TURNO': {
+        if (data?.turnoId && data?.candidatura?.id) {
+          const baseTurni = Array.isArray(this.cloudState.turni) ? [...this.cloudState.turni] : [];
+          let found = false;
+          const updatedTurni = baseTurni.map((t: any) => {
+            if (t?.id === data.turnoId) {
+              found = true;
+              const esistenti = Array.isArray(t.richiesteIscrizione) ? t.richiesteIscrizione : [];
+              const already = esistenti.some((r: any) => r?.id === data.candidatura.id);
+              return already
+                ? t
+                : { ...t, richiesteIscrizione: [...esistenti, data.candidatura] };
+            }
+            return t;
+          });
+          if (found) {
+            this.scheduleShardWrite('turni', { turni: updatedTurni });
+            this.emit('TURNI_UPDATED', { turni: updatedTurni });
+          }
+        }
+        break;
+      }
       case 'UPDATE_VOLONTARI_LIST':
         if (Array.isArray(data?.volontari)) {
           const deletedIds = normalizeDeletedIds([
@@ -2270,6 +2321,132 @@ class RealtimeService {
         }).catch(() => {});
       } catch {}
     }
+  }
+
+  public async submitCandidaturaTurno(
+    turno: { id: string; sedeNome?: string; data?: string; orarioInizio?: string; orarioFine?: string },
+    candidatura: {
+      id: string;
+      volontarioId: string;
+      volontarioNome: string;
+      qualificaVolontario?: string;
+      ruoloRichiesto: string;
+      stato: string;
+      dataRichiesta: string;
+      note?: string;
+    }
+  ): Promise<{ firestoreOk: boolean }> {
+    this.send('SUBMIT_CANDIDATURA_TURNO', {
+      turnoId: turno.id,
+      candidatura,
+      data: turno.data || '',
+      sede: turno.sedeNome || 'Sede Operativa',
+      fascia: turno.orarioInizio && turno.orarioFine ? `${turno.orarioInizio}-${turno.orarioFine}` : '',
+    });
+
+    const res = await salvaCandidaturaTurnoFirestore({
+      signupId: candidatura.id,
+      turnoId: turno.id,
+      sedeNome: turno.sedeNome || 'Sede Operativa',
+      turnoData: turno.data || '2026-01-01',
+      turnoOrario:
+        turno.orarioInizio && turno.orarioFine
+          ? `${turno.orarioInizio}-${turno.orarioFine}`
+          : '08:00-14:00',
+      volontarioId: candidatura.volontarioId,
+      volontarioNome: candidatura.volontarioNome,
+      qualificaVolontario: candidatura.qualificaVolontario || 'Volontario',
+      ruoloRichiesto: candidatura.ruoloRichiesto,
+      note: candidatura.note || '',
+      dataRichiesta: candidatura.dataRichiesta,
+    });
+
+    return { firestoreOk: res.ok };
+  }
+
+  private async applyPendingShiftSignups(signups: ShiftSignupRecord[]): Promise<number> {
+    if (!this.firebaseSession.isAuthorized || !Array.isArray(signups) || signups.length === 0) return 0;
+
+    if (!this.shardLoadedFromCloud['turni']) {
+      this.pendingShiftSignupsQueue = signups;
+      return 0;
+    }
+
+    const currentTurni = Array.isArray(this.cloudState.turni) ? [...this.cloudState.turni] : [];
+    let updated = [...currentTurni];
+    let appliedCount = 0;
+
+    for (const s of signups) {
+      const signupId = String(s?.signupId || '').trim();
+      const turnoId = String(s?.turnoId || '').trim();
+      if (!signupId || !turnoId || s.status !== 'pending') continue;
+      if (this.shiftSignupsReconciling.has(signupId)) continue;
+      this.shiftSignupsReconciling.add(signupId);
+
+      try {
+        const candObj = {
+          id: signupId,
+          volontarioId: s.volontarioId,
+          volontarioNome: s.volontarioNome,
+          qualificaVolontario: s.qualificaVolontario || 'Volontario',
+          ruoloRichiesto: s.ruoloRichiesto,
+          stato: 'In Attesa' as const,
+          dataRichiesta: s.dataRichiesta,
+          ...(s.note ? { note: s.note } : {}),
+        };
+
+        let matched = false;
+        updated = updated.map((t: any) => {
+          if (t && t.id === turnoId) {
+            matched = true;
+            const esistenti = Array.isArray(t.richiesteIscrizione) ? t.richiesteIscrizione : [];
+            if (esistenti.some((r: any) => r?.id === signupId)) return t;
+            appliedCount++;
+            return {
+              ...t,
+              richiesteIscrizione: [...esistenti, candObj],
+            };
+          }
+          return t;
+        });
+
+        await segnaCandidaturaTurnoApplicataFirestore(signupId).catch(() => {});
+
+        if (matched) {
+          this.emit('NOTIFICA_DISPONIBILITA_TURNO', {
+            tipo: 'disponibilita_turno',
+            turnoId,
+            volontarioNome: s.volontarioNome,
+            ruolo: s.ruoloRichiesto,
+            data: s.turnoData,
+            fascia: s.turnoOrario,
+            sede: s.sedeNome,
+            timestamp: Date.now(),
+          });
+        }
+      } finally {
+        this.shiftSignupsReconciling.delete(signupId);
+      }
+    }
+
+    if (appliedCount > 0) {
+      const turniNorm = normalizzaTurniSedi(updated);
+      this.scheduleShardWrite('turni', { turni: turniNorm });
+      this.emit('TURNI_UPDATED', { turni: turniNorm });
+      if (!this.isServerlessStaticHost()) {
+        try {
+          const baseUrl = this.getApiBaseUrl();
+          fetch(`${baseUrl}/api/turni`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ turni: turniNorm }),
+            cache: 'no-store',
+          }).catch(() => {});
+        } catch {}
+      }
+    }
+
+    return appliedCount;
   }
 
   public createVolontario(volontario: any) {

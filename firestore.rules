@@ -19,6 +19,13 @@ service cloud.firestore {
         tokenId.matches('^rst-[a-zA-Z0-9_\\-]+$');
     }
 
+    function isValidShiftSignupId(signupId) {
+      return signupId is string &&
+        signupId.size() >= 8 &&
+        signupId.size() <= 96 &&
+        signupId.matches('^cand-[a-zA-Z0-9_\\-]+$');
+    }
+
     function incoming() {
       return request.resource.data;
     }
@@ -282,6 +289,83 @@ service cloud.firestore {
         data.completedAt is timestamp;
     }
 
+    function isValidShiftSignupData(data, signupId) {
+      return data.keys().hasAll([
+          'signupId',
+          'turnoId',
+          'sedeNome',
+          'turnoData',
+          'turnoOrario',
+          'volontarioId',
+          'volontarioNome',
+          'qualificaVolontario',
+          'ruoloRichiesto',
+          'note',
+          'dataRichiesta',
+          'status',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'signupId',
+          'turnoId',
+          'sedeNome',
+          'turnoData',
+          'turnoOrario',
+          'volontarioId',
+          'volontarioNome',
+          'qualificaVolontario',
+          'ruoloRichiesto',
+          'note',
+          'dataRichiesta',
+          'status',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.signupId is string &&
+        data.signupId == signupId &&
+        isValidShiftSignupId(data.signupId) &&
+        data.turnoId is string &&
+        isValidId(data.turnoId) &&
+        data.sedeNome is string &&
+        data.sedeNome.size() >= 1 &&
+        data.sedeNome.size() <= 120 &&
+        data.turnoData is string &&
+        data.turnoData.size() == 10 &&
+        data.turnoData.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$') &&
+        data.turnoOrario is string &&
+        data.turnoOrario.size() >= 1 &&
+        data.turnoOrario.size() <= 32 &&
+        data.volontarioId is string &&
+        isValidId(data.volontarioId) &&
+        data.volontarioNome is string &&
+        data.volontarioNome.size() >= 1 &&
+        data.volontarioNome.size() <= 120 &&
+        data.qualificaVolontario is string &&
+        data.qualificaVolontario.size() >= 1 &&
+        data.qualificaVolontario.size() <= 80 &&
+        data.ruoloRichiesto is string &&
+        data.ruoloRichiesto in [
+          'autista',
+          'caposervizio',
+          'soccorritore2',
+          'terzoSoccorritore',
+          'operatoreCentrale',
+          'centralinista',
+          'osservatore'
+        ] &&
+        data.note is string &&
+        data.note.size() <= 300 &&
+        data.dataRichiesta is string &&
+        data.dataRichiesta.size() >= 1 &&
+        data.dataRichiesta.size() <= 40 &&
+        data.status is string &&
+        data.status in ['pending', 'applied'] &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp &&
+        data.updatedAt == request.time;
+    }
+
     // 4. Sharded Live Cloud State Collection
     match /sync_shards/{shardId} {
       allow get: if isValidId(shardId) && isAllowedShardId(shardId) && isOperator();
@@ -468,7 +552,24 @@ service cloud.firestore {
       allow delete: if isValidId(volunteerId) && isOperator();
     }
 
-    // 10. Boot Health Check Doc (no PII)
+    // 10. Zero-PII Volunteer Shift Sign-Up Queue (works without Google / AI Studio auth)
+    match /shift_signups/{signupId} {
+      allow get: if isValidShiftSignupId(signupId);
+      allow list: if isOperator();
+      allow create: if isValidShiftSignupId(signupId) &&
+        isValidShiftSignupData(incoming(), signupId) &&
+        incoming().status == 'pending' &&
+        incoming().createdAt == request.time;
+      allow update: if isValidShiftSignupId(signupId) &&
+        isOperator() &&
+        isValidShiftSignupData(incoming(), signupId) &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().signupId == existing().signupId &&
+        incoming().status in ['pending', 'applied'];
+      allow delete: if isValidShiftSignupId(signupId) && isOperator();
+    }
+
+    // 11. Boot Health Check Doc (no PII)
     match /test/{docId} {
       allow get: if isValidId(docId) && docId == 'connection' && isOperator();
       allow list, write: if false;

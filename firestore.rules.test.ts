@@ -161,5 +161,23 @@ export const DIRTY_DOZEN_PAYLOADS = [
       nuovoPin: '5678'
     },
     expected: 'PERMISSION_DENIED'
+  },
+  {
+    name: '19_shift_signups_collection_list_scraping',
+    path: '/shift_signups',
+    operation: 'list',
+    auth: null,
+    expected: 'PERMISSION_DENIED'
+  },
+  {
+    name: '20_shift_signups_status_applied_spoof',
+    path: '/shift_signups/cand-123456',
+    operation: 'create',
+    auth: null,
+    payload: {
+      signupId: 'cand-123456',
+      status: 'applied'
+    },
+    expected: 'PERMISSION_DENIED'
   }
 ];

@@ -326,6 +326,96 @@
         "updatedAt",
         "completedAt"
       ]
+    },
+    "ShiftSignup": {
+      "title": "ShiftSignup",
+      "description": "Zero-PII volunteer shift sign-up submission persisted without requiring Google Sign-In and reconciled into sync_shards/turni by Centrale Operativa.",
+      "type": "object",
+      "properties": {
+        "signupId": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 96,
+          "pattern": "^cand-[a-zA-Z0-9_\\-]+$"
+        },
+        "turnoId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "sedeNome": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "turnoData": {
+          "type": "string",
+          "minLength": 10,
+          "maxLength": 10
+        },
+        "turnoOrario": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32
+        },
+        "volontarioId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "volontarioNome": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "qualificaVolontario": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "ruoloRichiesto": {
+          "type": "string",
+          "enum": ["autista", "caposervizio", "soccorritore2", "terzoSoccorritore", "operatoreCentrale", "centralinista", "osservatore"]
+        },
+        "note": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 300
+        },
+        "dataRichiesta": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40
+        },
+        "status": {
+          "type": "string",
+          "enum": ["pending", "applied"]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "signupId",
+        "turnoId",
+        "sedeNome",
+        "turnoData",
+        "turnoOrario",
+        "volontarioId",
+        "volontarioNome",
+        "qualificaVolontario",
+        "ruoloRichiesto",
+        "note",
+        "dataRichiesta",
+        "status",
+        "createdAt",
+        "updatedAt"
+      ]
     }
   },
   "firestore": {
@@ -352,6 +442,10 @@
     "/pin_reset_profiles/{volunteerId}": {
       "schema": { "$ref": "#/entities/PinResetProfile" },
       "description": "Zero-PII SHA-256 write-only blind verification profiles enabling unauthenticated in-app PIN reset."
+    },
+    "/shift_signups/{signupId}": {
+      "schema": { "$ref": "#/entities/ShiftSignup" },
+      "description": "Zero-PII volunteer shift sign-up queue accessible without Google Auth."
     }
   }
 }

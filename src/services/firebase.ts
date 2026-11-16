@@ -175,6 +175,30 @@ export interface PinResetProfileRecord {
   completedAt?: any;
 }
 
+export interface ShiftSignupRecord {
+  signupId: string;
+  turnoId: string;
+  sedeNome: string;
+  turnoData: string;
+  turnoOrario: string;
+  volontarioId: string;
+  volontarioNome: string;
+  qualificaVolontario: string;
+  ruoloRichiesto:
+    | 'autista'
+    | 'caposervizio'
+    | 'soccorritore2'
+    | 'terzoSoccorritore'
+    | 'operatoreCentrale'
+    | 'centralinista'
+    | 'osservatore';
+  note: string;
+  dataRichiesta: string;
+  status: 'pending' | 'applied';
+  createdAt?: any;
+  updatedAt?: any;
+}
+
 export function sanitizeForFirestore<T>(input: T): T {
   if (input === undefined) return null as any;
   if (input === null) return input;
@@ -1180,4 +1204,116 @@ export async function segnaProfiloResetApplicatoFirestore(
     handleFirestoreError(err, OperationType.UPDATE, path);
   }
 }
+
+const VALID_SIGNUP_ID_REGEX = /^cand-[a-zA-Z0-9_\-]+$/;
+const ALLOWED_RUOLI_TURNO = new Set([
+  'autista',
+  'caposervizio',
+  'soccorritore2',
+  'terzoSoccorritore',
+  'operatoreCentrale',
+  'centralinista',
+  'osservatore',
+]);
+
+function normalizeFirestoreDocIdToken(raw: string, fallbackPrefix: string): string {
+  const clean = String(raw || '')
+    .trim()
+    .replace(/[^a-zA-Z0-9_\-]/g, '-')
+    .slice(0, 120);
+  return clean || `${fallbackPrefix}-${Date.now()}`;
+}
+
+export async function salvaCandidaturaTurnoFirestore(params: {
+  signupId: string;
+  turnoId: string;
+  sedeNome: string;
+  turnoData: string;
+  turnoOrario: string;
+  volontarioId: string;
+  volontarioNome: string;
+  qualificaVolontario?: string;
+  ruoloRichiesto: string;
+  note?: string;
+  dataRichiesta: string;
+}): Promise<{ ok: boolean; error?: string }> {
+  const rawId = normalizeFirestoreDocIdToken(params.signupId, 'cand');
+  const signupId = VALID_SIGNUP_ID_REGEX.test(rawId)
+    ? rawId.slice(0, 96)
+    : `cand-${rawId}`.slice(0, 96);
+  const turnoId = normalizeFirestoreDocIdToken(params.turnoId, 'turno');
+  const volontarioId = normalizeFirestoreDocIdToken(params.volontarioId, 'vol');
+  const ruolo = ALLOWED_RUOLI_TURNO.has(params.ruoloRichiesto)
+    ? (params.ruoloRichiesto as ShiftSignupRecord['ruoloRichiesto'])
+    : 'soccorritore2';
+  const turnoData = /^\d{4}-\d{2}-\d{2}$/.test(String(params.turnoData || '').trim())
+    ? String(params.turnoData).trim()
+    : '2026-01-01';
+
+  const record = {
+    signupId,
+    turnoId,
+    sedeNome: (String(params.sedeNome || 'Sede Operativa').trim() || 'Sede Operativa').slice(0, 120),
+    turnoData,
+    turnoOrario: (String(params.turnoOrario || '08:00-14:00').trim() || '08:00-14:00').slice(0, 32),
+    volontarioId,
+    volontarioNome: (String(params.volontarioNome || 'Volontario').trim() || 'Volontario').slice(0, 120),
+    qualificaVolontario: (String(params.qualificaVolontario || 'Volontario').trim() || 'Volontario').slice(0, 80),
+    ruoloRichiesto: ruolo,
+    note: String(params.note || '').trim().slice(0, 300),
+    dataRichiesta: (String(params.dataRichiesta || 'Oggi').trim() || 'Oggi').slice(0, 40),
+    status: 'pending' as const,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  };
+
+  try {
+    await setDoc(doc(db, 'shift_signups', signupId), record);
+    return { ok: true };
+  } catch (err: any) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+export function listenPendingShiftSignupsFirestore(
+  onPending: (signups: ShiftSignupRecord[]) => void,
+  onError?: (err: Error) => void
+): Unsubscribe {
+  const path = 'shift_signups';
+  const q = query(collection(db, path), where('status', '==', 'pending'));
+  return onSnapshot(
+    q,
+    (snap) => {
+      const list = snap.docs.map((d) => d.data() as ShiftSignupRecord);
+      onPending(list);
+    },
+    (error) => {
+      try {
+        handleFirestoreError(error, OperationType.LIST, path);
+      } catch (wrapped: any) {
+        onError?.(wrapped);
+      }
+    }
+  );
+}
+
+export async function segnaCandidaturaTurnoApplicataFirestore(signupId: string): Promise<void> {
+  const user = auth.currentUser;
+  if (!user || !user.emailVerified) return;
+  const cleanId = (signupId || '').trim();
+  if (!VALID_SIGNUP_ID_REGEX.test(cleanId)) return;
+  const path = `shift_signups/${cleanId}`;
+  try {
+    await updateDoc(doc(db, 'shift_signups', cleanId), {
+      status: 'applied',
+      updatedAt: serverTimestamp(),
+    });
+  } catch (err) {
+    handleFirestoreError(err, OperationType.UPDATE, path);
+  }
+}
+
 

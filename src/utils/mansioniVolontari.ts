@@ -449,6 +449,70 @@ export function getStileMansione(nomeMansione: string, catalogo?: MansioneOperat
  * incluse/ereditate gerarchicamente dalle mansioni superiori.
  * Ad es. "Autista Soccorritore 118" include automaticamente "Soccorritore Avanzato", "Soccorritore Base", "Autista Ordinari", ecc.
  */
+function risolviAliasMansioneCanoniche(nomeRaw: string): string[] {
+  const norm = (nomeRaw || '').trim().toLowerCase().replace(/\s+/g, ' ');
+  if (!norm) return [];
+
+  const alias: string[] = [];
+
+  if (
+    norm === 'autista' ||
+    norm === 'autista soccorritore' ||
+    norm === 'autista 118' ||
+    norm === 'autista soccorritore 118' ||
+    (norm.includes('autista') &&
+      !norm.includes('ordinar') &&
+      !norm.includes('pulmino') &&
+      !norm.includes('semplice') &&
+      !norm.includes('4x4'))
+  ) {
+    alias.push('Autista Soccorritore 118');
+  }
+
+  if (norm.includes('autista') && (norm.includes('ordinar') || norm.includes('pulmino') || norm.includes('4x4'))) {
+    alias.push('Autista Mezzi Ordinari / Pulmino');
+  }
+
+  if (norm.includes('protezione civile') || norm.includes('antincendio') || norm.includes('4x4')) {
+    alias.push('Protezione Civile & Antincendio');
+  }
+
+  if (norm.includes('caposervizio') || norm.includes('avanzato') || norm.includes('blsd')) {
+    alias.push('Soccorritore Avanzato (Caposervizio)');
+  } else if (
+    norm === 'soccorritore' ||
+    norm === 'volontario soccorritore' ||
+    norm === 'soccorritore base' ||
+    (norm.includes('soccorritor') && !norm.includes('autista'))
+  ) {
+    alias.push('Soccorritore Base');
+  }
+
+  if (
+    norm === 'operatore centrale' ||
+    norm === 'operatore centrale radio' ||
+    norm.includes('operatore centrale') ||
+    norm.includes('operatore di centrale') ||
+    norm.includes('sala radio')
+  ) {
+    alias.push('Operatore di Centrale Operativa');
+  }
+
+  if (norm.includes('centralinist') || norm.includes('accoglienza')) {
+    alias.push('Centralinista & Accoglienza');
+  }
+
+  if (norm.includes('barellier') || norm.includes('accompagnator')) {
+    alias.push('Barelliere / Accompagnatore Sanitario');
+  }
+
+  if (norm.includes('formator') || norm.includes('istruttor')) {
+    alias.push('Formatore Sanitario / Istruttore BLSD');
+  }
+
+  return alias;
+}
+
 export function getMansioniEffettiveVolontario(
   v: Partial<Volontario>,
   catalogo?: MansioneOperativa[]
@@ -458,7 +522,24 @@ export function getMansioniEffettiveVolontario(
   const mansioniDirette = getMansioniVolontario(v);
 
   const setEffettive = new Set<string>();
-  const daEsaminare: string[] = [...mansioniDirette];
+  const daEsaminare: string[] = [];
+
+  mansioniDirette.forEach((entry) => {
+    const clean = entry.trim();
+    if (!clean) return;
+    daEsaminare.push(clean);
+    if (/[\/,+&]/.test(clean)) {
+      clean
+        .split(/[\/,+&]+/)
+        .map((p) => p.trim())
+        .filter(Boolean)
+        .forEach((sub) => {
+          daEsaminare.push(sub);
+          risolviAliasMansioneCanoniche(sub).forEach((a) => daEsaminare.push(a));
+        });
+    }
+    risolviAliasMansioneCanoniche(clean).forEach((a) => daEsaminare.push(a));
+  });
 
   while (daEsaminare.length > 0) {
     const corrente = daEsaminare.pop()!;

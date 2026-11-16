@@ -1963,6 +1963,49 @@ async function startServer() {
         break;
       }
 
+      case 'SUBMIT_CANDIDATURA_TURNO': {
+        if (data?.turnoId && data?.candidatura?.id) {
+          const currentTurni = Array.isArray(state.turni) ? [...state.turni] : [];
+          let found = false;
+          let changed = false;
+          const nextTurni = currentTurni.map((t: any) => {
+            if (t && t.id === data.turnoId) {
+              found = true;
+              const esistenti = Array.isArray(t.richiesteIscrizione) ? t.richiesteIscrizione : [];
+              if (esistenti.some((r: any) => r && r.id === data.candidatura.id)) {
+                return t;
+              }
+              changed = true;
+              return {
+                ...t,
+                richiesteIscrizione: [...esistenti, data.candidatura]
+              };
+            }
+            return t;
+          });
+          if (found && changed) {
+            state.turni = nextTurni;
+            persistState();
+            broadcast({
+              type: 'TURNI_UPDATED',
+              turni: state.turni
+            });
+            broadcast({
+              type: 'NOTIFICA_DISPONIBILITA_TURNO',
+              tipo: 'disponibilita_turno',
+              turnoId: data.turnoId,
+              volontarioNome: data.candidatura.volontarioNome,
+              ruolo: data.candidatura.ruoloRichiesto,
+              data: data.data || '',
+              fascia: data.fascia || '',
+              sede: data.sede || '',
+              timestamp: Date.now()
+            });
+          }
+        }
+        break;
+      }
+
       // --- SINCRONIZZAZIONE CHECKLIST INIZIO TURNO GUIDATA MEZZI IN TEMPO REALE ---
       case 'UPDATE_CHECKLISTS_TEMPLATES': {
         const templatesArray = Array.isArray(data?.templates) ? data.templates : (Array.isArray(data) ? data : null);

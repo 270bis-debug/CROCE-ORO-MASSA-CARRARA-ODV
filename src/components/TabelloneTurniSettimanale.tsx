@@ -1,4 +1,5 @@
 import React, { useState, useMemo, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Calendar,
   ChevronLeft,
@@ -125,6 +126,11 @@ export const TabelloneTurniSettimanale: React.FC<TabelloneTurniSettimanaleProps>
     (volontarioAttivo?.qualifica && volontarioAttivo.qualifica.toLowerCase().includes('centrale'))
   );
 
+  // Escludi l'account tecnico di amministrazione dalla lista candidati
+  const volontariCandidabili = useMemo(() => {
+    return (volontari || []).filter((v) => v.id !== 'vol-admin' && v.pin !== '4451');
+  }, [volontari]);
+
   // Sedi autorizzate per la visualizzazione dei tabelloni turni:
   // Ogni volontario visualizza SOLO ed ESCLUSIVAMENTE i tabelloni consentiti da qualsiasi operatore di centrale
   const sediAutorizzate = useMemo(() => {
@@ -158,6 +164,7 @@ export const TabelloneTurniSettimanale: React.FC<TabelloneTurniSettimanaleProps>
   const [candQualifica, setCandQualifica] = useState<string>('');
   const [candRuolo, setCandRuolo] = useState<RuoloTurno>('soccorritore2');
   const [candNote, setCandNote] = useState<string>('');
+  const [candErrore, setCandErrore] = useState<string | null>(null);
   const [avvisoFeedback, setAvvisoFeedback] = useState<string | null>(null);
 
   const mostraAvviso = (msg: string) => {
@@ -178,22 +185,64 @@ export const TabelloneTurniSettimanale: React.FC<TabelloneTurniSettimanaleProps>
     }
   };
 
+  const getMigliorRuoloIdoneo = (
+    vol: Volontario | null | undefined,
+    turno: TurnoSedeOperativa,
+    preferred?: RuoloTurno
+  ): RuoloTurno => {
+    const ruoliOrdine: Array<{ id: RuoloTurno; occupato: boolean }> = [
+      { id: 'autista', occupato: Boolean(turno.autista) },
+      { id: 'caposervizio', occupato: Boolean(turno.caposervizio) },
+      { id: 'soccorritore2', occupato: Boolean(turno.soccorritore2) },
+      { id: 'terzoSoccorritore', occupato: Boolean(turno.terzoSoccorritore) },
+      { id: 'operatoreCentrale', occupato: Boolean(turno.operatoreCentrale) },
+      { id: 'centralinista', occupato: Boolean(turno.centralinista) },
+      { id: 'osservatore', occupato: Boolean(turno.osservatore) }
+    ];
+
+    if (!vol) return preferred || 'soccorritore2';
+
+    if (preferred && puoCoprireRuoloTurno(vol, preferred).idoneo) {
+      return preferred;
+    }
+
+    const idonei = ruoliOrdine.filter((r) => puoCoprireRuoloTurno(vol, r.id).idoneo);
+    const liberoIdoneo = idonei.find((r) => !r.occupato);
+    if (liberoIdoneo) return liberoIdoneo.id;
+    if (idonei.length > 0) return idonei[0].id;
+    return preferred || 'soccorritore2';
+  };
+
   const apriModaleCandidatura = (t: TurnoSedeOperativa, ruoloDefault?: RuoloTurno) => {
     setTurnoPerCandidatura(t);
-    if (volontarioLoggatoNome) {
-      const volTrovato = volontari.find(
-        (v) => (volontarioLoggatoId && v.id === volontarioLoggatoId) ||
-               `${v.nome} ${v.cognome}`.toLowerCase() === volontarioLoggatoNome.toLowerCase()
+    setCandErrore(null);
+
+    let volSelezionato: Volontario | null = null;
+    if (volontarioLoggatoNome || volontarioLoggatoId) {
+      volSelezionato =
+        volontariCandidabili.find(
+          (v) =>
+            (volontarioLoggatoId && v.id === volontarioLoggatoId) ||
+            (volontarioLoggatoNome && `${v.nome} ${v.cognome}`.toLowerCase().trim() === volontarioLoggatoNome.toLowerCase().trim())
+        ) || null;
+      setCandVolontarioId(volSelezionato?.id || volontarioLoggatoId || `vol-${Date.now()}`);
+      setCandVolontarioNome(
+        volSelezionato ? `${volSelezionato.nome} ${volSelezionato.cognome}` : (volontarioLoggatoNome || '')
       );
-      setCandVolontarioId(volTrovato?.id || volontarioLoggatoId || `vol-${Date.now()}`);
-      setCandVolontarioNome(volontarioLoggatoNome);
-      setCandQualifica(volTrovato?.qualifica || 'Volontario');
+      setCandQualifica(volSelezionato?.qualifica || 'Volontario');
+    } else if (volontarioAttivo && volontarioAttivo.id !== 'vol-admin' && volontarioAttivo.pin !== '4451') {
+      volSelezionato = volontarioAttivo;
+      setCandVolontarioId(volontarioAttivo.id);
+      setCandVolontarioNome(`${volontarioAttivo.nome} ${volontarioAttivo.cognome}`);
+      setCandQualifica(volontarioAttivo.qualifica || 'Volontario');
     } else {
-      setCandVolontarioId(volontari[0]?.id || '');
-      setCandVolontarioNome(volontari[0] ? `${volontari[0].nome} ${volontari[0].cognome}` : '');
-      setCandQualifica(volontari[0]?.qualifica || 'Volontario');
+      volSelezionato = volontariCandidabili[0] || null;
+      setCandVolontarioId(volSelezionato?.id || '');
+      setCandVolontarioNome(volSelezionato ? `${volSelezionato.nome} ${volSelezionato.cognome}` : '');
+      setCandQualifica(volSelezionato?.qualifica || 'Volontario');
     }
-    setCandRuolo(ruoloDefault || 'soccorritore2');
+
+    setCandRuolo(getMigliorRuoloIdoneo(volSelezionato, t, ruoloDefault));
     setCandNote('');
     setModaleCandidaturaAperta(true);
   };
@@ -201,27 +250,41 @@ export const TabelloneTurniSettimanale: React.FC<TabelloneTurniSettimanaleProps>
   const handleInviaCandidatura = (e: React.FormEvent) => {
     e.preventDefault();
     if (!turnoPerCandidatura) return;
+    setCandErrore(null);
 
     const nomeFinale = candVolontarioNome.trim();
     if (!nomeFinale) {
-      alert('Inserisci o seleziona il nominativo del volontario.');
+      setCandErrore('Inserisci o seleziona il nominativo del volontario prima di inviare.');
       return;
     }
 
     const volTrovato = (volontari || []).find(
       (v) => (candVolontarioId && v.id === candVolontarioId) ||
-             (nomeFinale && `${v.nome} ${v.cognome}`.toLowerCase() === nomeFinale.toLowerCase())
+             (nomeFinale && `${v.nome} ${v.cognome}`.toLowerCase().trim() === nomeFinale.toLowerCase().trim())
     );
 
     // Controllo abilitazione mansione: ogni volontario può iscriversi solo nelle mansioni assegnate
     if (volTrovato) {
       const verifica = puoCoprireRuoloTurno(volTrovato, candRuolo);
       if (!verifica.idoneo) {
-        alert(
-          `⛔ DISPONIBILITÀ NON CONSENTITA\n\nNon puoi iscriverti di turno per il ruolo "${getEtichettaRuolo(candRuolo)}".\n\n${verifica.motivo}\n\nOgni volontario può iscriversi ed essere inserito di turno solo nelle mansioni che gli sono state assegnate (dirette o ereditate).`
+        setCandErrore(
+          `Non puoi iscriverti per il ruolo "${getEtichettaRuolo(candRuolo)}". ${verifica.motivo}`
         );
         return;
       }
+    }
+
+    const nomeNorm = nomeFinale.toLowerCase().trim();
+    const duplicatoInAttesa = (turnoPerCandidatura.richiesteIscrizione || []).some(
+      (r) =>
+        r.stato === 'In Attesa' &&
+        r.ruoloRichiesto === candRuolo &&
+        ((candVolontarioId && r.volontarioId === candVolontarioId) ||
+          r.volontarioNome.toLowerCase().trim() === nomeNorm)
+    );
+    if (duplicatoInAttesa) {
+      setCandErrore(`Esiste già una candidatura in attesa per "${nomeFinale}" come ${getEtichettaRuolo(candRuolo)} in questo turno.`);
+      return;
     }
 
     const nuovaCandidatura: CandidaturaTurno = {
@@ -252,6 +315,11 @@ export const TabelloneTurniSettimanale: React.FC<TabelloneTurniSettimanaleProps>
       realtime.syncTurni(aggiornati);
     }
 
+    // Invio diretto anche sul canale dedicato (server WebSocket + Cloud Firestore shift_signups) per persistenza senza auth
+    try {
+      realtime.submitCandidaturaTurno(turnoPerCandidatura, nuovaCandidatura);
+    } catch {}
+
     // Notifica immediata a chi ha accesso al database turni
     onNotificaRadio?.(
       `📅 DISPONIBILITÀ TURNO: Il volontario ${nuovaCandidatura.volontarioNome} (${nuovaCandidatura.qualificaVolontario || 'Volontario'}) si è reso disponibile per il ruolo di ${getEtichettaRuolo(nuovaCandidatura.ruoloRichiesto)} per il turno del ${turnoPerCandidatura.data} (${turnoPerCandidatura.sedeNome}). Richiesta in attesa di approvazione da chi ha accesso al database turni.`,
@@ -270,9 +338,28 @@ export const TabelloneTurniSettimanale: React.FC<TabelloneTurniSettimanaleProps>
       });
     } catch {}
 
-    mostraAvviso(`✓ Disponibilità inviata con successo! In attesa di approvazione da chi ha accesso al database turni.`);
+    mostraAvviso(`✓ Disponibilità inviata con successo per ${getEtichettaRuolo(candRuolo)}! In attesa di approvazione.`);
     setModaleCandidaturaAperta(false);
     setTurnoPerCandidatura(null);
+    setCandErrore(null);
+  };
+
+  const handleRitiraCandidatura = (turnoId: string, candId: string) => {
+    const aggiornati = turni.map((t) => {
+      if (t.id === turnoId) {
+        return {
+          ...t,
+          richiesteIscrizione: (t.richiesteIscrizione || []).filter((c) => c.id !== candId)
+        };
+      }
+      return t;
+    });
+    if (onAggiornaTurni) {
+      onAggiornaTurni(aggiornati);
+    } else {
+      realtime.syncTurni(aggiornati);
+    }
+    mostraAvviso('Candidatura in attesa ritirata.');
   };
 
   const handleApprovaCandidatura = (turnoId: string, candId: string) => {
@@ -1118,9 +1205,24 @@ export const TabelloneTurniSettimanale: React.FC<TabelloneTurniSettimanaleProps>
                                       Tua cand.: <strong>{getEtichettaRuolo(miaCandidatura.ruoloRichiesto)}</strong>
                                     </span>
                                   </div>
-                                  <span className="px-1.5 py-0.2 rounded font-black text-[9px] uppercase shrink-0 bg-slate-950/70">
-                                    {miaCandidatura.stato === 'In Attesa' ? '⏳ In Attesa' : miaCandidatura.stato}
-                                  </span>
+                                  <div className="flex items-center gap-1 shrink-0">
+                                    <span className="px-1.5 py-0.2 rounded font-black text-[9px] uppercase bg-slate-950/70">
+                                      {miaCandidatura.stato === 'In Attesa' ? '⏳ In Attesa' : miaCandidatura.stato}
+                                    </span>
+                                    {miaCandidatura.stato === 'In Attesa' && (
+                                      <button
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          handleRitiraCandidatura(turno.id, miaCandidatura.id);
+                                        }}
+                                        className="px-1.5 py-0.2 rounded bg-slate-900 hover:bg-red-950 text-slate-300 hover:text-red-300 border border-slate-700 hover:border-red-700 font-bold text-[8.5px] uppercase cursor-pointer"
+                                        title="Ritira questa candidatura in attesa"
+                                      >
+                                        Ritira
+                                      </button>
+                                    )}
+                                  </div>
                                 </div>
                               )}
 
@@ -1147,32 +1249,34 @@ export const TabelloneTurniSettimanale: React.FC<TabelloneTurniSettimanaleProps>
                                       </div>
 
                                       {/* Azioni di Approvazione riservate a Operatore di Centrale / Admin */}
-                                      <div className="flex items-center justify-end gap-1 pt-1 border-t border-slate-800">
-                                        <button
-                                          type="button"
-                                          onClick={(e) => {
-                                            e.stopPropagation();
-                                            handleApprovaCandidatura(turno.id, req.id);
-                                          }}
-                                          className="px-2 py-0.5 rounded bg-emerald-600 hover:bg-emerald-500 text-white font-black text-[9px] uppercase flex items-center gap-1 shadow-sm active:scale-95 cursor-pointer"
-                                          title="Approva la candidatura e inserisci il volontario nel turno"
-                                        >
-                                          <Check className="w-3 h-3 text-emerald-200" />
-                                          <span>Approva</span>
-                                        </button>
-                                        <button
-                                          type="button"
-                                          onClick={(e) => {
-                                            e.stopPropagation();
-                                            handleRifiutaCandidatura(turno.id, req.id);
-                                          }}
-                                          className="px-1.5 py-0.5 rounded bg-slate-800 hover:bg-red-950 text-slate-300 hover:text-red-300 border border-slate-700 hover:border-red-700 font-bold text-[9px] uppercase active:scale-95 cursor-pointer"
-                                          title="Rifiuta candidatura"
-                                        >
-                                          <X className="w-3 h-3" />
-                                          <span>Rifiuta</span>
-                                        </button>
-                                      </div>
+                                      {isOperatoreCentraleOAdmin && (
+                                        <div className="flex items-center justify-end gap-1 pt-1 border-t border-slate-800">
+                                          <button
+                                            type="button"
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              handleApprovaCandidatura(turno.id, req.id);
+                                            }}
+                                            className="px-2 py-0.5 rounded bg-emerald-600 hover:bg-emerald-500 text-white font-black text-[9px] uppercase flex items-center gap-1 shadow-sm active:scale-95 cursor-pointer"
+                                            title="Approva la candidatura e inserisci il volontario nel turno"
+                                          >
+                                            <Check className="w-3 h-3 text-emerald-200" />
+                                            <span>Approva</span>
+                                          </button>
+                                          <button
+                                            type="button"
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              handleRifiutaCandidatura(turno.id, req.id);
+                                            }}
+                                            className="px-1.5 py-0.5 rounded bg-slate-800 hover:bg-red-950 text-slate-300 hover:text-red-300 border border-slate-700 hover:border-red-700 font-bold text-[9px] uppercase active:scale-95 cursor-pointer"
+                                            title="Rifiuta candidatura"
+                                          >
+                                            <X className="w-3 h-3" />
+                                            <span>Rifiuta</span>
+                                          </button>
+                                        </div>
+                                      )}
                                     </div>
                                   ))}
                                 </div>
@@ -1231,12 +1335,13 @@ export const TabelloneTurniSettimanale: React.FC<TabelloneTurniSettimanaleProps>
         </div>
       </div>
 
-      {/* Avviso Notifica Feedback */}
-      {avvisoFeedback && (
-        <div className="fixed bottom-4 right-4 z-[150] px-4 py-3 rounded-2xl bg-teal-950 border-2 border-teal-400 text-teal-100 font-bold text-xs shadow-2xl flex items-center gap-2 animate-in slide-in-from-bottom">
+      {/* Avviso Notifica Feedback (Portal su document.body) */}
+      {typeof document !== 'undefined' && avvisoFeedback && createPortal(
+        <div className="fixed bottom-4 right-4 z-[9996] px-4 py-3 rounded-2xl bg-teal-950 border-2 border-teal-400 text-teal-100 font-bold text-xs shadow-2xl flex items-center gap-2 animate-in slide-in-from-bottom">
           <CheckCircle2 className="w-5 h-5 text-teal-400 shrink-0" />
           <span>{avvisoFeedback}</span>
-        </div>
+        </div>,
+        document.body
       )}
 
       {/* Footer Riepilogo e Informazioni Operative */}
@@ -1262,10 +1367,18 @@ export const TabelloneTurniSettimanale: React.FC<TabelloneTurniSettimanaleProps>
       </div>
 
       {/* ------------------------------------------------------------- */}
-      {/* MODALE CANDIDATURA / ISCRIZIONE VOLONTARIO AL TURNO          */}
+      {/* MODALE CANDIDATURA / ISCRIZIONE VOLONTARIO AL TURNO (PORTAL) */}
       {/* ------------------------------------------------------------- */}
-      {modaleCandidaturaAperta && turnoPerCandidatura && (
-        <div className="fixed inset-0 z-[140] bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-3 sm:p-4 overflow-y-auto animate-in fade-in">
+      {typeof document !== 'undefined' && modaleCandidaturaAperta && turnoPerCandidatura && createPortal(
+        <div
+          className="fixed inset-0 z-[9995] bg-slate-950/85 backdrop-blur-md flex items-start sm:items-center justify-center p-3 sm:p-4 overflow-y-auto animate-in fade-in"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) {
+              setModaleCandidaturaAperta(false);
+              setCandErrore(null);
+            }
+          }}
+        >
           <div className="bg-slate-900 border-2 border-teal-500/60 rounded-3xl max-w-lg w-full p-5 shadow-2xl text-slate-200 space-y-4 my-auto">
             {/* Header Modale */}
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
@@ -1284,7 +1397,10 @@ export const TabelloneTurniSettimanale: React.FC<TabelloneTurniSettimanaleProps>
               </div>
               <button
                 type="button"
-                onClick={() => setModaleCandidaturaAperta(false)}
+                onClick={() => {
+                  setModaleCandidaturaAperta(false);
+                  setCandErrore(null);
+                }}
                 className="p-1.5 rounded-xl hover:bg-slate-800 text-slate-400 hover:text-white transition-colors cursor-pointer"
               >
                 <X className="w-5 h-5" />
@@ -1315,22 +1431,27 @@ export const TabelloneTurniSettimanale: React.FC<TabelloneTurniSettimanaleProps>
                 <label className="block text-slate-300 font-bold mb-1">
                   Nominativo Volontario:
                 </label>
-                {volontari.length > 0 ? (
+                {volontariCandidabili.length > 0 ? (
                   <select
                     value={candVolontarioId}
                     onChange={(e) => {
                       const selId = e.target.value;
                       setCandVolontarioId(selId);
-                      const trovato = volontari.find((v) => v.id === selId);
+                      setCandErrore(null);
+                      const trovato = volontariCandidabili.find((v) => v.id === selId) || null;
                       if (trovato) {
                         setCandVolontarioNome(`${trovato.nome} ${trovato.cognome}`);
                         setCandQualifica(trovato.qualifica || 'Volontario');
+                        setCandRuolo(getMigliorRuoloIdoneo(trovato, turnoPerCandidatura, candRuolo));
+                      } else {
+                        setCandVolontarioNome('');
+                        setCandQualifica('Volontario');
                       }
                     }}
                     className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white font-bold"
                   >
                     <option value="">-- Seleziona Volontario --</option>
-                    {volontari.map((v) => {
+                    {volontariCandidabili.map((v) => {
                       const isAutista = v.qualifica?.toLowerCase().includes('autista');
                       return (
                         <option key={v.id} value={v.id}>
@@ -1343,7 +1464,10 @@ export const TabelloneTurniSettimanale: React.FC<TabelloneTurniSettimanaleProps>
                   <input
                     type="text"
                     value={candVolontarioNome}
-                    onChange={(e) => setCandVolontarioNome(e.target.value)}
+                    onChange={(e) => {
+                      setCandVolontarioNome(e.target.value);
+                      if (candErrore) setCandErrore(null);
+                    }}
                     placeholder="Nome e Cognome..."
                     className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white font-bold"
                     required
@@ -1472,11 +1596,22 @@ export const TabelloneTurniSettimanale: React.FC<TabelloneTurniSettimanaleProps>
                 </p>
               </div>
 
+              {/* Messaggio di Errore Inline */}
+              {candErrore && (
+                <div className="p-3 rounded-2xl bg-red-950/70 border border-red-500/70 text-red-200 text-xs flex items-start gap-2">
+                  <AlertTriangle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+                  <span className="font-semibold leading-snug">{candErrore}</span>
+                </div>
+              )}
+
               {/* Bottoni Azione */}
               <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-800">
                 <button
                   type="button"
-                  onClick={() => setModaleCandidaturaAperta(false)}
+                  onClick={() => {
+                    setModaleCandidaturaAperta(false);
+                    setCandErrore(null);
+                  }}
                   className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs cursor-pointer"
                 >
                   Annulla
@@ -1491,7 +1626,8 @@ export const TabelloneTurniSettimanale: React.FC<TabelloneTurniSettimanaleProps>
               </div>
             </form>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
 
     </div>

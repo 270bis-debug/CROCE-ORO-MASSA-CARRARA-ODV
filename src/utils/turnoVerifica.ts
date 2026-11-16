@@ -1,6 +1,6 @@
 import { TurnoSedeOperativa, TimbraturaVolontario, CorsoFormazione } from '../types/adminTypes';
 import { Volontario } from '../components/DatabaseVolontariModal';
-import { formatISODateItaly, getItalianDateParts } from './italianTime';
+import { addDaysISODate, getItalianDateParts, parseItalianDateTimeMs } from './italianTime';
 
 export interface EsitoVerificaTurno {
   isDiTurno: boolean;
@@ -21,20 +21,11 @@ export interface AttivitaRilevataTimbratura {
   tipo: 'turno' | 'corso' | null;
   titolo: string;
   mezzoAssegnato?: string;
+  turnoId?: string;
 }
 
-/**
- * Converte una stringa oraria "HH:mm" in minuti totali trascorsi dalla mezzanotte.
- */
-function parseTimeToMinutes(timeStr?: string): number | null {
-  if (!timeStr) return null;
-  const match = timeStr.trim().match(/^(\d{1,2}):(\d{2})/);
-  if (!match) return null;
-  const hours = parseInt(match[1], 10);
-  const minutes = parseInt(match[2], 10);
-  if (isNaN(hours) || isNaN(minutes)) return null;
-  return hours * 60 + minutes;
-}
+const ANTICIPO_INGRESSO_MS = 30 * 60 * 1000;
+const ESTENSIONE_USCITA_MS = 120 * 60 * 1000;
 
 /**
  * Normalizza date in "YYYY-MM-DD".
@@ -54,6 +45,49 @@ function normalizzaDataIsoSemplice(raw?: string): string {
 function normalizzaNome(str?: string): string {
   if (!str) return '';
   return str.trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+function resolveOrariTurno(t: TurnoSedeOperativa): { start: string; end: string; isH24: boolean } | null {
+  const fascia = (t.fasciaOraria || '').toLowerCase();
+  const isH24 = fascia.includes('h24') || fascia.includes('reperibilit');
+  if (t.orarioInizio && t.orarioFine) {
+    return { start: t.orarioInizio, end: t.orarioFine, isH24 };
+  }
+  if (fascia.includes('mattin')) return { start: '08:00', end: '14:00', isH24: false };
+  if (fascia.includes('pomerigg')) return { start: '14:00', end: '20:00', isH24: false };
+  if (fascia.includes('nott')) return { start: '20:00', end: '08:00', isH24: false };
+  if (isH24) return { start: '00:00', end: '24:00', isH24: true };
+  return null;
+}
+
+function resolveBoundsTurnoMs(t: TurnoSedeOperativa): { startMs: number; endMs: number; isH24: boolean } | null {
+  const dataNorm = normalizzaDataIsoSemplice(t.data);
+  if (!dataNorm) return null;
+  const orari = resolveOrariTurno(t);
+  if (!orari) return null;
+
+  const startMs = parseItalianDateTimeMs(dataNorm, orari.start);
+  let endMs = parseItalianDateTimeMs(dataNorm, orari.end);
+  if (startMs === null || endMs === null) return null;
+
+  if (endMs <= startMs) {
+    endMs += 24 * 60 * 60 * 1000;
+  }
+  return { startMs, endMs, isH24: orari.isH24 };
+}
+
+function loadTurniFallback(listaTurni?: TurnoSedeOperativa[]): TurnoSedeOperativa[] {
+  if (listaTurni && Array.isArray(listaTurni) && listaTurni.length > 0) {
+    return listaTurni;
+  }
+  try {
+    const raw = localStorage.getItem('CROCE_ORO_TURNI_SEDI');
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) return parsed;
+    }
+  } catch {}
+  return [];
 }
 
 /**
@@ -102,24 +136,14 @@ function trovaTurnoAttivoNeiTabelloni(
   volNomeCompleto: string,
   listaTurni: TurnoSedeOperativa[]
 ): { turno: TurnoSedeOperativa; ruoloAssegnato: string; motivo: string } | null {
-  const now = new Date();
-  const nowItaly = getItalianDateParts(now);
+  const nowMs = Date.now();
+  const nowItaly = getItalianDateParts(nowMs);
   const oggiStr = nowItaly.isoDate;
   const ieriStr = nowItaly.yesterdayIsoDate;
-  const nowMinutes = nowItaly.hour * 60 + nowItaly.minute;
+  const domaniStr = nowItaly.tomorrowIsoDate;
 
-  const GRACE_BEFORE_MIN = 45;
-  const GRACE_AFTER_MIN = 30;
-
-  let turni: TurnoSedeOperativa[] = listaTurni;
-  if (!turni || turni.length === 0) {
-    try {
-      const raw = localStorage.getItem('CROCE_ORO_TURNI_SEDI');
-      if (raw) turni = JSON.parse(raw);
-    } catch {}
-  }
-
-  if (!turni || !Array.isArray(turni) || turni.length === 0) return null;
+  const turni = loadTurniFallback(listaTurni);
+  if (turni.length === 0) return null;
 
   for (const t of turni) {
     const ruoloAssegnato = trovaAssegnazioneVolontario(t, volId, volNomeCompleto);
@@ -128,70 +152,40 @@ function trovaTurnoAttivoNeiTabelloni(
     const turnoDataStr = normalizzaDataIsoSemplice(t.data);
     const isOggi = turnoDataStr === oggiStr;
     const isIeri = turnoDataStr === ieriStr;
+    const isDomani = turnoDataStr === domaniStr;
 
-    if (!isOggi && !isIeri) continue;
+    if (!isOggi && !isIeri && !isDomani) continue;
 
-    const fascia = (t.fasciaOraria || '').toLowerCase();
-    const isH24 = fascia.includes('h24') || fascia.includes('reperibilit');
-
-    if (isH24 && isOggi) {
+    const bounds = resolveBoundsTurnoMs(t);
+    if (bounds) {
+      const { startMs, endMs, isH24 } = bounds;
+      if (nowMs >= startMs - ANTICIPO_INGRESSO_MS && nowMs <= endMs + ESTENSIONE_USCITA_MS) {
+        if (isH24 && isOggi) {
+          return {
+            turno: t,
+            ruoloAssegnato,
+            motivo: `Turno Reperibilità H24 attivo oggi (${t.sedeNome}) - Ruolo: ${ruoloAssegnato}`
+          };
+        }
+        if (isIeri && endMs > startMs) {
+          return {
+            turno: t,
+            ruoloAssegnato,
+            motivo: `Turno in corso iniziato ieri (${t.sedeNome}, ${t.orarioInizio || ''} - ${t.orarioFine || ''}) - Ruolo: ${ruoloAssegnato}`
+          };
+        }
+        return {
+          turno: t,
+          ruoloAssegnato,
+          motivo: `Turno in corso adesso (${t.sedeNome}, ${t.orarioInizio || ''} - ${t.orarioFine || ''}) - Ruolo: ${ruoloAssegnato}`
+        };
+      }
+    } else if (isOggi) {
       return {
         turno: t,
         ruoloAssegnato,
-        motivo: `Turno Reperibilità H24 attivo oggi (${t.sedeNome}) - Ruolo: ${ruoloAssegnato}`
+        motivo: `Turno programmato per la giornata di oggi (${t.sedeNome}) - Ruolo: ${ruoloAssegnato}`
       };
-    }
-
-    const startMin = parseTimeToMinutes(t.orarioInizio);
-    const endMin = parseTimeToMinutes(t.orarioFine);
-
-    if (startMin !== null && endMin !== null) {
-      if (endMin < startMin) {
-        if (isIeri && nowMinutes <= endMin + GRACE_AFTER_MIN) {
-          return {
-            turno: t,
-            ruoloAssegnato,
-            motivo: `Turno notturno in corso iniziato ieri sera (${t.sedeNome}, ${t.orarioInizio} - ${t.orarioFine}) - Ruolo: ${ruoloAssegnato}`
-          };
-        }
-        if (isOggi && nowMinutes >= Math.max(0, startMin - GRACE_BEFORE_MIN)) {
-          return {
-            turno: t,
-            ruoloAssegnato,
-            motivo: `Turno notturno in corso stasera (${t.sedeNome}, ${t.orarioInizio} - ${t.orarioFine}) - Ruolo: ${ruoloAssegnato}`
-          };
-        }
-      } else if (isOggi) {
-        const finestraInizio = Math.max(0, startMin - GRACE_BEFORE_MIN);
-        const finestraFine = Math.min(24 * 60 - 1, endMin + GRACE_AFTER_MIN);
-        if (nowMinutes >= finestraInizio && nowMinutes <= finestraFine) {
-          return {
-            turno: t,
-            ruoloAssegnato,
-            motivo: `Turno in corso adesso (${t.sedeNome}, ${t.orarioInizio} - ${t.orarioFine}) - Ruolo: ${ruoloAssegnato}`
-          };
-        }
-      }
-    } else {
-      if (isOggi) {
-        if (fascia.includes('mattina')) {
-          if (nowMinutes >= 7 * 60 + 15 && nowMinutes <= 14 * 60 + 30) {
-            return { turno: t, ruoloAssegnato, motivo: `Turno Mattina in corso (${t.sedeNome}) - Ruolo: ${ruoloAssegnato}` };
-          }
-        } else if (fascia.includes('pomeriggio')) {
-          if (nowMinutes >= 13 * 60 + 15 && nowMinutes <= 20 * 60 + 30) {
-            return { turno: t, ruoloAssegnato, motivo: `Turno Pomeriggio in corso (${t.sedeNome}) - Ruolo: ${ruoloAssegnato}` };
-          }
-        } else if (fascia.includes('notte')) {
-          if (nowMinutes >= 19 * 60 + 15) {
-            return { turno: t, ruoloAssegnato, motivo: `Turno Notte in corso stasera (${t.sedeNome}) - Ruolo: ${ruoloAssegnato}` };
-          }
-        } else {
-          return { turno: t, ruoloAssegnato, motivo: `Turno programmato per la giornata di oggi (${t.sedeNome}) - Ruolo: ${ruoloAssegnato}` };
-        }
-      } else if (isIeri && fascia.includes('notte') && nowMinutes <= 8 * 60 + 30) {
-        return { turno: t, ruoloAssegnato, motivo: `Turno Notte iniziato ieri sera in corso stamattina (${t.sedeNome}) - Ruolo: ${ruoloAssegnato}` };
-      }
     }
   }
 
@@ -210,6 +204,164 @@ function formatNomeTurnoPerTimbratura(t: TurnoSedeOperativa): string {
     return `${t.nomeTurno.trim()} — ${t.sedeNome}${orario ? ` (${orario})` : ''}${mezzoStr}`;
   }
   return `Turno ${t.sedeNome}${orario ? ` (${orario})` : ''}${mezzoStr}`;
+}
+
+export interface EsitoFinestraTimbratura {
+  consentita: boolean;
+  motivo?: string;
+  turnoAssociato?: TurnoSedeOperativa;
+}
+
+/**
+ * Verifica silenziosa delle regole temporali di sistema per timbratura entrata/uscita turno.
+ */
+export function verificaFinestraTimbraturaTurno(params: {
+  tipo: 'entrata' | 'uscita';
+  volontarioId?: string;
+  volontarioNome?: string;
+  turni?: TurnoSedeOperativa[];
+  timbraturaAperta?: TimbraturaVolontario | null;
+  nowMs?: number;
+}): EsitoFinestraTimbratura {
+  const {
+    tipo,
+    volontarioId,
+    volontarioNome = '',
+    turni: turniParam,
+    timbraturaAperta,
+    nowMs = Date.now()
+  } = params;
+
+  const turni = loadTurniFallback(turniParam);
+  if (turni.length === 0) {
+    return { consentita: true };
+  }
+
+  const nowItaly = getItalianDateParts(nowMs);
+  const oggiStr = nowItaly.isoDate;
+  const ieriStr = nowItaly.yesterdayIsoDate;
+  const domaniStr = nowItaly.tomorrowIsoDate;
+
+  if (tipo === 'entrata') {
+    const turniCandidati: Array<{ turno: TurnoSedeOperativa; startMs: number; endMs: number }> = [];
+
+    for (const t of turni) {
+      if (!trovaAssegnazioneVolontario(t, volontarioId, volontarioNome)) continue;
+      const dataNorm = normalizzaDataIsoSemplice(t.data);
+      if (dataNorm !== oggiStr && dataNorm !== ieriStr && dataNorm !== domaniStr) continue;
+      const bounds = resolveBoundsTurnoMs(t);
+      if (!bounds) continue;
+      turniCandidati.push({ turno: t, startMs: bounds.startMs, endMs: bounds.endMs });
+    }
+
+    if (turniCandidati.length === 0) {
+      return { consentita: true };
+    }
+
+    // 1. Se esiste un turno attualmente nella finestra ammessa per l'ingresso (o in corso fino al termine turno)
+    const turnoAttivoIngresso = turniCandidati.find(
+      c => nowMs >= c.startMs - ANTICIPO_INGRESSO_MS && nowMs <= c.endMs
+    );
+    if (turnoAttivoIngresso) {
+      return { consentita: true, turnoAssociato: turnoAttivoIngresso.turno };
+    }
+
+    // 2. Se esiste un turno programmato per oggi (o in arrivo) il cui ingresso non è ancora aperto
+    const turnoOggiNonAperto = turniCandidati
+      .filter(c => {
+        const d = normalizzaDataIsoSemplice(c.turno.data);
+        return (d === oggiStr || (d === domaniStr && nowMs < c.startMs)) && nowMs < c.startMs - ANTICIPO_INGRESSO_MS;
+      })
+      .sort((a, b) => a.startMs - b.startMs)[0];
+
+    if (turnoOggiNonAperto) {
+      return {
+        consentita: false,
+        turnoAssociato: turnoOggiNonAperto.turno,
+        motivo: '⛔ Timbratura di ingresso non ancora disponibile per questo turno.'
+      };
+    }
+
+    // 3. Se esiste solo un turno odierno già concluso
+    const turnoGiaTerminato = turniCandidati
+      .filter(c => normalizzaDataIsoSemplice(c.turno.data) === oggiStr && nowMs > c.endMs)
+      .sort((a, b) => b.endMs - a.endMs)[0];
+
+    if (turnoGiaTerminato) {
+      return {
+        consentita: false,
+        turnoAssociato: turnoGiaTerminato.turno,
+        motivo: '⛔ Timbratura di ingresso non disponibile: questo turno risulta già concluso.'
+      };
+    }
+
+    return { consentita: true };
+  }
+
+  // USCITA
+  if (!timbraturaAperta) {
+    return { consentita: true };
+  }
+  if (timbraturaAperta.corsoId || timbraturaAperta.tipoAttivita === 'manuale') {
+    return { consentita: true };
+  }
+
+  // Ricerca turno associato alla timbratura aperta
+  let turnoMatch: TurnoSedeOperativa | undefined;
+  if (timbraturaAperta.turnoId) {
+    turnoMatch = turni.find(t => t.id === timbraturaAperta.turnoId);
+  }
+
+  if (!turnoMatch) {
+    const dataTimbNorm = normalizzaDataIsoSemplice(timbraturaAperta.data) || oggiStr;
+    const giornoPrecTimb = addDaysISODate(dataTimbNorm, -1);
+    const giornoSuccTimb = addDaysISODate(dataTimbNorm, 1);
+    const entryMs = parseItalianDateTimeMs(dataTimbNorm, timbraturaAperta.orarioIngresso);
+
+    const turniDelVolontario = turni.filter(t => {
+      if (!trovaAssegnazioneVolontario(t, volontarioId, volontarioNome)) return false;
+      const d = normalizzaDataIsoSemplice(t.data);
+      return d === dataTimbNorm || d === giornoPrecTimb || d === giornoSuccTimb || d === oggiStr || d === ieriStr;
+    });
+
+    if (turniDelVolontario.length === 1) {
+      turnoMatch = turniDelVolontario[0];
+    } else if (turniDelVolontario.length > 1) {
+      if (timbraturaAperta.attivitaSvolta) {
+        turnoMatch = turniDelVolontario.find(
+          t => formatNomeTurnoPerTimbratura(t) === timbraturaAperta.attivitaSvolta
+        );
+      }
+      if (!turnoMatch && entryMs !== null) {
+        turnoMatch = turniDelVolontario.find(t => {
+          const b = resolveBoundsTurnoMs(t);
+          return b ? entryMs >= b.startMs - 60 * 60 * 1000 && entryMs <= b.endMs : false;
+        });
+      }
+      if (!turnoMatch) {
+        turnoMatch = turniDelVolontario[0];
+      }
+    }
+  }
+
+  if (!turnoMatch) {
+    return { consentita: true };
+  }
+
+  const bounds = resolveBoundsTurnoMs(turnoMatch);
+  if (!bounds) {
+    return { consentita: true, turnoAssociato: turnoMatch };
+  }
+
+  if (nowMs > bounds.endMs + ESTENSIONE_USCITA_MS) {
+    return {
+      consentita: false,
+      turnoAssociato: turnoMatch,
+      motivo: '⛔ Timbratura di uscita non più disponibile: il turno è già terminato. Contatta la Centrale Operativa.'
+    };
+  }
+
+  return { consentita: true, turnoAssociato: turnoMatch };
 }
 
 /**
@@ -286,7 +438,7 @@ export function verificaVolontarioInTurnoAdesso(
 
 /**
  * Rileva automaticamente l'attività ("Cosa stai facendo?") per la timbratura del volontario/operatore:
- * - Turno in cui è segnato in app (su qualsiasi tabellone oggi / attivo ora)
+ * - Turno in cui è segnato in app (su qualsiasi tabellone attivo ora o programmato oggi)
  * - Oppure Corso / Formazione a cui è iscritto in app (lezione di oggi o corso attivo / punto GPS corso)
  * - Altrimenti restituisce { trovata: false } per mostrare il campo editabile manuale.
  */
@@ -307,7 +459,8 @@ export function rilevaAttivitaProgrammataPerTimbratura(params: {
     targetLezioneId
   } = params;
 
-  const nowItaly = getItalianDateParts(new Date());
+  const nowMs = Date.now();
+  const nowItaly = getItalianDateParts(nowMs);
   const oggiStr = nowItaly.isoDate;
   const volNorm = normalizzaNome(volontarioNome);
 
@@ -330,38 +483,46 @@ export function rilevaAttivitaProgrammataPerTimbratura(params: {
   }
 
   // 1. Ricerca su tutti i tabelloni turni in app
-  let turni: TurnoSedeOperativa[] = turniParam || [];
-  if (!turni || turni.length === 0) {
-    try {
-      const raw = localStorage.getItem('CROCE_ORO_TURNI_SEDI');
-      if (raw) turni = JSON.parse(raw);
-    } catch {}
-  }
+  const turni = loadTurniFallback(turniParam);
 
-  if (turni && turni.length > 0) {
-    // A) Priorità al turno attivo in questa fascia oraria (inclusi notturni)
+  if (turni.length > 0) {
+    // A) Priorità al turno attivo in questa fascia oraria (inclusi notturni e anticipo pre-turno)
     const turnoAttivoAdesso = trovaTurnoAttivoNeiTabelloni(volontarioId, volontarioNome, turni);
     if (turnoAttivoAdesso) {
       return {
         trovata: true,
         tipo: 'turno',
         titolo: formatNomeTurnoPerTimbratura(turnoAttivoAdesso.turno),
-        mezzoAssegnato: turnoAttivoAdesso.turno.mezzoAssegnato
+        mezzoAssegnato: turnoAttivoAdesso.turno.mezzoAssegnato,
+        turnoId: turnoAttivoAdesso.turno.id
       };
     }
 
-    // B) Eventuale altro turno programmato per la data di oggi su qualsiasi tabellone
-    const turnoOggi = turni.find(t => {
-      const dataNorm = normalizzaDataIsoSemplice(t.data);
-      if (dataNorm !== oggiStr) return false;
-      return Boolean(trovaAssegnazioneVolontario(t, volontarioId, volontarioNome));
-    });
+    // B) Eventuale altro turno programmato per la data di oggi su qualsiasi tabellone (preferendo quello non ancora concluso o più vicino)
+    const turniOggi = turni
+      .filter(t => {
+        const dataNorm = normalizzaDataIsoSemplice(t.data);
+        if (dataNorm !== oggiStr) return false;
+        return Boolean(trovaAssegnazioneVolontario(t, volontarioId, volontarioNome));
+      })
+      .sort((a, b) => {
+        const ba = resolveBoundsTurnoMs(a);
+        const bb = resolveBoundsTurnoMs(b);
+        const aFuture = ba && ba.endMs >= nowMs ? 0 : 1;
+        const bFuture = bb && bb.endMs >= nowMs ? 0 : 1;
+        if (aFuture !== bFuture) return aFuture - bFuture;
+        if (ba && bb) return Math.abs(ba.startMs - nowMs) - Math.abs(bb.startMs - nowMs);
+        return 0;
+      });
+
+    const turnoOggi = turniOggi[0];
     if (turnoOggi) {
       return {
         trovata: true,
         tipo: 'turno',
         titolo: formatNomeTurnoPerTimbratura(turnoOggi),
-        mezzoAssegnato: turnoOggi.mezzoAssegnato
+        mezzoAssegnato: turnoOggi.mezzoAssegnato,
+        turnoId: turnoOggi.id
       };
     }
   }
@@ -413,4 +574,3 @@ export function rilevaAttivitaProgrammataPerTimbratura(params: {
     titolo: ''
   };
 }
-
