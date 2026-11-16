@@ -53,6 +53,7 @@ import { MacroCategoriaId, LISTA_MACRO_CATEGORIE, TUTTE_LE_MACRO_CATEGORIE } fro
 import { inviaNotificaModificaAdmin } from '../../utils/notificaModificaAdmin';
 import { MappaSelezioneLuogoTimbratura } from './MappaSelezioneLuogoTimbratura';
 import { mergeVolontariListsSafe } from '../../utils/volontariMerge';
+import { normalizzaNomeCarraraTesto, normalizzaListaLuoghiTimbratura } from '../../utils/sediNormalize';
 import {
   ModalitaPeriodoTimbrature,
   formatLocalISODate,
@@ -603,9 +604,11 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
   // Elenco unico delle sedi e luoghi presenti per il filtro
   const elencoSediTimbrature = Array.from(
     new Set([
-      ...SEDI_ASSOCIATIVE_INIZIALI.map((s) => s.nome),
-      ...(luoghiTimbratura || LUOGHI_TIMBRATURA_DEFAULT).map((l) => l.nome),
-      ...timbrature.map((t) => t.sede).filter(Boolean)
+      ...SEDI_ASSOCIATIVE_INIZIALI.map((s) => normalizzaNomeCarraraTesto(s.nome)),
+      ...normalizzaListaLuoghiTimbratura(luoghiTimbratura || LUOGHI_TIMBRATURA_DEFAULT).map((l) =>
+        normalizzaNomeCarraraTesto(l.nome)
+      ),
+      ...timbrature.map((t) => normalizzaNomeCarraraTesto(t.sede)).filter(Boolean)
     ])
   );
 

@@ -228,7 +228,7 @@ export const AdminPortalDashboard: React.FC<AdminPortalDashboardProps> = ({
       coloreTesto: 'text-rose-400',
       coloreBadge: 'bg-rose-950 text-rose-300 border-rose-700/50',
       coloreGradiente: 'from-rose-600/20 via-slate-900 to-slate-950',
-      descrizione: 'Registro completo e anagrafica di tutte le sedi associative e territoriali (Sede Legale Massa Ronchi, Sede Operativa Le Jare, Sezione Territoriale Carrara Fossone, presidi). Recapiti, responsabili di sede, autoparco assegnato, dotazioni locali e mappa interattiva.',
+      descrizione: 'Registro completo e anagrafica di tutte le sedi associative e territoriali (Sede Legale Massa Ronchi, Sede Operativa Le Jare, Sezione Territoriale Carrara Fossone / Monteverde, presidi). Recapiti, responsabili di sede, autoparco assegnato, dotazioni locali e mappa interattiva.',
       funzionalita: [
         'Anagrafica sedi con tipologia, indirizzo e recapiti H24',
         'Responsabile/coordinatore di sede e contatti di presidio',

@@ -78,41 +78,41 @@ export const SEDI_TERRITORIALI_GPS = [
     id: 'sede-massa-ronchi',
     codice: 'SEDE-01-RONCHI',
     nome: 'Sede Legale & Direzione Generale Massa (Ronchi)',
-    indirizzo: 'Via Ronchi 12, 54100 Massa (MS)',
-    lat: 44.0185,
-    lng: 10.1062
+    indirizzo: 'Via Como, 12 Località Ronchi, 54100 Marina di Massa (MS)',
+    lat: 43.99419,
+    lng: 10.12367
   },
   {
     id: 'sede-massa-lejare',
     codice: 'SEDE-02-LEJARE',
-    nome: 'Sede Operativa H24 & Autoparco Massa (Le Jare)',
-    indirizzo: 'Via Le Jare 45, 54100 Massa (MS)',
-    lat: 44.0321,
-    lng: 10.1345
+    nome: 'Sede Operativa H24 & Autoparco Emergenze Massa (Le Jare)',
+    indirizzo: 'Via Delle Jare, 9, 54100 Massa (MS)',
+    lat: 44.01700,
+    lng: 10.15121
   },
   {
     id: 'sede-carrara-fossone',
     codice: 'SEDE-03-FOSSONE',
     nome: 'Sezione Territoriale Carrara (Fossone / Monteverde)',
-    indirizzo: 'Viale Galilei 150, 54033 Fossone, Carrara (MS)',
-    lat: 44.0532,
-    lng: 10.0612
+    indirizzo: 'Strada Comunale di Monteverde, 49 Località Fossone, 54033 Carrara (MS)',
+    lat: 44.066716,
+    lng: 10.049207
   },
   {
     id: 'sede-pietrasanta',
     codice: 'SEDE-04-PIETRASANTA',
     nome: 'Presidio Territoriale Versilia (Marina di Pietrasanta)',
-    indirizzo: 'Viale Roma 88, 55045 Marina di Pietrasanta (LU)',
-    lat: 43.9572,
-    lng: 10.2312
+    indirizzo: 'Piazza Villeparisis, 14 Località Marina di Pietrasanta, 55045 Pietrasanta (LU)',
+    lat: 43.92771,
+    lng: 10.20194
   },
   {
     id: 'sede-lunigiana',
     codice: 'SEDE-05-LUNIGIANA',
     nome: 'Sezione Territoriale Lunigiana (Aulla)',
-    indirizzo: 'Piazza Cavour 4, 54011 Aulla (MS)',
-    lat: 44.2145,
-    lng: 9.9682
+    indirizzo: 'Piazza Cavour / Piazza della Vittoria, 54011 Aulla (MS)',
+    lat: 44.21455,
+    lng: 9.96779
   }
 ];
 
@@ -178,7 +178,7 @@ export const SezioneFormazione: React.FC<SezioneFormazioneProps> = ({
   const [formSedeTipo, setFormSedeTipo] = useState<string>('sede-massa-ronchi');
   const [formNomePosizioneAltro, setFormNomePosizioneAltro] = useState('');
   const [formIndirizzoAltro, setFormIndirizzoAltro] = useState('');
-  const [formCoordinate, setFormCoordinate] = useState<{ lat: number; lng: number }>({ lat: 44.0185, lng: 10.1062 });
+  const [formCoordinate, setFormCoordinate] = useState<{ lat: number; lng: number }>({ lat: 43.99419, lng: 10.12367 });
 
   // Percentuale Minima Presenza e Orari
   const [formPercentualeMinima, setFormPercentualeMinima] = useState<number>(80);

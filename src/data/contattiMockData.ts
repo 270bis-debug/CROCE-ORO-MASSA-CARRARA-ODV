@@ -221,7 +221,7 @@ export const CONTATTI_INIZIALI: ContattoEsterno[] = [
       dataIntervento: '2026-03-05',
       importo: 100.00,
       metodoPagamento: 'POS',
-      mezzo: 'T4609 (Carrara Fossone)',
+      mezzo: 'T4609 (Carrara Fossone / Monteverde)',
       note: 'Pagamento effettuato con terminale POS di bordo.'
     },
     dataCreazione: '2026-03-05'

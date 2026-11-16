@@ -1160,7 +1160,7 @@
     {
       "id": "turno-oggi-carrara-mattina",
       "sedeId": "sede-carrara-fossone",
-      "sedeNome": "Sezione Territoriale Carrara (Fossone)",
+      "sedeNome": "Sezione Territoriale Carrara (Fossone / Monteverde)",
       "data": "2026-10-24",
       "fasciaOraria": "Mattina (08:00 - 14:00)",
       "orarioInizio": "08:00",
@@ -1180,7 +1180,7 @@
     {
       "id": "turno-domani-carrara-pomeriggio",
       "sedeId": "sede-carrara-fossone",
-      "sedeNome": "Sezione Territoriale Carrara (Fossone)",
+      "sedeNome": "Sezione Territoriale Carrara (Fossone / Monteverde)",
       "data": "2026-10-25",
       "fasciaOraria": "Pomeriggio (14:00 - 20:00)",
       "orarioInizio": "14:00",

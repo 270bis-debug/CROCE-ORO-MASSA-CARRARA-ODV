@@ -47,13 +47,13 @@ export const SEDI_CROCE_ORO: SedeCroceOro[] = [
   },
   {
     id: 'sede-croce-oro-carrara',
-    nome: 'Sede Croce Oro Carrara (Sezione Territoriale)',
-    sezione: 'Carrara (Fossone)',
+    nome: 'Sezione Territoriale Carrara (Fossone / Monteverde)',
+    sezione: 'Carrara (Fossone / Monteverde)',
     indirizzoCompleto: 'Strada Comunale di Monteverde, 49 Località Fossone, 54033 Carrara MS',
     comune: 'Carrara',
     servizi: ['Ambulanza Veterinaria', 'Protezione Civile', 'Soccorso H24'],
     telefono: '0585 625410',
-    note: 'Sezione territoriale di Carrara a Fossone (RSD Monteverde Anffas)',
+    note: 'Sezione territoriale di Carrara a Fossone / Monteverde (RSD Monteverde Anffas)',
     coordinate: {
       lat: 44.066716,
       lng: 10.049207

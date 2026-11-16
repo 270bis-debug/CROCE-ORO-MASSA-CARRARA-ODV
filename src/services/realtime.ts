@@ -22,6 +22,12 @@ import {
 } from './firebase';
 import { formatDateTimeItaly, formatTimeItaly } from '../utils/italianTime';
 import { mergeVolontariListsSafe, normalizeDeletedIds } from '../utils/volontariMerge';
+import {
+  normalizzaListaSediAssociative,
+  normalizzaListaLuoghiTimbratura,
+  normalizzaTurniSedi,
+  normalizzaComunicazioniBacheca,
+} from '../utils/sediNormalize';
 
 type MessageHandler = (data: any) => void;
 
@@ -422,11 +428,15 @@ class RealtimeService {
       Object.assign(this.cloudState, payload);
     }
     if (shardId === 'turni' && Array.isArray(payload.turni)) {
-      this.emit('TURNI_UPDATED', { turni: payload.turni });
+      const turniNorm = normalizzaTurniSedi(payload.turni);
+      this.cloudState.turni = turniNorm;
+      this.emit('TURNI_UPDATED', { turni: turniNorm });
     }
     if (shardId === 'bacheca') {
       if (Array.isArray(payload.bacheca)) {
-        this.emit('BACHECA_UPDATED', { bacheca: payload.bacheca });
+        const bachecaNorm = normalizzaComunicazioniBacheca(payload.bacheca);
+        this.cloudState.bacheca = bachecaNorm;
+        this.emit('BACHECA_UPDATED', { bacheca: bachecaNorm });
       }
       if (Array.isArray(payload.giornaleBordo)) {
         this.emit('GIORNALE_BORDO_UPDATED', { giornaleBordo: payload.giornaleBordo });
@@ -453,7 +463,12 @@ class RealtimeService {
         this.emit('TIMBRATURE_UPDATED', { timbrature: payload.timbrature });
       }
       if (Array.isArray(payload.luoghiTimbratura)) {
-        this.emit('LUOGHI_TIMBRATURA_UPDATED', { luoghi: payload.luoghiTimbratura });
+        const sediCurr = Array.isArray(this.cloudState.sedi)
+          ? normalizzaListaSediAssociative(this.cloudState.sedi)
+          : undefined;
+        const luoghiNorm = normalizzaListaLuoghiTimbratura(payload.luoghiTimbratura, sediCurr);
+        this.cloudState.luoghiTimbratura = luoghiNorm;
+        this.emit('LUOGHI_TIMBRATURA_UPDATED', { luoghi: luoghiNorm });
       }
     }
     if (shardId === 'checklists') {
@@ -468,10 +483,17 @@ class RealtimeService {
     }
     if (shardId === 'config') {
       if (Array.isArray(payload.sedi)) {
-        this.emit('SEDI_UPDATED', { sedi: payload.sedi });
+        const sediNorm = normalizzaListaSediAssociative(payload.sedi);
+        this.cloudState.sedi = sediNorm;
+        this.emit('SEDI_UPDATED', { sedi: sediNorm });
         try {
-          localStorage.setItem('CROCE_ORO_SEDI_COMPLETE', JSON.stringify(payload.sedi));
+          localStorage.setItem('CROCE_ORO_SEDI_COMPLETE', JSON.stringify(sediNorm));
         } catch {}
+        if (Array.isArray(this.cloudState.luoghiTimbratura)) {
+          const luoghiNorm = normalizzaListaLuoghiTimbratura(this.cloudState.luoghiTimbratura, sediNorm);
+          this.cloudState.luoghiTimbratura = luoghiNorm;
+          this.emit('LUOGHI_TIMBRATURA_UPDATED', { luoghi: luoghiNorm });
+        }
       }
       if (Array.isArray(payload.radioGroups)) {
         this.emit('RADIO_GROUPS_UPDATED', { radioGroups: payload.radioGroups });
@@ -639,11 +661,11 @@ class RealtimeService {
         };
       case 'turni':
         return {
-          turni: Array.isArray(this.cloudState.turni) ? this.cloudState.turni : [],
+          turni: Array.isArray(this.cloudState.turni) ? normalizzaTurniSedi(this.cloudState.turni) : [],
         };
       case 'bacheca':
         return {
-          bacheca: Array.isArray(this.cloudState.bacheca) ? this.cloudState.bacheca : [],
+          bacheca: Array.isArray(this.cloudState.bacheca) ? normalizzaComunicazioniBacheca(this.cloudState.bacheca) : [],
           giornaleBordo: Array.isArray(this.cloudState.giornaleBordo) ? this.cloudState.giornaleBordo : [],
         };
       case 'magazzino':
@@ -651,11 +673,17 @@ class RealtimeService {
           magazzinoParti: Array.isArray(this.cloudState.magazzinoParti) ? this.cloudState.magazzinoParti : [],
           magazzinoMezzi: Array.isArray(this.cloudState.magazzinoMezzi) ? this.cloudState.magazzinoMezzi : [],
         };
-      case 'timbrature':
+      case 'timbrature': {
+        const sediCurr = Array.isArray(this.cloudState.sedi)
+          ? normalizzaListaSediAssociative(this.cloudState.sedi)
+          : undefined;
         return {
           timbrature: Array.isArray(this.cloudState.timbrature) ? this.cloudState.timbrature : [],
-          luoghiTimbratura: Array.isArray(this.cloudState.luoghiTimbratura) ? this.cloudState.luoghiTimbratura : [],
+          luoghiTimbratura: Array.isArray(this.cloudState.luoghiTimbratura)
+            ? normalizzaListaLuoghiTimbratura(this.cloudState.luoghiTimbratura, sediCurr)
+            : [],
         };
+      }
       case 'indirizzi':
         return {
           indirizziCollezionati: Array.isArray(this.cloudState.indirizziCollezionati) ? this.cloudState.indirizziCollezionati : [],
@@ -668,7 +696,7 @@ class RealtimeService {
         };
       case 'config':
         return {
-          sedi: Array.isArray(this.cloudState.sedi) ? this.cloudState.sedi : [],
+          sedi: Array.isArray(this.cloudState.sedi) ? normalizzaListaSediAssociative(this.cloudState.sedi) : [],
           datiCartaIntestata: this.cloudState.datiCartaIntestata || null,
           radioGroups: Array.isArray(this.cloudState.radioGroups) ? this.cloudState.radioGroups : [],
         };
@@ -939,11 +967,11 @@ class RealtimeService {
           codiciEliminati: snapshot.codiciEliminati || this.cloudState.codiciEliminati || [],
         },
       },
-      { id: 'turni', patch: { turni: snapshot.turni || this.cloudState.turni || [] } },
+      { id: 'turni', patch: { turni: normalizzaTurniSedi(snapshot.turni || this.cloudState.turni || []) } },
       {
         id: 'bacheca',
         patch: {
-          bacheca: snapshot.bacheca || this.cloudState.bacheca || [],
+          bacheca: normalizzaComunicazioniBacheca(snapshot.bacheca || this.cloudState.bacheca || []),
           giornaleBordo: snapshot.giornaleBordo || this.cloudState.giornaleBordo || [],
         },
       },
@@ -958,7 +986,10 @@ class RealtimeService {
         id: 'timbrature',
         patch: {
           timbrature: snapshot.timbrature || this.cloudState.timbrature || [],
-          luoghiTimbratura: snapshot.luoghiTimbratura || this.cloudState.luoghiTimbratura || [],
+          luoghiTimbratura: normalizzaListaLuoghiTimbratura(
+            snapshot.luoghiTimbratura || this.cloudState.luoghiTimbratura || [],
+            normalizzaListaSediAssociative(snapshot.sedi || this.cloudState.sedi || [])
+          ),
         },
       },
       {
@@ -978,7 +1009,7 @@ class RealtimeService {
       {
         id: 'config',
         patch: {
-          sedi: snapshot.sedi || this.cloudState.sedi || [],
+          sedi: normalizzaListaSediAssociative(snapshot.sedi || this.cloudState.sedi || []),
         },
       },
     ];

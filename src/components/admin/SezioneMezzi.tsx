@@ -2527,14 +2527,19 @@ export const SezioneMezzi: React.FC<SezioneMezziProps> = ({
                         }}
                         className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-700 text-amber-300 font-semibold"
                       >
-                        {sedi.map((s) => (
-                          <option key={s.id} value={s.nome}>
-                            {s.nome}
-                          </option>
-                        ))}
-                        <option value="Sede Operativa H24 Massa (Le Jare)">Sede Operativa H24 Massa (Le Jare)</option>
-                        <option value="Sezione Territoriale Carrara (Fossone)">Sezione Territoriale Carrara (Fossone)</option>
-                        <option value="Sede Legale Massa (Ronchi)">Sede Legale Massa (Ronchi)</option>
+                        {sedi.length > 0 ? (
+                          sedi.map((s) => (
+                            <option key={s.id} value={s.nome}>
+                              {s.nome}
+                            </option>
+                          ))
+                        ) : (
+                          <>
+                            <option value="Sede Operativa H24 & Autoparco Emergenze Massa (Le Jare)">Sede Operativa H24 & Autoparco Emergenze Massa (Le Jare)</option>
+                            <option value="Sezione Territoriale Carrara (Fossone / Monteverde)">Sezione Territoriale Carrara (Fossone / Monteverde)</option>
+                            <option value="Sede Legale & Direzione Generale Massa (Ronchi)">Sede Legale & Direzione Generale Massa (Ronchi)</option>
+                          </>
+                        )}
                       </select>
                     </div>
 

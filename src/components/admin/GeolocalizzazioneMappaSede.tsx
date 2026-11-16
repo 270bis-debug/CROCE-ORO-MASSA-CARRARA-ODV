@@ -35,7 +35,7 @@ const DEFAULT_LNG = 10.15121;
 const PRESET_SEDI_NOTE = [
   { nome: 'Massa Le Jare', lat: 44.01700, lng: 10.15121, desc: 'Sede Operativa H24 & Centrale' },
   { nome: 'Massa Ronchi', lat: 43.99419, lng: 10.12367, desc: 'Sede Legale & Territoriale' },
-  { nome: 'Carrara Fossone', lat: 44.06672, lng: 10.04921, desc: 'Sezione Territoriale Fossone' },
+  { nome: 'Carrara (Fossone / Monteverde)', lat: 44.06672, lng: 10.04921, desc: 'Sezione Territoriale Carrara (Fossone / Monteverde)' },
   { nome: 'Avenza Stazione FS', lat: 44.04120, lng: 10.06740, desc: 'Presidio Territoriale Avenza' }
 ];
 

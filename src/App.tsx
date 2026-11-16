@@ -215,6 +215,13 @@ import {
   LUOGHI_TIMBRATURA_DEFAULT
 } from './data/adminMockData';
 import {
+  normalizzaListaSediAssociative,
+  normalizzaListaLuoghiTimbratura,
+  normalizzaTurniSedi,
+  normalizzaComunicazioniBacheca,
+  normalizzaCorsiFormazione,
+} from './utils/sediNormalize';
+import {
   sincronizzaDatiCartaIntestataDaServer,
   applicaDatiCartaIntestataRemoti,
 } from './utils/cartaIntestataStore';
@@ -780,24 +787,25 @@ const VistaDedicataTabelloneSenzaLogin: React.FC<{
   const [turni, setTurni] = useState<TurnoSedeOperativa[]>(() => {
     try {
       const saved = localStorage.getItem('CROCE_ORO_TURNI_SEDI');
-      if (saved) return JSON.parse(saved);
+      if (saved) return normalizzaTurniSedi(JSON.parse(saved));
     } catch {}
-    return initialTurni;
+    return normalizzaTurniSedi(initialTurni);
   });
   const [sedi, setSedi] = useState<SedeAssociativaCompleta[]>(() => {
     try {
       const saved = localStorage.getItem('CROCE_ORO_SEDI_COMPLETE');
-      if (saved) return JSON.parse(saved);
+      if (saved) return normalizzaListaSediAssociative(JSON.parse(saved));
     } catch {}
-    return initialSedi;
+    return normalizzaListaSediAssociative(initialSedi);
   });
 
   const handleAggiornaTurniDiretto = (nuovi: TurnoSedeOperativa[]) => {
-    setTurni(nuovi);
+    const norm = normalizzaTurniSedi(nuovi);
+    setTurni(norm);
     try {
-      localStorage.setItem('CROCE_ORO_TURNI_SEDI', JSON.stringify(nuovi));
+      localStorage.setItem('CROCE_ORO_TURNI_SEDI', JSON.stringify(norm));
     } catch {}
-    realtime.syncTurni(nuovi);
+    realtime.syncTurni(norm);
   };
 
   const ricaricaDati = () => {
@@ -806,15 +814,16 @@ const VistaDedicataTabelloneSenzaLogin: React.FC<{
         .then((res) => res.json())
         .then((data) => {
           if (data?.turni && Array.isArray(data.turni) && data.turni.length > 0) {
-            setTurni(data.turni);
-            localStorage.setItem('CROCE_ORO_TURNI_SEDI', JSON.stringify(data.turni));
+            const norm = normalizzaTurniSedi(data.turni);
+            setTurni(norm);
+            localStorage.setItem('CROCE_ORO_TURNI_SEDI', JSON.stringify(norm));
           }
         })
         .catch(() => {});
       const savedTurni = localStorage.getItem('CROCE_ORO_TURNI_SEDI');
-      if (savedTurni) setTurni(JSON.parse(savedTurni));
+      if (savedTurni) setTurni(normalizzaTurniSedi(JSON.parse(savedTurni)));
       const savedSedi = localStorage.getItem('CROCE_ORO_SEDI_COMPLETE');
-      if (savedSedi) setSedi(JSON.parse(savedSedi));
+      if (savedSedi) setSedi(normalizzaListaSediAssociative(JSON.parse(savedSedi)));
     } catch {}
   };
 
@@ -825,16 +834,17 @@ const VistaDedicataTabelloneSenzaLogin: React.FC<{
     // Sottoscrizione WebSocket in tempo reale: riceve aggiornamenti istantanei senza alcun ritardo
     const unsubTurni = realtime.on('TURNI_UPDATED', (payload: any) => {
       if (payload?.turni && Array.isArray(payload.turni)) {
-        setTurni(payload.turni);
+        const norm = normalizzaTurniSedi(payload.turni);
+        setTurni(norm);
         try {
-          localStorage.setItem('CROCE_ORO_TURNI_SEDI', JSON.stringify(payload.turni));
+          localStorage.setItem('CROCE_ORO_TURNI_SEDI', JSON.stringify(norm));
         } catch {}
       }
     });
 
     const unsubSync = realtime.on('INIT_SYNC', (payload: any) => {
       if (payload?.state?.turni && Array.isArray(payload.state.turni)) {
-        setTurni(payload.state.turni);
+        setTurni(normalizzaTurniSedi(payload.state.turni));
       }
       if (payload?.state?.datiCartaIntestata && typeof payload.state.datiCartaIntestata === 'object') {
         applicaDatiCartaIntestataRemoti(payload.state.datiCartaIntestata);
@@ -843,7 +853,7 @@ const VistaDedicataTabelloneSenzaLogin: React.FC<{
 
     const unsubPoll = realtime.on('POLL_SYNC', (s: any) => {
       if (s?.turni && Array.isArray(s.turni)) {
-        setTurni(s.turni);
+        setTurni(normalizzaTurniSedi(s.turni));
       }
       if (s?.datiCartaIntestata && typeof s.datiCartaIntestata === 'object') {
         applicaDatiCartaIntestataRemoti(s.datiCartaIntestata);
@@ -1071,19 +1081,41 @@ export default function App() {
 
   // Luoghi di Timbratura GPS (a discrezione operatore, effetto immediato)
   const [luoghiTimbratura, setLuoghiTimbratura] = useState<LuogoTimbratura[]>(() => {
+    let sediBase: SedeAssociativaCompleta[] = SEDI_ASSOCIATIVE_INIZIALI;
+    try {
+      const savedSedi = localStorage.getItem('CROCE_ORO_SEDI_COMPLETE');
+      if (savedSedi) {
+        const parsedSedi = JSON.parse(savedSedi);
+        if (Array.isArray(parsedSedi) && parsedSedi.length > 0) {
+          sediBase = normalizzaListaSediAssociative(parsedSedi);
+        }
+      }
+    } catch {}
     try {
       const saved = localStorage.getItem('CROCE_ORO_LUOGHI_TIMBRATURA');
-      if (saved) return JSON.parse(saved);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) {
+          const healed = normalizzaListaLuoghiTimbratura(parsed, sediBase);
+          try {
+            localStorage.setItem('CROCE_ORO_LUOGHI_TIMBRATURA', JSON.stringify(healed));
+          } catch {}
+          return healed;
+        }
+      }
     } catch {}
-    return LUOGHI_TIMBRATURA_DEFAULT;
+    return normalizzaListaLuoghiTimbratura(LUOGHI_TIMBRATURA_DEFAULT, sediBase);
   });
+  const luoghiTimbraturaRef = useRef<LuogoTimbratura[]>(luoghiTimbratura);
+  luoghiTimbraturaRef.current = luoghiTimbratura;
 
   const handleAggiornaLuoghiTimbratura = (nuovi: LuogoTimbratura[]) => {
-    setLuoghiTimbratura(nuovi);
+    const norm = normalizzaListaLuoghiTimbratura(nuovi, sediAssociativeRef.current);
+    setLuoghiTimbratura(norm);
     try {
-      localStorage.setItem('CROCE_ORO_LUOGHI_TIMBRATURA', JSON.stringify(nuovi));
+      localStorage.setItem('CROCE_ORO_LUOGHI_TIMBRATURA', JSON.stringify(norm));
     } catch {}
-    realtime.syncLuoghiTimbratura(nuovi);
+    realtime.syncLuoghiTimbratura(norm);
   };
 
   // 2. Database Mezzi Flotta (ordinati sempre alfanumericamente A-Z e numerico crescente)
@@ -1287,14 +1319,21 @@ export default function App() {
   const [corsiFormazione, setCorsiFormazione] = useState<CorsoFormazione[]>(() => {
     try {
       const saved = localStorage.getItem('CROCE_ORO_CORSI');
-      if (saved) return JSON.parse(saved);
+      if (saved) {
+        const healed = normalizzaCorsiFormazione(JSON.parse(saved), SEDI_ASSOCIATIVE_INIZIALI);
+        try {
+          localStorage.setItem('CROCE_ORO_CORSI', JSON.stringify(healed));
+        } catch {}
+        return healed;
+      }
     } catch {}
-    return CORSI_FORMAZIONE_INIZIALI;
+    return normalizzaCorsiFormazione(CORSI_FORMAZIONE_INIZIALI, SEDI_ASSOCIATIVE_INIZIALI);
   });
   const handleAggiornaCorsi = (nuovi: CorsoFormazione[]) => {
-    setCorsiFormazione(nuovi);
+    const norm = normalizzaCorsiFormazione(nuovi, sediAssociativeRef.current);
+    setCorsiFormazione(norm);
     try {
-      localStorage.setItem('CROCE_ORO_CORSI', JSON.stringify(nuovi));
+      localStorage.setItem('CROCE_ORO_CORSI', JSON.stringify(norm));
     } catch {}
   };
 
@@ -1351,52 +1390,70 @@ export default function App() {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed) && parsed.length > 0) {
           // Verifica se mancano le coordinate bancarie e postali ufficiali, nel qual caso le inietta
-          const conConti = parsed.map((s: SedeAssociativaCompleta) => {
-            if (!s.contiCorrenti || s.contiCorrenti.length === 0 || !s.ibanPoste || !s.ibanBanca) {
-              const defaultMatch = SEDI_ASSOCIATIVE_INIZIALI.find((init) => init.id === s.id);
-              return {
-                ...s,
-                intestatarioConti: s.intestatarioConti || defaultMatch?.intestatarioConti || 'CROCE ORO MASSA CARRARA ODV',
-                bancaPoste: s.bancaPoste || defaultMatch?.bancaPoste || 'POSTE ITALIANE',
-                ibanPoste: s.ibanPoste || defaultMatch?.ibanPoste || 'IT40P0760113600001007035676',
-                ccPostale: s.ccPostale || defaultMatch?.ccPostale || '00001007035676',
-                bancaAppoggio: s.bancaAppoggio || defaultMatch?.bancaAppoggio || 'Credit Agricole',
-                ibanBanca: s.ibanBanca || defaultMatch?.ibanBanca || 'IT79M0623024500000046980317',
-                contiCorrenti: (s.contiCorrenti && s.contiCorrenti.length > 0) ? s.contiCorrenti : defaultMatch?.contiCorrenti || CONTI_CORRENTI_CROCE_ORO_DEFAULT
-              };
-            }
-            return s;
-          });
+          const conConti = normalizzaListaSediAssociative(
+            parsed.map((s: SedeAssociativaCompleta) => {
+              if (!s.contiCorrenti || s.contiCorrenti.length === 0 || !s.ibanPoste || !s.ibanBanca) {
+                const defaultMatch = SEDI_ASSOCIATIVE_INIZIALI.find((init) => init.id === s.id);
+                return {
+                  ...s,
+                  intestatarioConti: s.intestatarioConti || defaultMatch?.intestatarioConti || 'CROCE ORO MASSA CARRARA ODV',
+                  bancaPoste: s.bancaPoste || defaultMatch?.bancaPoste || 'POSTE ITALIANE',
+                  ibanPoste: s.ibanPoste || defaultMatch?.ibanPoste || 'IT40P0760113600001007035676',
+                  ccPostale: s.ccPostale || defaultMatch?.ccPostale || '00001007035676',
+                  bancaAppoggio: s.bancaAppoggio || defaultMatch?.bancaAppoggio || 'Credit Agricole',
+                  ibanBanca: s.ibanBanca || defaultMatch?.ibanBanca || 'IT79M0623024500000046980317',
+                  contiCorrenti: (s.contiCorrenti && s.contiCorrenti.length > 0) ? s.contiCorrenti : defaultMatch?.contiCorrenti || CONTI_CORRENTI_CROCE_ORO_DEFAULT
+                };
+              }
+              return s;
+            })
+          );
           localStorage.setItem('CROCE_ORO_SEDI_COMPLETE', JSON.stringify(conConti));
           return conConti;
         }
       }
     } catch {}
-    return SEDI_ASSOCIATIVE_INIZIALI;
+    return normalizzaListaSediAssociative(SEDI_ASSOCIATIVE_INIZIALI);
   });
+  const sediAssociativeRef = useRef<SedeAssociativaCompleta[]>(sediAssociative);
+  sediAssociativeRef.current = sediAssociative;
 
   const handleAggiornaSedi = (nuove: SedeAssociativaCompleta[]) => {
-    setSediAssociative(nuove);
+    const sediNorm = normalizzaListaSediAssociative(nuove);
+    setSediAssociative(sediNorm);
     try {
-      localStorage.setItem('CROCE_ORO_SEDI_COMPLETE', JSON.stringify(nuove));
+      localStorage.setItem('CROCE_ORO_SEDI_COMPLETE', JSON.stringify(sediNorm));
     } catch {}
-    realtime.syncSedi(nuove);
+    realtime.syncSedi(sediNorm);
+    // Riallinea anche i luoghi GPS se associati a sedi con refusi o duplicati
+    const luoghiNorm = normalizzaListaLuoghiTimbratura(luoghiTimbraturaRef.current, sediNorm);
+    setLuoghiTimbratura(luoghiNorm);
+    try {
+      localStorage.setItem('CROCE_ORO_LUOGHI_TIMBRATURA', JSON.stringify(luoghiNorm));
+    } catch {}
   };
 
   // 12. Turni Sedi Operative
   const [turniSedi, setTurniSedi] = useState<TurnoSedeOperativa[]>(() => {
     try {
       const saved = localStorage.getItem('CROCE_ORO_TURNI_SEDI');
-      if (saved) return JSON.parse(saved);
+      if (saved) {
+        const healed = normalizzaTurniSedi(JSON.parse(saved));
+        try {
+          localStorage.setItem('CROCE_ORO_TURNI_SEDI', JSON.stringify(healed));
+        } catch {}
+        return healed;
+      }
     } catch {}
-    return TURNI_SEDI_INIZIALI;
+    return normalizzaTurniSedi(TURNI_SEDI_INIZIALI);
   });
   const handleAggiornaTurni = (nuovi: TurnoSedeOperativa[]) => {
-    setTurniSedi(nuovi);
+    const norm = normalizzaTurniSedi(nuovi);
+    setTurniSedi(norm);
     try {
-      localStorage.setItem('CROCE_ORO_TURNI_SEDI', JSON.stringify(nuovi));
+      localStorage.setItem('CROCE_ORO_TURNI_SEDI', JSON.stringify(norm));
     } catch {}
-    realtime.syncTurni(nuovi);
+    realtime.syncTurni(norm);
   };
 
   // Caricamento sincronizzato turni e sedi dal backend cloud con push immediato se vuoto
@@ -1411,13 +1468,21 @@ export default function App() {
           if (r.headers.get('X-Sync-Mode') === 'cloud-firestore') return;
           const data = await r.json();
           if (Array.isArray(data) && data.length > 0) {
-            setSediAssociative(data);
-            localStorage.setItem('CROCE_ORO_SEDI_COMPLETE', JSON.stringify(data));
+            const sediNorm = normalizzaListaSediAssociative(data);
+            setSediAssociative(sediNorm);
+            localStorage.setItem('CROCE_ORO_SEDI_COMPLETE', JSON.stringify(sediNorm));
+            setLuoghiTimbratura((prev) => {
+              const luoghiNorm = normalizzaListaLuoghiTimbratura(prev, sediNorm);
+              try {
+                localStorage.setItem('CROCE_ORO_LUOGHI_TIMBRATURA', JSON.stringify(luoghiNorm));
+              } catch {}
+              return luoghiNorm;
+            });
           } else if (Array.isArray(data) && data.length === 0) {
             fetch('/api/sedi', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ sedi: SEDI_ASSOCIATIVE_INIZIALI })
+              body: JSON.stringify({ sedi: normalizzaListaSediAssociative(SEDI_ASSOCIATIVE_INIZIALI) })
             }).catch(() => {});
           }
         })
@@ -1430,11 +1495,12 @@ export default function App() {
           const d = await r.json();
           if (d?.mode === 'cloud-firestore') return;
           if (d?.turni && Array.isArray(d.turni) && d.turni.length > 0) {
-            setTurniSedi(d.turni);
-            localStorage.setItem('CROCE_ORO_TURNI_SEDI', JSON.stringify(d.turni));
+            const turniNorm = normalizzaTurniSedi(d.turni);
+            setTurniSedi(turniNorm);
+            localStorage.setItem('CROCE_ORO_TURNI_SEDI', JSON.stringify(turniNorm));
           } else if (d?.turni && d.turni.length === 0 && turniSedi.length > 0) {
             // Se il server non ha ancora turni archiviati, invia subito la configurazione di partenza
-            realtime.syncTurni(turniSedi);
+            realtime.syncTurni(normalizzaTurniSedi(turniSedi));
           }
         })
         .catch(() => {});
@@ -1445,12 +1511,13 @@ export default function App() {
           if (r.headers.get('X-Sync-Mode') === 'cloud-firestore') return;
           const data = await r.json();
           if (Array.isArray(data) && data.length > 0) {
-            setLuoghiTimbratura(data);
+            const luoghiNorm = normalizzaListaLuoghiTimbratura(data, sediAssociativeRef.current);
+            setLuoghiTimbratura(luoghiNorm);
             try {
-              localStorage.setItem('CROCE_ORO_LUOGHI_TIMBRATURA', JSON.stringify(data));
+              localStorage.setItem('CROCE_ORO_LUOGHI_TIMBRATURA', JSON.stringify(luoghiNorm));
             } catch {}
           } else if (Array.isArray(data) && data.length === 0) {
-            realtime.syncLuoghiTimbratura(LUOGHI_TIMBRATURA_DEFAULT);
+            realtime.syncLuoghiTimbratura(normalizzaListaLuoghiTimbratura(LUOGHI_TIMBRATURA_DEFAULT, sediAssociativeRef.current));
           }
         })
         .catch(() => {});
@@ -1458,19 +1525,28 @@ export default function App() {
 
     const unbindLuoghi = realtime.on('LUOGHI_TIMBRATURA_UPDATED', (payload: any) => {
       if (payload?.luoghi && Array.isArray(payload.luoghi)) {
-        setLuoghiTimbratura(payload.luoghi);
+        const luoghiNorm = normalizzaListaLuoghiTimbratura(payload.luoghi, sediAssociativeRef.current);
+        setLuoghiTimbratura(luoghiNorm);
         try {
-          localStorage.setItem('CROCE_ORO_LUOGHI_TIMBRATURA', JSON.stringify(payload.luoghi));
+          localStorage.setItem('CROCE_ORO_LUOGHI_TIMBRATURA', JSON.stringify(luoghiNorm));
         } catch {}
       }
     });
 
     const unbindSedi = realtime.on('SEDI_UPDATED', (payload: any) => {
       if (payload?.sedi && Array.isArray(payload.sedi)) {
-        setSediAssociative(payload.sedi);
+        const sediNorm = normalizzaListaSediAssociative(payload.sedi);
+        setSediAssociative(sediNorm);
         try {
-          localStorage.setItem('CROCE_ORO_SEDI_COMPLETE', JSON.stringify(payload.sedi));
+          localStorage.setItem('CROCE_ORO_SEDI_COMPLETE', JSON.stringify(sediNorm));
         } catch {}
+        setLuoghiTimbratura((prev) => {
+          const luoghiNorm = normalizzaListaLuoghiTimbratura(prev, sediNorm);
+          try {
+            localStorage.setItem('CROCE_ORO_LUOGHI_TIMBRATURA', JSON.stringify(luoghiNorm));
+          } catch {}
+          return luoghiNorm;
+        });
       }
     });
 
@@ -1491,16 +1567,23 @@ export default function App() {
   const [comunicazioniBacheca, setComunicazioniBacheca] = useState<ComunicazioneBacheca[]>(() => {
     try {
       const saved = localStorage.getItem('CROCE_ORO_BACHECA_COMUNICAZIONI');
-      if (saved) return JSON.parse(saved);
+      if (saved) {
+        const healed = normalizzaComunicazioniBacheca(JSON.parse(saved));
+        try {
+          localStorage.setItem('CROCE_ORO_BACHECA_COMUNICAZIONI', JSON.stringify(healed));
+        } catch {}
+        return healed;
+      }
     } catch {}
-    return COMUNICAZIONI_BACHECA_INIZIALI;
+    return normalizzaComunicazioniBacheca(COMUNICAZIONI_BACHECA_INIZIALI);
   });
   const handleAggiornaComunicazioniBacheca = (nuove: ComunicazioneBacheca[]) => {
-    setComunicazioniBacheca(nuove);
+    const norm = normalizzaComunicazioniBacheca(nuove);
+    setComunicazioniBacheca(norm);
     try {
-      localStorage.setItem('CROCE_ORO_BACHECA_COMUNICAZIONI', JSON.stringify(nuove));
+      localStorage.setItem('CROCE_ORO_BACHECA_COMUNICAZIONI', JSON.stringify(norm));
     } catch {}
-    realtime.syncBacheca(nuove);
+    realtime.syncBacheca(norm);
   };
 
   // 14. Contatti Esterni (Fornitori, Officine, Clienti/Debitori, Donatori da Intervento)
@@ -8624,9 +8707,27 @@ KM TOTALI: ${kmTot} KM`;
           applicaVolontari(Array.isArray(s.volontari) ? s.volontari : [], s.volontariEliminatiIds);
         }
         if (s.turni && Array.isArray(s.turni) && s.turni.length > 0) {
-          setTurniSedi(s.turni);
+          const turniNorm = normalizzaTurniSedi(s.turni);
+          setTurniSedi(turniNorm);
           try {
-            localStorage.setItem('CROCE_ORO_TURNI_SEDI', JSON.stringify(s.turni));
+            localStorage.setItem('CROCE_ORO_TURNI_SEDI', JSON.stringify(turniNorm));
+          } catch {}
+        }
+        if (s.sedi && Array.isArray(s.sedi) && s.sedi.length > 0) {
+          const sediNorm = normalizzaListaSediAssociative(s.sedi);
+          setSediAssociative(sediNorm);
+          try {
+            localStorage.setItem('CROCE_ORO_SEDI_COMPLETE', JSON.stringify(sediNorm));
+          } catch {}
+        }
+        if (s.luoghiTimbratura && Array.isArray(s.luoghiTimbratura) && s.luoghiTimbratura.length > 0) {
+          const luoghiNorm = normalizzaListaLuoghiTimbratura(
+            s.luoghiTimbratura,
+            Array.isArray(s.sedi) && s.sedi.length > 0 ? s.sedi : sediAssociativeRef.current
+          );
+          setLuoghiTimbratura(luoghiNorm);
+          try {
+            localStorage.setItem('CROCE_ORO_LUOGHI_TIMBRATURA', JSON.stringify(luoghiNorm));
           } catch {}
         }
         if (s.timbrature && Array.isArray(s.timbrature) && s.timbrature.length > 0) {
@@ -8765,9 +8866,10 @@ KM TOTALI: ${kmTot} KM`;
           } catch {}
         }
         if (s.bacheca && Array.isArray(s.bacheca) && s.bacheca.length > 0) {
-          setComunicazioniBacheca(s.bacheca);
+          const bachecaNorm = normalizzaComunicazioniBacheca(s.bacheca);
+          setComunicazioniBacheca(bachecaNorm);
           try {
-            localStorage.setItem('CROCE_ORO_BACHECA_COMUNICAZIONI', JSON.stringify(s.bacheca));
+            localStorage.setItem('CROCE_ORO_BACHECA_COMUNICAZIONI', JSON.stringify(bachecaNorm));
           } catch {}
         }
         if (s.giornaleBordo && Array.isArray(s.giornaleBordo)) {
@@ -8851,9 +8953,27 @@ KM TOTALI: ${kmTot} KM`;
           applicaVolontari(Array.isArray(s.volontari) ? s.volontari : [], s.volontariEliminatiIds);
         }
         if (s.turni && Array.isArray(s.turni) && s.turni.length > 0) {
-          setTurniSedi(s.turni);
+          const turniNorm = normalizzaTurniSedi(s.turni);
+          setTurniSedi(turniNorm);
           try {
-            localStorage.setItem('CROCE_ORO_TURNI_SEDI', JSON.stringify(s.turni));
+            localStorage.setItem('CROCE_ORO_TURNI_SEDI', JSON.stringify(turniNorm));
+          } catch {}
+        }
+        if (s.sedi && Array.isArray(s.sedi) && s.sedi.length > 0) {
+          const sediNorm = normalizzaListaSediAssociative(s.sedi);
+          setSediAssociative(sediNorm);
+          try {
+            localStorage.setItem('CROCE_ORO_SEDI_COMPLETE', JSON.stringify(sediNorm));
+          } catch {}
+        }
+        if (s.luoghiTimbratura && Array.isArray(s.luoghiTimbratura) && s.luoghiTimbratura.length > 0) {
+          const luoghiNorm = normalizzaListaLuoghiTimbratura(
+            s.luoghiTimbratura,
+            Array.isArray(s.sedi) && s.sedi.length > 0 ? s.sedi : sediAssociativeRef.current
+          );
+          setLuoghiTimbratura(luoghiNorm);
+          try {
+            localStorage.setItem('CROCE_ORO_LUOGHI_TIMBRATURA', JSON.stringify(luoghiNorm));
           } catch {}
         }
         if (s.serviziArchivio && Array.isArray(s.serviziArchivio) && s.serviziArchivio.length > 0) {
@@ -8878,9 +8998,10 @@ KM TOTALI: ${kmTot} KM`;
           } catch {}
         }
         if (s.bacheca && Array.isArray(s.bacheca) && s.bacheca.length > 0) {
-          setComunicazioniBacheca(s.bacheca);
+          const bachecaNorm = normalizzaComunicazioniBacheca(s.bacheca);
+          setComunicazioniBacheca(bachecaNorm);
           try {
-            localStorage.setItem('CROCE_ORO_BACHECA_COMUNICAZIONI', JSON.stringify(s.bacheca));
+            localStorage.setItem('CROCE_ORO_BACHECA_COMUNICAZIONI', JSON.stringify(bachecaNorm));
           } catch {}
         }
         if (s.giornaleBordo && Array.isArray(s.giornaleBordo)) {
@@ -9096,9 +9217,10 @@ KM TOTALI: ${kmTot} KM`;
       // Ricezione aggiornamento calendario turni in tempo reale (visibile a tutti i ruoli e visitatori)
       realtime.on('TURNI_UPDATED', (payload: any) => {
         if (payload && Array.isArray(payload.turni)) {
-          setTurniSedi(payload.turni);
+          const turniNorm = normalizzaTurniSedi(payload.turni);
+          setTurniSedi(turniNorm);
           try {
-            localStorage.setItem('CROCE_ORO_TURNI_SEDI', JSON.stringify(payload.turni));
+            localStorage.setItem('CROCE_ORO_TURNI_SEDI', JSON.stringify(turniNorm));
           } catch {}
         }
       }),
@@ -10474,9 +10596,10 @@ KM TOTALI: ${kmTot} KM`;
       // 15. Sincronizzazione Realtime Bacheca e Commenti
       realtime.on('BACHECA_UPDATED', (payload: any) => {
         if (payload && Array.isArray(payload.bacheca)) {
-          setComunicazioniBacheca(payload.bacheca);
+          const bachecaNorm = normalizzaComunicazioniBacheca(payload.bacheca);
+          setComunicazioniBacheca(bachecaNorm);
           try {
-            localStorage.setItem('CROCE_ORO_BACHECA_COMUNICAZIONI', JSON.stringify(payload.bacheca));
+            localStorage.setItem('CROCE_ORO_BACHECA_COMUNICAZIONI', JSON.stringify(bachecaNorm));
           } catch {}
         }
       }),
@@ -10617,22 +10740,23 @@ KM TOTALI: ${kmTot} KM`;
           } catch {}
           return fallback;
         };
+        const sediLocali = normalizzaListaSediAssociative(readLS('CROCE_ORO_SEDI_COMPLETE', SEDI_ASSOCIATIVE_INIZIALI));
         realtime.seedMissingShardsFromLocal({
           volontari: readLS('CROCE_ORO_VOLONTARI_DB', []),
           volontariEliminatiIds: readLS('CROCE_ORO_VOLONTARI_ELIMINATI', []),
-          turni: readLS('CROCE_ORO_TURNI_SEDI', TURNI_SEDI_INIZIALI),
+          turni: normalizzaTurniSedi(readLS('CROCE_ORO_TURNI_SEDI', TURNI_SEDI_INIZIALI)),
           serviziArchivio: readLS('CROCE_ORO_SERVIZI_ARCHIVIO', []),
-          bacheca: readLS('CROCE_ORO_BACHECA_COMUNICAZIONI', COMUNICAZIONI_BACHECA_INIZIALI),
+          bacheca: normalizzaComunicazioniBacheca(readLS('CROCE_ORO_BACHECA_COMUNICAZIONI', COMUNICAZIONI_BACHECA_INIZIALI)),
           giornaleBordo: readLS('CROCE_ORO_GIORNALE_BORDO', []),
           magazzinoParti: readLS('CROCE_ORO_MAGAZZINO_PARTI_MEZZI', []),
           magazzinoMezzi: readLS('CROCE_ORO_MAGAZZINO_MEZZI', []),
           timbrature: readLS('CROCE_ORO_TIMBRATURE', []),
-          luoghiTimbratura: readLS('CROCE_ORO_LUOGHI_TIMBRATURA', LUOGHI_TIMBRATURA_DEFAULT),
+          luoghiTimbratura: normalizzaListaLuoghiTimbratura(readLS('CROCE_ORO_LUOGHI_TIMBRATURA', LUOGHI_TIMBRATURA_DEFAULT), sediLocali),
           indirizziCollezionati: readLS('CROCE_ORO_INDIRIZZI_COLLEZIONATI', []),
           contatti: readLS('CROCE_ORO_CONTATTI_ESTERNI', CONTATTI_INIZIALI),
           checklistsTemplates: readLS('CROCE_ORO_CHECKLISTS_TEMPLATES', CHECKLIST_TEMPLATES_INIZIALI),
           checklistsCompilate: readLS('CROCE_ORO_CHECKLISTS_COMPILATE', []),
-          sedi: readLS('CROCE_ORO_SEDI_COMPLETE', SEDI_ASSOCIATIVE_INIZIALI),
+          sedi: sediLocali,
         }).then(() => {
           return realtime.reconcileLocalVolontariWithCloud(
             volontariRef.current,
@@ -10657,9 +10781,10 @@ KM TOTALI: ${kmTot} KM`;
     // Carica la bacheca remota sincronizzata dal server
     realtime.fetchBacheca().then(remoteBacheca => {
       if (remoteBacheca && Array.isArray(remoteBacheca) && remoteBacheca.length > 0) {
-        setComunicazioniBacheca(remoteBacheca);
+        const bachecaNorm = normalizzaComunicazioniBacheca(remoteBacheca);
+        setComunicazioniBacheca(bachecaNorm);
         try {
-          localStorage.setItem('CROCE_ORO_BACHECA_COMUNICAZIONI', JSON.stringify(remoteBacheca));
+          localStorage.setItem('CROCE_ORO_BACHECA_COMUNICAZIONI', JSON.stringify(bachecaNorm));
         } catch {}
       }
     }).catch(() => {});

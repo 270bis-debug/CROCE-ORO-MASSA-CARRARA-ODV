@@ -28,6 +28,11 @@ import {
 } from '../utils/exportTimbrature';
 import { addDaysISODate, formatTimeItaly, getCurrentYearItaly } from '../utils/italianTime';
 import { rilevaAttivitaProgrammataPerTimbratura } from '../utils/turnoVerifica';
+import {
+  normalizzaListaLuoghiTimbratura,
+  normalizzaListaSediAssociative,
+  detectCanonicalSedeKey
+} from '../utils/sediNormalize';
 
 // Formula geodesica di Haversine per calcolare la distanza in metri tra due coordinate GPS
 export function calcolaDistanzaMetri(lat1: number, lon1: number, lat2: number, lon2: number): number {
@@ -49,20 +54,40 @@ export function getLuoghiTimbraturaServizioAttivi(
   luoghiTimbratura: LuogoTimbratura[] | undefined,
   sedi: SedeAssociativaCompleta[]
 ): LuogoTimbratura[] {
-  const baseLuoghi =
+  const sediNormalizzate = normalizzaListaSediAssociative(sedi || []);
+  const rawLuoghi =
     luoghiTimbratura !== undefined
       ? luoghiTimbratura
       : LUOGHI_TIMBRATURA_DEFAULT;
 
+  const baseLuoghi = normalizzaListaLuoghiTimbratura(rawLuoghi, sediNormalizzate);
   const attivi = baseLuoghi.filter(l => l.attivo !== false);
 
   // Integrazione sedi associative solo se non già configurate in luoghiTimbratura (rispetta eventuali disattivazioni Admin)
-  if (sedi && sedi.length > 0) {
-    sedi.forEach(sede => {
-      const giaConfigurata = baseLuoghi.some(p =>
-        p.nome.toLowerCase() === sede.nome.toLowerCase() ||
-        (p.codice && p.codice.toLowerCase() === sede.id.toLowerCase())
-      );
+  if (sediNormalizzate && sediNormalizzate.length > 0) {
+    sediNormalizzate.forEach(sede => {
+      const sedeCanonKey = detectCanonicalSedeKey({
+        id: sede.id,
+        codice: sede.codice,
+        nome: sede.nome,
+        indirizzo: sede.indirizzoCompleto,
+        coordinate: sede.coordinate
+      });
+      const giaConfigurata = baseLuoghi.some(p => {
+        if (p.nome.toLowerCase() === sede.nome.toLowerCase()) return true;
+        if (p.codice && p.codice.toLowerCase() === sede.id.toLowerCase()) return true;
+        if (sedeCanonKey) {
+          const pKey = detectCanonicalSedeKey({
+            id: p.id,
+            codice: p.codice,
+            nome: p.nome,
+            indirizzo: p.indirizzo,
+            coordinate: p.coordinate
+          });
+          if (pKey === sedeCanonKey) return true;
+        }
+        return false;
+      });
       if (!giaConfigurata && sede.coordinate && typeof sede.coordinate.lat === 'number' && typeof sede.coordinate.lng === 'number') {
         attivi.push({
           id: `sede-${sede.id}`,

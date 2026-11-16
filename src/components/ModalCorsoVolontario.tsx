@@ -89,7 +89,7 @@ export const ModalCorsoVolontario: React.FC<ModalCorsoVolontarioProps> = ({
   const lezioneCorrente = lezioni.find(l => l.id === selectedLezioneId);
 
   // Coordinate di riferimento: DEVE essere il luogo della singola lezione!
-  const coordTarget = lezioneCorrente?.coordinate || corso.coordinate || { lat: 44.0185, lng: 10.1062 };
+  const coordTarget = lezioneCorrente?.coordinate || corso.coordinate || { lat: 43.99419, lng: 10.12367 };
   const sedeTargetNome = lezioneCorrente?.sedeNome || corso.sedeCorso;
   const indirizzoTarget = lezioneCorrente?.indirizzoCompleto || corso.indirizzoCompleto || 'Massa Carrara';
 

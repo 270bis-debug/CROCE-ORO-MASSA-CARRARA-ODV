@@ -23,6 +23,12 @@ import {
   parseItalianDateTimeMs
 } from './src/utils/italianTime';
 import { mergeVolontariListsSafe, normalizeDeletedIds } from './src/utils/volontariMerge';
+import {
+  normalizzaListaSediAssociative,
+  normalizzaListaLuoghiTimbratura,
+  normalizzaTurniSedi,
+  normalizzaComunicazioniBacheca
+} from './src/utils/sediNormalize';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -813,18 +819,23 @@ function loadPersistedState(): ServerState {
             phoneNumberId: (parsed.whatsappConfig?.phoneNumberId && parsed.whatsappConfig.phoneNumberId.trim()) || process.env.WHATSAPP_PHONE_NUMBER_ID || '1692890819217239',
             businessNumber: parsed.whatsappConfig?.businessNumber || '0585625410'
           },
-          turni: Array.isArray(parsed.turni) ? parsed.turni : [],
+          turni: Array.isArray(parsed.turni) ? normalizzaTurniSedi(parsed.turni) : [],
           checklistsTemplates: Array.isArray(parsed.checklistsTemplates) ? parsed.checklistsTemplates : undefined,
           checklistsCompilate: Array.isArray(parsed.checklistsCompilate) ? parsed.checklistsCompilate : [],
-          sedi: Array.isArray(parsed.sedi) ? parsed.sedi : [],
+          sedi: Array.isArray(parsed.sedi) ? normalizzaListaSediAssociative(parsed.sedi) : [],
           datiCartaIntestata: parsed.datiCartaIntestata
             ? normalizeDatiCartaIntestataServer(parsed.datiCartaIntestata)
             : { ...DATI_CARTA_INTESTATA_DEFAULT },
-          luoghiTimbratura: Array.isArray(parsed.luoghiTimbratura) && parsed.luoghiTimbratura.length > 0 ? parsed.luoghiTimbratura : LUOGHI_TIMBRATURA_DEFAULT,
+          luoghiTimbratura: Array.isArray(parsed.luoghiTimbratura) && parsed.luoghiTimbratura.length > 0
+            ? normalizzaListaLuoghiTimbratura(
+                parsed.luoghiTimbratura,
+                Array.isArray(parsed.sedi) ? normalizzaListaSediAssociative(parsed.sedi) : undefined
+              )
+            : LUOGHI_TIMBRATURA_DEFAULT,
           promemoriaTurniInviati: parsed.promemoriaTurniInviati && typeof parsed.promemoriaTurniInviati === 'object' ? parsed.promemoriaTurniInviati : {},
           promemoriaCompleanniInviati: parsed.promemoriaCompleanniInviati && typeof parsed.promemoriaCompleanniInviati === 'object' ? parsed.promemoriaCompleanniInviati : {},
           timbrature: Array.isArray(parsed.timbrature) ? parsed.timbrature : [],
-          bacheca: Array.isArray(parsed.bacheca) ? parsed.bacheca : [],
+          bacheca: Array.isArray(parsed.bacheca) ? normalizzaComunicazioniBacheca(parsed.bacheca) : [],
           giornaleBordo: Array.isArray(parsed.giornaleBordo) ? parsed.giornaleBordo : [],
           codiciEliminati: ensureCodiciEliminati(parsed.codiciEliminati),
           magazzinoParti: filterDemoMagazzinoParti(parsed.magazzinoParti),
@@ -4109,10 +4120,11 @@ async function startServer() {
           // 15. Aggiornamento Luoghi di Timbratura GPS a discrezione operatore (Effetto Immediato)
           case 'UPDATE_LUOGHI_TIMBRATURA': {
             if (Array.isArray(data.luoghi)) {
-              state.luoghiTimbratura = data.luoghi;
+              const luoghiNorm = normalizzaListaLuoghiTimbratura(data.luoghi, state.sedi);
+              state.luoghiTimbratura = luoghiNorm;
               persistState();
 
-              const count = data.luoghi.length;
+              const count = luoghiNorm.length;
               const notif: RadioNotification = {
                 id: generateUniqueNotifId(),
                 orario: formatTimeItaly(),
@@ -5927,7 +5939,7 @@ async function startServer() {
 
   // REST API per il Database Anagrafiche Sedi Associative
   app.get('/api/sedi', (_req, res) => {
-    res.json(state.sedi || []);
+    res.json(normalizzaListaSediAssociative(state.sedi || []));
   });
 
   app.post('/api/sedi', (req, res) => {
@@ -5936,13 +5948,18 @@ async function startServer() {
       if (!Array.isArray(sedi)) {
         return res.status(400).json({ error: 'Payload sedi deve essere un array' });
       }
-      state.sedi = sedi;
+      const sediNorm = normalizzaListaSediAssociative(sedi);
+      state.sedi = sediNorm;
+      state.luoghiTimbratura = normalizzaListaLuoghiTimbratura(
+        state.luoghiTimbratura || LUOGHI_TIMBRATURA_DEFAULT,
+        sediNorm
+      );
       persistState();
       broadcast({
         type: 'SEDI_UPDATED',
         sedi: state.sedi
       });
-      console.log(`[Sedi Associative] Aggiornate ${sedi.length} sedi nel database persistito.`);
+      console.log(`[Sedi Associative] Aggiornate ${sediNorm.length} sedi nel database persistito.`);
       res.json({ success: true, sedi: state.sedi });
     } catch (err: any) {
       console.error('[Sedi Associative] Errore aggiornamento sedi:', err);
@@ -5954,7 +5971,7 @@ async function startServer() {
   app.get('/api/luoghi-timbratura', (_req, res) => {
     res.json({
       success: true,
-      luoghi: state.luoghiTimbratura || LUOGHI_TIMBRATURA_DEFAULT
+      luoghi: normalizzaListaLuoghiTimbratura(state.luoghiTimbratura || LUOGHI_TIMBRATURA_DEFAULT, state.sedi)
     });
   });
 
@@ -5964,13 +5981,14 @@ async function startServer() {
       if (!Array.isArray(luoghi)) {
         return res.status(400).json({ success: false, error: 'Payload luoghi deve essere un array' });
       }
-      state.luoghiTimbratura = luoghi;
+      const luoghiNorm = normalizzaListaLuoghiTimbratura(luoghi, state.sedi);
+      state.luoghiTimbratura = luoghiNorm;
       persistState();
 
       const notif: RadioNotification = {
         id: generateUniqueNotifId(),
         orario: formatTimeItaly(),
-        testo: messaggio || `📍 LUOGHI DI TIMBRATURA: Configurazione aggiornata dall'operatore (${luoghi.length} punti). Validità immediata.`,
+        testo: messaggio || `📍 LUOGHI DI TIMBRATURA: Configurazione aggiornata dall'operatore (${luoghiNorm.length} punti). Validità immediata.`,
         tipo: 'sistema'
       };
       state.notifiche.push(notif);
@@ -5981,7 +5999,7 @@ async function startServer() {
         notification: notif
       });
 
-      console.log(`[Luoghi Timbratura] ${luoghi.length} punti salvati via REST API.`);
+      console.log(`[Luoghi Timbratura] ${luoghiNorm.length} punti salvati via REST API.`);
       res.json({ success: true, luoghi: state.luoghiTimbratura });
     } catch (err: any) {
       console.error('[Luoghi Timbratura] Errore aggiornamento:', err);
