@@ -174,6 +174,7 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
   const [formTimbUscita, setFormTimbUscita] = useState('14:00:00');
   const [formTimbSede, setFormTimbSede] = useState('Sede Operativa Massa (Le Jare)');
   const [formTimbSedeUscita, setFormTimbSedeUscita] = useState('');
+  const [formTimbAttivita, setFormTimbAttivita] = useState('');
   const [formTimbNote, setFormTimbNote] = useState('');
 
   // Filtri Timbrature (Nominativo Volontario, Sede di timbratura, Filtro Temporale: Tutto / Giornaliero / Settimanale / Personalizzato)
@@ -503,6 +504,7 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
           oreEMinuti,
           sede: formTimbSede,
           sedeUscita: formTimbSedeUscita.trim() || formTimbSede,
+          attivitaSvolta: formTimbAttivita.trim() || undefined,
           note: formTimbNote,
           modificataDaAdmin: true,
           dataUltimaModifica: `${formatISODateItaly()} ${formatTimeItaly(undefined, true)}`,
@@ -547,6 +549,8 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
       oreEMinuti,
       sede: formTimbSede,
       sedeUscita: formTimbSedeUscita.trim() || formTimbSede,
+      attivitaSvolta: formTimbAttivita.trim() || undefined,
+      tipoAttivita: formTimbAttivita.trim() ? 'manuale' : undefined,
       modificataDaAdmin: true,
       dataUltimaModifica: `${formatISODateItaly()} ${formatTimeItaly(undefined, true)}`,
       operatoreModifica: operatoreCorrente,
@@ -694,6 +698,7 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
         (t.volontarioNome || '').toLowerCase().includes(ricerca.toLowerCase()) ||
         (t.sede || '').toLowerCase().includes(ricerca.toLowerCase()) ||
         (t.sedeUscita && t.sedeUscita.toLowerCase().includes(ricerca.toLowerCase())) ||
+        (t.attivitaSvolta && t.attivitaSvolta.toLowerCase().includes(ricerca.toLowerCase())) ||
         (t.qualifica && t.qualifica.toLowerCase().includes(ricerca.toLowerCase())) ||
         (t.note && t.note.toLowerCase().includes(ricerca.toLowerCase()));
 
@@ -2245,6 +2250,7 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
                     <th className="py-3 px-4">Ingresso — Uscita</th>
                     <th className="py-3 px-4">Ore Totali</th>
                     <th className="py-3 px-4">Sede / Postazione</th>
+                    <th className="py-3 px-4">Cosa stai facendo / Attività</th>
                     <th className="py-3 px-4">Stato / Modifica</th>
                     <th className="py-3 px-4 text-right">Azioni Admin</th>
                   </tr>
@@ -2252,7 +2258,7 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
                 <tbody className="divide-y divide-slate-800/60">
                   {timbratureFiltrate.length === 0 ? (
                     <tr>
-                      <td colSpan={7} className="py-8 text-center text-slate-500">
+                      <td colSpan={8} className="py-8 text-center text-slate-500">
                         Nessuna timbratura registrata con i filtri selezionati.
                       </td>
                     </tr>
@@ -2289,6 +2295,15 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
                             </div>
                           )}
                         </td>
+                        <td className="py-3 px-4 max-w-[230px]">
+                          {t.attivitaSvolta ? (
+                            <div className="text-xs font-semibold text-amber-200 break-words">
+                              {t.attivitaSvolta}
+                            </div>
+                          ) : (
+                            <span className="text-slate-500 italic text-[11px]">—</span>
+                          )}
+                        </td>
                         <td className="py-3 px-4">
                           {t.modificataDaAdmin ? (
                             <span className="px-2 py-0.5 rounded bg-amber-950 text-amber-300 border border-amber-700/50 text-[10px] font-bold block w-fit" title={`Modificato da ${t.operatoreModifica || 'Admin'} il ${t.dataUltimaModifica || ''}`}>
@@ -2312,6 +2327,7 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
                                 setFormTimbUscita(t.orarioUscita || '13:00:00');
                                 setFormTimbSede(t.sede || 'Sede Operativa Massa (Le Jare)');
                                 setFormTimbSedeUscita(t.sedeUscita || '');
+                                setFormTimbAttivita(t.attivitaSvolta || '');
                                 setFormTimbNote(t.note || '');
                               }}
                               className="p-1.5 rounded-lg bg-blue-950 hover:bg-blue-900 text-blue-300 border border-blue-800 transition-colors"
@@ -2422,6 +2438,17 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
                     className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white"
                   />
                 </div>
+              </div>
+
+              <div>
+                <label className="block text-slate-400 font-bold mb-1">Cosa stava facendo / Attività Svolta</label>
+                <input
+                  type="text"
+                  value={formTimbAttivita}
+                  onChange={(e) => setFormTimbAttivita(e.target.value)}
+                  placeholder="Es. Turno Sede, Corso Formazione, Manutenzione..."
+                  className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white"
+                />
               </div>
 
               <div>
@@ -2551,6 +2578,17 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
                     className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white"
                   />
                 </div>
+              </div>
+
+              <div>
+                <label className="block text-slate-400 font-bold mb-1">Cosa stava facendo / Attività Svolta</label>
+                <input
+                  type="text"
+                  value={formTimbAttivita}
+                  onChange={(e) => setFormTimbAttivita(e.target.value)}
+                  placeholder="Es. Turno Sede, Corso Formazione, Manutenzione..."
+                  className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white"
+                />
               </div>
 
               <div>
@@ -3196,6 +3234,7 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
                         <th className="py-1.5 px-2 border-r border-slate-400">Nominativo Volontario</th>
                         <th className="py-1.5 px-2 border-r border-slate-400">Qualifica</th>
                         <th className="py-1.5 px-2 border-r border-slate-400">Sede di Timbratura</th>
+                        <th className="py-1.5 px-2 border-r border-slate-400">Attività Svolta (Cosa stai facendo)</th>
                         <th className="py-1.5 px-2 border-r border-slate-400 text-center w-14">Ingresso</th>
                         <th className="py-1.5 px-2 border-r border-slate-400 text-center w-14">Uscita</th>
                         <th className="py-1.5 px-2 border-r border-slate-400 text-center w-14">Ore Tot.</th>
@@ -3205,7 +3244,7 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
                     <tbody className="divide-y divide-slate-300">
                       {timbratureFiltrate.length === 0 ? (
                         <tr>
-                          <td colSpan={9} className="py-6 text-center text-slate-500 italic">
+                          <td colSpan={10} className="py-6 text-center text-slate-500 italic">
                             Nessuna timbratura registrata con i criteri di ricerca specificati.
                           </td>
                         </tr>
@@ -3230,6 +3269,9 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
                                 <div className="text-[10px] text-amber-800 font-semibold">Uscita: {t.sedeUscita}</div>
                               )}
                             </td>
+                            <td className="py-1.5 px-2 border-r border-slate-300 text-slate-900 font-medium">
+                              {t.attivitaSvolta || '—'}
+                            </td>
                             <td className="py-1.5 px-2 border-r border-slate-300 text-center font-mono font-bold text-slate-900">
                               {t.orarioIngresso}
                             </td>
@@ -3251,7 +3293,7 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
                     </tbody>
                     <tfoot>
                       <tr className="bg-slate-100 font-black border-t-2 border-slate-900 text-slate-950">
-                        <td colSpan={7} className="py-2 px-3 text-right uppercase tracking-wider text-[10px]">
+                        <td colSpan={8} className="py-2 px-3 text-right uppercase tracking-wider text-[10px]">
                           Totale Ore di Volontariato Certificate nel Periodo:
                         </td>
                         <td className="py-2 px-2 text-center font-mono text-xs text-amber-800">

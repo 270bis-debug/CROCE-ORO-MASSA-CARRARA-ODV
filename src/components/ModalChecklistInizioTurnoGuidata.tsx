@@ -32,6 +32,7 @@ export interface ModalChecklistInizioTurnoGuidataProps {
   templates?: ChecklistTemplate[];
   mezzoSigla?: string;
   mezzo?: string;
+  flottaMezzi?: string[];
   volontario: Volontario;
   ruoloTurno?: string;
   onConferma?: (compilata: ChecklistCompilataTurno) => void;
@@ -46,6 +47,7 @@ export const ModalChecklistInizioTurnoGuidata: React.FC<ModalChecklistInizioTurn
   templates,
   mezzoSigla,
   mezzo,
+  flottaMezzi,
   volontario,
   ruoloTurno,
   onConferma,
@@ -53,7 +55,20 @@ export const ModalChecklistInizioTurnoGuidata: React.FC<ModalChecklistInizioTurn
   onAnnulla,
   onClose
 }) => {
-  const effMezzo = mezzoSigla || mezzo || 'Mezzo';
+  const hasMezzoPreassegnato = Boolean((mezzoSigla || mezzo || '').trim());
+  const [mezzoSelezionato, setMezzoSelezionato] = useState<string>(
+    mezzoSigla || mezzo || (flottaMezzi && flottaMezzi[0]) || 'Mezzo'
+  );
+  React.useEffect(() => {
+    const incoming = mezzoSigla || mezzo;
+    if (incoming && incoming.trim()) {
+      setMezzoSelezionato(incoming);
+    } else if (flottaMezzi && flottaMezzi.length > 0 && !flottaMezzi.includes(mezzoSelezionato)) {
+      setMezzoSelezionato(flottaMezzi[0]);
+    }
+  }, [mezzoSigla, mezzo, flottaMezzi]);
+
+  const effMezzo = mezzoSelezionato || 'Mezzo';
   const effRuolo = ruoloTurno || volontario?.qualifica || 'Soccorritore';
   const handleFinalConferma = onConfermaOperativita || onConferma || (() => {});
   const handleFinalAnnulla = onClose || onAnnulla || (() => {});
@@ -255,6 +270,26 @@ export const ModalChecklistInizioTurnoGuidata: React.FC<ModalChecklistInizioTurn
 
         {/* Corpo Lista Controlli Raggruppati per Categoria */}
         <div className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-4">
+          {!hasMezzoPreassegnato && flottaMezzi && flottaMezzi.length > 0 && (
+            <div className="p-3 rounded-2xl bg-amber-500/10 border border-amber-500/40 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div className="flex items-center gap-2 text-xs text-amber-200 font-bold">
+                <Car className="w-4 h-4 text-amber-400 shrink-0" />
+                <span>Seleziona il mezzo su cui effettui la checklist:</span>
+              </div>
+              <select
+                value={mezzoSelezionato}
+                onChange={(e) => setMezzoSelezionato(e.target.value)}
+                className="px-3 py-1.5 rounded-xl bg-slate-950 border border-amber-500/50 text-amber-300 font-bold text-xs focus:outline-none focus:ring-2 focus:ring-amber-400"
+              >
+                {flottaMezzi.map((m) => (
+                  <option key={m} value={m}>
+                    {m}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
           <p className="text-xs text-slate-300 leading-snug">
             Prima di iniziare il turno e dare operatività alla Centrale, spunta a crocette lo stato delle dotazioni di bordo. Se una voce presenta un'anomalia, tocca la <strong>croce rossa (✗)</strong> e scrivi una breve nota descrittiva.
           </p>

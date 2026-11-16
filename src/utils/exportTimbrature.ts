@@ -263,6 +263,7 @@ export function esportaReportTimbratureCSV(params: ExportReportTimbratureParams)
     'Qualifica',
     'Sede / Luogo Entrata',
     'Sede / Luogo Uscita',
+    'Attività Svolta (Cosa stai facendo)',
     'Orario Ingresso (HH:MM:SS)',
     'Orario Uscita (HH:MM:SS)',
     'Ore Totali',
@@ -291,6 +292,7 @@ export function esportaReportTimbratureCSV(params: ExportReportTimbratureParams)
       t.qualifica || vol?.qualifica || 'Volontario',
       t.sede || '',
       sedeUscitaVal,
+      t.attivitaSvolta || '—',
       t.orarioIngresso || '',
       t.orarioUscita || 'In Turno',
       typeof t.oreTotali === 'number' ? t.oreTotali.toFixed(2).replace('.', ',') : '0,00',
@@ -308,6 +310,7 @@ export function esportaReportTimbratureCSV(params: ExportReportTimbratureParams)
     '',
     '',
     `${timbrature.length} Timbrature`,
+    '',
     '',
     '',
     '',
@@ -400,6 +403,7 @@ export function esportaReportTimbratureExcel(params: ExportReportTimbratureParam
           <td style="border:1px solid #cbd5e1;padding:5px;">${escapeHTML(t.qualifica || vol?.qualifica || 'Volontario')}</td>
           <td style="border:1px solid #cbd5e1;padding:5px;">${escapeHTML(t.sede || '')}</td>
           <td style="border:1px solid #cbd5e1;padding:5px;">${escapeHTML(sedeUscitaVal)}</td>
+          <td style="border:1px solid #cbd5e1;padding:5px;font-weight:bold;">${escapeHTML(t.attivitaSvolta || '—')}</td>
           <td style="border:1px solid #cbd5e1;padding:5px;text-align:center;mso-number-format:'\\@';">${escapeHTML(t.orarioIngresso || '')}</td>
           <td style="border:1px solid #cbd5e1;padding:5px;text-align:center;mso-number-format:'\\@';">${escapeHTML(t.orarioUscita || 'In Turno')}</td>
           <td style="border:1px solid #cbd5e1;padding:5px;text-align:right;font-weight:bold;mso-number-format:'0\\.00';">${oreVal}</td>
@@ -452,7 +456,7 @@ export function esportaReportTimbratureExcel(params: ExportReportTimbratureParam
 <body>
   <table>
     <tr>
-      <td colspan="14" style="background:#1d1a60;color:#fbbf24;font-size:14pt;font-weight:bold;padding:10px;border:1px solid #0f172a;">
+      <td colspan="15" style="background:#1d1a60;color:#fbbf24;font-size:14pt;font-weight:bold;padding:10px;border:1px solid #0f172a;">
         CROCE ORO MASSA CARRARA OdV — REPORT COMPLETO TIMBRATURE VOLONTARI
       </td>
     </tr>
@@ -460,23 +464,23 @@ export function esportaReportTimbratureExcel(params: ExportReportTimbratureParam
       <td colspan="3" style="font-weight:bold;background:#f1f5f9;border:1px solid #cbd5e1;padding:5px;">Volontario Selezionato:</td>
       <td colspan="4" style="border:1px solid #cbd5e1;padding:5px;font-weight:bold;">${escapeHTML(etichettaVolontario)}</td>
       <td colspan="3" style="font-weight:bold;background:#f1f5f9;border:1px solid #cbd5e1;padding:5px;">Periodo Temporale:</td>
-      <td colspan="4" style="border:1px solid #cbd5e1;padding:5px;font-weight:bold;">${escapeHTML(etichettaPeriodo)}</td>
+      <td colspan="5" style="border:1px solid #cbd5e1;padding:5px;font-weight:bold;">${escapeHTML(etichettaPeriodo)}</td>
     </tr>
     <tr>
       <td colspan="3" style="font-weight:bold;background:#f1f5f9;border:1px solid #cbd5e1;padding:5px;">Sede / Postazione:</td>
       <td colspan="4" style="border:1px solid #cbd5e1;padding:5px;">${escapeHTML(filtroSede === 'tutte' ? 'Tutte le Sedi Operative' : filtroSede)}</td>
       <td colspan="3" style="font-weight:bold;background:#f1f5f9;border:1px solid #cbd5e1;padding:5px;">Data Generazione Report:</td>
-      <td colspan="4" style="border:1px solid #cbd5e1;padding:5px;">${escapeHTML(formatDateItaly())} ${escapeHTML(formatOrarioConSecondi())}</td>
+      <td colspan="5" style="border:1px solid #cbd5e1;padding:5px;">${escapeHTML(formatDateItaly())} ${escapeHTML(formatOrarioConSecondi())}</td>
     </tr>
     ${
       filtroTesto?.trim()
         ? `<tr>
       <td colspan="3" style="font-weight:bold;background:#f1f5f9;border:1px solid #cbd5e1;padding:5px;">Filtro Testo Libero:</td>
-      <td colspan="11" style="border:1px solid #cbd5e1;padding:5px;">${escapeHTML(filtroTesto.trim())}</td>
+      <td colspan="12" style="border:1px solid #cbd5e1;padding:5px;">${escapeHTML(filtroTesto.trim())}</td>
     </tr>`
         : ''
     }
-    <tr><td colspan="14" style="height:10px;"></td></tr>
+    <tr><td colspan="15" style="height:10px;"></td></tr>
     <tr style="background:#0f172a;color:#ffffff;font-weight:bold;text-align:center;">
       <th style="border:1px solid #334155;padding:6px;">N°</th>
       <th style="border:1px solid #334155;padding:6px;">Data</th>
@@ -486,6 +490,7 @@ export function esportaReportTimbratureExcel(params: ExportReportTimbratureParam
       <th style="border:1px solid #334155;padding:6px;">Qualifica</th>
       <th style="border:1px solid #334155;padding:6px;">Sede / Luogo Entrata</th>
       <th style="border:1px solid #334155;padding:6px;">Sede / Luogo Uscita</th>
+      <th style="border:1px solid #334155;padding:6px;">Attività Svolta (Cosa stai facendo)</th>
       <th style="border:1px solid #334155;padding:6px;">Ingresso</th>
       <th style="border:1px solid #334155;padding:6px;">Uscita</th>
       <th style="border:1px solid #334155;padding:6px;">Ore Totali</th>
@@ -495,11 +500,11 @@ export function esportaReportTimbratureExcel(params: ExportReportTimbratureParam
     </tr>
     ${
       timbrature.length === 0
-        ? `<tr><td colspan="14" style="border:1px solid #cbd5e1;padding:12px;text-align:center;color:#64748b;">Nessuna timbratura trovata con i filtri selezionati.</td></tr>`
+        ? `<tr><td colspan="15" style="border:1px solid #cbd5e1;padding:12px;text-align:center;color:#64748b;">Nessuna timbratura trovata con i filtri selezionati.</td></tr>`
         : dataRowsHtml
     }
     <tr style="background:#fef3c7;font-weight:bold;">
-      <td colspan="10" style="border:1px solid #0f172a;padding:7px;text-align:right;text-transform:uppercase;">
+      <td colspan="11" style="border:1px solid #0f172a;padding:7px;text-align:right;text-transform:uppercase;">
         TOTALE GENERALE (${timbrature.length} TIMBRATURE):
       </td>
       <td style="border:1px solid #0f172a;padding:7px;text-align:right;mso-number-format:'0\\.00';">${totaleOre.toFixed(2).replace('.', ',')}</td>

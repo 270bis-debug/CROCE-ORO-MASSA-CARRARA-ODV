@@ -4191,7 +4191,7 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[100] flex items-center justify-center p-3 sm:p-4">
           <form
             onSubmit={salvaVolontario}
-            className={`bg-slate-900 border border-slate-700 rounded-3xl ${tabModaleEdit === 'domanda_iscrizione' ? 'max-w-4xl' : 'max-w-3xl'} w-full shadow-2xl flex flex-col max-h-[92vh] overflow-hidden transition-all`}
+            className="bg-slate-900 border border-slate-700 rounded-3xl max-w-4xl w-full shadow-2xl flex flex-col max-h-[92vh] overflow-hidden transition-all"
           >
             {/* Header Modale */}
             <div className="p-4 sm:p-5 border-b border-slate-800 flex items-center justify-between shrink-0 bg-slate-950/50">
@@ -5414,31 +5414,31 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
               )}
             </div>
 
-            {/* Footer Modale Fisso */}
-            <div className="p-3 sm:p-4 border-t border-slate-800 bg-slate-950 flex flex-wrap items-center justify-between gap-2 shrink-0">
-              <div className="flex items-center gap-2 flex-wrap">
+            {/* Footer Modale Fisso su Riga Unica */}
+            <div className="px-3 py-2.5 sm:px-4 sm:py-3 border-t border-slate-800 bg-slate-950 flex flex-nowrap items-center justify-between gap-2 shrink-0 overflow-x-auto">
+              <div className="flex flex-nowrap items-center gap-1.5 sm:gap-2 shrink-0">
                 {volontarioInModifica && (
                   <>
                     <button
                       type="button"
                       onClick={() => handleScaricaSchedaVestiario(volontarioInModifica)}
-                      className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-amber-300 border border-amber-500/30 text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer active:scale-95"
+                      className="px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-amber-300 border border-amber-500/30 text-[11px] sm:text-xs font-bold flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-all cursor-pointer active:scale-95"
                       title="Scarica la Scheda Vestiario & DPI in formato PDF da stampare e firmare"
                     >
-                      <FileDown className="w-3.5 h-3.5 text-amber-400" />
+                      <FileDown className="w-3.5 h-3.5 text-amber-400 shrink-0" />
                       <span>Scheda Vestiario</span>
                     </button>
 
                     {/* Carica Documento Stampato e Firmato dal Footer */}
                     <label
-                      className={`px-3 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer active:scale-95 border ${
+                      className={`px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-xl text-[11px] sm:text-xs font-bold flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-all cursor-pointer active:scale-95 border ${
                         formVestiario.documentoFirmato
                           ? 'bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border-emerald-500/40'
                           : 'bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border-amber-500/40'
                       }`}
                       title="Una volta stampato il PDF, carica qui la scansione o il PDF firmato"
                     >
-                      <Upload className="w-3.5 h-3.5" />
+                      <Upload className="w-3.5 h-3.5 shrink-0" />
                       <span>{formVestiario.documentoFirmato ? 'Doc. Firmato Agli Atti ✓' : 'Carica Doc. Firmato (PDF)'}</span>
                       <input
                         type="file"
@@ -5451,28 +5451,28 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
                 )}
               </div>
 
-              <div className="flex items-center gap-2">
+              <div className="flex flex-nowrap items-center gap-1.5 sm:gap-2 shrink-0 ml-auto">
                 {volontarioInModifica && canDeleteEffettivo && (
                   <button
                     type="button"
                     onClick={() => setAccountDaEliminare(volontarioInModifica)}
-                    className="py-2 px-3.5 rounded-xl bg-red-600/15 hover:bg-red-600/25 text-red-400 border border-red-500/40 font-bold text-xs flex items-center gap-1.5 transition-all cursor-pointer active:scale-95"
+                    className="py-1.5 sm:py-2 px-2.5 sm:px-3 rounded-xl bg-red-600/15 hover:bg-red-600/25 text-red-400 border border-red-500/40 font-bold text-[11px] sm:text-xs flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-all cursor-pointer active:scale-95"
                     title="Elimina definitivamente questo account"
                   >
-                    <Trash2 className="w-3.5 h-3.5" />
+                    <Trash2 className="w-3.5 h-3.5 shrink-0" />
                     <span>Elimina Account</span>
                   </button>
                 )}
                 <button
                   type="button"
                   onClick={() => setModaleEditAperta(false)}
-                  className="py-2 px-4 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs cursor-pointer"
+                  className="py-1.5 sm:py-2 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-[11px] sm:text-xs whitespace-nowrap shrink-0 cursor-pointer transition-colors"
                 >
                   Annulla
                 </button>
                 <button
                   type="submit"
-                  className="py-2 px-5 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 font-black text-xs uppercase shadow-lg active:scale-95 transition-all cursor-pointer"
+                  className="py-1.5 sm:py-2 px-3.5 sm:px-4 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 font-black text-[11px] sm:text-xs tracking-tight uppercase shadow-lg whitespace-nowrap shrink-0 active:scale-95 transition-all cursor-pointer"
                 >
                   {volontarioInModifica ? 'Salva Modifiche Profilo' : 'Registra Nuovo Profilo'}
                 </button>

@@ -15,7 +15,8 @@ import {
   ChevronRight,
   Megaphone,
   BookUser,
-  Server
+  Server,
+  Clock
 } from 'lucide-react';
 import { CroceOroLogo } from '../CroceOroLogo';
 import { AdminSectionId } from './AdminPortalDashboard';
@@ -31,6 +32,8 @@ interface AdminTopNavbarProps {
   onLogout?: () => void;
   onSwitchToSmartphone?: () => void;
   onApriSyncServer?: () => void;
+  onApriTimbraturaCentrale?: () => void;
+  timbraturaCentraleAttiva?: boolean;
 }
 
 export const AdminTopNavbar: React.FC<AdminTopNavbarProps> = ({
@@ -41,7 +44,9 @@ export const AdminTopNavbar: React.FC<AdminTopNavbarProps> = ({
   isAdmin = true,
   allowedSections,
   onSwitchToSmartphone,
-  onApriSyncServer
+  onApriSyncServer,
+  onApriTimbraturaCentrale,
+  timbraturaCentraleAttiva = false
 }) => {
   const tabMetaMap: Record<string, { label: string; icona: any }> = {
     centrale: { label: 'Centrale', icona: Headphones },
@@ -91,6 +96,25 @@ export const AdminTopNavbar: React.FC<AdminTopNavbarProps> = ({
           </div>
 
           <div className="flex flex-wrap items-center gap-2 shrink-0">
+            {onApriTimbraturaCentrale && (
+              <button
+                type="button"
+                onClick={onApriTimbraturaCentrale}
+                className={`px-2.5 py-1 rounded-xl border text-xs font-black flex items-center gap-1.5 transition-all shadow cursor-pointer active:scale-95 ${
+                  timbraturaCentraleAttiva
+                    ? 'bg-emerald-600 hover:bg-emerald-500 text-white border-emerald-300'
+                    : 'bg-teal-500/15 hover:bg-teal-500 text-teal-200 hover:text-slate-950 border-teal-500/40'
+                }`}
+                title="Timbra Entrata o Uscita per l'Operatore di Centrale senza uscire dal login Centrale"
+              >
+                <Clock className="w-3.5 h-3.5 shrink-0" />
+                <span>{timbraturaCentraleAttiva ? 'Timbratura Attiva' : 'Timbratura'}</span>
+                {timbraturaCentraleAttiva && (
+                  <span className="w-2 h-2 rounded-full bg-emerald-200 animate-ping shrink-0" />
+                )}
+              </button>
+            )}
+
             {onApriSyncServer && (
               <button
                 type="button"

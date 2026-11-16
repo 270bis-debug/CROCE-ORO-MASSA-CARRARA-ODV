@@ -94,6 +94,8 @@ import { DatabaseVolontariModal, Volontario } from './components/DatabaseVolonta
 import { mergeVolontariListsSafe, normalizeDeletedIds } from './utils/volontariMerge';
 import { ModalDecisioneSbloccoAdmin } from './components/ModalDecisioneSbloccoAdmin';
 import { SchermataTurnoVolontario, SessioneTurno } from './components/SchermataTurnoVolontario';
+import { ModalChecklistInizioTurnoGuidata } from './components/ModalChecklistInizioTurnoGuidata';
+import { verificaVolontarioInTurnoAdesso } from './utils/turnoVerifica';
 import { TabelloneTurniSettimanale } from './components/TabelloneTurniSettimanale';
 import { SchermataSceltaRuolo } from './components/SchermataSceltaRuolo';
 import { SchermataAccountInAttivazione } from './components/SchermataAccountInAttivazione';
@@ -2037,9 +2039,11 @@ export default function App() {
     const dataOggiISO = formatISODateItaly();
     const titoloCorso = corsoCorrente?.titolo || 'Corso Formazione';
     const sedeLezione = lezCorrente?.sedeNome || corsoCorrente?.sedeCorso || 'Sede didattica';
+    const attivitaCorsoLabel = `Corso: ${titoloCorso} — Lezione #${lezCorrente?.numero || 1}`;
+    const currentTimbrature = timbratureVolontariRef.current;
 
     if (tipo === 'entrata') {
-      const giaAperta = timbratureVolontari.some(t =>
+      const giaAperta = currentTimbrature.some(t =>
         t.volontarioId === vol.id && !t.orarioUscita && (t.corsoId === corsoId || t.sede.includes(titoloCorso))
       );
       if (!giaAperta) {
@@ -2057,17 +2061,19 @@ export default function App() {
           modificataDaAdmin: false,
           corsoId,
           lezioneId: lezCorrente?.id,
+          attivitaSvolta: attivitaCorsoLabel,
+          tipoAttivita: 'corso',
           note: `Presenza Lezione Corso "${titoloCorso}" (Incontro #${lezCorrente?.numero || 1}) - Timbratura GPS entrata alle ore ${orarioAdesso} (±${distanzaMetri}m)`
         };
-        handleAggiornaTimbrature([nuovaTimb, ...timbratureVolontari]);
+        handleAggiornaTimbrature([nuovaTimb, ...currentTimbrature]);
       }
     } else {
       // Uscita: chiusura timbratura attiva e salvataggio ore, minuti e secondi esatti
-      const idxTimbAperta = timbratureVolontari.findIndex(t =>
+      const idxTimbAperta = currentTimbrature.findIndex(t =>
         t.volontarioId === vol.id && !t.orarioUscita && (t.corsoId === corsoId || t.sede.includes(titoloCorso))
       );
       if (idxTimbAperta >= 0) {
-        const aperta = timbratureVolontari[idxTimbAperta];
+        const aperta = currentTimbrature[idxTimbAperta];
         const calcTimb = calcolaDurataTimbratura(aperta.orarioIngresso, orarioAdesso);
         const oreDec = aperta.orarioIngresso ? calcTimb.oreDecimali : 2;
         const omStr = aperta.orarioIngresso ? calcTimb.durataTesto : '2h 00m 00s';
@@ -2080,9 +2086,11 @@ export default function App() {
           coordinateUscita: coords,
           oreTotali: oreDec,
           oreEMinuti: omStr,
+          attivitaSvolta: aperta.attivitaSvolta || attivitaCorsoLabel,
+          tipoAttivita: aperta.tipoAttivita || 'corso',
           note: `${aperta.note || ''} • USCITA timbrata via GPS alle ore ${orarioAdesso} (±${distanzaMetri}m) presso ${sedeLezione} [Presenza convalidata: ${omStr}]`
         };
-        const listNuova = [...timbratureVolontari];
+        const listNuova = [...currentTimbrature];
         listNuova[idxTimbAperta] = timbChiusa;
         handleAggiornaTimbrature(listNuova);
       }
@@ -2308,6 +2316,14 @@ export default function App() {
   const [modalConfermaUscitaServizioAttivo, setModalConfermaUscitaServizioAttivo] = useState(false);
   const [modalConfermaFineTurnoVolontario, setModalConfermaFineTurnoVolontario] = useState(false);
   const [modalTimbraturaVolontarioAperta, setModalTimbraturaVolontarioAperta] = useState(false);
+  const [modalTimbraturaCentraleAperta, setModalTimbraturaCentraleAperta] = useState(false);
+  const [inAttesaChecklistDopoTimbratura, setInAttesaChecklistDopoTimbratura] = useState<{
+    mezzo: string;
+    ruolo: string;
+  } | null>(null);
+  const [modalChecklistPostTimbraturaAperta, setModalChecklistPostTimbraturaAperta] = useState(false);
+  const [invitoAvvioDismissedVolKey, setInvitoAvvioDismissedVolKey] = useState<string | null>(null);
+  const invitoAutoTriggeredRef = useRef<string | null>(null);
 
   // Sessione Turno di Servizio del Volontario su questo terminale
   const [sessioneTurno, setSessioneTurno] = useState<SessioneTurno>(() => {
@@ -3955,7 +3971,6 @@ export default function App() {
 
     const now = new Date();
     const orarioAdesso = formatOrarioConSecondi(now);
-    const dataOggiISO = formatLocalISODate(now);
     const nomeCompleto = `${volontario.nome} ${volontario.cognome}`.trim();
     const nomeNorm = nomeCompleto.toLowerCase();
 
@@ -3968,34 +3983,7 @@ export default function App() {
       t => matchesVol(t) && !t.orarioUscita && !t.corsoId
     );
 
-    const luoghiServizio = getLuoghiTimbraturaServizioAttivi(luoghiTimbratura, sediAssociative);
-    const { luogoValido: luogoValidoLogin, luogoPiuVicino } = trovaLuogoAutorizzatoPerPosizione(
-      posizioneVolontario,
-      luoghiServizio
-    );
-
-    let orarioInizioTurno = timbApertaEsistente?.orarioIngresso || orarioAdesso;
-    let timbraturaRegistrataAllAccesso: TimbraturaVolontario | null = null;
-
-    if (!timbApertaEsistente && luogoValidoLogin) {
-      const raggioApplicato = luogoValidoLogin.raggioMetri || 20;
-      timbraturaRegistrataAllAccesso = {
-        id: `timb-${Date.now()}`,
-        volontarioId: volontario.id,
-        volontarioNome: nomeCompleto,
-        qualifica: ruolo || volontario.qualifica || 'Volontario',
-        data: dataOggiISO,
-        orarioIngresso: orarioAdesso,
-        orarioUscita: undefined,
-        oreTotali: undefined,
-        sede: luogoValidoLogin.nome,
-        coordinateIngresso: { lat: posizioneVolontario.lat, lng: posizioneVolontario.lng },
-        modificataDaAdmin: false,
-        note: `Inizio turno & timbratura INGRESSO automatica via GPS alle ${orarioAdesso} a ${luogoValidoLogin.distanza}m da ${luogoValidoLogin.nome} (Raggio autorizzato: ${raggioApplicato}m - GPS: ${posizioneVolontario.lat.toFixed(5)}, ${posizioneVolontario.lng.toFixed(5)})`
-      };
-      orarioInizioTurno = orarioAdesso;
-      handleAggiornaTimbrature([timbraturaRegistrataAllAccesso, ...timbratureVolontariRef.current]);
-    }
+    const orarioInizioTurno = timbApertaEsistente?.orarioIngresso || orarioAdesso;
 
     const nuovaSessione: SessioneTurno = {
       attivo: true,
@@ -4006,6 +3994,8 @@ export default function App() {
       orarioInizio: orarioInizioTurno
     };
     aggiornaSessioneTurno(nuovaSessione);
+    setInvitoAvvioDismissedVolKey(null);
+    invitoAutoTriggeredRef.current = volontario.id;
     if (utenteCentrale && utenteCentrale.id !== volontario.id) {
       setUtenteCentrale(null);
       try {
@@ -4056,9 +4046,7 @@ export default function App() {
     }
 
     const dettaglioMezzoLog = mezzo ? ` su ${mezzo}` : '';
-    const testoInizioNotif = timbraturaRegistrataAllAccesso && luogoValidoLogin
-      ? `🟢 INIZIO TURNO & TIMBRATURA INGRESSO: ${nomeCompleto} alle ${orarioInizioTurno} presso ${luogoValidoLogin.nome}${dettaglioMezzoLog} (${ruolo})`
-      : `🟢 INIZIO TURNO: ${nomeCompleto} in turno${dettaglioMezzoLog} (${ruolo}) dalle ${orarioInizioTurno}`;
+    const testoInizioNotif = `🟢 INIZIO TURNO: ${nomeCompleto} in turno${dettaglioMezzoLog} (${ruolo}) dalle ${orarioInizioTurno}`;
 
     const notifInizio = {
       id: `init-turno-${Date.now()}`,
@@ -4069,95 +4057,105 @@ export default function App() {
     setNotificheCentrale([notifInizio]);
 
     notificaDatoAllaCentrale(
-      timbraturaRegistrataAllAccesso && luogoValidoLogin
-        ? `🟢 INIZIO TURNO & TIMBRATURA INGRESSO: ${nomeCompleto} ha iniziato il servizio alle ore ${orarioInizioTurno} presso ${luogoValidoLogin.nome}${dettaglioMezzoLog} come ${ruolo}`
-        : `🟢 INIZIO TURNO: ${nomeCompleto} ha iniziato il servizio dalle ${orarioInizioTurno}${dettaglioMezzoLog} come ${ruolo}`,
+      `🟢 INIZIO TURNO: ${nomeCompleto} ha iniziato il servizio dalle ${orarioInizioTurno}${dettaglioMezzoLog} come ${ruolo}`,
       'generico'
     );
-
-    if (!timbApertaEsistente && !luogoValidoLogin) {
-      // Tenta un rilevamento GPS ad alta precisione al volo nel caso in cui la posizione in memoria non fosse ancora aggiornata
-      if (typeof navigator !== 'undefined' && 'geolocation' in navigator) {
-        navigator.geolocation.getCurrentPosition(
-          (pos) => {
-            const coordsFresche: PosizioneGPS = {
-              lat: pos.coords.latitude,
-              lng: pos.coords.longitude,
-              accuratezza: Math.round(pos.coords.accuracy),
-              velocita: pos.coords.speed ? Math.round(pos.coords.speed * 3.6) : null,
-              orario: formatOrarioConSecondi(new Date())
-            };
-            setPosizioneVolontario(coordsFresche);
-            realtime.updateGps(coordsFresche);
-
-            if (!sessioneTurnoRef.current.attivo || sessioneTurnoRef.current.volontarioId !== volontario.id) {
-              return;
-            }
-            const giaApertaOra = timbratureVolontariRef.current.some(
-              t => matchesVol(t) && !t.orarioUscita && !t.corsoId
-            );
-            if (giaApertaOra) return;
-
-            const { luogoValido: luogoFresco } = trovaLuogoAutorizzatoPerPosizione(coordsFresche, luoghiServizio);
-            if (luogoFresco) {
-              const nowGps = new Date();
-              const orarioGps = formatOrarioConSecondi(nowGps);
-              const dataGps = formatLocalISODate(nowGps);
-              const raggioFresco = luogoFresco.raggioMetri || 20;
-              const nuovaTimbGps: TimbraturaVolontario = {
-                id: `timb-${Date.now()}`,
-                volontarioId: volontario.id,
-                volontarioNome: nomeCompleto,
-                qualifica: ruolo || volontario.qualifica || 'Volontario',
-                data: dataGps,
-                orarioIngresso: orarioGps,
-                orarioUscita: undefined,
-                oreTotali: undefined,
-                sede: luogoFresco.nome,
-                coordinateIngresso: { lat: coordsFresche.lat, lng: coordsFresche.lng },
-                modificataDaAdmin: false,
-                note: `Inizio turno & timbratura INGRESSO automatica via GPS alle ${orarioGps} a ${luogoFresco.distanza}m da ${luogoFresco.nome} (Raggio autorizzato: ${raggioFresco}m - GPS: ${coordsFresche.lat.toFixed(5)}, ${coordsFresche.lng.toFixed(5)})`
-              };
-              handleAggiornaTimbrature([nuovaTimbGps, ...timbratureVolontariRef.current]);
-              const sessioneAllineata: SessioneTurno = {
-                ...sessioneTurnoRef.current,
-                orarioInizio: orarioGps
-              };
-              aggiornaSessioneTurno(sessioneAllineata);
-              realtime.updateShift(sessioneAllineata);
-              aggiungiNotifica(
-                `🕒 TIMBRATURA INGRESSO & INIZIO TURNO ALLINEATI: ${orarioGps} presso ${luogoFresco.nome}.`,
-                'sistema'
-              );
-              notificaDatoAllaCentrale(
-                `🕒 TIMBRATURA INGRESSO AUTOMATICA: ${nomeCompleto} ha timbrato alle ${orarioGps} presso ${luogoFresco.nome} (inizio turno allineato).`,
-                'generico'
-              );
-            } else if (luogoPiuVicino) {
-              aggiungiNotifica(
-                `⚠️ Timbratura entrata non registrata all'accesso: sei fuori perimetro autorizzato (${luogoPiuVicino.distanza}m da ${luogoPiuVicino.nome}). Apri Timbratura una volta in posizione autorizzata per allineare l'inizio turno.`,
-                'sistema'
-              );
-            }
-          },
-          () => {
-            if (luogoPiuVicino) {
-              aggiungiNotifica(
-                `⚠️ Timbratura entrata non registrata: fuori posizione autorizzata (${luogoPiuVicino.distanza}m da ${luogoPiuVicino.nome}). Apri Timbratura in una posizione autorizzata per allineare l'inizio turno.`,
-                'sistema'
-              );
-            }
-          },
-          { enableHighAccuracy: true, timeout: 6000, maximumAge: 0 }
-        );
-      } else if (luogoPiuVicino) {
-        aggiungiNotifica(
-          `⚠️ Timbratura entrata non registrata: fuori posizione autorizzata (${luogoPiuVicino.distanza}m da ${luogoPiuVicino.nome}). Apri Timbratura in una posizione autorizzata per allineare l'inizio turno.`,
-          'sistema'
-        );
-      }
-    }
   };
+
+  // Verifica se il volontario loggato ha già compilato la checklist nella giornata odierna
+  const checklistCompilataOggiVolontario = useMemo(() => {
+    if (!sessioneTurno.attivo || !sessioneTurno.volontarioId) return false;
+    const oggiStr = formatDateItaly();
+    const volNomeNorm = (sessioneTurno.volontarioNome || '').trim().toLowerCase();
+    return checklistsCompilate.some(c => {
+      const stessoVol =
+        (sessioneTurno.volontarioId && c.volontarioId === sessioneTurno.volontarioId) ||
+        (volNomeNorm && c.volontarioNome?.trim().toLowerCase() === volNomeNorm);
+      if (!stessoVol) return false;
+      return (c.dataOraCompilazione || '').includes(oggiStr);
+    });
+  }, [checklistsCompilate, sessioneTurno.attivo, sessioneTurno.volontarioId, sessioneTurno.volontarioNome]);
+
+  // Verifica se il volontario loggato ha una timbratura aperta in corso
+  const haTimbraturaApertaVolontario = useMemo(() => {
+    if (!sessioneTurno.attivo) return false;
+    const volNomeNorm = (sessioneTurno.volontarioNome || '').trim().toLowerCase();
+    return timbratureVolontari.some(
+      t =>
+        !t.orarioUscita &&
+        ((sessioneTurno.volontarioId && t.volontarioId === sessioneTurno.volontarioId) ||
+          (volNomeNorm && t.volontarioNome?.trim().toLowerCase() === volNomeNorm))
+    );
+  }, [timbratureVolontari, sessioneTurno.attivo, sessioneTurno.volontarioId, sessioneTurno.volontarioNome]);
+
+  // Flusso guidato post-login (quando di turno): 1) Prima Timbratura -> 2) Poi Checklist
+  const handleAvviaFlussoTimbraturaPoiChecklist = useCallback(
+    (vol: Volontario, mezzo: string, ruoloTurno: string, timbGiaAperta: boolean) => {
+      const oggiStr = formatDateItaly();
+      const volNomeNorm = `${vol.nome} ${vol.cognome}`.trim().toLowerCase();
+      const giaCompilataOggi = checklistsCompilate.some(c => {
+        const stessoVol =
+          (vol.id && c.volontarioId === vol.id) ||
+          (volNomeNorm && c.volontarioNome?.trim().toLowerCase() === volNomeNorm);
+        return stessoVol && (c.dataOraCompilazione || '').includes(oggiStr);
+      });
+
+      setInvitoAvvioDismissedVolKey(null);
+
+      if (!timbGiaAperta) {
+        setInAttesaChecklistDopoTimbratura({
+          mezzo: mezzo || '',
+          ruolo: ruoloTurno || vol.qualifica || 'Soccorritore'
+        });
+        setModalTimbraturaVolontarioAperta(true);
+      } else if (!giaCompilataOggi) {
+        setInAttesaChecklistDopoTimbratura({
+          mezzo: mezzo || '',
+          ruolo: ruoloTurno || vol.qualifica || 'Soccorritore'
+        });
+        setModalChecklistPostTimbraturaAperta(true);
+      } else {
+        setInAttesaChecklistDopoTimbratura(null);
+      }
+    },
+    [checklistsCompilate]
+  );
+
+  // Chi ha già effettuato il login in precedenza viene comunque invitato prima a timbrare e poi a compilare la checklist
+  useEffect(() => {
+    if (!sessioneTurno.attivo || !sessioneTurno.volontarioId || !volontarioLoggatoCorrente) return;
+    if (ruolo === 'admin' && layoutView === 'centrale') return;
+    const sessionKey = sessioneTurno.volontarioId;
+    if (invitoAutoTriggeredRef.current === sessionKey || invitoAvvioDismissedVolKey === sessionKey) return;
+
+    const verifica = verificaVolontarioInTurnoAdesso(volontarioLoggatoCorrente, turniSedi, timbratureVolontari);
+    const mezzoTurno = sessioneTurno.mezzoScelto || verifica.dettaglioTurno?.mezzoAssegnato || '';
+    const ruoloTurnoEff = sessioneTurno.qualificaTurno || verifica.dettaglioTurno?.ruoloAssegnato || volontarioLoggatoCorrente.qualifica || 'Soccorritore';
+
+    if (!haTimbraturaApertaVolontario) {
+      invitoAutoTriggeredRef.current = sessionKey;
+      setInAttesaChecklistDopoTimbratura({ mezzo: mezzoTurno, ruolo: ruoloTurnoEff });
+      setModalTimbraturaVolontarioAperta(true);
+    } else if (verifica.isDiTurno && !checklistCompilataOggiVolontario) {
+      invitoAutoTriggeredRef.current = sessionKey;
+      setInAttesaChecklistDopoTimbratura({ mezzo: mezzoTurno, ruolo: ruoloTurnoEff });
+      setModalChecklistPostTimbraturaAperta(true);
+    }
+  }, [
+    sessioneTurno.attivo,
+    sessioneTurno.volontarioId,
+    sessioneTurno.orarioInizio,
+    sessioneTurno.mezzoScelto,
+    sessioneTurno.qualificaTurno,
+    volontarioLoggatoCorrente,
+    ruolo,
+    layoutView,
+    turniSedi,
+    timbratureVolontari,
+    haTimbraturaApertaVolontario,
+    checklistCompilataOggiVolontario,
+    invitoAvvioDismissedVolKey
+  ]);
 
   // Effetto di sincronizzazione automatica: se una missione con destinatari specifici è attiva e un volontario destinatario è già in turno
   useEffect(() => {
@@ -4283,6 +4281,10 @@ export default function App() {
 
     aggiornaSessioneTurno({ attivo: false });
     realtime.updateShift({ attivo: false });
+    invitoAutoTriggeredRef.current = null;
+    setInvitoAvvioDismissedVolKey(null);
+    setInAttesaChecklistDopoTimbratura(null);
+    setModalChecklistPostTimbraturaAperta(false);
 
     // Azzera tassativamente le notifiche radio per il volontario (mantenendole solo per la centrale)
     setNotificheCentrale([]);
@@ -11419,6 +11421,33 @@ KM TOTALI: ${kmTot} KM`;
             >
               {ruolo === 'admin' ? 'Accesso Volontario' : 'Accedi Centrale'}
             </button>
+            {ruolo === 'admin' && (() => {
+              const centraleOpIdBtn = utenteCentrale?.id || 'admin-centrale-root';
+              const centraleOpNomeBtn = utenteCentrale?.nome
+                ? `${utenteCentrale.nome} ${utenteCentrale.cognome || ''}`.trim().toLowerCase()
+                : 'amministratore centrale';
+              const timbCentraleAttivaBtn = timbratureVolontari.some(
+                t =>
+                  !t.orarioUscita &&
+                  ((centraleOpIdBtn && t.volontarioId === centraleOpIdBtn) ||
+                    (centraleOpNomeBtn && t.volontarioNome?.trim().toLowerCase() === centraleOpNomeBtn))
+              );
+              return (
+                <button
+                  type="button"
+                  onClick={() => setModalTimbraturaCentraleAperta(true)}
+                  className={`text-[11px] px-2.5 py-1 rounded-lg font-black transition-all shadow-sm active:scale-95 border flex items-center gap-1 cursor-pointer ${
+                    timbCentraleAttivaBtn
+                      ? 'bg-emerald-600 hover:bg-emerald-500 text-white border-emerald-400'
+                      : 'bg-teal-500/20 hover:bg-teal-500/30 text-teal-200 border-teal-500/40'
+                  }`}
+                  title="Timbra Entrata o Uscita come Operatore di Centrale senza perdere il login Centrale"
+                >
+                  <Clock className="w-3.5 h-3.5 shrink-0" />
+                  <span>{timbCentraleAttivaBtn ? 'Timbrato' : 'Timbratura'}</span>
+                </button>
+              );
+            })()}
             <button
               type="button"
               onClick={async () => {
@@ -11478,26 +11507,40 @@ KM TOTALI: ${kmTot} KM`;
       )}
 
       {/* BARRA DI NAVIGAZIONE SUPERIORE AMMINISTRATORE */}
-      {ruolo === 'admin' && (
-        <AdminTopNavbar
-          currentSection={adminSection}
-          onSelectSection={handleSelectAdminSection}
-          operatoreNome={utenteCentrale?.nome ? `${utenteCentrale.nome} ${utenteCentrale.cognome || ''}` : 'Amministratore'}
-          isPresidente={!!utenteCentrale?.caricaConsiglioDirettivo?.toLowerCase().includes('presidente')}
-          isAdmin={isCentraleAdmin}
-          allowedSections={sezioniAbilitateUtente}
-          onLogout={handleLogoutCentrale}
-          onApriSyncServer={() => setModalSyncServerAperta(true)}
-          onSwitchToSmartphone={(!isCentraleAdmin || (utenteCentrale?.id && utenteCentrale.id !== 'admin-centrale-root')) ? () => {
-            if (ruolo === 'admin') {
-              handleCambiaRuolo();
-            } else {
-              handleSelectAdminSection('centrale');
-              setLayoutView('smartphone');
-            }
-          } : undefined}
-        />
-      )}
+      {ruolo === 'admin' && (() => {
+        const centraleOpIdNav = utenteCentrale?.id || 'admin-centrale-root';
+        const centraleOpNomeNav = utenteCentrale?.nome
+          ? `${utenteCentrale.nome} ${utenteCentrale.cognome || ''}`.trim().toLowerCase()
+          : 'amministratore centrale';
+        const timbCentraleAttivaNav = timbratureVolontari.some(
+          t =>
+            !t.orarioUscita &&
+            ((centraleOpIdNav && t.volontarioId === centraleOpIdNav) ||
+              (centraleOpNomeNav && t.volontarioNome?.trim().toLowerCase() === centraleOpNomeNav))
+        );
+        return (
+          <AdminTopNavbar
+            currentSection={adminSection}
+            onSelectSection={handleSelectAdminSection}
+            operatoreNome={utenteCentrale?.nome ? `${utenteCentrale.nome} ${utenteCentrale.cognome || ''}` : 'Amministratore'}
+            isPresidente={!!utenteCentrale?.caricaConsiglioDirettivo?.toLowerCase().includes('presidente')}
+            isAdmin={isCentraleAdmin}
+            allowedSections={sezioniAbilitateUtente}
+            onLogout={handleLogoutCentrale}
+            onApriSyncServer={() => setModalSyncServerAperta(true)}
+            onApriTimbraturaCentrale={() => setModalTimbraturaCentraleAperta(true)}
+            timbraturaCentraleAttiva={timbCentraleAttivaNav}
+            onSwitchToSmartphone={(!isCentraleAdmin || (utenteCentrale?.id && utenteCentrale.id !== 'admin-centrale-root')) ? () => {
+              if (ruolo === 'admin') {
+                handleCambiaRuolo();
+              } else {
+                handleSelectAdminSection('centrale');
+                setLayoutView('smartphone');
+              }
+            } : undefined}
+          />
+        );
+      })()}
 
       {/* Contenitore Principale */}
       <main className={`flex-1 flex flex-col ${ruolo === 'admin' && adminSection !== 'centrale' ? 'items-center p-3 sm:p-6' : 'xl:flex-row items-start justify-center p-1 sm:p-5'} gap-6 w-full max-w-full`}>
@@ -11984,6 +12027,7 @@ KM TOTALI: ${kmTot} KM`;
                       turni={turniSedi}
                       timbrature={timbratureVolontari}
                       utenteCentraleAutenticato={utenteCentrale}
+                      onAvviaFlussoTimbraturaPoiChecklist={handleAvviaFlussoTimbraturaPoiChecklist}
                     />
                   ) : (
                     <>
@@ -12008,21 +12052,39 @@ KM TOTALI: ${kmTot} KM`;
                         conteggioBacheca={comunicazioniBacheca.filter(c => c.attiva).length}
                         onApriCentroNotifiche={() => setModalCentroNotificheAperta(true)}
                         conteggioNotificheNonLette={conteggioNotificheNonLette}
-                        onApriTimbratura={() => setModalTimbraturaVolontarioAperta(true)}
-                        timbraturaAttiva={Boolean(
-                          sessioneTurno.attivo &&
-                          timbratureVolontari.some(t =>
-                            !t.orarioUscita &&
-                            ((sessioneTurno.volontarioId && t.volontarioId === sessioneTurno.volontarioId) ||
-                             (sessioneTurno.volontarioNome && t.volontarioNome?.trim().toLowerCase() === sessioneTurno.volontarioNome.trim().toLowerCase()))
-                          )
-                        )}
+                        onApriTimbratura={() => {
+                          if (!haTimbraturaApertaVolontario && !checklistCompilataOggiVolontario && !inAttesaChecklistDopoTimbratura) {
+                            setInAttesaChecklistDopoTimbratura({
+                              mezzo: sessioneTurno.mezzoScelto || '',
+                              ruolo: sessioneTurno.qualificaTurno || 'Soccorritore'
+                            });
+                          }
+                          setModalTimbraturaVolontarioAperta(true);
+                        }}
+                        timbraturaAttiva={haTimbraturaApertaVolontario}
                         checklistsTemplates={checklistsTemplates}
                         checklistsCompilate={checklistsCompilate}
                         onSalvaChecklistCompilata={handleSalvaChecklistCompilata}
                         turni={turniSedi}
                         timbrature={timbratureVolontari}
                         utenteCentraleAutenticato={utenteCentrale}
+                        onAvviaFlussoTimbraturaPoiChecklist={handleAvviaFlussoTimbraturaPoiChecklist}
+                        checklistCompilataOggi={checklistCompilataOggiVolontario}
+                        invitoAvvioDismissed={
+                          Boolean(sessioneTurno.volontarioId && invitoAvvioDismissedVolKey === sessioneTurno.volontarioId)
+                        }
+                        onDismissInvitoAvvio={() => {
+                          if (sessioneTurno.volontarioId) {
+                            setInvitoAvvioDismissedVolKey(sessioneTurno.volontarioId);
+                          }
+                        }}
+                        onApriChecklistInCorso={() => {
+                          setInAttesaChecklistDopoTimbratura({
+                            mezzo: sessioneTurno.mezzoScelto || '',
+                            ruolo: sessioneTurno.qualificaTurno || 'Soccorritore'
+                          });
+                          setModalChecklistPostTimbraturaAperta(true);
+                        }}
                       />
 
                       {/* Telemetria GPS in Tempo Reale Bordo Mezzo */}
@@ -18781,7 +18843,7 @@ KM TOTALI: ${kmTot} KM`;
         </div>
       )}
 
-      {/* MODALE DEDICATA TIMBRATURA PRESENZA GPS VOLONTARIO (APERTA DAL BOTTONE PENNELLO) */}
+      {/* MODALE DEDICATA TIMBRATURA PRESENZA GPS VOLONTARIO (APERTA DAL BOTTONE PENNELLO O AL LOGIN IN TURNO) */}
       {modalTimbraturaVolontarioAperta && sessioneTurno.attivo && (
         <div
           className="fixed inset-0 bg-black/85 backdrop-blur-sm z-[9995] flex items-center justify-center p-2 sm:p-4"
@@ -18814,6 +18876,24 @@ KM TOTALI: ${kmTot} KM`;
               </button>
             </div>
 
+            {inAttesaChecklistDopoTimbratura && !haTimbraturaApertaVolontario && !checklistCompilataOggiVolontario && (
+              <div className="px-3.5 py-2 bg-amber-500/15 border-b border-amber-500/35 flex items-center justify-between gap-2 shrink-0">
+                <span className="text-[11px] font-bold text-amber-200 leading-tight">
+                  1️⃣ Passo 1 di 2: Registra prima la Timbratura di Ingresso, poi compilerai la Checklist
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setModalTimbraturaVolontarioAperta(false);
+                    setModalChecklistPostTimbraturaAperta(true);
+                  }}
+                  className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-amber-300 font-black text-[10px] uppercase shrink-0 cursor-pointer border border-amber-500/30"
+                >
+                  Vai a Checklist →
+                </button>
+              </div>
+            )}
+
             <div
               className="p-2.5 sm:p-4 overflow-y-auto overflow-x-hidden flex-1 min-h-0 overscroll-y-contain touch-pan-y"
               style={{ WebkitOverflowScrolling: 'touch' }}
@@ -18830,6 +18910,7 @@ KM TOTALI: ${kmTot} KM`;
                 onNotifica={aggiungiNotifica}
                 luoghiTimbratura={luoghiTimbratura}
                 corsiFormazione={corsiFormazione}
+                turni={turniSedi}
                 onTimbraPresenzaGPSCorso={handleTimbraPresenzaGPSCorso}
                 onTimbraturaServizioRegistrata={(tipo, timbratura) => {
                   if (tipo === 'entrata' && sessioneTurnoRef.current.attivo) {
@@ -18839,6 +18920,11 @@ KM TOTALI: ${kmTot} KM`;
                     };
                     aggiornaSessioneTurno(sessioneAggiornata);
                     realtime.updateShift(sessioneAggiornata);
+
+                    if (!checklistCompilataOggiVolontario && inAttesaChecklistDopoTimbratura && timbratura.tipoAttivita !== 'corso') {
+                      setModalTimbraturaVolontarioAperta(false);
+                      setModalChecklistPostTimbraturaAperta(true);
+                    }
                   } else if (tipo === 'uscita' && sessioneTurnoRef.current.attivo) {
                     setModalTimbraturaVolontarioAperta(false);
                     handleLogoutVolontario(false);
@@ -18859,6 +18945,134 @@ KM TOTALI: ${kmTot} KM`;
           </div>
         </div>
       )}
+
+      {/* MODALE CHECKLIST POST-TIMBRATURA (PASSO 2 GUIDATO) */}
+      {modalChecklistPostTimbraturaAperta && sessioneTurno.attivo && volontarioLoggatoCorrente && (
+        <ModalChecklistInizioTurnoGuidata
+          isOpen={modalChecklistPostTimbraturaAperta}
+          templates={checklistsTemplates}
+          mezzoSigla={inAttesaChecklistDopoTimbratura?.mezzo || sessioneTurno.mezzoScelto || ''}
+          flottaMezzi={FLOTTA_COMPLETA}
+          volontario={volontarioLoggatoCorrente}
+          ruoloTurno={inAttesaChecklistDopoTimbratura?.ruolo || sessioneTurno.qualificaTurno || volontarioLoggatoCorrente.qualifica}
+          onConfermaOperativita={(compilata) => {
+            handleSalvaChecklistCompilata(compilata);
+            setModalChecklistPostTimbraturaAperta(false);
+            setInAttesaChecklistDopoTimbratura(null);
+            if (!sessioneTurnoRef.current.mezzoScelto && compilata.mezzoSigla) {
+              const aggSess: SessioneTurno = {
+                ...sessioneTurnoRef.current,
+                mezzoScelto: compilata.mezzoSigla
+              };
+              aggiornaSessioneTurno(aggSess);
+              realtime.updateShift(aggSess);
+            }
+            if (!compilata.tuttoConforme && compilata.anomalieRilevate && compilata.anomalieRilevate.length > 0) {
+              aggiungiNotifica(
+                `⚠️ CHECKLIST ${compilata.mezzoSigla}: Inizio turno con anomalie da parte di ${compilata.volontarioNome}! Difetti: ${compilata.anomalieRilevate.join(', ')}`,
+                'allarme'
+              );
+            } else {
+              aggiungiNotifica(
+                `✅ CHECKLIST ${compilata.mezzoSigla}: Controllo inizio turno completato regolarmente da ${compilata.volontarioNome}.`,
+                'mezzo'
+              );
+            }
+          }}
+          onClose={() => {
+            setModalChecklistPostTimbraturaAperta(false);
+            setInAttesaChecklistDopoTimbratura(null);
+          }}
+        />
+      )}
+
+      {/* MODALE TIMBRATURA OPERATORE DI CENTRALE (ENTRATA & USCITA SENZA PERDERE IL LOGIN CENTRALE) */}
+      {modalTimbraturaCentraleAperta && ruolo === 'admin' && (() => {
+        const opCentraleId = utenteCentrale?.id || 'admin-centrale-root';
+        const opCentraleNome = utenteCentrale?.nome
+          ? `${utenteCentrale.nome} ${utenteCentrale.cognome || ''}`.trim()
+          : 'Amministratore Centrale';
+        const opCentraleQualifica =
+          utenteCentrale?.caricaConsiglioDirettivo ||
+          (isCentraleAdmin ? 'Amministratore Centrale' : 'Operatore Centrale');
+
+        return (
+          <div
+            className="fixed inset-0 bg-black/85 backdrop-blur-sm z-[9995] flex items-center justify-center p-2 sm:p-4"
+            onClick={(e) => {
+              if (e.target === e.currentTarget) setModalTimbraturaCentraleAperta(false);
+            }}
+          >
+            <div className="bg-slate-950 border-2 border-teal-500/60 rounded-2xl sm:rounded-3xl max-w-lg w-full max-h-[88dvh] sm:max-h-[90dvh] flex flex-col min-h-0 shadow-2xl overflow-hidden text-white">
+              <div className="px-3.5 sm:px-4 py-3 bg-slate-900 border-b border-slate-800 flex items-center justify-between gap-2 shrink-0">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <div className="w-9 h-9 rounded-xl bg-teal-500/20 border border-teal-500/40 text-teal-400 flex items-center justify-center shrink-0">
+                    <Clock className="w-4 h-4" />
+                  </div>
+                  <div className="min-w-0">
+                    <h3 className="text-xs sm:text-sm font-black uppercase text-teal-300 tracking-wide truncate">
+                      Timbratura Operatore di Centrale
+                    </h3>
+                    <p className="text-[10px] text-slate-400 truncate">
+                      {opCentraleNome} • Timbra entrata e uscita senza perdere l'accesso Centrale
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setModalTimbraturaCentraleAperta(false)}
+                  className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition-colors cursor-pointer shrink-0"
+                  title="Chiudi pannello Timbratura Centrale"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <div
+                className="p-2.5 sm:p-4 overflow-y-auto overflow-x-hidden flex-1 min-h-0 overscroll-y-contain touch-pan-y"
+                style={{ WebkitOverflowScrolling: 'touch' }}
+              >
+                <PannelloTimbraturaVolontario
+                  volontarioId={opCentraleId}
+                  volontarioNome={opCentraleNome}
+                  qualifica={opCentraleQualifica}
+                  posizioneGps={posizioneVolontario}
+                  onAggiornaPosizioneGps={setPosizioneVolontario}
+                  sedi={sediAssociative}
+                  timbrature={timbratureVolontari}
+                  onSalvaTimbrature={handleAggiornaTimbrature}
+                  onNotifica={aggiungiNotifica}
+                  luoghiTimbratura={luoghiTimbratura}
+                  corsiFormazione={corsiFormazione}
+                  turni={turniSedi}
+                  onTimbraPresenzaGPSCorso={handleTimbraPresenzaGPSCorso}
+                  onTimbraturaServizioRegistrata={(tipo, timbratura) => {
+                    aggiungiNotifica(
+                      tipo === 'entrata'
+                        ? `🟢 TIMBRATURA ENTRATA CENTRALE: ${opCentraleNome} (${timbratura.orarioIngresso}) — Sessione Centrale mantenuta attiva.`
+                        : `🏁 TIMBRATURA USCITA CENTRALE: ${opCentraleNome} (${timbratura.orarioUscita || 'ora'}) — Sessione Centrale mantenuta attiva.`,
+                      'sistema'
+                    );
+                  }}
+                />
+              </div>
+
+              <div className="px-4 py-2.5 bg-slate-900 border-t border-slate-800 flex items-center justify-between gap-2 shrink-0">
+                <span className="text-[10px] text-teal-300/90 font-semibold">
+                  La timbratura di entrata o uscita non chiude la postazione Centrale.
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setModalTimbraturaCentraleAperta(false)}
+                  className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-xs uppercase cursor-pointer"
+                >
+                  Chiudi
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* ------------------------------------------------------------- */}
       {/* MODALE DI NOTIFICA ANNULLAMENTO INTERVENTO DA CENTRALE (VOLONTARIO) */}

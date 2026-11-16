@@ -71,6 +71,16 @@ interface SchermataTurnoVolontarioProps {
   timbrature?: TimbraturaVolontario[];
   missioneAttiva?: any;
   utenteCentraleAutenticato?: { id?: string; nome: string; cognome: string; pin?: string } | null;
+  onAvviaFlussoTimbraturaPoiChecklist?: (
+    volontario: Volontario,
+    mezzo: string,
+    ruolo: string,
+    timbraturaGiaAperta: boolean
+  ) => void;
+  checklistCompilataOggi?: boolean;
+  invitoAvvioDismissed?: boolean;
+  onDismissInvitoAvvio?: () => void;
+  onApriChecklistInCorso?: () => void;
 }
 
 export const SchermataTurnoVolontario: React.FC<SchermataTurnoVolontarioProps> = ({
@@ -95,7 +105,12 @@ export const SchermataTurnoVolontario: React.FC<SchermataTurnoVolontarioProps> =
   turni = [],
   timbrature = [],
   missioneAttiva,
-  utenteCentraleAutenticato = null
+  utenteCentraleAutenticato = null,
+  onAvviaFlussoTimbraturaPoiChecklist,
+  checklistCompilataOggi = false,
+  invitoAvvioDismissed = false,
+  onDismissInvitoAvvio,
+  onApriChecklistInCorso
 }) => {
   const [volontarioSelezionatoId, setVolontarioSelezionatoId] = useState<string>(
     utenteCentraleAutenticato?.id && utenteCentraleAutenticato.id !== 'admin-centrale-root'
@@ -356,30 +371,42 @@ export const SchermataTurnoVolontario: React.FC<SchermataTurnoVolontarioProps> =
       }
     }
 
-    if (verificaTurno.isDiTurno && mezzoAssegnatoTurno) {
-      // È DI TURNO CON MEZZO ASSEGNATO: LA CHECKLIST È OBBLIGATORIA PRIMA DI DARE OPERATIVITÀ
-      setVolontarioInAttesaChecklist({
-        vol,
-        mezzo: mezzoAssegnatoTurno,
-        ruolo: ruoloSelezionato
-      });
-      setModaleChecklistAperta(true);
+    if (verificaTurno.isDiTurno) {
+      // È DI TURNO SUI TURNI IN APP (QUALSIASI TABELLONE): INVITA PRIMA A TIMBRARE E POI A COMPILARE LA CHECKLIST
+      const volNomeNorm = `${vol.nome} ${vol.cognome}`.trim().toLowerCase();
+      const timbGiaAperta = timbrature.some(t =>
+        !t.orarioUscita &&
+        ((vol.id && t.volontarioId === vol.id) ||
+         (t.volontarioNome && t.volontarioNome.trim().toLowerCase() === volNomeNorm))
+      );
+
+      onLogin(vol, mezzoAssegnatoTurno, ruoloSelezionato);
+      if (onAvviaFlussoTimbraturaPoiChecklist) {
+        onAvviaFlussoTimbraturaPoiChecklist(vol, mezzoAssegnatoTurno, ruoloSelezionato, timbGiaAperta);
+      } else if (mezzoAssegnatoTurno) {
+        setVolontarioInAttesaChecklist({
+          vol,
+          mezzo: mezzoAssegnatoTurno,
+          ruolo: ruoloSelezionato
+        });
+        setModaleChecklistAperta(true);
+      }
       setPinInput('');
       setErrore('');
       if (onNotificaRadio) {
         onNotificaRadio(
-          `📋 CHECKLIST MEZZO OBBLIGATORIA: ${vol.nome} ${vol.cognome} è di turno in questo momento (${verificaTurno.motivo}). Avviata verifica pre-operativa per ${mezzoAssegnatoTurno}.`,
+          `🕒 ACCESSO IN TURNO: ${vol.nome} ${vol.cognome} è di turno (${verificaTurno.motivo}). Avviato percorso guidato: 1) Timbratura -> 2) Checklist.`,
           'mezzo'
         );
       }
     } else {
-      // ACCESSO DIRETTO AL TERMINALE SENZA SCELTA MEZZO AL LOGIN
+      // NON È DI TURNO: SALTA LA CHECKLIST COMPLETAMENTE
       onLogin(vol, mezzoAssegnatoTurno, ruoloSelezionato);
       setPinInput('');
       setErrore('');
       if (onNotificaRadio) {
         onNotificaRadio(
-          `ℹ️ ACCESSO VOLONTARIO: ${vol.nome} ${vol.cognome} (${ruoloSelezionato}) ha effettuato l'accesso al terminale.`,
+          `ℹ️ ACCESSO VOLONTARIO (FUORI TURNO): ${vol.nome} ${vol.cognome} (${ruoloSelezionato}) ha effettuato l'accesso al terminale saltando la checklist.`,
           'sistema'
         );
       }
@@ -505,19 +532,30 @@ export const SchermataTurnoVolontario: React.FC<SchermataTurnoVolontarioProps> =
       setVolontarioDaFirmare(null);
       setFirmaVolontarioMancante(null);
 
-      // Verifica obbligatorietà Checklist: deve effettuare la checklist se è di turno e ha un mezzo assegnato
+      // Verifica turno sui tabelloni: se di turno invita prima a timbratura e poi a checklist, se non è di turno salta la checklist
       const verificaTurno = verificaVolontarioInTurnoAdesso(vTarget, turni, timbrature);
       const mezzoAssegnatoTurno =
         (missioneAttiva && !missioneAttiva.archiviata && !missioneAttiva.annullata && missioneAttiva.mezzoAssegnato)
           ? missioneAttiva.mezzoAssegnato
           : (verificaTurno.dettaglioTurno?.mezzoAssegnato || '');
-      if (verificaTurno.isDiTurno && mezzoAssegnatoTurno) {
-        setVolontarioInAttesaChecklist({
-          vol: vTarget,
-          mezzo: mezzoAssegnatoTurno,
-          ruolo: ruoloSelezionato
-        });
-        setModaleChecklistAperta(true);
+      if (verificaTurno.isDiTurno) {
+        const volNomeNorm = `${vTarget.nome} ${vTarget.cognome}`.trim().toLowerCase();
+        const timbGiaAperta = timbrature.some(t =>
+          !t.orarioUscita &&
+          ((vTarget.id && t.volontarioId === vTarget.id) ||
+           (t.volontarioNome && t.volontarioNome.trim().toLowerCase() === volNomeNorm))
+        );
+        onLogin(vTarget, mezzoAssegnatoTurno, ruoloSelezionato);
+        if (onAvviaFlussoTimbraturaPoiChecklist) {
+          onAvviaFlussoTimbraturaPoiChecklist(vTarget, mezzoAssegnatoTurno, ruoloSelezionato, timbGiaAperta);
+        } else if (mezzoAssegnatoTurno) {
+          setVolontarioInAttesaChecklist({
+            vol: vTarget,
+            mezzo: mezzoAssegnatoTurno,
+            ruolo: ruoloSelezionato
+          });
+          setModaleChecklistAperta(true);
+        }
       } else {
         onLogin(vTarget, mezzoAssegnatoTurno, ruoloSelezionato);
       }
@@ -526,111 +564,178 @@ export const SchermataTurnoVolontario: React.FC<SchermataTurnoVolontarioProps> =
     }
   };
 
-  // Se la sessione è attiva, mostra il badge riassuntivo in testa al terminale
+  // Se la sessione è attiva, mostra il badge riassuntivo in testa al terminale + invito 1. Timbratura -> 2. Checklist
   if (sessione.attivo) {
+    const mostraInvitoAvvio = (!timbraturaAttiva || !checklistCompilataOggi) && !invitoAvvioDismissed;
     return (
-      <div className="bg-emerald-950/80 border-b border-emerald-500/40 px-3 py-2 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2 shadow-md">
-        <div className="flex items-center gap-2 min-w-0">
-          <div className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse shrink-0" />
-          <div className="min-w-0">
-            <span className="font-bold text-white text-xs block truncate">
-              🟢 {sessione.volontarioNome} • <span className="text-emerald-300 font-semibold">{sessione.qualificaTurno}</span>
-            </span>
-            <span className="text-[10px] text-slate-300 block truncate">
-              {sessione.mezzoScelto ? (
-                <>
-                  Mezzo: <strong className="text-amber-400">{sessione.mezzoScelto}</strong> •{' '}
-                </>
-              ) : null}
-              Dalle {sessione.orarioInizio}
-            </span>
+      <div className="flex flex-col">
+        <div className="bg-emerald-950/80 border-b border-emerald-500/40 px-3 py-2 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2 shadow-md">
+          <div className="flex items-center gap-2 min-w-0">
+            <div className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse shrink-0" />
+            <div className="min-w-0">
+              <span className="font-bold text-white text-xs block truncate">
+                🟢 {sessione.volontarioNome} • <span className="text-emerald-300 font-semibold">{sessione.qualificaTurno}</span>
+              </span>
+              <span className="text-[10px] text-slate-300 block truncate">
+                {sessione.mezzoScelto ? (
+                  <>
+                    Mezzo: <strong className="text-amber-400">{sessione.mezzoScelto}</strong> •{' '}
+                  </>
+                ) : null}
+                Dalle {sessione.orarioInizio}
+              </span>
+            </div>
+          </div>
+
+          <div className="flex items-center flex-wrap gap-1.5 shrink-0">
+            {onApriTimbratura && (
+              <button
+                type="button"
+                onClick={onApriTimbratura}
+                className={`px-2.5 py-1 rounded-lg font-bold text-[11px] flex items-center gap-1.5 shadow-sm transition-transform active:scale-95 cursor-pointer border ${
+                  timbraturaAttiva
+                    ? 'bg-emerald-600 hover:bg-emerald-500 text-white border-emerald-300'
+                    : 'bg-amber-500 hover:bg-amber-400 text-slate-950 border-amber-300 font-black'
+                }`}
+                title="Apri sezione Timbratura Presenza GPS & Ore di Servizio"
+              >
+                <Paintbrush className={`w-3.5 h-3.5 ${timbraturaAttiva ? 'text-white' : 'text-slate-950'}`} />
+                <span>Timbratura</span>
+                {timbraturaAttiva && (
+                  <span className="w-2 h-2 rounded-full bg-emerald-200 animate-ping shrink-0" />
+                )}
+              </button>
+            )}
+
+            {onApriCentroNotifiche && (
+              <button
+                type="button"
+                onClick={onApriCentroNotifiche}
+                className={`px-2.5 py-1 rounded-lg text-white font-bold text-[11px] flex items-center gap-1 shadow-sm transition-transform active:scale-95 cursor-pointer border ${
+                  conteggioNotificheNonLette > 0
+                    ? 'bg-gradient-to-r from-violet-600 to-indigo-600 border-violet-400 animate-pulse'
+                    : 'bg-slate-800/90 hover:bg-slate-700 text-slate-200 border-slate-700'
+                }`}
+                title="Centro Notifiche Ricevute (Archivio Permanente)"
+              >
+                <Bell className={`w-3.5 h-3.5 ${conteggioNotificheNonLette > 0 ? 'text-amber-300' : 'text-slate-300'}`} />
+                <span className="hidden sm:inline">Notifiche</span>
+                {conteggioNotificheNonLette > 0 && (
+                  <span className="px-1.5 py-0.2 rounded-full bg-red-600 text-white text-[9px] font-black border border-red-400">
+                    {conteggioNotificheNonLette}
+                  </span>
+                )}
+              </button>
+            )}
+
+            {onApriBacheca && (
+              <button
+                type="button"
+                onClick={onApriBacheca}
+                className="px-2.5 py-1 rounded-lg bg-violet-600/90 hover:bg-violet-500 text-white font-bold text-[11px] flex items-center gap-1 shadow-sm transition-transform active:scale-95 cursor-pointer"
+                title="Apri Bacheca di Sezione e Comunicazioni Ufficiali"
+              >
+                <Megaphone className="w-3.5 h-3.5 text-violet-200" />
+                <span className="hidden sm:inline">Bacheca</span>
+                {typeof conteggioBacheca === 'number' && conteggioBacheca > 0 && (
+                  <span className="px-1.5 py-0.2 rounded-full bg-violet-950 text-violet-200 text-[9px] font-black border border-violet-400/40">
+                    {conteggioBacheca}
+                  </span>
+                )}
+              </button>
+            )}
+
+            {onApriTabelloneTurni && (
+              <button
+                type="button"
+                onClick={onApriTabelloneTurni}
+                className="px-2.5 py-1 rounded-lg bg-teal-600/90 hover:bg-teal-500 text-white font-bold text-[11px] flex items-center gap-1 shadow-sm transition-transform active:scale-95 cursor-pointer"
+                title="Apri Tabellone Turni Settimanale Sezioni Territoriali"
+              >
+                <Calendar className="w-3.5 h-3.5 text-teal-200" />
+                <span className="hidden sm:inline">Tabellone Turni</span>
+                <span className="sm:hidden">Turni</span>
+              </button>
+            )}
+
+            {(sessione.mezzoScelto || onApriChecklistInCorso) && (
+              <button
+                type="button"
+                onClick={() => {
+                  if (onApriChecklistInCorso) {
+                    onApriChecklistInCorso();
+                  } else {
+                    setModaleVisualizzaChecklistAperta(true);
+                  }
+                }}
+                className="px-2.5 py-1 rounded-lg bg-amber-600/90 hover:bg-amber-500 text-white font-bold text-[11px] flex items-center gap-1 shadow-sm transition-transform active:scale-95 cursor-pointer"
+                title="Consulta o ricompila la Checklist Inizio Turno"
+              >
+                <ClipboardCheck className="w-3.5 h-3.5 text-amber-200" />
+                <span className="hidden sm:inline">Checklist Mezzo</span>
+                <span className="sm:hidden">Checklist</span>
+              </button>
+            )}
           </div>
         </div>
 
-        <div className="flex items-center flex-wrap gap-1.5 shrink-0">
-          {onApriTimbratura && (
-            <button
-              type="button"
-              onClick={onApriTimbratura}
-              className={`px-2.5 py-1 rounded-lg font-bold text-[11px] flex items-center gap-1.5 shadow-sm transition-transform active:scale-95 cursor-pointer border ${
-                timbraturaAttiva
-                  ? 'bg-emerald-600 hover:bg-emerald-500 text-white border-emerald-300'
-                  : 'bg-amber-500 hover:bg-amber-400 text-slate-950 border-amber-300 font-black'
-              }`}
-              title="Apri sezione Timbratura Presenza GPS & Ore di Servizio"
-            >
-              <Paintbrush className={`w-3.5 h-3.5 ${timbraturaAttiva ? 'text-white' : 'text-slate-950'}`} />
-              <span>Timbratura</span>
-              {timbraturaAttiva && (
-                <span className="w-2 h-2 rounded-full bg-emerald-200 animate-ping shrink-0" />
+        {/* Invito guidato per chi ha già fatto il login: prima Timbratura e poi Checklist */}
+        {mostraInvitoAvvio && (
+          <div className="bg-amber-500/15 border-b border-amber-500/40 px-3 py-2 flex flex-wrap items-center justify-between gap-2 text-[11px] text-amber-100">
+            <div className="flex items-center gap-2 min-w-0">
+              <Clock className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+              <span className="font-bold truncate">
+                {!timbraturaAttiva
+                  ? '1️⃣ Prima registra la Timbratura di ingresso, poi compila la Checklist'
+                  : '2️⃣ Timbratura registrata! Ora compila la Checklist di inizio turno'}
+              </span>
+            </div>
+            <div className="flex items-center gap-1.5 shrink-0">
+              {onApriTimbratura && (
+                <button
+                  type="button"
+                  onClick={onApriTimbratura}
+                  className={`px-2 py-1 rounded-lg font-black text-[10px] uppercase flex items-center gap-1 cursor-pointer transition-all ${
+                    timbraturaAttiva
+                      ? 'bg-emerald-600/40 text-emerald-200 border border-emerald-400/50'
+                      : 'bg-amber-500 hover:bg-amber-400 text-slate-950 shadow'
+                  }`}
+                >
+                  <span>{timbraturaAttiva ? '✓ 1. Timbrato' : '1. Timbra Ora'}</span>
+                </button>
               )}
-            </button>
-          )}
-
-          {onApriCentroNotifiche && (
-            <button
-              type="button"
-              onClick={onApriCentroNotifiche}
-              className={`px-2.5 py-1 rounded-lg text-white font-bold text-[11px] flex items-center gap-1 shadow-sm transition-transform active:scale-95 cursor-pointer border ${
-                conteggioNotificheNonLette > 0
-                  ? 'bg-gradient-to-r from-violet-600 to-indigo-600 border-violet-400 animate-pulse'
-                  : 'bg-slate-800/90 hover:bg-slate-700 text-slate-200 border-slate-700'
-              }`}
-              title="Centro Notifiche Ricevute (Archivio Permanente)"
-            >
-              <Bell className={`w-3.5 h-3.5 ${conteggioNotificheNonLette > 0 ? 'text-amber-300' : 'text-slate-300'}`} />
-              <span className="hidden sm:inline">Notifiche</span>
-              {conteggioNotificheNonLette > 0 && (
-                <span className="px-1.5 py-0.2 rounded-full bg-red-600 text-white text-[9px] font-black border border-red-400">
-                  {conteggioNotificheNonLette}
-                </span>
+              <button
+                type="button"
+                onClick={() => {
+                  if (onApriChecklistInCorso) {
+                    onApriChecklistInCorso();
+                  } else {
+                    setModaleVisualizzaChecklistAperta(true);
+                  }
+                }}
+                className={`px-2 py-1 rounded-lg font-black text-[10px] uppercase flex items-center gap-1 cursor-pointer transition-all ${
+                  checklistCompilataOggi
+                    ? 'bg-emerald-600/40 text-emerald-200 border border-emerald-400/50'
+                    : timbraturaAttiva
+                    ? 'bg-amber-500 hover:bg-amber-400 text-slate-950 shadow'
+                    : 'bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-600'
+                }`}
+              >
+                <span>{checklistCompilataOggi ? '✓ 2. Checklist OK' : '2. Checklist'}</span>
+              </button>
+              {onDismissInvitoAvvio && (
+                <button
+                  type="button"
+                  onClick={onDismissInvitoAvvio}
+                  className="p-1 rounded-lg text-slate-300 hover:text-white hover:bg-slate-800 cursor-pointer"
+                  title="Nascondi promemoria"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
               )}
-            </button>
-          )}
-
-          {onApriBacheca && (
-            <button
-              type="button"
-              onClick={onApriBacheca}
-              className="px-2.5 py-1 rounded-lg bg-violet-600/90 hover:bg-violet-500 text-white font-bold text-[11px] flex items-center gap-1 shadow-sm transition-transform active:scale-95 cursor-pointer"
-              title="Apri Bacheca di Sezione e Comunicazioni Ufficiali"
-            >
-              <Megaphone className="w-3.5 h-3.5 text-violet-200" />
-              <span className="hidden sm:inline">Bacheca</span>
-              {typeof conteggioBacheca === 'number' && conteggioBacheca > 0 && (
-                <span className="px-1.5 py-0.2 rounded-full bg-violet-950 text-violet-200 text-[9px] font-black border border-violet-400/40">
-                  {conteggioBacheca}
-                </span>
-              )}
-            </button>
-          )}
-
-          {onApriTabelloneTurni && (
-            <button
-              type="button"
-              onClick={onApriTabelloneTurni}
-              className="px-2.5 py-1 rounded-lg bg-teal-600/90 hover:bg-teal-500 text-white font-bold text-[11px] flex items-center gap-1 shadow-sm transition-transform active:scale-95 cursor-pointer"
-              title="Apri Tabellone Turni Settimanale Sezioni Territoriali"
-            >
-              <Calendar className="w-3.5 h-3.5 text-teal-200" />
-              <span className="hidden sm:inline">Tabellone Turni</span>
-              <span className="sm:hidden">Turni</span>
-            </button>
-          )}
-
-          {sessione.mezzoScelto && (
-            <button
-              type="button"
-              onClick={() => setModaleVisualizzaChecklistAperta(true)}
-              className="px-2.5 py-1 rounded-lg bg-amber-600/90 hover:bg-amber-500 text-white font-bold text-[11px] flex items-center gap-1 shadow-sm transition-transform active:scale-95 cursor-pointer"
-              title="Consulta o ricompila la Checklist Inizio Turno per questo mezzo"
-            >
-              <ClipboardCheck className="w-3.5 h-3.5 text-amber-200" />
-              <span className="hidden sm:inline">Checklist Mezzo</span>
-              <span className="sm:hidden">Checklist</span>
-            </button>
-          )}
-        </div>
+            </div>
+          </div>
+        )}
       </div>
     );
   }
@@ -742,8 +847,8 @@ export const SchermataTurnoVolontario: React.FC<SchermataTurnoVolontarioProps> =
                 </p>
               </div>
             </div>
-            <span className="px-2 py-0.5 rounded-full bg-emerald-600 text-white font-black text-[9px] uppercase tracking-wider shrink-0 shadow-sm" title="All'accesso su questo mezzo dovrai compilare la checklist del veicolo">
-              Checklist Obbligatoria
+            <span className="px-2 py-0.5 rounded-full bg-emerald-600 text-white font-black text-[9px] uppercase tracking-wider shrink-0 shadow-sm" title="All'accesso dovrai prima effettuare la timbratura e poi compilare la checklist">
+              1° Timbratura • 2° Checklist
             </span>
           </div>
         ) : (
@@ -757,12 +862,12 @@ export const SchermataTurnoVolontario: React.FC<SchermataTurnoVolontarioProps> =
                   Fuori Turno Programmato Adesso
                 </div>
                 <p className="text-[9.5px] text-slate-500 truncate">
-                  Accesso diretto al terminale • Nessun blocco checklist obbligatoria
+                  Accesso diretto al terminale • Salta la checklist
                 </p>
               </div>
             </div>
             <span className="px-2 py-0.5 rounded-full bg-slate-200 text-slate-600 font-bold text-[9px] uppercase tracking-wider shrink-0">
-              Checklist Non Richiesta
+              Salta Checklist
             </span>
           </div>
         )}
@@ -1241,6 +1346,7 @@ export const SchermataTurnoVolontario: React.FC<SchermataTurnoVolontarioProps> =
             setVolontarioInAttesaChecklist(null);
           }}
           mezzo={volontarioInAttesaChecklist.mezzo}
+          flottaMezzi={flottaMezzi}
           volontario={volontarioInAttesaChecklist.vol}
           templates={checklistsTemplates}
           onConfermaOperativita={handleConfermaChecklist}
@@ -1248,11 +1354,12 @@ export const SchermataTurnoVolontario: React.FC<SchermataTurnoVolontarioProps> =
       )}
 
       {/* MODALE VISUALIZZA / AGGIORNA CHECKLIST MEZZO IN CORSO DI TURNO */}
-      {modaleVisualizzaChecklistAperta && sessione.volontarioNome && sessione.mezzoScelto && (
+      {modaleVisualizzaChecklistAperta && sessione.volontarioNome && (
         <ModalChecklistInizioTurnoGuidata
           isOpen={modaleVisualizzaChecklistAperta}
           onClose={() => setModaleVisualizzaChecklistAperta(false)}
-          mezzo={sessione.mezzoScelto}
+          mezzo={sessione.mezzoScelto || ''}
+          flottaMezzi={flottaMezzi}
           volontario={
             volontari.find(v => v.id === sessione.volontarioId) || {
               id: sessione.volontarioId || 'vol-corrente',

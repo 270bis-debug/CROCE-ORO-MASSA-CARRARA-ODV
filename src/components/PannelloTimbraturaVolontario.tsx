@@ -13,9 +13,11 @@ import {
   ChevronUp,
   SlidersHorizontal,
   Building2,
-  GraduationCap
+  GraduationCap,
+  Briefcase,
+  Edit3
 } from 'lucide-react';
-import { TimbraturaVolontario, SedeAssociativaCompleta, LuogoTimbratura, CorsoFormazione } from '../types/adminTypes';
+import { TimbraturaVolontario, SedeAssociativaCompleta, LuogoTimbratura, CorsoFormazione, TurnoSedeOperativa } from '../types/adminTypes';
 import { LUOGHI_TIMBRATURA_DEFAULT } from '../data/adminMockData';
 import { PosizioneGPS } from './MappaOperativa';
 import {
@@ -25,6 +27,7 @@ import {
   formatLocalISODate
 } from '../utils/exportTimbrature';
 import { addDaysISODate, formatTimeItaly, getCurrentYearItaly } from '../utils/italianTime';
+import { rilevaAttivitaProgrammataPerTimbratura } from '../utils/turnoVerifica';
 
 // Formula geodesica di Haversine per calcolare la distanza in metri tra due coordinate GPS
 export function calcolaDistanzaMetri(lat1: number, lon1: number, lat2: number, lon2: number): number {
@@ -113,6 +116,7 @@ interface PannelloTimbraturaVolontarioProps {
   onNotifica?: (testo: string, tipo?: 'centrale' | 'mezzo' | 'sistema' | 'allarme') => void;
   luoghiTimbratura?: LuogoTimbratura[];
   corsiFormazione?: CorsoFormazione[];
+  turni?: TurnoSedeOperativa[];
   onTimbraPresenzaGPSCorso?: (
     corsoId: string,
     volontario: any,
@@ -136,6 +140,7 @@ export const PannelloTimbraturaVolontario: React.FC<PannelloTimbraturaVolontario
   onNotifica,
   luoghiTimbratura,
   corsiFormazione,
+  turni,
   onTimbraPresenzaGPSCorso,
   onTimbraturaServizioRegistrata
 }) => {
@@ -144,6 +149,7 @@ export const PannelloTimbraturaVolontario: React.FC<PannelloTimbraturaVolontario
   const [erroreGps, setErroreGps] = useState<string | null>(null);
   const [avvisoSuccesso, setAvvisoSuccesso] = useState<string | null>(null);
   const [inRilevamentoGps, setInRilevamentoGps] = useState(false);
+  const [attivitaManuale, setAttivitaManuale] = useState('');
   const [oraLiveConSecondi, setOraLiveConSecondi] = useState(() => formatOrarioConSecondi());
 
   useEffect(() => {
@@ -291,6 +297,27 @@ export const PannelloTimbraturaVolontario: React.FC<PannelloTimbraturaVolontario
     );
   }, [timbrature, volontarioId, volontarioNome]);
 
+  // Rilevamento automatico attività "Cosa stai facendo?" da Turni (qualsiasi tabellone) o Corsi/Formazione
+  const attivitaRilevata = useMemo(() => {
+    const validId = analisiDistanza.luogoValido?.id;
+    let targetCorsoId: string | undefined;
+    let targetLezioneId: string | undefined;
+    if (validId && validId.startsWith('corso-')) {
+      const clean = validId.replace('corso-', '');
+      const parts = clean.split('-lez-');
+      targetCorsoId = parts[0];
+      targetLezioneId = parts[1] || undefined;
+    }
+    return rilevaAttivitaProgrammataPerTimbratura({
+      volontarioId,
+      volontarioNome,
+      turni,
+      corsiFormazione,
+      targetCorsoId,
+      targetLezioneId
+    });
+  }, [analisiDistanza.luogoValido, volontarioId, volontarioNome, turni, corsiFormazione]);
+
   // Calcolo ore di volontariato regolarmente timbrate nel mese in corso
   const oreMeseCorrente = useMemo(() => {
     const prefissoMese = oggiStr.slice(0, 7); // es. "2026-10"
@@ -421,6 +448,13 @@ export const PannelloTimbraturaVolontario: React.FC<PannelloTimbraturaVolontario
     }
 
     if (!timbraturaAttiva) {
+      // Verifica "Cosa stai facendo?" prima di registrare la timbratura di entrata
+      const attivitaEffettiva = (attivitaRilevata.trovata ? attivitaRilevata.titolo : attivitaManuale).trim();
+      if (!attivitaRilevata.trovata && !attivitaEffettiva) {
+        setErroreGps('✏️ Scrivi prima nella riga "Cosa stai facendo?" l\'attività che stai svolgendo.');
+        return;
+      }
+
       // -------------------------------------------------------------
       // 1. TIMBRATURA INGRESSO (con secondi HH:MM:SS)
       // -------------------------------------------------------------
@@ -433,11 +467,14 @@ export const PannelloTimbraturaVolontario: React.FC<PannelloTimbraturaVolontario
         orarioIngresso: orarioCorrente,
         orarioUscita: undefined,
         oreTotali: undefined,
+        mezzoAssegnato: attivitaRilevata.mezzoAssegnato,
         sede: nomeLuogo,
         coordinateIngresso: { lat: posizioneGps.lat, lng: posizioneGps.lng },
         modificataDaAdmin: false,
         corsoId: targetCorsoId,
         lezioneId: targetLezioneId,
+        attivitaSvolta: attivitaEffettiva,
+        tipoAttivita: attivitaRilevata.trovata ? (attivitaRilevata.tipo || 'turno') : 'manuale',
         note: isPuntoCorso
           ? `Timbratura INGRESSO LEZIONE CORSO FORMATIVO validata via GPS alle ${orarioCorrente} a ${analisiDistanza.distanzaMetri}m da ${nomeLuogo} (Raggio autorizzato: ${raggioApplicato}m - GPS: ${posizioneGps.lat.toFixed(5)}, ${posizioneGps.lng.toFixed(5)})`
           : `Timbratura INGRESSO validata via GPS alle ${orarioCorrente} a ${analisiDistanza.distanzaMetri}m da ${nomeLuogo} (Raggio autorizzato: ${raggioApplicato}m - GPS: ${posizioneGps.lat.toFixed(5)}, ${posizioneGps.lng.toFixed(5)})`
@@ -445,6 +482,9 @@ export const PannelloTimbraturaVolontario: React.FC<PannelloTimbraturaVolontario
 
       const aggiornate = [nuovaTimb, ...timbrature];
       onSalvaTimbrature(aggiornate);
+      if (!attivitaRilevata.trovata) {
+        setAttivitaManuale('');
+      }
 
       // Notifica e aggiornamento registro presenze del corso oppure sincronizza Inizio Turno
       if (isPuntoCorso && targetCorsoId && onTimbraPresenzaGPSCorso) {
@@ -461,15 +501,15 @@ export const PannelloTimbraturaVolontario: React.FC<PannelloTimbraturaVolontario
       }
 
       const msgConferma = isPuntoCorso
-        ? `✅ Timbratura di INGRESSO CORSO registrata alle ore ${orarioCorrente} del ${dataCorrente} presso ${nomeLuogo}! Presenza alla lezione attivata via GPS (±${analisiDistanza.distanzaMetri}m).`
-        : `✅ Timbratura di INGRESSO registrata alle ore ${orarioCorrente} del ${dataCorrente} presso ${nomeLuogo}! Inizio turno allineato alle ${orarioCorrente} (GPS: ${analisiDistanza.distanzaMetri}m).`;
+        ? `✅ Timbratura di INGRESSO CORSO registrata alle ore ${orarioCorrente} del ${dataCorrente} presso ${nomeLuogo}! Attività: ${attivitaEffettiva}.`
+        : `✅ Timbratura di INGRESSO registrata alle ore ${orarioCorrente} del ${dataCorrente} presso ${nomeLuogo}! Attività: ${attivitaEffettiva}.`;
       setAvvisoSuccesso(msgConferma);
 
       if (onNotifica) {
         onNotifica(
           isPuntoCorso
-            ? `🎓 INIZIO LEZIONE CORSO: ${volontarioNome} ha timbrato l'ingresso alle ${orarioCorrente} presso ${nomeLuogo}`
-            : `🕒 TIMBRATURA INGRESSO & INIZIO TURNO: ${volontarioNome} ha timbrato alle ${orarioCorrente} presso ${nomeLuogo} [Raggio: ${raggioApplicato}m]`,
+            ? `🎓 INIZIO LEZIONE CORSO: ${volontarioNome} ha timbrato l'ingresso alle ${orarioCorrente} presso ${nomeLuogo} (${attivitaEffettiva})`
+            : `🕒 TIMBRATURA INGRESSO & INIZIO TURNO: ${volontarioNome} ha timbrato alle ${orarioCorrente} presso ${nomeLuogo} • Attività: ${attivitaEffettiva}`,
           'centrale'
         );
       }
@@ -794,6 +834,55 @@ export const PannelloTimbraturaVolontario: React.FC<PannelloTimbraturaVolontario
         )}
 
         {/* ------------------------------------------------------------- */}
+        {/* RIGA "COSA STAI FACENDO?" (AUTO DA TURNO/CORSO O EDITABILE)   */}
+        {/* ------------------------------------------------------------- */}
+        <div className="p-3 rounded-xl bg-slate-950/90 border border-amber-500/40 space-y-2 shadow-inner">
+          {/* Riga 1: Domanda chiara + provenienza rilevata */}
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-1.5 text-xs font-black text-amber-300 uppercase tracking-wide">
+              <Briefcase className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+              <span>Cosa stai facendo?</span>
+            </div>
+            {timbraturaAttiva ? (
+              <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 font-bold">
+                ✓ Registrato all'entrata
+              </span>
+            ) : attivitaRilevata.trovata ? (
+              <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 font-bold">
+                {attivitaRilevata.tipo === 'corso' ? '🎓 Compilato da Corso/Formazione' : '📅 Compilato da Turno in App'}
+              </span>
+            ) : (
+              <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40 font-bold flex items-center gap-1">
+                <Edit3 className="w-2.5 h-2.5" />
+                <span>Campo editabile</span>
+              </span>
+            )}
+          </div>
+
+          {/* Riga 2: Valore automatico (se iscritto) oppure campo editabile (se non segnato da nessuna parte) */}
+          {timbraturaAttiva ? (
+            <div className="w-full px-3 py-2 rounded-lg bg-slate-900 border border-emerald-500/30 text-xs font-bold text-white break-words">
+              {timbraturaAttiva.attivitaSvolta || (attivitaRilevata.trovata ? attivitaRilevata.titolo : 'Servizio operativo')}
+            </div>
+          ) : attivitaRilevata.trovata ? (
+            <div className="w-full px-3 py-2 rounded-lg bg-emerald-950/40 border border-emerald-500/40 text-xs font-bold text-emerald-100 break-words">
+              {attivitaRilevata.titolo}
+            </div>
+          ) : (
+            <input
+              type="text"
+              value={attivitaManuale}
+              onChange={(e) => {
+                setAttivitaManuale(e.target.value);
+                if (erroreGps) setErroreGps(null);
+              }}
+              placeholder="Scrivi cosa stai facendo (es. Servizio sede, Manutenzione mezzo, Segreteria...)"
+              className="w-full px-3 py-2 rounded-lg bg-slate-900 border border-amber-500/50 text-xs font-medium text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-amber-400"
+            />
+          )}
+        </div>
+
+        {/* ------------------------------------------------------------- */}
         {/* PULSANTE UNIFICATO PER TIMBRATURA INGRESSO ED USCITA CON GPS  */}
         {/* ------------------------------------------------------------- */}
         <div className="pt-1">
@@ -967,6 +1056,13 @@ export const PannelloTimbraturaVolontario: React.FC<PannelloTimbraturaVolontario
                           </span>
                         </div>
                       </div>
+
+                      {t.attivitaSvolta && (
+                        <div className="text-[11px] font-semibold text-amber-200 bg-slate-950/70 border border-slate-800 rounded-lg px-2 py-1 break-words">
+                          <span className="text-slate-400 font-normal mr-1">Attività:</span>
+                          {t.attivitaSvolta}
+                        </div>
+                      )}
 
                       <div className="text-[10px] text-slate-400 flex flex-wrap items-center justify-between gap-1 border-t border-slate-800/80 pt-1">
                         <div className="flex flex-col gap-0.5 min-w-0 flex-1">

@@ -1,4 +1,4 @@
-import { TurnoSedeOperativa, TimbraturaVolontario } from '../types/adminTypes';
+import { TurnoSedeOperativa, TimbraturaVolontario, CorsoFormazione } from '../types/adminTypes';
 import { Volontario } from '../components/DatabaseVolontariModal';
 import { formatISODateItaly, getItalianDateParts } from './italianTime';
 
@@ -7,12 +7,20 @@ export interface EsitoVerificaTurno {
   motivo: string;
   dettaglioTurno?: {
     sedeNome?: string;
+    nomeTurno?: string;
     fasciaOraria?: string;
     orarioInizio?: string;
     orarioFine?: string;
     ruoloAssegnato?: string;
     mezzoAssegnato?: string;
   };
+}
+
+export interface AttivitaRilevataTimbratura {
+  trovata: boolean;
+  tipo: 'turno' | 'corso' | null;
+  titolo: string;
+  mezzoAssegnato?: string;
 }
 
 /**
@@ -29,10 +37,15 @@ function parseTimeToMinutes(timeStr?: string): number | null {
 }
 
 /**
- * Formatta una data in stringa standard "YYYY-MM-DD".
+ * Normalizza date in "YYYY-MM-DD".
  */
-function toDateKey(d: Date): string {
-  return formatISODateItaly(d);
+function normalizzaDataIsoSemplice(raw?: string): string {
+  const s = String(raw || '').trim();
+  if (!s) return '';
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+  const m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  if (m) return `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`;
+  return s;
 }
 
 /**
@@ -44,31 +57,34 @@ function normalizzaNome(str?: string): string {
 }
 
 /**
- * Verifica se un volontario è assegnato a un determinato turno di sede.
+ * Verifica se un volontario (per id o nome completo) è assegnato a un determinato turno di sede.
  */
-function trovaAssegnazioneVolontario(turno: TurnoSedeOperativa, vol: Volontario): string | null {
-  const volId = vol.id;
-  const volNomeCompleto = normalizzaNome(`${vol.nome} ${vol.cognome}`);
+function trovaAssegnazioneVolontario(
+  turno: TurnoSedeOperativa,
+  volId?: string,
+  volNomeCompleto?: string
+): string | null {
+  const normNome = normalizzaNome(volNomeCompleto);
 
-  const check = (slot?: { id?: string; nome?: string }, label?: string): boolean => {
+  const check = (slot?: { id?: string; nome?: string }): boolean => {
     if (!slot) return false;
-    if (slot.id && slot.id === volId) return true;
-    if (slot.nome && normalizzaNome(slot.nome) === volNomeCompleto) return true;
+    if (volId && slot.id && slot.id === volId) return true;
+    if (normNome && slot.nome && normalizzaNome(slot.nome) === normNome) return true;
     return false;
   };
 
-  if (check(turno.autista, 'Autista')) return 'Autista';
-  if (check(turno.caposervizio, 'Caposervizio')) return 'Caposervizio';
-  if (check(turno.soccorritore2, 'Secondo Soccorritore')) return 'Secondo Soccorritore';
-  if (check(turno.terzoSoccorritore, 'Terzo Soccorritore')) return 'Terzo Soccorritore';
-  if (check(turno.operatoreCentrale, 'Operatore Centrale')) return 'Operatore Centrale';
-  if (check(turno.centralinista, 'Centralinista')) return 'Centralinista';
-  if (check(turno.osservatore, 'Osservatore')) return 'Osservatore';
+  if (check(turno.autista)) return 'Autista';
+  if (check(turno.caposervizio)) return 'Caposervizio';
+  if (check(turno.soccorritore2)) return 'Secondo Soccorritore';
+  if (check(turno.terzoSoccorritore)) return 'Terzo Soccorritore';
+  if (check(turno.operatoreCentrale)) return 'Operatore Centrale';
+  if (check(turno.centralinista)) return 'Centralinista';
+  if (check(turno.osservatore)) return 'Osservatore';
 
   if (turno.richiesteIscrizione && turno.richiesteIscrizione.length > 0) {
     const approvata = turno.richiesteIscrizione.find(r =>
       r.stato === 'Approvato' &&
-      (r.volontarioId === volId || normalizzaNome(r.volontarioNome) === volNomeCompleto)
+      ((volId && r.volontarioId === volId) || (normNome && normalizzaNome(r.volontarioNome) === normNome))
     );
     if (approvata) {
       return approvata.ruoloRichiesto ? String(approvata.ruoloRichiesto) : 'Soccorritore';
@@ -79,15 +95,125 @@ function trovaAssegnazioneVolontario(turno: TurnoSedeOperativa, vol: Volontario)
 }
 
 /**
+ * Cerca nel calendario Turni di tutte le sedi operative un turno attivo adesso per il volontario.
+ */
+function trovaTurnoAttivoNeiTabelloni(
+  volId: string | undefined,
+  volNomeCompleto: string,
+  listaTurni: TurnoSedeOperativa[]
+): { turno: TurnoSedeOperativa; ruoloAssegnato: string; motivo: string } | null {
+  const now = new Date();
+  const nowItaly = getItalianDateParts(now);
+  const oggiStr = nowItaly.isoDate;
+  const ieriStr = nowItaly.yesterdayIsoDate;
+  const nowMinutes = nowItaly.hour * 60 + nowItaly.minute;
+
+  const GRACE_BEFORE_MIN = 45;
+  const GRACE_AFTER_MIN = 30;
+
+  let turni: TurnoSedeOperativa[] = listaTurni;
+  if (!turni || turni.length === 0) {
+    try {
+      const raw = localStorage.getItem('CROCE_ORO_TURNI_SEDI');
+      if (raw) turni = JSON.parse(raw);
+    } catch {}
+  }
+
+  if (!turni || !Array.isArray(turni) || turni.length === 0) return null;
+
+  for (const t of turni) {
+    const ruoloAssegnato = trovaAssegnazioneVolontario(t, volId, volNomeCompleto);
+    if (!ruoloAssegnato) continue;
+
+    const turnoDataStr = normalizzaDataIsoSemplice(t.data);
+    const isOggi = turnoDataStr === oggiStr;
+    const isIeri = turnoDataStr === ieriStr;
+
+    if (!isOggi && !isIeri) continue;
+
+    const fascia = (t.fasciaOraria || '').toLowerCase();
+    const isH24 = fascia.includes('h24') || fascia.includes('reperibilit');
+
+    if (isH24 && isOggi) {
+      return {
+        turno: t,
+        ruoloAssegnato,
+        motivo: `Turno Reperibilità H24 attivo oggi (${t.sedeNome}) - Ruolo: ${ruoloAssegnato}`
+      };
+    }
+
+    const startMin = parseTimeToMinutes(t.orarioInizio);
+    const endMin = parseTimeToMinutes(t.orarioFine);
+
+    if (startMin !== null && endMin !== null) {
+      if (endMin < startMin) {
+        if (isIeri && nowMinutes <= endMin + GRACE_AFTER_MIN) {
+          return {
+            turno: t,
+            ruoloAssegnato,
+            motivo: `Turno notturno in corso iniziato ieri sera (${t.sedeNome}, ${t.orarioInizio} - ${t.orarioFine}) - Ruolo: ${ruoloAssegnato}`
+          };
+        }
+        if (isOggi && nowMinutes >= Math.max(0, startMin - GRACE_BEFORE_MIN)) {
+          return {
+            turno: t,
+            ruoloAssegnato,
+            motivo: `Turno notturno in corso stasera (${t.sedeNome}, ${t.orarioInizio} - ${t.orarioFine}) - Ruolo: ${ruoloAssegnato}`
+          };
+        }
+      } else if (isOggi) {
+        const finestraInizio = Math.max(0, startMin - GRACE_BEFORE_MIN);
+        const finestraFine = Math.min(24 * 60 - 1, endMin + GRACE_AFTER_MIN);
+        if (nowMinutes >= finestraInizio && nowMinutes <= finestraFine) {
+          return {
+            turno: t,
+            ruoloAssegnato,
+            motivo: `Turno in corso adesso (${t.sedeNome}, ${t.orarioInizio} - ${t.orarioFine}) - Ruolo: ${ruoloAssegnato}`
+          };
+        }
+      }
+    } else {
+      if (isOggi) {
+        if (fascia.includes('mattina')) {
+          if (nowMinutes >= 7 * 60 + 15 && nowMinutes <= 14 * 60 + 30) {
+            return { turno: t, ruoloAssegnato, motivo: `Turno Mattina in corso (${t.sedeNome}) - Ruolo: ${ruoloAssegnato}` };
+          }
+        } else if (fascia.includes('pomeriggio')) {
+          if (nowMinutes >= 13 * 60 + 15 && nowMinutes <= 20 * 60 + 30) {
+            return { turno: t, ruoloAssegnato, motivo: `Turno Pomeriggio in corso (${t.sedeNome}) - Ruolo: ${ruoloAssegnato}` };
+          }
+        } else if (fascia.includes('notte')) {
+          if (nowMinutes >= 19 * 60 + 15) {
+            return { turno: t, ruoloAssegnato, motivo: `Turno Notte in corso stasera (${t.sedeNome}) - Ruolo: ${ruoloAssegnato}` };
+          }
+        } else {
+          return { turno: t, ruoloAssegnato, motivo: `Turno programmato per la giornata di oggi (${t.sedeNome}) - Ruolo: ${ruoloAssegnato}` };
+        }
+      } else if (isIeri && fascia.includes('notte') && nowMinutes <= 8 * 60 + 30) {
+        return { turno: t, ruoloAssegnato, motivo: `Turno Notte iniziato ieri sera in corso stamattina (${t.sedeNome}) - Ruolo: ${ruoloAssegnato}` };
+      }
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Formatta il nome leggibile di un turno per "Cosa stai facendo?" nella timbratura.
+ */
+function formatNomeTurnoPerTimbratura(t: TurnoSedeOperativa): string {
+  const orario = t.orarioInizio && t.orarioFine
+    ? `${t.orarioInizio}-${t.orarioFine}`
+    : (t.fasciaOraria || '');
+  const mezzoStr = t.mezzoAssegnato ? ` • ${t.mezzoAssegnato}` : '';
+  if (t.nomeTurno && t.nomeTurno.trim()) {
+    return `${t.nomeTurno.trim()} — ${t.sedeNome}${orario ? ` (${orario})` : ''}${mezzoStr}`;
+  }
+  return `Turno ${t.sedeNome}${orario ? ` (${orario})` : ''}${mezzoStr}`;
+}
+
+/**
  * Determina se il volontario specificato è di turno in questo preciso momento.
- *
- * Controlla in ordine:
- * 1. Timbrature di presenza GPS attive (ingresso timbrato senza uscita per oggi).
- * 2. Flag di turno attivo sul profilo del volontario (vol.inTurno).
- * 3. Tabellone Turni delle Sedi Operative (TurnoSedeOperativa):
- *    - Data corrispondente a oggi (o ieri sera per turni notturni che scavalcano mezzanotte).
- *    - Volontario regolarmente assegnato in uno dei ruoli del turno.
- *    - Orario attuale compreso tra inizio turno (con 45 min di anticipo per check-in e ispezione) e fine turno (+30 min di grazia).
  */
 export function verificaVolontarioInTurnoAdesso(
   vol: Volontario,
@@ -101,21 +227,35 @@ export function verificaVolontarioInTurnoAdesso(
   const now = new Date();
   const nowItaly = getItalianDateParts(now);
   const oggiStr = nowItaly.isoDate;
-  const nowMinutes = nowItaly.hour * 60 + nowItaly.minute;
+  const volNomeCompleto = `${vol.nome} ${vol.cognome}`.trim();
+  const matchTabellone = trovaTurnoAttivoNeiTabelloni(vol.id, volNomeCompleto, listaTurni);
+
+  const dettaglioDaTabellone = matchTabellone
+    ? {
+        sedeNome: matchTabellone.turno.sedeNome,
+        nomeTurno: matchTabellone.turno.nomeTurno,
+        fasciaOraria: matchTabellone.turno.fasciaOraria,
+        orarioInizio: matchTabellone.turno.orarioInizio || '00:00',
+        orarioFine: matchTabellone.turno.orarioFine || '24:00',
+        ruoloAssegnato: matchTabellone.ruoloAssegnato,
+        mezzoAssegnato: matchTabellone.turno.mezzoAssegnato
+      }
+    : undefined;
 
   // 1. Controllo timbrature di presenza del volontario (se ha timbrato l'ingresso e non ancora l'uscita)
   if (listaTimbrature && listaTimbrature.length > 0) {
-    const volNomeCompleto = normalizzaNome(`${vol.nome} ${vol.cognome}`);
+    const volNorm = normalizzaNome(volNomeCompleto);
     const timbraturaAperta = listaTimbrature.find(t => {
       const matchId = t.volontarioId === vol.id;
-      const matchNome = t.volontarioNome && normalizzaNome(t.volontarioNome) === volNomeCompleto;
+      const matchNome = t.volontarioNome && normalizzaNome(t.volontarioNome) === volNorm;
       return (matchId || matchNome) && !t.orarioUscita && (t.data === oggiStr || !t.data);
     });
 
     if (timbraturaAperta) {
       return {
         isDiTurno: true,
-        motivo: `Timbratura ingresso attiva dalle ore ${timbraturaAperta.orarioIngresso || 'inizio servizio'} presso ${timbraturaAperta.sede || 'la sede operativa'}`
+        motivo: `Timbratura ingresso attiva dalle ore ${timbraturaAperta.orarioIngresso || 'inizio servizio'} presso ${timbraturaAperta.sede || 'la sede operativa'}`,
+        dettaglioTurno: dettaglioDaTabellone || (vol.mezzoAttivo ? { mezzoAssegnato: vol.mezzoAttivo } : undefined)
       };
     }
   }
@@ -124,160 +264,18 @@ export function verificaVolontarioInTurnoAdesso(
   if (vol.inTurno) {
     return {
       isDiTurno: true,
-      motivo: 'Stato di servizio "In Turno" attivo sul profilo'
+      motivo: 'Stato di servizio "In Turno" attivo sul profilo',
+      dettaglioTurno: dettaglioDaTabellone || (vol.mezzoAttivo ? { mezzoAssegnato: vol.mezzoAttivo } : undefined)
     };
   }
 
   // 3. Controllo nel Calendario Turni di tutte le sedi operative
-  let turni: TurnoSedeOperativa[] = listaTurni;
-  if (!turni || turni.length === 0) {
-    try {
-      const raw = localStorage.getItem('CROCE_ORO_TURNI_SEDI');
-      if (raw) turni = JSON.parse(raw);
-    } catch {}
-  }
-
-  if (turni && Array.isArray(turni) && turni.length > 0) {
-    // Margine di anticipo login per briefing e controllo mezzo (45 minuti prima dell'inizio)
-    const GRACE_BEFORE_MIN = 45;
-    // Margine dopo termine turno (30 minuti dopo la fine per passaggio consegne)
-    const GRACE_AFTER_MIN = 30;
-
-    // Data di ieri per turni notturni (es. 20:00 - 08:00 iniziati ieri sera)
-    const ieriStr = nowItaly.yesterdayIsoDate;
-
-    for (const t of turni) {
-      const ruoloAssegnato = trovaAssegnazioneVolontario(t, vol);
-      if (!ruoloAssegnato) continue;
-
-      const turnoDataStr = (t.data || '').trim();
-      const isOggi = turnoDataStr === oggiStr;
-      const isIeri = turnoDataStr === ieriStr;
-
-      if (!isOggi && !isIeri) continue;
-
-      const fascia = (t.fasciaOraria || '').toLowerCase();
-      const isH24 = fascia.includes('h24') || fascia.includes('reperibilit');
-
-      // Se il turno è H24 ed è per oggi: attivo tutto il giorno
-      if (isH24 && isOggi) {
-        return {
-          isDiTurno: true,
-          motivo: `Turno Reperibilità H24 attivo oggi (${t.sedeNome}) - Ruolo: ${ruoloAssegnato}`,
-          dettaglioTurno: {
-            sedeNome: t.sedeNome,
-            fasciaOraria: t.fasciaOraria,
-            orarioInizio: t.orarioInizio || '00:00',
-            orarioFine: t.orarioFine || '24:00',
-            ruoloAssegnato,
-            mezzoAssegnato: t.mezzoAssegnato
-          }
-        };
-      }
-
-      const startMin = parseTimeToMinutes(t.orarioInizio);
-      const endMin = parseTimeToMinutes(t.orarioFine);
-
-      if (startMin !== null && endMin !== null) {
-        if (endMin < startMin) {
-          // Turno Notturno a cavallo di mezzanotte (es. 20:00 - 08:00)
-          // A) Iniziato ieri sera: attivo stamattina fino a endMin + GRACE_AFTER_MIN
-          if (isIeri && nowMinutes <= (endMin + GRACE_AFTER_MIN)) {
-            return {
-              isDiTurno: true,
-              motivo: `Turno notturno in corso iniziato ieri sera (${t.sedeNome}, ${t.orarioInizio} - ${t.orarioFine}) - Ruolo: ${ruoloAssegnato}`,
-              dettaglioTurno: {
-                sedeNome: t.sedeNome,
-                fasciaOraria: t.fasciaOraria,
-                orarioInizio: t.orarioInizio,
-                orarioFine: t.orarioFine,
-                ruoloAssegnato,
-                mezzoAssegnato: t.mezzoAssegnato
-              }
-            };
-          }
-          // B) Programmato per stasera: attivo da startMin - GRACE_BEFORE_MIN fino a mezzanotte
-          if (isOggi && nowMinutes >= Math.max(0, startMin - GRACE_BEFORE_MIN)) {
-            return {
-              isDiTurno: true,
-              motivo: `Turno notturno in corso stasera (${t.sedeNome}, ${t.orarioInizio} - ${t.orarioFine}) - Ruolo: ${ruoloAssegnato}`,
-              dettaglioTurno: {
-                sedeNome: t.sedeNome,
-                fasciaOraria: t.fasciaOraria,
-                orarioInizio: t.orarioInizio,
-                orarioFine: t.orarioFine,
-                ruoloAssegnato,
-                mezzoAssegnato: t.mezzoAssegnato
-              }
-            };
-          }
-        } else {
-          // Turno Diurno (es. 08:00 - 14:00 oppure 14:00 - 20:00)
-          if (isOggi) {
-            const finestraInizio = Math.max(0, startMin - GRACE_BEFORE_MIN);
-            const finestraFine = Math.min(24 * 60 - 1, endMin + GRACE_AFTER_MIN);
-            if (nowMinutes >= finestraInizio && nowMinutes <= finestraFine) {
-              return {
-                isDiTurno: true,
-                motivo: `Turno in corso adesso (${t.sedeNome}, ${t.orarioInizio} - ${t.orarioFine}) - Ruolo: ${ruoloAssegnato}`,
-                dettaglioTurno: {
-                  sedeNome: t.sedeNome,
-                  fasciaOraria: t.fasciaOraria,
-                  orarioInizio: t.orarioInizio,
-                  orarioFine: t.orarioFine,
-                  ruoloAssegnato,
-                  mezzoAssegnato: t.mezzoAssegnato
-                }
-              };
-            }
-          }
-        }
-      } else {
-        // Fallback per fasce orarie convenzionali se mancano orari precisi
-        if (isOggi) {
-          if (fascia.includes('mattina')) {
-            if (nowMinutes >= 7 * 60 + 15 && nowMinutes <= 14 * 60 + 30) {
-              return {
-                isDiTurno: true,
-                motivo: `Turno Mattina in corso (${t.sedeNome}) - Ruolo: ${ruoloAssegnato}`,
-                dettaglioTurno: { sedeNome: t.sedeNome, fasciaOraria: t.fasciaOraria, ruoloAssegnato, mezzoAssegnato: t.mezzoAssegnato }
-              };
-            }
-          } else if (fascia.includes('pomeriggio')) {
-            if (nowMinutes >= 13 * 60 + 15 && nowMinutes <= 20 * 60 + 30) {
-              return {
-                isDiTurno: true,
-                motivo: `Turno Pomeriggio in corso (${t.sedeNome}) - Ruolo: ${ruoloAssegnato}`,
-                dettaglioTurno: { sedeNome: t.sedeNome, fasciaOraria: t.fasciaOraria, ruoloAssegnato, mezzoAssegnato: t.mezzoAssegnato }
-              };
-            }
-          } else if (fascia.includes('notte')) {
-            if (nowMinutes >= 19 * 60 + 15) {
-              return {
-                isDiTurno: true,
-                motivo: `Turno Notte in corso stasera (${t.sedeNome}) - Ruolo: ${ruoloAssegnato}`,
-                dettaglioTurno: { sedeNome: t.sedeNome, fasciaOraria: t.fasciaOraria, ruoloAssegnato, mezzoAssegnato: t.mezzoAssegnato }
-              };
-            }
-          } else {
-            // Turno programmato per oggi senza orari definiti
-            return {
-              isDiTurno: true,
-              motivo: `Turno programmato per la giornata di oggi (${t.sedeNome}) - Ruolo: ${ruoloAssegnato}`,
-              dettaglioTurno: { sedeNome: t.sedeNome, fasciaOraria: t.fasciaOraria, ruoloAssegnato, mezzoAssegnato: t.mezzoAssegnato }
-            };
-          }
-        } else if (isIeri && fascia.includes('notte')) {
-          if (nowMinutes <= 8 * 60 + 30) {
-            return {
-              isDiTurno: true,
-              motivo: `Turno Notte iniziato ieri sera in corso stamattina (${t.sedeNome}) - Ruolo: ${ruoloAssegnato}`,
-              dettaglioTurno: { sedeNome: t.sedeNome, fasciaOraria: t.fasciaOraria, ruoloAssegnato, mezzoAssegnato: t.mezzoAssegnato }
-            };
-          }
-        }
-      }
-    }
+  if (matchTabellone && dettaglioDaTabellone) {
+    return {
+      isDiTurno: true,
+      motivo: matchTabellone.motivo,
+      dettaglioTurno: dettaglioDaTabellone
+    };
   }
 
   return {
@@ -285,3 +283,134 @@ export function verificaVolontarioInTurnoAdesso(
     motivo: 'Nessun turno operativo programmato per questo volontario al momento'
   };
 }
+
+/**
+ * Rileva automaticamente l'attività ("Cosa stai facendo?") per la timbratura del volontario/operatore:
+ * - Turno in cui è segnato in app (su qualsiasi tabellone oggi / attivo ora)
+ * - Oppure Corso / Formazione a cui è iscritto in app (lezione di oggi o corso attivo / punto GPS corso)
+ * - Altrimenti restituisce { trovata: false } per mostrare il campo editabile manuale.
+ */
+export function rilevaAttivitaProgrammataPerTimbratura(params: {
+  volontarioId?: string;
+  volontarioNome?: string;
+  turni?: TurnoSedeOperativa[];
+  corsiFormazione?: CorsoFormazione[];
+  targetCorsoId?: string;
+  targetLezioneId?: string;
+}): AttivitaRilevataTimbratura {
+  const {
+    volontarioId,
+    volontarioNome = '',
+    turni: turniParam,
+    corsiFormazione = [],
+    targetCorsoId,
+    targetLezioneId
+  } = params;
+
+  const nowItaly = getItalianDateParts(new Date());
+  const oggiStr = nowItaly.isoDate;
+  const volNorm = normalizzaNome(volontarioNome);
+
+  // 0. Se il punto GPS validato corrisponde direttamente a un corso formativo
+  if (targetCorsoId && corsiFormazione.length > 0) {
+    const corsoGps = corsiFormazione.find(c => c.id === targetCorsoId);
+    if (corsoGps) {
+      const lezGps = targetLezioneId
+        ? corsoGps.lezioni?.find(l => l.id === targetLezioneId)
+        : corsoGps.lezioni?.find(l => normalizzaDataIsoSemplice(l.data) === oggiStr);
+      const lezDesc = lezGps
+        ? ` — Lez. #${lezGps.numero}${lezGps.titolo ? `: ${lezGps.titolo}` : ''}`
+        : '';
+      return {
+        trovata: true,
+        tipo: 'corso',
+        titolo: `Corso: ${corsoGps.titolo}${lezDesc}`
+      };
+    }
+  }
+
+  // 1. Ricerca su tutti i tabelloni turni in app
+  let turni: TurnoSedeOperativa[] = turniParam || [];
+  if (!turni || turni.length === 0) {
+    try {
+      const raw = localStorage.getItem('CROCE_ORO_TURNI_SEDI');
+      if (raw) turni = JSON.parse(raw);
+    } catch {}
+  }
+
+  if (turni && turni.length > 0) {
+    // A) Priorità al turno attivo in questa fascia oraria (inclusi notturni)
+    const turnoAttivoAdesso = trovaTurnoAttivoNeiTabelloni(volontarioId, volontarioNome, turni);
+    if (turnoAttivoAdesso) {
+      return {
+        trovata: true,
+        tipo: 'turno',
+        titolo: formatNomeTurnoPerTimbratura(turnoAttivoAdesso.turno),
+        mezzoAssegnato: turnoAttivoAdesso.turno.mezzoAssegnato
+      };
+    }
+
+    // B) Eventuale altro turno programmato per la data di oggi su qualsiasi tabellone
+    const turnoOggi = turni.find(t => {
+      const dataNorm = normalizzaDataIsoSemplice(t.data);
+      if (dataNorm !== oggiStr) return false;
+      return Boolean(trovaAssegnazioneVolontario(t, volontarioId, volontarioNome));
+    });
+    if (turnoOggi) {
+      return {
+        trovata: true,
+        tipo: 'turno',
+        titolo: formatNomeTurnoPerTimbratura(turnoOggi),
+        mezzoAssegnato: turnoOggi.mezzoAssegnato
+      };
+    }
+  }
+
+  // 2. Ricerca nei Corsi / Formazione dove il volontario è iscritto
+  if (corsiFormazione && corsiFormazione.length > 0) {
+    const corsiIscritto = corsiFormazione.filter(c =>
+      c.stato !== 'Annullato' &&
+      c.stato !== 'Concluso' &&
+      Array.isArray(c.iscritti) &&
+      c.iscritti.some(p =>
+        (volontarioId && p.volontarioId === volontarioId) ||
+        (volNorm && p.volontarioNome && normalizzaNome(p.volontarioNome) === volNorm)
+      )
+    );
+
+    // A) Corso con lezione in programma nella data odierna
+    for (const c of corsiIscritto) {
+      const lezOggi = c.lezioni?.find(l => normalizzaDataIsoSemplice(l.data) === oggiStr);
+      if (lezOggi) {
+        const orarioLez = lezOggi.orarioInizio && lezOggi.orarioFine ? ` (${lezOggi.orarioInizio}-${lezOggi.orarioFine})` : '';
+        return {
+          trovata: true,
+          tipo: 'corso',
+          titolo: `Corso: ${c.titolo} — Lez. #${lezOggi.numero}${lezOggi.titolo ? `: ${lezOggi.titolo}` : ''}${orarioLez}`
+        };
+      }
+    }
+
+    // B) Corso "In Corso" o il cui intervallo date comprende oggi
+    const corsoAttivoOggi = corsiIscritto.find(c => {
+      const di = normalizzaDataIsoSemplice(c.dataInizio);
+      const df = normalizzaDataIsoSemplice(c.dataFine);
+      return c.stato === 'In Corso' || (di && df && oggiStr >= di && oggiStr <= df);
+    });
+    if (corsoAttivoOggi) {
+      return {
+        trovata: true,
+        tipo: 'corso',
+        titolo: `Corso: ${corsoAttivoOggi.titolo}${corsoAttivoOggi.tipologia ? ` (${corsoAttivoOggi.tipologia})` : ''}`
+      };
+    }
+  }
+
+  // 3. Nessun turno o corso trovato -> campo editabile libero
+  return {
+    trovata: false,
+    tipo: null,
+    titolo: ''
+  };
+}
+
