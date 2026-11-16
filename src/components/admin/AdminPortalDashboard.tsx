@@ -337,135 +337,138 @@ export const AdminPortalDashboard: React.FC<AdminPortalDashboardProps> = ({
   }, [sezioniAttive, isAdmin, allowedSections]);
 
   return (
-    <div className="w-full max-w-7xl mx-auto space-y-6 animate-in fade-in duration-300">
+    <div className="w-full max-w-7xl mx-auto space-y-4 animate-in fade-in duration-300">
       
-      {/* Banner di Benvenuto Amministratore / Delegato */}
-      <div className="bg-gradient-to-r from-slate-950 via-[#1d1a60] to-slate-950 border-2 border-[#bfa353]/50 rounded-3xl p-5 sm:p-6 shadow-2xl relative overflow-hidden">
-        <div className="absolute top-0 right-0 w-96 h-96 bg-amber-500/5 rounded-full blur-3xl pointer-events-none" />
-        <div className="absolute bottom-0 left-0 w-96 h-96 bg-indigo-500/5 rounded-full blur-3xl pointer-events-none" />
+      {/* Banner di Benvenuto Amministratore / Delegato Compatto */}
+      <div className="bg-gradient-to-r from-slate-950 via-[#1d1a60] to-slate-950 border-2 border-[#bfa353]/50 rounded-2xl px-3.5 py-2.5 sm:px-4 sm:py-3 shadow-2xl relative overflow-hidden">
+        <div className="absolute top-0 right-0 w-72 h-72 bg-amber-500/5 rounded-full blur-3xl pointer-events-none" />
+        <div className="absolute bottom-0 left-0 w-72 h-72 bg-indigo-500/5 rounded-full blur-3xl pointer-events-none" />
         
-        <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-5 relative z-10">
-          <div className="flex items-center gap-4">
-            <div className="relative">
-              <CroceOroLogo size="md" className="shrink-0 shadow-xl shadow-amber-500/20" />
-              <span className="absolute -bottom-1 -right-1 w-4 h-4 rounded-full bg-emerald-500 border-2 border-slate-900 animate-pulse" />
-            </div>
-            <div>
-              <div className="flex items-center gap-2 flex-wrap">
-                <span className="text-[10px] uppercase font-black px-2.5 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40 tracking-wider">
-                  {isPresidente ? 'Presidente / Legale Rappresentante' : (!isAdmin ? 'Volontario / Operatore Delegato' : 'Centrale & Amministrazione')}
-                </span>
-                <span className="text-[10px] text-slate-300 flex items-center gap-1 font-mono">
-                  <Activity className="w-3 h-3 text-emerald-400" />
-                  Sistema Operativo H24
-                </span>
+        <div className="flex flex-col gap-2.5 relative z-10">
+          {/* Riga Titolo + Controlli compatti */}
+          <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-2.5">
+            <div className="flex items-center gap-3 min-w-0 flex-1">
+              <div className="relative shrink-0">
+                <CroceOroLogo size="sm" className="shrink-0 shadow-lg shadow-amber-500/20" />
+                <span className="absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full bg-emerald-500 border-2 border-slate-900 animate-pulse" />
               </div>
-              <h1 className="text-xl sm:text-2xl font-black text-white tracking-wide uppercase mt-1">
-                {!isAdmin ? 'Portale Operativo Delegato' : 'Portale Gestionale Amministratore'}
-              </h1>
-              <p className="text-xs sm:text-sm text-slate-300 mt-0.5">
-                Benvenuto, <strong className="text-amber-400">{operatoreNome}</strong>. {!isAdmin ? `Hai accesso a ${sezioniVisibili.length} macro categorie abilitate per nuovi inserimenti e modifiche.` : 'Seleziona una delle macro categorie operative sottostanti per gestire le attività della Croce Oro Massa Carrara ODV.'}
-              </p>
-            </div>
-          </div>
-
-          <div className="flex flex-col sm:flex-row items-end sm:items-center gap-2.5 shrink-0">
-            {/* Switch Viste: Macro Categorie vs Monitoraggio Flotta */}
-            <div className="flex items-center p-1 rounded-2xl bg-slate-950/90 border border-slate-800 shrink-0 shadow-lg">
-              <button
-                type="button"
-                onClick={() => setVistaAttiva('macro')}
-                className={`px-3 py-2 rounded-xl text-xs font-black uppercase flex items-center gap-1.5 transition-all cursor-pointer ${
-                  vistaAttiva === 'macro'
-                    ? 'bg-amber-500 text-slate-950 shadow-md font-black'
-                    : 'text-slate-400 hover:text-white'
-                }`}
-              >
-                <Shield className="w-3.5 h-3.5" />
-                <span>Macro Categorie ({sezioniVisibili.length})</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setVistaAttiva('monitoraggio_flotta')}
-                className={`px-3 py-2 rounded-xl text-xs font-black uppercase flex items-center gap-1.5 transition-all cursor-pointer ${
-                  vistaAttiva === 'monitoraggio_flotta'
-                    ? 'bg-amber-500 text-slate-950 shadow-md font-black'
-                    : 'text-slate-400 hover:text-white'
-                }`}
-              >
-                <BarChart3 className="w-3.5 h-3.5 text-current" />
-                <span>Monitoraggio Flotta (KM)</span>
-              </button>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <h1 className="text-sm sm:text-base font-black text-white tracking-wide uppercase leading-tight">
+                    {!isAdmin ? 'Portale Operativo Delegato' : 'Portale Gestionale Amministratore'}
+                  </h1>
+                  <span className="text-[9px] uppercase font-black px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40 tracking-wider">
+                    {isPresidente ? 'Presidente / Legale Rappresentante' : (!isAdmin ? 'Volontario / Operatore Delegato' : 'Centrale & Amministrazione')}
+                  </span>
+                  <span className="text-[10px] text-slate-300 flex items-center gap-1 font-mono">
+                    <Activity className="w-3 h-3 text-emerald-400" />
+                    Sistema Operativo H24
+                  </span>
+                </div>
+                <p className="text-xs text-slate-300 leading-snug mt-0.5">
+                  Benvenuto, <strong className="text-amber-400">{operatoreNome}</strong>. {!isAdmin ? `Hai accesso a ${sezioniVisibili.length} macro categorie abilitate per nuovi inserimenti e modifiche.` : 'Seleziona una delle macro categorie operative sottostanti per gestire le attività della Croce Oro Massa Carrara ODV.'}
+                </p>
+              </div>
             </div>
 
-            {onApriSyncServer && (
-              <button
-                type="button"
-                onClick={onApriSyncServer}
-                className="px-3.5 py-2.5 rounded-2xl bg-gradient-to-r from-amber-500/20 via-amber-500/10 to-amber-600/20 hover:from-amber-500 hover:to-amber-400 border border-amber-500/50 text-amber-300 hover:text-slate-950 text-xs font-black uppercase flex items-center gap-2 shadow-lg transition-all active:scale-95 cursor-pointer shrink-0 group"
-                title="Salva e sincronizza i dati sui 10 GB di spazio del dominio www.croceoro.org"
-              >
-                <Server className="w-4 h-4 text-amber-400 group-hover:text-slate-950 group-hover:scale-110 transition-transform" />
-                <span>Backup www.croceoro.org (10 GB)</span>
-              </button>
-            )}
+            <div className="flex flex-wrap items-center gap-1.5 shrink-0">
+              {/* Switch Viste: Macro Categorie vs Monitoraggio Flotta */}
+              <div className="flex items-center p-0.5 rounded-xl bg-slate-950/90 border border-slate-800 shrink-0 shadow">
+                <button
+                  type="button"
+                  onClick={() => setVistaAttiva('macro')}
+                  className={`px-2.5 py-1 rounded-lg text-[11px] font-black uppercase flex items-center gap-1 transition-all cursor-pointer ${
+                    vistaAttiva === 'macro'
+                      ? 'bg-amber-500 text-slate-950 shadow-sm font-black'
+                      : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  <Shield className="w-3 h-3" />
+                  <span>Macro Categorie ({sezioniVisibili.length})</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setVistaAttiva('monitoraggio_flotta')}
+                  className={`px-2.5 py-1 rounded-lg text-[11px] font-black uppercase flex items-center gap-1 transition-all cursor-pointer ${
+                    vistaAttiva === 'monitoraggio_flotta'
+                      ? 'bg-amber-500 text-slate-950 shadow-sm font-black'
+                      : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  <BarChart3 className="w-3 h-3 text-current" />
+                  <span>Monitoraggio Flotta (KM)</span>
+                </button>
+              </div>
 
-            <div className="flex items-center gap-2 bg-slate-950/80 px-3.5 py-2.5 rounded-2xl border border-slate-800 shrink-0">
-              <Shield className="w-5 h-5 text-amber-400 shrink-0" />
-              <div className="text-right">
-                <div className="text-[9px] uppercase font-bold text-slate-400">Privilegi Accesso</div>
-                <div className="text-xs font-black text-white">
-                  {!isAdmin ? `${sezioniVisibili.length} Categorie Abilitate` : 'Accesso Completo'}
+              {onApriSyncServer && (
+                <button
+                  type="button"
+                  onClick={onApriSyncServer}
+                  className="px-2.5 py-1.5 rounded-xl bg-gradient-to-r from-amber-500/20 via-amber-500/10 to-amber-600/20 hover:from-amber-500 hover:to-amber-400 border border-amber-500/50 text-amber-300 hover:text-slate-950 text-[11px] font-black uppercase flex items-center gap-1.5 shadow transition-all active:scale-95 cursor-pointer shrink-0 group"
+                  title="Salva e sincronizza i dati sui 10 GB di spazio del dominio www.croceoro.org"
+                >
+                  <Server className="w-3.5 h-3.5 text-amber-400 group-hover:text-slate-950 transition-transform" />
+                  <span>Backup www.croceoro.org (10 GB)</span>
+                </button>
+              )}
+
+              <div className="flex items-center gap-1.5 bg-slate-950/80 px-2.5 py-1 rounded-xl border border-slate-800 shrink-0">
+                <Shield className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                <div className="flex items-center gap-1.5 text-[11px]">
+                  <span className="text-[9px] uppercase font-bold text-slate-400">Privilegi Accesso:</span>
+                  <span className="font-black text-white">
+                    {!isAdmin ? `${sezioniVisibili.length} Categorie Abilitate` : 'Accesso Completo'}
+                  </span>
                 </div>
               </div>
             </div>
           </div>
-        </div>
 
-        {/* Barra Statistiche Rapide */}
-        <div className="mt-5 pt-4 border-t border-slate-800/80 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 lg:grid-cols-9 gap-2.5 text-center">
-          <div className="bg-slate-900/60 p-2 rounded-xl border border-slate-800">
-            <div className="text-[10px] text-slate-400 uppercase font-bold">Servizi</div>
-            <div className="text-sm font-black text-emerald-400 font-mono">{conteggioServiziArchivio}</div>
-          </div>
-          <div className="bg-slate-900/60 p-2 rounded-xl border border-slate-800">
-            <div className="text-[10px] text-slate-400 uppercase font-bold">Volontari</div>
-            <div className="text-sm font-black text-blue-400 font-mono">{conteggioVolontari}</div>
-          </div>
-          <div
-            onClick={() => setVistaAttiva('monitoraggio_flotta')}
-            className="bg-slate-900/60 hover:bg-slate-900 p-2 rounded-xl border border-slate-800 hover:border-amber-500/60 transition-all cursor-pointer group"
-            title="Clicca per aprire la vista Monitoraggio Flotta con grafici KM"
-          >
-            <div className="text-[10px] text-slate-400 uppercase font-bold group-hover:text-amber-300 flex items-center justify-center gap-1">
-              <span>Mezzi</span>
-              <BarChart3 className="w-2.5 h-2.5 text-amber-400" />
+          {/* Barra Statistiche Rapide Compatta */}
+          <div className="pt-2 border-t border-slate-800/80 grid grid-cols-3 sm:grid-cols-5 lg:grid-cols-9 gap-1.5">
+            <div className="bg-slate-900/60 px-2 py-1 rounded-lg border border-slate-800 flex items-center justify-between gap-1">
+              <span className="text-[10px] text-slate-400 uppercase font-bold truncate">Servizi</span>
+              <span className="text-xs font-black text-emerald-400 font-mono">{conteggioServiziArchivio}</span>
             </div>
-            <div className="text-sm font-black text-amber-400 font-mono">{conteggioMezzi}</div>
-          </div>
-          <div className="bg-slate-900/60 p-2 rounded-xl border border-slate-800">
-            <div className="text-[10px] text-slate-400 uppercase font-bold">Donazioni</div>
-            <div className="text-sm font-black text-purple-400 font-mono">{conteggioDonazioni}</div>
-          </div>
-          <div className="bg-slate-900/60 p-2 rounded-xl border border-slate-800">
-            <div className="text-[10px] text-slate-400 uppercase font-bold">Corsi</div>
-            <div className="text-sm font-black text-indigo-400 font-mono">{conteggioCorsi}</div>
-          </div>
-          <div className="bg-slate-900/60 p-2 rounded-xl border border-slate-800">
-            <div className="text-[10px] text-slate-400 uppercase font-bold">Magazzino</div>
-            <div className="text-sm font-black text-cyan-400 font-mono">Attivo</div>
-          </div>
-          <div className="bg-slate-900/60 p-2 rounded-xl border border-slate-800">
-            <div className="text-[10px] text-slate-400 uppercase font-bold">Sedi</div>
-            <div className="text-sm font-black text-rose-400 font-mono">{conteggioSedi}</div>
-          </div>
-          <div className="bg-slate-900/60 p-2 rounded-xl border border-slate-800">
-            <div className="text-[10px] text-slate-400 uppercase font-bold">Turni</div>
-            <div className="text-sm font-black text-teal-400 font-mono">{conteggioTurniOggi}</div>
-          </div>
-          <div className="bg-slate-900/60 p-2 rounded-xl border border-slate-800">
-            <div className="text-[10px] text-slate-400 uppercase font-bold">Bacheca</div>
-            <div className="text-sm font-black text-violet-400 font-mono">{conteggioComunicazioni}</div>
+            <div className="bg-slate-900/60 px-2 py-1 rounded-lg border border-slate-800 flex items-center justify-between gap-1">
+              <span className="text-[10px] text-slate-400 uppercase font-bold truncate">Volontari</span>
+              <span className="text-xs font-black text-blue-400 font-mono">{conteggioVolontari}</span>
+            </div>
+            <div
+              onClick={() => setVistaAttiva('monitoraggio_flotta')}
+              className="bg-slate-900/60 hover:bg-slate-900 px-2 py-1 rounded-lg border border-slate-800 hover:border-amber-500/60 transition-all cursor-pointer group flex items-center justify-between gap-1"
+              title="Clicca per aprire la vista Monitoraggio Flotta con grafici KM"
+            >
+              <span className="text-[10px] text-slate-400 uppercase font-bold group-hover:text-amber-300 flex items-center gap-1 truncate">
+                <span>Mezzi</span>
+                <BarChart3 className="w-2.5 h-2.5 text-amber-400 shrink-0" />
+              </span>
+              <span className="text-xs font-black text-amber-400 font-mono">{conteggioMezzi}</span>
+            </div>
+            <div className="bg-slate-900/60 px-2 py-1 rounded-lg border border-slate-800 flex items-center justify-between gap-1">
+              <span className="text-[10px] text-slate-400 uppercase font-bold truncate">Donazioni</span>
+              <span className="text-xs font-black text-purple-400 font-mono">{conteggioDonazioni}</span>
+            </div>
+            <div className="bg-slate-900/60 px-2 py-1 rounded-lg border border-slate-800 flex items-center justify-between gap-1">
+              <span className="text-[10px] text-slate-400 uppercase font-bold truncate">Corsi</span>
+              <span className="text-xs font-black text-indigo-400 font-mono">{conteggioCorsi}</span>
+            </div>
+            <div className="bg-slate-900/60 px-2 py-1 rounded-lg border border-slate-800 flex items-center justify-between gap-1">
+              <span className="text-[10px] text-slate-400 uppercase font-bold truncate">Magazzino</span>
+              <span className="text-[11px] font-black text-cyan-400 font-mono">Attivo</span>
+            </div>
+            <div className="bg-slate-900/60 px-2 py-1 rounded-lg border border-slate-800 flex items-center justify-between gap-1">
+              <span className="text-[10px] text-slate-400 uppercase font-bold truncate">Sedi</span>
+              <span className="text-xs font-black text-rose-400 font-mono">{conteggioSedi}</span>
+            </div>
+            <div className="bg-slate-900/60 px-2 py-1 rounded-lg border border-slate-800 flex items-center justify-between gap-1">
+              <span className="text-[10px] text-slate-400 uppercase font-bold truncate">Turni</span>
+              <span className="text-xs font-black text-teal-400 font-mono">{conteggioTurniOggi}</span>
+            </div>
+            <div className="bg-slate-900/60 px-2 py-1 rounded-lg border border-slate-800 flex items-center justify-between gap-1">
+              <span className="text-[10px] text-slate-400 uppercase font-bold truncate">Bacheca</span>
+              <span className="text-xs font-black text-violet-400 font-mono">{conteggioComunicazioni}</span>
+            </div>
           </div>
         </div>
       </div>

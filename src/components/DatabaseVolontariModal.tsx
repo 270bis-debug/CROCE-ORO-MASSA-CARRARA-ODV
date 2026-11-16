@@ -246,8 +246,10 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
   // Modale Aggiungi / Modifica
   const [modaleEditAperta, setModaleEditAperta] = useState(false);
   const [volontarioInModifica, setVolontarioInModifica] = useState<Volontario | null>(null);
-  const [tabModaleEdit, setTabModaleEdit] = useState<'anagrafica' | 'tesseramento' | 'documenti' | 'vestiario'>('anagrafica');
+  const [tabModaleEdit, setTabModaleEdit] = useState<'anagrafica' | 'tesseramento' | 'documenti' | 'vestiario' | 'domanda_iscrizione'>('anagrafica');
   const [formMacroCategorie, setFormMacroCategorie] = useState<MacroCategoriaId[]>([]);
+  const [formDomandaIscrizioneDati, setFormDomandaIscrizioneDati] = useState<any>(undefined);
+  const [formDomandaIscrizioneFirmata, setFormDomandaIscrizioneFirmata] = useState<DocumentoFirmatoArchiviato | undefined>(undefined);
 
   // Modale Conferma Eliminazione Account
   const [accountDaEliminare, setAccountDaEliminare] = useState<Volontario | null>(null);
@@ -364,7 +366,7 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
     setModaleDomandaIscrizioneAperta(true);
   };
 
-  const apriDomandaDaFormAttuale = () => {
+  const buildVolontarioLiveDaForm = (): Volontario => {
     const vestiarioAggiornato = applicaEvidenziazioneUltimaConsegna(
       formVestiario,
       volontarioInModifica?.vestiario
@@ -384,8 +386,9 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
       ? `${formResidenza.indirizzo.trim()}, ${formResidenza.cap.trim() ? formResidenza.cap.trim() + ' ' : ''}${formResidenza.comune.trim()}${formResidenza.provincia.trim() ? ' (' + formResidenza.provincia.trim().toUpperCase() + ')' : ''}`
       : (formIndirizzoResidenza.trim() || undefined);
 
-    const volTemp: Volontario = {
-      id: volontarioInModifica?.id || `temp-${Date.now()}`,
+    return {
+      ...(volontarioInModifica || {}),
+      id: volontarioInModifica?.id || 'draft-domanda-iscrizione',
       nome: formNome.trim() || 'Nuovo',
       cognome: formCognome.trim() || 'Richiedente',
       codiceFiscale: formCodiceFiscale.trim().toUpperCase() || undefined,
@@ -403,18 +406,51 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
       telefono: formTelefono.trim(),
       email: formEmail.trim(),
       pin: formPIN || '0000',
-      dataRegistrazione: formatDateItaly(),
-      inTurno: false,
+      dataRegistrazione: volontarioInModifica?.dataRegistrazione || formatDateItaly(),
+      inTurno: volontarioInModifica?.inTurno || false,
       profiloCentrale: formProfiloCentrale || formQualifica === 'Operatore Centrale',
       approvato: formApprovato,
-      firmaBase64: formFirmaBase64 || undefined,
+      firmaBase64: formFirmaBase64 || volontarioInModifica?.firmaBase64 || undefined,
       fotoBase64: formFotoBase64 || undefined,
       documentoIdentita: formDocNumero.trim() ? docIdentita : undefined,
       patente: formPatenteInPossesso ? patGuida : undefined,
-      vestiario: vestiarioAggiornato
+      vestiario: vestiarioAggiornato,
+      esenteQuotaAssociativa: formEsenteQuota,
+      motivoEsenzioneQuota: formEsenteQuota ? formMotivoEsenzioneQuota : undefined,
+      domandaIscrizioneDati: formDomandaIscrizioneDati ?? volontarioInModifica?.domandaIscrizioneDati,
+      domandaIscrizioneFirmata: formDomandaIscrizioneFirmata ?? volontarioInModifica?.domandaIscrizioneFirmata,
+      tesseramento: {
+        ...(volontarioInModifica?.tesseramento || {
+          annoRiferimento: getCurrentYearItaly(),
+          rinnovata: formTesseraRinnovata
+        }),
+        numeroTessera: formNumeroTessera.trim() || volontarioInModifica?.tesseramento?.numeroTessera || formMatricola.trim(),
+        importoVersato: formEsenteQuota ? 0 : formQuotaVersata
+      }
     };
-    setVolontarioPerDomandaIscrizione(volTemp);
-    setModaleDomandaIscrizioneAperta(true);
+  };
+
+  const handleSalvaDaTabDomanda = (vAgg: Volontario) => {
+    setFormDomandaIscrizioneDati(vAgg.domandaIscrizioneDati);
+    setFormDomandaIscrizioneFirmata(vAgg.domandaIscrizioneFirmata);
+    if (vAgg.esenteQuotaAssociativa !== undefined) {
+      setFormEsenteQuota(Boolean(vAgg.esenteQuotaAssociativa));
+    }
+    if (vAgg.motivoEsenzioneQuota) {
+      setFormMotivoEsenzioneQuota(vAgg.motivoEsenzioneQuota as any);
+    }
+    if (vAgg.tesseramento?.numeroTessera) {
+      setFormNumeroTessera(vAgg.tesseramento.numeroTessera);
+    }
+    if (vAgg.tesseramento?.importoVersato !== undefined) {
+      setFormQuotaVersata(vAgg.tesseramento.importoVersato);
+    }
+
+    if (volontarioInModifica) {
+      const aggiornati = volontari.map((v) => (v.id === volontarioInModifica.id ? { ...v, ...vAgg, id: v.id } : v));
+      onAggiornaVolontari(aggiornati);
+      setVolontarioInModifica((prev) => (prev ? { ...prev, ...vAgg, id: prev.id } : prev));
+    }
   };
 
   // Operatori Centrale (fino a 10 slot oltre all'amministratore con 4451)
@@ -1349,6 +1385,8 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
     setFormPatenteNumero('');
     setFormPatenteScadenza('');
     setFormVestiario(creaDotazioneVuota());
+    setFormDomandaIscrizioneDati(undefined);
+    setFormDomandaIscrizioneFirmata(undefined);
     setTabModaleEdit('anagrafica');
     setErroreForm('');
     setModaleEditAperta(true);
@@ -1466,6 +1504,8 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
 
     setFormMacroCategorie(volontario.macroCategorieAbilitate || (volontario.profiloCentrale ? ['centrale'] : []));
     setFormSezioneAppartenenzaId(volontario.sezioneAppartenenzaId || 'sede-massa-ronchi');
+    setFormDomandaIscrizioneDati(volontario.domandaIscrizioneDati);
+    setFormDomandaIscrizioneFirmata(volontario.domandaIscrizioneFirmata);
     setTabModaleEdit('anagrafica');
     setErroreForm('');
     setModaleEditAperta(true);
@@ -1710,6 +1750,8 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
               documentoIdentita: formDocNumero.trim() ? docIdentita : undefined,
               patente: formPatenteInPossesso ? patGuida : undefined,
               vestiario: vestiarioAggiornato,
+              domandaIscrizioneDati: formDomandaIscrizioneDati ?? v.domandaIscrizioneDati,
+              domandaIscrizioneFirmata: formDomandaIscrizioneFirmata,
               esenteQuotaAssociativa: formEsenteQuota,
               motivoEsenzioneQuota: formEsenteQuota ? formMotivoEsenzioneQuota : undefined,
               macroCategorieAbilitate: formMacroCategorie,
@@ -1776,6 +1818,8 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
         documentoIdentita: formDocNumero.trim() ? docIdentita : undefined,
         patente: formPatenteInPossesso ? patGuida : undefined,
         vestiario: vestiarioAggiornato,
+        domandaIscrizioneDati: formDomandaIscrizioneDati,
+        domandaIscrizioneFirmata: formDomandaIscrizioneFirmata,
         esenteQuotaAssociativa: formEsenteQuota,
         motivoEsenzioneQuota: formEsenteQuota ? formMotivoEsenzioneQuota : undefined,
         macroCategorieAbilitate: formMacroCategorie,
@@ -4147,7 +4191,7 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[100] flex items-center justify-center p-3 sm:p-4">
           <form
             onSubmit={salvaVolontario}
-            className="bg-slate-900 border border-slate-700 rounded-3xl max-w-2xl w-full shadow-2xl flex flex-col max-h-[92vh] overflow-hidden"
+            className={`bg-slate-900 border border-slate-700 rounded-3xl ${tabModaleEdit === 'domanda_iscrizione' ? 'max-w-4xl' : 'max-w-3xl'} w-full shadow-2xl flex flex-col max-h-[92vh] overflow-hidden transition-all`}
           >
             {/* Header Modale */}
             <div className="p-4 sm:p-5 border-b border-slate-800 flex items-center justify-between shrink-0 bg-slate-950/50">
@@ -4155,7 +4199,7 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
                 <div className="w-10 h-10 rounded-2xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-400 shrink-0">
                   {tabModaleEdit === 'anagrafica' ? (
                     <Users className="w-5 h-5 text-amber-400" />
-                  ) : tabModaleEdit === 'documenti' ? (
+                  ) : tabModaleEdit === 'documenti' || tabModaleEdit === 'domanda_iscrizione' ? (
                     <FileText className="w-5 h-5 text-amber-400" />
                   ) : (
                     <Shirt className="w-5 h-5 text-amber-400" />
@@ -4242,6 +4286,19 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
                     </span>
                   ) : null;
                 })()}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setTabModaleEdit('domanda_iscrizione')}
+                className={`px-3.5 py-2 font-bold text-xs rounded-t-xl border-b-2 flex items-center gap-1.5 transition-all cursor-pointer whitespace-nowrap ${
+                  tabModaleEdit === 'domanda_iscrizione'
+                    ? 'border-amber-400 text-amber-300 bg-slate-900/90'
+                    : 'border-transparent text-slate-400 hover:text-slate-200 hover:bg-slate-900/40'
+                }`}
+              >
+                <FileText className="w-3.5 h-3.5" />
+                <span>Domanda Iscrizione</span>
               </button>
             </div>
 
@@ -5330,30 +5387,46 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
                   </div>
                 </div>
               )}
+              {/* TAB 4: DOMANDA ISCRIZIONE */}
+              {tabModaleEdit === 'domanda_iscrizione' && (
+                <ModalCompilaDomandaIscrizione
+                  embedded
+                  isOpen={modaleEditAperta}
+                  onClose={() => {}}
+                  volontario={buildVolontarioLiveDaForm()}
+                  volontari={volontari}
+                  onDatiChange={(nuoviDati) => {
+                    setFormDomandaIscrizioneDati(nuoviDati);
+                    setFormEsenteQuota(Boolean(nuoviDati.esenteQuota));
+                    if (nuoviDati.motivoEsenzione) {
+                      setFormMotivoEsenzioneQuota(nuoviDati.motivoEsenzione as any);
+                    }
+                    if (nuoviDati.numeroTessera) {
+                      setFormNumeroTessera(nuoviDati.numeroTessera);
+                    }
+                    if (nuoviDati.quotaVersata !== undefined) {
+                      setFormQuotaVersata(nuoviDati.esenteQuota ? 0 : nuoviDati.quotaVersata);
+                    }
+                  }}
+                  onSalvaVolontario={handleSalvaDaTabDomanda}
+                  onNotificaRadio={onNotificaRadio}
+                />
+              )}
             </div>
 
             {/* Footer Modale Fisso */}
             <div className="p-3 sm:p-4 border-t border-slate-800 bg-slate-950 flex flex-wrap items-center justify-between gap-2 shrink-0">
               <div className="flex items-center gap-2 flex-wrap">
-                <button
-                  type="button"
-                  onClick={apriDomandaDaFormAttuale}
-                  className="px-3 py-2 rounded-xl bg-sky-500/20 hover:bg-sky-500/30 text-sky-300 border border-sky-500/40 text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer active:scale-95"
-                  title="Compila e scarica la Domanda di Iscrizione PDF caricando automaticamente i dati di Sezione 1 (Anagrafica) e Sezione 2 (Documenti)"
-                >
-                  <FileText className="w-3.5 h-3.5 text-sky-400" />
-                  <span>Domanda Iscrizione (PDF)</span>
-                </button>
                 {volontarioInModifica && (
                   <>
                     <button
                       type="button"
                       onClick={() => handleScaricaSchedaVestiario(volontarioInModifica)}
                       className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-amber-300 border border-amber-500/30 text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer active:scale-95"
-                      title="Scarica direttamente la Scheda Vestiario & DPI in formato PDF da stampare e firmare"
+                      title="Scarica la Scheda Vestiario & DPI in formato PDF da stampare e firmare"
                     >
                       <FileDown className="w-3.5 h-3.5 text-amber-400" />
-                      <span>Scarica PDF Scheda</span>
+                      <span>Scheda Vestiario</span>
                     </button>
 
                     {/* Carica Documento Stampato e Firmato dal Footer */}

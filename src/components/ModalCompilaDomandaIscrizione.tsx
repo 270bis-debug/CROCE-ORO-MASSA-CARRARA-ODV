@@ -48,6 +48,8 @@ interface ModalCompilaDomandaIscrizioneProps {
   volontari?: Volontario[];
   onSalvaVolontario?: (volontarioAggiornato: Volontario) => void;
   onNotificaRadio?: (testo: string, tipo?: 'centrale' | 'mezzo' | 'sistema' | 'allarme') => void;
+  embedded?: boolean;
+  onDatiChange?: (dati: DatiDomandaIscrizione) => void;
 }
 
 export const ModalCompilaDomandaIscrizione: React.FC<ModalCompilaDomandaIscrizioneProps> = ({
@@ -56,56 +58,77 @@ export const ModalCompilaDomandaIscrizione: React.FC<ModalCompilaDomandaIscrizio
   volontario,
   volontari = [],
   onSalvaVolontario,
-  onNotificaRadio
+  onNotificaRadio,
+  embedded = false,
+  onDatiChange
 }) => {
-  const [dati, setDati] = useState<DatiDomandaIscrizione>(creaDatiDomandaIscrizionePredefiniti());
+  const [dati, setDatiState] = useState<DatiDomandaIscrizione>(creaDatiDomandaIscrizionePredefiniti());
   const [tabAttiva, setTabAttiva] = useState<'sanitari' | 'dichiarazioni' | 'tutore' | 'privacy' | 'foto' | 'associazione'>('sanitari');
-  const [messaggioConferma, setMessaggioConferma] = useState<string | null>(null);
+  const [messaggioConferma, setMessaggioConferma] = useState<{ tipo: 'ok' | 'err'; testo: string } | null>(null);
+  const [confermaRimuoviFirmata, setConfermaRimuoviFirmata] = useState(false);
   const fileInputDomandaFirmataRef = useRef<HTMLInputElement>(null);
+  const loadedKeyRef = useRef<string | null>(null);
+
+  const setDati = (next: DatiDomandaIscrizione) => {
+    setDatiState(next);
+    if (onDatiChange) {
+      onDatiChange(next);
+    }
+  };
 
   const isManualeAttivo = isPeriodoInserimentoManualeTessere();
   const isOperatore = !!(volontario?.profiloCentrale || volontario?.qualifica === 'Operatore Centrale');
   const infoTessera = calcolaProssimoNumeroTessera(volontari.length > 0 ? volontari : (volontario ? [volontario] : []), isOperatore);
 
   useEffect(() => {
-    if (volontario) {
-      const def = creaDatiDomandaIscrizionePredefiniti();
-      const salvati = (volontario as any).domandaIscrizioneDati;
-      const isEsente = salvati?.esenteQuota !== undefined
-        ? Boolean(salvati.esenteQuota)
-        : Boolean(volontario.esenteQuotaAssociativa);
-      const motivoEs = salvati?.motivoEsenzione || volontario.motivoEsenzioneQuota || 'Benemerito';
-      const quotaSuggerita = isOperatore ? 10.0 : 5.0;
-      const numEsistente = volontario.tesseramento?.numeroTessera || '';
-
-      // Fino al 31/10/2026: l'amministratore può digitare liberamente qualsiasi numero.
-      // Dopo il 31/10/2026: assegnazione automatica del progressivo (+1 dall'ultima emessa),
-      // a meno che non ci sia già un numero registrato o forzatura manuale.
-      let numTesseraIniziale = numEsistente;
-      if (!numTesseraIniziale) {
-        if (isManualeAttivo) {
-          numTesseraIniziale = volontario.matricola || infoTessera.prossimoNumeroTessera;
-        } else {
-          numTesseraIniziale = infoTessera.prossimoNumeroTessera;
-        }
-      }
-
-      setDati({
-        ...def,
-        ...(salvati || {}),
-        esenteQuota: isEsente,
-        motivoEsenzione: motivoEs,
-        quotaVersata: isEsente ? 0 : (salvati?.quotaVersata !== undefined ? salvati.quotaVersata : quotaSuggerita),
-        numeroTessera: salvati?.numeroTessera || numTesseraIniziale,
-        forzaturaNumeroTessera: salvati?.forzaturaNumeroTessera || false,
-        numeroIscrizioneLibroSoci: salvati?.numeroIscrizioneLibroSoci || `LS-2026/${(salvati?.numeroTessera || numTesseraIniziale).replace(/\D/g, '') || '01'}`,
-        richiedenteMinorenne: salvati?.richiedenteMinorenne !== undefined ? salvati.richiedenteMinorenne : false,
-        genitoreNomeCognome: salvati?.genitoreNomeCognome || '',
-        genitoreRecapiti: salvati?.genitoreRecapiti || '',
-        genitoreLuogoData: salvati?.genitoreLuogoData || ''
-      });
+    if (!isOpen || !volontario) {
+      loadedKeyRef.current = null;
+      return;
     }
-  }, [volontario, isManualeAttivo]);
+
+    const keyCorrente = `${volontario.id}:${embedded ? 'embedded' : 'modal'}:${isManualeAttivo ? '1' : '0'}`;
+    if (loadedKeyRef.current === keyCorrente) {
+      return;
+    }
+    loadedKeyRef.current = keyCorrente;
+
+    const def = creaDatiDomandaIscrizionePredefiniti();
+    const salvati = (volontario as any).domandaIscrizioneDati;
+    const isEsente = salvati?.esenteQuota !== undefined
+      ? Boolean(salvati.esenteQuota)
+      : Boolean(volontario.esenteQuotaAssociativa);
+    const motivoEs = salvati?.motivoEsenzione || volontario.motivoEsenzioneQuota || 'Benemerito';
+    const quotaSuggerita = isOperatore ? 10.0 : 5.0;
+    const numEsistente = volontario.tesseramento?.numeroTessera || '';
+
+    // Fino al 31/10/2026: l'amministratore può digitare liberamente qualsiasi numero.
+    // Dopo il 31/10/2026: assegnazione automatica del progressivo (+1 dall'ultima emessa),
+    // a meno che non ci sia già un numero registrato o forzatura manuale.
+    let numTesseraIniziale = numEsistente;
+    if (!numTesseraIniziale) {
+      if (isManualeAttivo) {
+        numTesseraIniziale = volontario.matricola || infoTessera.prossimoNumeroTessera;
+      } else {
+        numTesseraIniziale = infoTessera.prossimoNumeroTessera;
+      }
+    }
+
+    setDatiState({
+      ...def,
+      ...(salvati || {}),
+      esenteQuota: isEsente,
+      motivoEsenzione: motivoEs,
+      quotaVersata: isEsente ? 0 : (salvati?.quotaVersata !== undefined ? salvati.quotaVersata : quotaSuggerita),
+      numeroTessera: salvati?.numeroTessera || numTesseraIniziale,
+      forzaturaNumeroTessera: salvati?.forzaturaNumeroTessera || false,
+      numeroIscrizioneLibroSoci: salvati?.numeroIscrizioneLibroSoci || `LS-2026/${(salvati?.numeroTessera || numTesseraIniziale).replace(/\D/g, '') || '01'}`,
+      richiedenteMinorenne: salvati?.richiedenteMinorenne !== undefined ? salvati.richiedenteMinorenne : false,
+      genitoreNomeCognome: salvati?.genitoreNomeCognome || '',
+      genitoreRecapiti: salvati?.genitoreRecapiti || '',
+      genitoreLuogoData: salvati?.genitoreLuogoData || ''
+    });
+    setConfermaRimuoviFirmata(false);
+  }, [volontario, isOpen, isManualeAttivo, embedded, isOperatore, infoTessera.prossimoNumeroTessera]);
 
   if (!isOpen || !volontario) return null;
 
@@ -143,13 +166,15 @@ export const ModalCompilaDomandaIscrizione: React.FC<ModalCompilaDomandaIscrizio
       sincronizzaVolontario();
       scaricaPDFDomandaIscrizione(volontario, dati, { volontari });
       const msg = `✅ Domanda di Iscrizione PDF scaricata per ${volontario.nome} ${volontario.cognome}!`;
-      setMessaggioConferma(msg);
+      setMessaggioConferma({ tipo: 'ok', testo: msg });
       if (onNotificaRadio) {
         onNotificaRadio(`📄 Domanda di Iscrizione PDF generata per ${volontario.nome} ${volontario.cognome} (Tessera N. ${dati.numeroTessera || 'N/D'})`, 'centrale');
       }
       setTimeout(() => setMessaggioConferma(null), 4000);
     } catch (err) {
       console.error('Errore generazione PDF:', err);
+      setMessaggioConferma({ tipo: 'err', testo: 'Errore durante la generazione del PDF della Domanda di Iscrizione.' });
+      setTimeout(() => setMessaggioConferma(null), 4000);
     }
   };
 
@@ -161,17 +186,25 @@ export const ModalCompilaDomandaIscrizione: React.FC<ModalCompilaDomandaIscrizio
       const win = window.open(blobUrl, '_blank');
       if (win) {
         win.focus();
+        setMessaggioConferma({ tipo: 'ok', testo: '🖨️ Anteprima di stampa aperta in nuova scheda!' });
+      } else {
+        scaricaPDFDomandaIscrizione(volontario, dati, { volontari });
+        setMessaggioConferma({ tipo: 'ok', testo: '📄 Anteprima diretta bloccata dal browser: PDF scaricato sul dispositivo per la stampa.' });
       }
-      setMessaggioConferma('🖨️ Anteprima di stampa aperta in nuova scheda!');
       setTimeout(() => setMessaggioConferma(null), 4000);
     } catch (err) {
       console.error('Errore stampa:', err);
+      setMessaggioConferma({ tipo: 'err', testo: 'Errore durante la preparazione della stampa PDF.' });
+      setTimeout(() => setMessaggioConferma(null), 4000);
     }
   };
 
   const handleSalvaSoloDati = () => {
     sincronizzaVolontario();
-    setMessaggioConferma(`💾 Numero tessera ${dati.numeroTessera} e delibera allineati nel database per ${volontario.nome} ${volontario.cognome}!`);
+    setMessaggioConferma({
+      tipo: 'ok',
+      testo: `💾 Dati Domanda e tessera ${dati.numeroTessera} allineati nel database per ${volontario.nome} ${volontario.cognome}!`
+    });
     if (onNotificaRadio) {
       onNotificaRadio(`💾 Delibera e tessera N. ${dati.numeroTessera} salvate nel database per ${volontario.nome} ${volontario.cognome}`, 'centrale');
     }
@@ -183,7 +216,12 @@ export const ModalCompilaDomandaIscrizione: React.FC<ModalCompilaDomandaIscrizio
     if (!file || !volontario) return;
 
     if (file.size > 25 * 1024 * 1024) {
-      alert("Il file selezionato supera i 25 MB consentiti. Carica una scansione PDF o immagine più leggera.");
+      setMessaggioConferma({
+        tipo: 'err',
+        testo: 'Il file selezionato supera i 25 MB consentiti. Carica una scansione PDF o immagine più leggera.'
+      });
+      setTimeout(() => setMessaggioConferma(null), 5000);
+      e.target.value = '';
       return;
     }
 
@@ -202,6 +240,7 @@ export const ModalCompilaDomandaIscrizione: React.FC<ModalCompilaDomandaIscrizio
 
       const volAggiornato: Volontario = {
         ...volontario,
+        domandaIscrizioneDati: { ...dati },
         domandaIscrizioneFirmata: docFirmato,
         tesseramento: {
           ...(volontario.tesseramento || {
@@ -209,7 +248,7 @@ export const ModalCompilaDomandaIscrizione: React.FC<ModalCompilaDomandaIscrizio
             rinnovata: true
           }),
           numeroTessera: dati.numeroTessera ? dati.numeroTessera.trim() : (volontario.tesseramento?.numeroTessera || volontario.matricola || 'TV-101'),
-          importoVersato: dati.quotaVersata !== undefined ? dati.quotaVersata : 5.0,
+          importoVersato: dati.esenteQuota ? 0 : (dati.quotaVersata !== undefined ? dati.quotaVersata : 5.0),
           dataPrimaIscrizione: volontario.tesseramento?.dataPrimaIscrizione || dati.deliberaData || formatISODateItaly()
         }
       };
@@ -218,7 +257,10 @@ export const ModalCompilaDomandaIscrizione: React.FC<ModalCompilaDomandaIscrizio
         onSalvaVolontario(volAggiornato);
       }
 
-      setMessaggioConferma(`✅ Domanda di Iscrizione stampata e firmata archiviata con successo nella scheda di ${volontario.nome} ${volontario.cognome}!`);
+      setMessaggioConferma({
+        tipo: 'ok',
+        testo: `✅ Domanda di Iscrizione stampata e firmata archiviata con successo nella scheda di ${volontario.nome} ${volontario.cognome}!`
+      });
       if (onNotificaRadio) {
         onNotificaRadio(`📁 ARCHIVIAZIONE: Domanda di iscrizione firmata archiviata per ${volontario.nome} ${volontario.cognome} (${file.name})`, 'centrale');
       }
@@ -239,66 +281,49 @@ export const ModalCompilaDomandaIscrizione: React.FC<ModalCompilaDomandaIscrizio
     document.body.removeChild(a);
   };
 
-  const handleRimuoviDomandaFirmata = () => {
+  const confermaRimozioneDomandaFirmata = () => {
     if (!volontario?.domandaIscrizioneFirmata) return;
-    if (!confirm("Vuoi davvero rimuovere la scansione della Domanda di Iscrizione firmata da questo volontario?")) return;
 
     const volAggiornato: Volontario = {
       ...volontario,
+      domandaIscrizioneDati: { ...dati },
       domandaIscrizioneFirmata: undefined
     };
 
     if (onSalvaVolontario) {
       onSalvaVolontario(volAggiornato);
     }
-    setMessaggioConferma(`Documento firmato rimosso dalla scheda di ${volontario.nome} ${volontario.cognome}.`);
+    setConfermaRimuoviFirmata(false);
+    setMessaggioConferma({
+      tipo: 'ok',
+      testo: `Documento firmato rimosso dalla scheda di ${volontario.nome} ${volontario.cognome}.`
+    });
     setTimeout(() => setMessaggioConferma(null), 4000);
   };
 
-  return (
-    <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-70 flex items-center justify-center p-2 sm:p-4 overflow-y-auto animate-in fade-in duration-200">
-      <div className="bg-slate-900 border border-slate-700 rounded-3xl max-w-4xl w-full shadow-2xl overflow-hidden flex flex-col my-auto max-h-[92vh]">
-        {/* Header Modale */}
-        <div className="bg-gradient-to-r from-slate-950 via-slate-900 to-indigo-950 p-4 sm:p-5 border-b border-slate-800 flex items-center justify-between gap-3">
-          <div className="flex items-center gap-3">
-            <div className="w-11 h-11 rounded-2xl bg-amber-500/20 border border-amber-400/40 flex items-center justify-center text-amber-400 shadow-md">
-              <FileText className="w-6 h-6" />
-            </div>
-            <div>
-              <div className="flex items-center gap-2 flex-wrap">
-                <h3 className="text-sm sm:text-base font-black text-white uppercase tracking-wide">
-                  Domanda di Iscrizione Socio / Volontario
-                </h3>
-                <span className="text-[10px] font-bold px-2.5 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-400/30">
-                  Compilabile dal Device
-                </span>
-              </div>
-              <p className="text-xs text-slate-300 mt-0.5">
-                Dati anagrafici e documenti recuperati in automatico • Modifica i consensi e le clausole prima della stampa
-              </p>
-            </div>
-          </div>
+  const renderNotificaBanner = () =>
+    messaggioConferma ? (
+      <div
+        className={`px-4 py-2 text-xs font-bold flex items-center justify-between ${
+          messaggioConferma.tipo === 'err'
+            ? 'bg-red-500/20 border-b border-red-500/40 text-red-200 rounded-xl'
+            : 'bg-emerald-500/20 border-b border-emerald-500/40 text-emerald-300 rounded-xl'
+        }`}
+      >
+        <span>{messaggioConferma.testo}</span>
+        <button
+          type="button"
+          onClick={() => setMessaggioConferma(null)}
+          className={messaggioConferma.tipo === 'err' ? 'text-red-300 hover:text-white cursor-pointer' : 'text-emerald-400 hover:text-white cursor-pointer'}
+        >
+          ✕
+        </button>
+      </div>
+    ) : null;
 
-          <button
-            onClick={onClose}
-            className="w-9 h-9 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white flex items-center justify-center transition-colors cursor-pointer shrink-0"
-            title="Chiudi"
-          >
-            <X className="w-5 h-5" />
-          </button>
-        </div>
-
-        {/* Notifica Temporanea */}
-        {messaggioConferma && (
-          <div className="bg-emerald-500/20 border-b border-emerald-500/40 px-4 py-2 text-xs font-bold text-emerald-300 flex items-center justify-between">
-            <span>{messaggioConferma}</span>
-            <button onClick={() => setMessaggioConferma(null)} className="text-emerald-400 hover:text-white">✕</button>
-          </div>
-        )}
-
-        {/* Corpo Modale Scrollabile */}
-        <div className="p-4 sm:p-6 overflow-y-auto space-y-5 text-xs flex-1">
-          {/* Box Dati Recuperati in Automatico da Sezione 1 e Sezione 2 */}
+  const renderCorpoCompilazione = () => (
+    <div className="space-y-4 text-xs">
+      {/* Box Dati Recuperati in Automatico da Sezione 1 e Sezione 2 */}
           <div className="p-4 rounded-2xl bg-slate-950/80 border border-slate-800 space-y-3">
             <div className="flex items-center justify-between border-b border-slate-800 pb-2">
               <span className="text-[11px] font-black uppercase tracking-wider text-amber-400 flex items-center gap-1.5">
@@ -353,6 +378,7 @@ export const ModalCompilaDomandaIscrizione: React.FC<ModalCompilaDomandaIscrizio
           {/* Tab Selector per Sezioni Compilabili */}
           <div className="flex items-center gap-1.5 overflow-x-auto pb-1 border-b border-slate-800 text-[11px] font-bold">
             <button
+              type="button"
               onClick={() => setTabAttiva('sanitari')}
               className={`px-3 py-2 rounded-xl transition-all flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
                 tabAttiva === 'sanitari'
@@ -364,6 +390,7 @@ export const ModalCompilaDomandaIscrizione: React.FC<ModalCompilaDomandaIscrizio
               1. Informazioni Sanitarie
             </button>
             <button
+              type="button"
               onClick={() => setTabAttiva('dichiarazioni')}
               className={`px-3 py-2 rounded-xl transition-all flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
                 tabAttiva === 'dichiarazioni'
@@ -375,6 +402,7 @@ export const ModalCompilaDomandaIscrizione: React.FC<ModalCompilaDomandaIscrizio
               2. Dichiarazioni
             </button>
             <button
+              type="button"
               onClick={() => setTabAttiva('tutore')}
               className={`px-3 py-2 rounded-xl transition-all flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
                 tabAttiva === 'tutore'
@@ -386,6 +414,7 @@ export const ModalCompilaDomandaIscrizione: React.FC<ModalCompilaDomandaIscrizio
               3. Genitore / Tutore (Minorenni)
             </button>
             <button
+              type="button"
               onClick={() => setTabAttiva('privacy')}
               className={`px-3 py-2 rounded-xl transition-all flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
                 tabAttiva === 'privacy'
@@ -397,6 +426,7 @@ export const ModalCompilaDomandaIscrizione: React.FC<ModalCompilaDomandaIscrizio
               4-5. Privacy & Dati Sanitari
             </button>
             <button
+              type="button"
               onClick={() => setTabAttiva('foto')}
               className={`px-3 py-2 rounded-xl transition-all flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
                 tabAttiva === 'foto'
@@ -408,6 +438,7 @@ export const ModalCompilaDomandaIscrizione: React.FC<ModalCompilaDomandaIscrizio
               6. Consenso Foto / Video
             </button>
             <button
+              type="button"
               onClick={() => setTabAttiva('associazione')}
               className={`px-3 py-2 rounded-xl transition-all flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
                 tabAttiva === 'associazione'
@@ -1180,20 +1211,40 @@ export const ModalCompilaDomandaIscrizione: React.FC<ModalCompilaDomandaIscrizio
                         <button
                           type="button"
                           onClick={() => fileInputDomandaFirmataRef.current?.click()}
-                          className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-amber-300 border border-amber-500/40 text-xs font-bold transition-all cursor-pointer"
+                          className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-amber-300 border border-amber-500/40 text-xs font-bold transition-all cursor-pointer flex items-center gap-1"
                           title="Sostituisci documento con una nuova scansione"
                         >
                           <Upload className="w-3.5 h-3.5" />
                           <span>Sostituisci</span>
                         </button>
-                        <button
-                          type="button"
-                          onClick={handleRimuoviDomandaFirmata}
-                          className="p-1.5 rounded-lg bg-slate-800 hover:bg-red-500/20 text-slate-400 hover:text-red-400 border border-slate-700 text-xs transition-colors cursor-pointer"
-                          title="Rimuovi file firmato archiviato"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
+                        {!confermaRimuoviFirmata ? (
+                          <button
+                            type="button"
+                            onClick={() => setConfermaRimuoviFirmata(true)}
+                            className="p-1.5 rounded-lg bg-slate-800 hover:bg-red-500/20 text-slate-400 hover:text-red-400 border border-slate-700 text-xs transition-colors cursor-pointer"
+                            title="Rimuovi file firmato archiviato"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        ) : (
+                          <div className="flex items-center gap-1.5 bg-red-950/60 border border-red-500/50 rounded-lg px-2 py-1">
+                            <span className="text-[10px] text-red-200 font-bold">Rimuovere?</span>
+                            <button
+                              type="button"
+                              onClick={confermaRimozioneDomandaFirmata}
+                              className="px-2 py-0.5 rounded bg-red-600 hover:bg-red-500 text-white text-[10px] font-bold cursor-pointer"
+                            >
+                              Sì
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setConfermaRimuoviFirmata(false)}
+                              className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-bold cursor-pointer"
+                            >
+                              No
+                            </button>
+                          </div>
+                        )}
                       </div>
                     </div>
                   ) : (
@@ -1215,89 +1266,177 @@ export const ModalCompilaDomandaIscrizione: React.FC<ModalCompilaDomandaIscrizio
               </div>
             </div>
           )}
+    </div>
+  );
+
+  const renderAzioniDomanda = (mostraChiudi: boolean) => (
+    <div className="flex flex-col sm:flex-row items-center justify-between gap-3">
+      <div className="text-[11px] text-slate-400">
+        Documento ufficiale <span className="text-white font-bold">Domanda di Iscrizione</span> pronto per esportazione PDF ad alta risoluzione.
+      </div>
+
+      <div className="flex items-center gap-2 w-full sm:w-auto flex-wrap">
+        {mostraChiudi && (
+          <button
+            type="button"
+            onClick={onClose}
+            className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold transition-colors cursor-pointer"
+          >
+            Chiudi
+          </button>
+        )}
+
+        <button
+          type="button"
+          onClick={handleSalvaSoloDati}
+          className="px-3.5 py-2 rounded-xl bg-emerald-600/90 hover:bg-emerald-500 text-white text-xs font-bold flex items-center justify-center gap-1.5 transition-all shadow-md cursor-pointer"
+        >
+          <Save className="w-3.5 h-3.5" />
+          <span>Salva Tessera nel DB</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={handleStampaPDF}
+          className="px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold flex items-center justify-center gap-1.5 transition-all shadow-md cursor-pointer"
+        >
+          <Printer className="w-3.5 h-3.5" />
+          <span>Stampa</span>
+        </button>
+
+        {/* Input file nascosto per upload scansione domanda firmata */}
+        <input
+          ref={fileInputDomandaFirmataRef}
+          type="file"
+          accept=".pdf,image/png,image/jpeg,image/webp"
+          onChange={handleUploadDomandaFirmata}
+          className="hidden"
+        />
+
+        <button
+          type="button"
+          onClick={handleScaricaPDF}
+          className="flex-1 sm:flex-none px-4 py-2 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 text-xs font-black flex items-center justify-center gap-2 transition-all shadow-lg hover:shadow-amber-500/20 cursor-pointer"
+        >
+          <Download className="w-3.5 h-3.5" />
+          <span>Scarica PDF Domanda</span>
+        </button>
+
+        {/* PULSANTE UPLOAD DOCUMENTO STAMPATO E FIRMATO ACCANTO A SCARICA PDF */}
+        {volontario.domandaIscrizioneFirmata ? (
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={handleScaricaDomandaFirmata}
+              className="px-3 py-2 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold flex items-center justify-center gap-1.5 transition-all shadow-md cursor-pointer"
+              title={`Visualizza/Scarica file firmato archiviato: ${volontario.domandaIscrizioneFirmata.nomeFile} (${volontario.domandaIscrizioneFirmata.dataUpload})`}
+            >
+              <FileCheck className="w-3.5 h-3.5 text-emerald-300" />
+              <span>Domanda Firmata ✓</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => fileInputDomandaFirmataRef.current?.click()}
+              className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-amber-300 border border-amber-500/40 text-xs transition-all cursor-pointer"
+              title="Sostituisci scansione documento firmato"
+            >
+              <Upload className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={() => fileInputDomandaFirmataRef.current?.click()}
+            className="px-3.5 py-2 rounded-xl bg-gradient-to-r from-teal-600 to-emerald-600 hover:from-teal-500 hover:to-emerald-500 text-white text-xs font-bold flex items-center justify-center gap-2 transition-all shadow-md hover:shadow-teal-500/20 active:scale-95 cursor-pointer"
+            title="Carica la scansione o foto della Domanda di Iscrizione stampata e firmata per archiviarla nella scheda del volontario"
+          >
+            <Upload className="w-3.5 h-3.5" />
+            <span>Carica Domanda Firmata</span>
+          </button>
+        )}
+      </div>
+    </div>
+  );
+
+  if (embedded) {
+    return (
+      <div className="space-y-4">
+        <div className="p-3.5 rounded-2xl bg-slate-950/70 border border-amber-500/30 flex items-center justify-between gap-3 flex-wrap">
+          <div className="flex items-center gap-2.5">
+            <div className="w-9 h-9 rounded-xl bg-amber-500/20 border border-amber-400/40 flex items-center justify-center text-amber-400 shrink-0">
+              <FileText className="w-4 h-4" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <h4 className="text-xs sm:text-sm font-black text-white uppercase tracking-wide">
+                  Domanda di Iscrizione Socio / Volontario
+                </h4>
+                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-400/30">
+                  Compilabile dal Device
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-400 mt-0.5">
+                Dati anagrafici e documenti caricati dalle sezioni 1 e 2 • Compila i consensi, salva o esporta il PDF
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {renderNotificaBanner()}
+        {renderCorpoCompilazione()}
+
+        <div className="p-3.5 rounded-2xl bg-slate-950/80 border border-slate-800">
+          {renderAzioniDomanda(false)}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-70 flex items-center justify-center p-2 sm:p-4 overflow-y-auto animate-in fade-in duration-200">
+      <div className="bg-slate-900 border border-slate-700 rounded-3xl max-w-4xl w-full shadow-2xl overflow-hidden flex flex-col my-auto max-h-[92vh]">
+        {/* Header Modale */}
+        <div className="bg-gradient-to-r from-slate-950 via-slate-900 to-indigo-950 p-4 sm:p-5 border-b border-slate-800 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <div className="w-11 h-11 rounded-2xl bg-amber-500/20 border border-amber-400/40 flex items-center justify-center text-amber-400 shadow-md">
+              <FileText className="w-6 h-6" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <h3 className="text-sm sm:text-base font-black text-white uppercase tracking-wide">
+                  Domanda di Iscrizione Socio / Volontario
+                </h3>
+                <span className="text-[10px] font-bold px-2.5 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-400/30">
+                  Compilabile dal Device
+                </span>
+              </div>
+              <p className="text-xs text-slate-300 mt-0.5">
+                Dati anagrafici e documenti recuperati in automatico • Modifica i consensi e le clausole prima della stampa
+              </p>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            onClick={onClose}
+            className="w-9 h-9 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white flex items-center justify-center transition-colors cursor-pointer shrink-0"
+            title="Chiudi"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        {/* Notifica Temporanea */}
+        {renderNotificaBanner()}
+
+        {/* Corpo Modale Scrollabile */}
+        <div className="p-4 sm:p-6 overflow-y-auto flex-1">
+          {renderCorpoCompilazione()}
         </div>
 
         {/* Footer con Azioni Download e Stampa */}
-        <div className="bg-slate-950 p-4 border-t border-slate-800 flex flex-col sm:flex-row items-center justify-between gap-3">
-          <div className="text-[11px] text-slate-400">
-            Documento ufficiale <span className="text-white font-bold">Domanda di Iscrizione</span> pronto per esportazione PDF ad alta risoluzione.
-          </div>
-
-          <div className="flex items-center gap-2.5 w-full sm:w-auto flex-wrap">
-            <button
-              onClick={onClose}
-              className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold transition-colors cursor-pointer"
-            >
-              Chiudi
-            </button>
-
-            <button
-              type="button"
-              onClick={handleSalvaSoloDati}
-              className="px-4 py-2.5 rounded-xl bg-emerald-600/90 hover:bg-emerald-500 text-white text-xs font-bold flex items-center justify-center gap-1.5 transition-all shadow-md cursor-pointer"
-            >
-              <Save className="w-4 h-4" />
-              <span>Salva Tessera nel DB</span>
-            </button>
-
-            <button
-              onClick={handleStampaPDF}
-              className="px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold flex items-center justify-center gap-1.5 transition-all shadow-md cursor-pointer"
-            >
-              <Printer className="w-4 h-4" />
-              <span>Stampa</span>
-            </button>
-
-            {/* Input file nascosto per upload scansione domanda firmata */}
-            <input
-              ref={fileInputDomandaFirmataRef}
-              type="file"
-              accept=".pdf,image/png,image/jpeg,image/webp"
-              onChange={handleUploadDomandaFirmata}
-              className="hidden"
-            />
-
-            <button
-              onClick={handleScaricaPDF}
-              className="flex-1 sm:flex-none px-4 sm:px-5 py-2.5 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 text-xs font-black flex items-center justify-center gap-2 transition-all shadow-lg hover:shadow-amber-500/20 cursor-pointer"
-            >
-              <Download className="w-4 h-4" />
-              <span>Scarica PDF Domanda</span>
-            </button>
-
-            {/* PULSANTE UPLOAD DOCUMENTO STAMPATO E FIRMATO ACCANTO A SCARICA PDF */}
-            {volontario.domandaIscrizioneFirmata ? (
-              <div className="flex items-center gap-1.5">
-                <button
-                  type="button"
-                  onClick={handleScaricaDomandaFirmata}
-                  className="px-3.5 py-2.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold flex items-center justify-center gap-1.5 transition-all shadow-md cursor-pointer"
-                  title={`Visualizza/Scarica file firmato archiviato: ${volontario.domandaIscrizioneFirmata.nomeFile} (${volontario.domandaIscrizioneFirmata.dataUpload})`}
-                >
-                  <FileCheck className="w-4 h-4 text-emerald-300" />
-                  <span>Domanda Firmata ✓</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => fileInputDomandaFirmataRef.current?.click()}
-                  className="p-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-amber-300 border border-amber-500/40 text-xs transition-all cursor-pointer"
-                  title="Sostituisci scansione documento firmato"
-                >
-                  <Upload className="w-4 h-4" />
-                </button>
-              </div>
-            ) : (
-              <button
-                type="button"
-                onClick={() => fileInputDomandaFirmataRef.current?.click()}
-                className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-teal-600 to-emerald-600 hover:from-teal-500 hover:to-emerald-500 text-white text-xs font-bold flex items-center justify-center gap-2 transition-all shadow-md hover:shadow-teal-500/20 active:scale-95 cursor-pointer"
-                title="Carica la scansione o foto della Domanda di Iscrizione stampata e firmata per archiviarla nella scheda del volontario"
-              >
-                <Upload className="w-4 h-4" />
-                <span>Carica Domanda Firmata</span>
-              </button>
-            )}
-          </div>
+        <div className="bg-slate-950 p-4 border-t border-slate-800">
+          {renderAzioniDomanda(true)}
         </div>
       </div>
     </div>
