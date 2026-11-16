@@ -43,7 +43,8 @@ import {
   RotateCcw,
   FileSpreadsheet,
   ChevronLeft,
-  ChevronRight
+  ChevronRight,
+  Upload
 } from 'lucide-react';
 import { DatabaseVolontariModal, Volontario, SEDI_TURNI_DISPONIBILI } from '../DatabaseVolontariModal';
 import { TimbraturaVolontario, LuogoTimbratura, TipoLuogoTimbratura } from '../../types/adminTypes';
@@ -51,6 +52,7 @@ import { SEDI_ASSOCIATIVE_INIZIALI, LUOGHI_TIMBRATURA_DEFAULT } from '../../data
 import { MacroCategoriaId, LISTA_MACRO_CATEGORIE, TUTTE_LE_MACRO_CATEGORIE } from '../../constants/macroCategorie';
 import { inviaNotificaModificaAdmin } from '../../utils/notificaModificaAdmin';
 import { MappaSelezioneLuogoTimbratura } from './MappaSelezioneLuogoTimbratura';
+import { mergeVolontariListsSafe } from '../../utils/volontariMerge';
 import {
   ModalitaPeriodoTimbrature,
   formatLocalISODate,
@@ -83,6 +85,7 @@ import { addDaysISODate, formatDateItaly, formatISODateItaly, formatTimeItaly } 
 interface SezioneVolontariProps {
   volontari: Volontario[];
   onAggiornaVolontari: (nuoviVolontari: Volontario[]) => void;
+  onEliminaVolontario?: (id: string) => void;
   onNotificaRadio?: (testo: string, tipo?: 'centrale' | 'mezzo' | 'sistema' | 'allarme') => void;
   operatoreCorrente?: string;
   isPresidente?: boolean;
@@ -96,6 +99,7 @@ interface SezioneVolontariProps {
 export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
   volontari,
   onAggiornaVolontari,
+  onEliminaVolontario,
   onNotificaRadio,
   operatoreCorrente = 'Amministratore',
   isPresidente = false,
@@ -152,6 +156,8 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
 
   // Stato modale DatabaseVolontari completa
   const [modalDatabaseCompletoAperta, setModalDatabaseCompletoAperta] = useState(false);
+  // Modale conferma eliminazione definitiva account/domanda
+  const [volontarioDaEliminareSezione, setVolontarioDaEliminareSezione] = useState<{ vol: Volontario; modo: 'account' | 'domanda' } | null>(null);
 
   // Visibilità PIN globale
   const [mostraTuttiPin, setMostraTuttiPin] = useState(false);
@@ -359,11 +365,80 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
 
   // Rifiuta o archivia domanda aspirante
   const rifiutaAspirante = (v: Volontario) => {
-    if (!confirm(`Sei sicuro di voler respingere la domanda di ammissione di ${v.nome} ${v.cognome}?`)) return;
-    const aggiornati = volontari.filter((item) => item.id !== v.id);
-    onAggiornaVolontari(aggiornati);
-    onNotificaRadio?.(`❌ AMMISSIONE: Respinta domanda di iscrizione per ${v.nome} ${v.cognome}`, 'sistema');
-    mostraAvviso(`Domanda di ${v.nome} ${v.cognome} archiviata.`);
+    setVolontarioDaEliminareSezione({ vol: v, modo: 'domanda' });
+  };
+
+  // Conferma eliminazione definitiva account o domanda aspirante
+  const confermaEliminaVolontarioSezione = () => {
+    if (!volontarioDaEliminareSezione) return;
+    const { vol, modo } = volontarioDaEliminareSezione;
+    if (onEliminaVolontario) {
+      onEliminaVolontario(vol.id);
+    } else {
+      const aggiornati = volontari.filter((item) => item.id !== vol.id);
+      onAggiornaVolontari(aggiornati);
+    }
+    if (modo === 'domanda') {
+      onNotificaRadio?.(`❌ AMMISSIONE: Respinta ed eliminata domanda di iscrizione per ${vol.nome} ${vol.cognome}`, 'sistema');
+      mostraAvviso(`Domanda di ${vol.nome} ${vol.cognome} respinta e rimossa definitivamente.`);
+    } else {
+      onNotificaRadio?.(`🗑️ CENTRALE: Rimosso account ${vol.nome} ${vol.cognome} (${vol.qualifica}) dal database`, 'centrale');
+      mostraAvviso(`Account ${vol.nome} ${vol.cognome} eliminato definitivamente.`);
+    }
+    setVolontarioDaEliminareSezione(null);
+  };
+
+  // Esporta e Importa Backup JSON diretto dei profili volontari
+  const handleEsportaBackupVolontariJSON = () => {
+    const dataStr = 'data:text/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(volontari, null, 2));
+    const downloadAnchor = document.createElement('a');
+    downloadAnchor.setAttribute('href', dataStr);
+    downloadAnchor.setAttribute('download', `Database_Volontari_Croce_Oro_${formatLocalISODate()}.json`);
+    document.body.appendChild(downloadAnchor);
+    downloadAnchor.click();
+    downloadAnchor.remove();
+    mostraAvviso(`Backup JSON esportato (${volontari.length} profili salvati).`);
+  };
+
+  const handleImportaBackupVolontariJSON = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const parsed = JSON.parse(String(reader.result || ''));
+        const listRaw = Array.isArray(parsed)
+          ? parsed
+          : Array.isArray(parsed?.volontari)
+          ? parsed.volontari
+          : null;
+        if (!listRaw) {
+          mostraAvviso('⚠️ Il file selezionato non contiene un backup volontari JSON valido.');
+          return;
+        }
+        const validItems = listRaw.filter(
+          (item: any) =>
+            item &&
+            typeof item === 'object' &&
+            (typeof item.nome === 'string' || typeof item.cognome === 'string' || typeof item.id === 'string')
+        ) as Volontario[];
+        if (validItems.length === 0) {
+          mostraAvviso('⚠️ Nessun profilo valido trovato nel file di backup.');
+          return;
+        }
+        const merged = mergeVolontariListsSafe(volontari, validItems);
+        onAggiornaVolontari(merged);
+        onNotificaRadio?.(
+          `📥 CENTRALE: Importato backup volontari JSON (${validItems.length} profili letti, totale ${merged.length} in archivio)`,
+          'centrale'
+        );
+        mostraAvviso(`Importati/aggiornati ${validItems.length} profili dal backup JSON! Totale archivio: ${merged.length}.`);
+      } catch {
+        mostraAvviso('⚠️ Errore lettura file JSON: verifica che il file non sia danneggiato.');
+      }
+    };
+    reader.readAsText(file);
   };
 
   // Calcolo automatico delle ore di servizio timbrate nell'anno solare (2026) per ciascun volontario
@@ -1192,6 +1267,32 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
 
               <button
                 type="button"
+                onClick={handleEsportaBackupVolontariJSON}
+                className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 font-bold text-xs flex items-center gap-1.5 cursor-pointer"
+                title="Esporta tutto l'elenco volontari in file JSON di backup"
+              >
+                <Download className="w-3.5 h-3.5 text-blue-400" />
+                <span>Esporta Backup</span>
+              </button>
+
+              {isEffettivoAdmin && (
+                <label
+                  className="px-3 py-2 rounded-xl bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/40 font-bold text-xs flex items-center gap-1.5 cursor-pointer active:scale-95 transition-all"
+                  title="Importa un file JSON esportato da un altro PC/browser per ricaricare profili mancanti"
+                >
+                  <Upload className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>Importa Backup</span>
+                  <input
+                    type="file"
+                    accept=".json,application/json"
+                    onChange={handleImportaBackupVolontariJSON}
+                    className="hidden"
+                  />
+                </label>
+              )}
+
+              <button
+                type="button"
                 onClick={() => setModalDatabaseCompletoAperta(true)}
                 className="px-3.5 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs uppercase flex items-center gap-1.5 shadow-md active:scale-95 cursor-pointer"
               >
@@ -1349,14 +1450,26 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
                           )}
                         </td>
                         <td className="py-3 px-4 text-right">
-                          <button
-                            type="button"
-                            onClick={() => setModalDatabaseCompletoAperta(true)}
-                            className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-bold text-xs flex items-center gap-1.5 ml-auto border border-slate-700 transition-colors cursor-pointer"
-                          >
-                            <Edit2 className="w-3 h-3 text-blue-400" />
-                            <span>Gestisci Fascicolo</span>
-                          </button>
+                          <div className="flex items-center justify-end gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => setModalDatabaseCompletoAperta(true)}
+                              className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-bold text-xs flex items-center gap-1.5 border border-slate-700 transition-colors cursor-pointer"
+                            >
+                              <Edit2 className="w-3 h-3 text-blue-400" />
+                              <span>Gestisci Fascicolo</span>
+                            </button>
+                            {isEffettivoAdmin && (
+                              <button
+                                type="button"
+                                onClick={() => setVolontarioDaEliminareSezione({ vol: v, modo: 'account' })}
+                                className="p-1.5 rounded-xl bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/30 transition-colors cursor-pointer active:scale-95"
+                                title={`Elimina definitivamente l'account di ${v.nome} ${v.cognome}`}
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                          </div>
                         </td>
                       </tr>
                     ))
@@ -4777,12 +4890,70 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
         </div>
       )}
 
+      {/* MODALE CONFERMA ELIMINAZIONE DEFINITIVA ACCOUNT / DOMANDA */}
+      {volontarioDaEliminareSezione && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[120] flex items-center justify-center p-4">
+          <div className="bg-slate-900 border-2 border-red-500/80 rounded-3xl max-w-sm w-full p-6 text-white shadow-2xl space-y-4">
+            <div className="flex items-center gap-3 text-red-400">
+              <div className="w-12 h-12 rounded-2xl bg-red-500/20 border border-red-500/40 flex items-center justify-center shrink-0">
+                <Trash2 className="w-6 h-6 text-red-400" />
+              </div>
+              <div>
+                <h4 className="font-black text-sm uppercase">
+                  {volontarioDaEliminareSezione.modo === 'domanda' ? 'Respingi Domanda' : 'Elimina Account'}
+                </h4>
+                <p className="text-xs text-slate-400">Azione irreversibile</p>
+              </div>
+            </div>
+
+            <p className="text-xs text-slate-300 leading-relaxed">
+              {volontarioDaEliminareSezione.modo === 'domanda' ? (
+                <>
+                  Sei sicuro di voler respingere ed eliminare definitivamente la domanda di ammissione di{' '}
+                  <strong className="text-white">
+                    {volontarioDaEliminareSezione.vol.nome} {volontarioDaEliminareSezione.vol.cognome}
+                  </strong>?
+                </>
+              ) : (
+                <>
+                  Confermi di voler eliminare definitivamente l&apos;account di{' '}
+                  <strong className="text-white">
+                    {volontarioDaEliminareSezione.vol.nome} {volontarioDaEliminareSezione.vol.cognome}
+                  </strong>{' '}
+                  (<span className="text-amber-400">{volontarioDaEliminareSezione.vol.qualifica}</span>)?
+                  <br /><br />
+                  L&apos;account verrà rimosso in modo permanente da tutti i dispositivi e dal database.
+                </>
+              )}
+            </p>
+
+            <div className="flex items-center gap-2 pt-2">
+              <button
+                type="button"
+                onClick={confermaEliminaVolontarioSezione}
+                className="flex-1 py-2.5 px-3 bg-red-600 hover:bg-red-500 text-white font-black text-xs uppercase rounded-xl transition-all cursor-pointer shadow-md active:scale-95"
+              >
+                {volontarioDaEliminareSezione.modo === 'domanda' ? 'Respingi e Rimuovi' : 'Elimina Definitivamente'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setVolontarioDaEliminareSezione(null)}
+                className="py-2.5 px-4 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold rounded-xl transition-all cursor-pointer"
+              >
+                Annulla
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* MODALE DATABASE VOLONTARI COMPLETO */}
       <DatabaseVolontariModal
         isOpen={modalDatabaseCompletoAperta}
         onClose={() => setModalDatabaseCompletoAperta(false)}
         volontari={volontari}
         onAggiornaVolontari={onAggiornaVolontari}
+        onEliminaVolontario={onEliminaVolontario}
         onNotificaRadio={(msg, tipo) => onNotificaRadio?.(msg, tipo)}
         isAdmin={isEffettivoAdmin}
         timbrature={timbrature}

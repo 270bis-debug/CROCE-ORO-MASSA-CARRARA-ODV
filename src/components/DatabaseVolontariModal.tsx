@@ -56,6 +56,7 @@ import { ModalAccessoWeb } from './ModalAccessoWeb';
 import { MacroCategoriaId } from '../constants/macroCategorie';
 import { inviaNotificaModificaAdmin } from '../utils/notificaModificaAdmin';
 import { formatDateItaly, formatDateTimeItaly, formatISODateItaly, getCurrentYearItaly } from '../utils/italianTime';
+import { mergeVolontariListsSafe } from '../utils/volontariMerge';
 import {
   getMansioniCatalogo,
   creaNuovaMansione,
@@ -171,6 +172,7 @@ interface DatabaseVolontariModalProps {
   onClose: () => void;
   volontari: Volontario[];
   onAggiornaVolontari: (nuoviVolontari: Volontario[]) => void;
+  onEliminaVolontario?: (id: string) => void;
   onNotificaRadio: (testo: string, tipo?: 'centrale' | 'mezzo' | 'sistema' | 'allarme') => void;
   isAdmin?: boolean;
   canDelete?: boolean; // Se false, eliminazione inibita e riservata all'amministratore
@@ -183,6 +185,7 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
   onClose,
   volontari,
   onAggiornaVolontari,
+  onEliminaVolontario,
   onNotificaRadio,
   isAdmin = true,
   canDelete,
@@ -654,7 +657,9 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
     if (!file) return;
 
     if (file.size > 15 * 1024 * 1024) {
-      alert("Il file selezionato supera i 15MB. Carica un file PDF o immagine più compatto.");
+      setErroreForm("Il file selezionato supera i 15MB. Carica un file PDF o immagine più compatto.");
+      setAvvisoTemporaneo("⚠️ Il file selezionato supera i 15MB. Carica un file PDF o immagine più compatto.");
+      setTimeout(() => setAvvisoTemporaneo(null), 5000);
       return;
     }
 
@@ -919,6 +924,26 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
     }, 6000);
   };
 
+  const calcolaProssimaMatricola = (isOperatoreCentrale: boolean): string => {
+    const usate = new Set(
+      volontari
+        .map((v) => String(v.matricola || '').trim().toUpperCase())
+        .filter(Boolean)
+    );
+    if (isOperatoreCentrale) {
+      for (let n = 1; n <= 99; n++) {
+        const cand = n < 10 ? `OP-0${n}` : `OP-${n}`;
+        if (!usate.has(cand)) return cand;
+      }
+      return `OP-${Date.now().toString().slice(-3)}`;
+    }
+    for (let tent = 0; tent < 50; tent++) {
+      const cand = `VOL-${Math.floor(100 + Math.random() * 900)}`;
+      if (!usate.has(cand)) return cand;
+    }
+    return `VOL-${Date.now().toString().slice(-4)}`;
+  };
+
   const apriAggiungiOperatoreCentrale = () => {
     if (operatoriCentrale.length >= 10) {
       alert("Tutti i 10 slot per Operatori Centrale sono già occupati. Elimina un operatore esistente per liberare uno slot.");
@@ -927,8 +952,7 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
     setVolontarioInModifica(null);
     setFormNome('');
     setFormCognome('');
-    const nextNum = operatoriCentrale.length + 1;
-    setFormMatricola(nextNum < 10 ? `OP-0${nextNum}` : `OP-${nextNum}`);
+    setFormMatricola(calcolaProssimaMatricola(true));
     setFormQualifica('Operatore Centrale');
     setFormTelefono('');
     setFormEmail('');
@@ -1729,7 +1753,7 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
         sesso: formSesso,
         comuneNascita: formComuneNascita.trim() || undefined,
         provinciaNascita: formProvinciaNascita.trim().toUpperCase() || undefined,
-        matricola: formMatricola.trim() || (formProfiloCentrale ? (operatoriCentrale.length < 9 ? `OP-0${operatoriCentrale.length + 1}` : `OP-${operatoriCentrale.length + 1}`) : `VOL-${Math.floor(100 + Math.random() * 900)}`),
+        matricola: formMatricola.trim() || calcolaProssimaMatricola(formProfiloCentrale),
         qualifica: formQualifica,
         mansione: formQualifica,
         mansioni: formMansioni.length > 0 ? formMansioni : [formQualifica],
@@ -1813,13 +1837,26 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
   const confermaEliminaAccount = () => {
     if (!accountDaEliminare) return;
     if (!canDeleteEffettivo) {
-      alert("Operazione non consentita: il tuo profilo dispone dei permessi di inserimento e modifica, ma l'eliminazione è riservata all'Amministratore.");
+      setAvvisoTemporaneo("Operazione non consentita: il tuo profilo dispone dei permessi di inserimento e modifica, ma l'eliminazione è riservata all'Amministratore.");
+      setTimeout(() => setAvvisoTemporaneo(null), 5000);
       setAccountDaEliminare(null);
       return;
     }
-    const aggiornati = volontari.filter((v) => v.id !== accountDaEliminare.id);
-    onAggiornaVolontari(aggiornati);
-    onNotificaRadio(`🗑️ CENTRALE: Rimosso account ${accountDaEliminare.nome} ${accountDaEliminare.cognome} (${accountDaEliminare.qualifica}) dal database`, 'centrale');
+    const eliminatoNome = `${accountDaEliminare.nome} ${accountDaEliminare.cognome} (${accountDaEliminare.qualifica})`;
+    const eliminatoId = accountDaEliminare.id;
+    if (onEliminaVolontario) {
+      onEliminaVolontario(eliminatoId);
+    } else {
+      const aggiornati = volontari.filter((v) => v.id !== eliminatoId);
+      onAggiornaVolontari(aggiornati);
+    }
+    if (volontarioInModifica?.id === eliminatoId) {
+      setModaleEditAperta(false);
+      setVolontarioInModifica(null);
+    }
+    onNotificaRadio(`🗑️ CENTRALE: Rimosso account ${eliminatoNome} dal database`, 'centrale');
+    setAvvisoTemporaneo(`🗑️ Account ${accountDaEliminare.nome} ${accountDaEliminare.cognome} eliminato definitivamente.`);
+    setTimeout(() => setAvvisoTemporaneo(null), 4000);
     setAccountDaEliminare(null);
   };
 
@@ -1840,6 +1877,51 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
     document.body.appendChild(downloadAnchor);
     downloadAnchor.click();
     downloadAnchor.remove();
+  };
+
+  const importaJSON = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const parsed = JSON.parse(String(reader.result || ''));
+        const listRaw = Array.isArray(parsed)
+          ? parsed
+          : Array.isArray(parsed?.volontari)
+          ? parsed.volontari
+          : null;
+        if (!listRaw) {
+          setAvvisoTemporaneo('⚠️ Il file selezionato non contiene un backup volontari JSON valido.');
+          setTimeout(() => setAvvisoTemporaneo(null), 5000);
+          return;
+        }
+        const validItems = listRaw.filter(
+          (item: any) =>
+            item &&
+            typeof item === 'object' &&
+            (typeof item.nome === 'string' || typeof item.cognome === 'string' || typeof item.id === 'string')
+        ) as Volontario[];
+        if (validItems.length === 0) {
+          setAvvisoTemporaneo('⚠️ Nessun profilo valido trovato nel file di backup.');
+          setTimeout(() => setAvvisoTemporaneo(null), 5000);
+          return;
+        }
+        const merged = mergeVolontariListsSafe(volontari, validItems);
+        onAggiornaVolontari(merged);
+        onNotificaRadio(
+          `📥 CENTRALE: Importato backup volontari JSON (${validItems.length} profili letti, totale ${merged.length} in archivio)`,
+          'centrale'
+        );
+        setAvvisoTemporaneo(`✅ Importati/aggiornati ${validItems.length} profili dal backup JSON! Ora in archivio: ${merged.length} profili.`);
+        setTimeout(() => setAvvisoTemporaneo(null), 5500);
+      } catch {
+        setAvvisoTemporaneo('⚠️ Errore lettura file JSON: verifica che il file non sia danneggiato.');
+        setTimeout(() => setAvvisoTemporaneo(null), 5000);
+      }
+    };
+    reader.readAsText(file);
   };
 
   const inTurnoCount = volontari.filter((v) => v.inTurno).length;
@@ -2404,6 +2486,23 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
                 <span className="hidden sm:inline">Esporta Backup</span>
                 <span className="sm:hidden">Backup</span>
               </button>
+
+              {isAdminEffettivo && (
+                <label
+                  className="px-2.5 py-1.5 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/30 font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
+                  title="Importa un file JSON esportato da un altro PC/browser per ricaricare i profili mancanti"
+                >
+                  <Upload className="w-3.5 h-3.5 text-emerald-400" />
+                  <span className="hidden sm:inline">Importa Backup</span>
+                  <span className="sm:hidden">Importa</span>
+                  <input
+                    type="file"
+                    accept=".json,application/json"
+                    onChange={importaJSON}
+                    className="hidden"
+                  />
+                </label>
+              )}
             </div>
           </div>
 
@@ -3849,7 +3948,7 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
 
         {/* MODALE CREAZIONE NUOVA MANSIONE NEL CATALOGO (DENTRO MODALE DATABASE) */}
         {modalCreaNuovaMansioneInModal && (
-          <div className="fixed inset-0 z-60 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="fixed inset-0 z-[100] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
             <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-md overflow-hidden shadow-2xl animate-in fade-in zoom-in-95 duration-150">
               <div className="p-4 bg-slate-950 border-b border-slate-800 flex items-center justify-between">
                 <div className="flex items-center gap-2">
@@ -4045,7 +4144,7 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
 
       {/* SOTTO-MODALE AGGIUNGI / MODIFICA VOLONTARIO */}
       {modaleEditAperta && (
-        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-60 flex items-center justify-center p-3 sm:p-4">
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[100] flex items-center justify-center p-3 sm:p-4">
           <form
             onSubmit={salvaVolontario}
             className="bg-slate-900 border border-slate-700 rounded-3xl max-w-2xl w-full shadow-2xl flex flex-col max-h-[92vh] overflow-hidden"
@@ -5280,6 +5379,17 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
               </div>
 
               <div className="flex items-center gap-2">
+                {volontarioInModifica && canDeleteEffettivo && (
+                  <button
+                    type="button"
+                    onClick={() => setAccountDaEliminare(volontarioInModifica)}
+                    className="py-2 px-3.5 rounded-xl bg-red-600/15 hover:bg-red-600/25 text-red-400 border border-red-500/40 font-bold text-xs flex items-center gap-1.5 transition-all cursor-pointer active:scale-95"
+                    title="Elimina definitivamente questo account"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Elimina Account</span>
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => setModaleEditAperta(false)}
@@ -5300,7 +5410,7 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
       )}
       {/* SOTTO-MODALE CONFERMA ELIMINAZIONE ACCOUNT */}
       {accountDaEliminare && (
-        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-70 flex items-center justify-center p-4">
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[120] flex items-center justify-center p-4">
           <div className="bg-slate-900 border-2 border-red-500/80 rounded-3xl max-w-sm w-full p-6 text-white shadow-2xl space-y-4">
             <div className="flex items-center gap-3 text-red-400">
               <div className="w-12 h-12 rounded-2xl bg-red-500/20 border border-red-500/40 flex items-center justify-center shrink-0">
@@ -5341,7 +5451,7 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
       )}
       {/* SOTTO-MODALE RAPIDA: CARICAMENTO/GESTIONE FIRMA CON TRASPARENZA (PER ACCOUNT GIÀ ATTIVO) */}
       {volontarioPerFirmaRapida && (
-        <div className="fixed inset-0 bg-black/85 backdrop-blur-md z-70 flex items-center justify-center p-3 sm:p-4 animate-in fade-in duration-200">
+        <div className="fixed inset-0 bg-black/85 backdrop-blur-md z-[120] flex items-center justify-center p-3 sm:p-4 animate-in fade-in duration-200">
           <div className="bg-slate-900 border-2 border-amber-500/80 rounded-3xl max-w-lg w-full p-4 sm:p-6 text-white shadow-2xl space-y-4 max-h-[92vh] overflow-y-auto">
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
               <div className="flex items-center gap-3">

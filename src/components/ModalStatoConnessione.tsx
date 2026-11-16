@@ -216,6 +216,7 @@ export const ModalStatoConnessione: React.FC<ModalStatoConnessioneProps> = ({
         };
         await realtime.pushAllLocalStateToCloud({
           volontari: readJson('CROCE_ORO_VOLONTARI_DB'),
+          volontariEliminatiIds: readJson('CROCE_ORO_VOLONTARI_ELIMINATI', []),
           turni: readJson('CROCE_ORO_TURNI_SEDI'),
           serviziArchivio: readJson('CROCE_ORO_ARCHIVIO_PDF'),
           bacheca: readJson('CROCE_ORO_BACHECA_COMUNICAZIONI'),

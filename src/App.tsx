@@ -91,6 +91,7 @@ import { SEDI_CROCE_ORO, SedeCroceOro } from './data/sediCroceOro';
 import { MappaOperativa, PosizioneGPS } from './components/MappaOperativa';
 import { VistaCittadinoLiveTracking } from './components/VistaCittadinoLiveTracking';
 import { DatabaseVolontariModal, Volontario } from './components/DatabaseVolontariModal';
+import { mergeVolontariListsSafe, normalizeDeletedIds } from './utils/volontariMerge';
 import { ModalDecisioneSbloccoAdmin } from './components/ModalDecisioneSbloccoAdmin';
 import { SchermataTurnoVolontario, SessioneTurno } from './components/SchermataTurnoVolontario';
 import { TabelloneTurniSettimanale } from './components/TabelloneTurniSettimanale';
@@ -3364,6 +3365,13 @@ export default function App() {
   // DATABASE VOLONTARI E GESTIONE PIN LATO AMMINISTRATORE
   // -------------------------------------------------------------
   const [volontari, setVolontari] = useState<Volontario[]>(() => {
+    let deletedIds: string[] = [];
+    try {
+      const rawDel = localStorage.getItem('CROCE_ORO_VOLONTARI_ELIMINATI');
+      if (rawDel) deletedIds = normalizeDeletedIds(JSON.parse(rawDel));
+    } catch {}
+    const deletedSet = new Set(deletedIds);
+
     try {
       const salvati = localStorage.getItem('CROCE_ORO_VOLONTARI_DB');
       if (salvati) {
@@ -3374,11 +3382,12 @@ export default function App() {
             'mario rossi', 'elena conti', 'marco rossi', 'laura bianchi', 'matteo neri'
           ];
           parsed = parsed.filter((v: any) => {
+            if (v?.id && deletedSet.has(String(v.id).trim())) return false;
             const full = `${v.nome || ''} ${v.cognome || ''}`.trim().toLowerCase();
             return !DUMMY_PURGE.includes(full);
           });
           const haAdmin = parsed.some((v: any) => v.pin === '4451' || v.id === 'vol-admin');
-          if (!haAdmin) {
+          if (!haAdmin && !deletedSet.has('vol-admin')) {
             parsed.unshift({
               id: 'vol-admin',
               nome: 'Amministratore',
@@ -3411,9 +3420,9 @@ export default function App() {
             }
           }
 
-          // Garantisce la presenza permanente del Segretario Simone Quattrini
+          // Garantisce la presenza permanente del Segretario Simone Quattrini (salvo esplicita eliminazione)
           const idxQuattrini = parsed.findIndex((v: any) => v.id === 'vol-quattrini' || (v.nome === 'Simone' && v.cognome === 'Quattrini'));
-          if (idxQuattrini === -1) {
+          if (idxQuattrini === -1 && !deletedSet.has('vol-quattrini')) {
             parsed.push({
               id: 'vol-quattrini',
               nome: 'Simone',
@@ -3452,9 +3461,9 @@ export default function App() {
             });
           }
 
-          // Garantisce la presenza permanente del Consigliere Noemi Ricci
+          // Garantisce la presenza permanente del Consigliere Noemi Ricci (salvo esplicita eliminazione)
           const idxRicci = parsed.findIndex((v: any) => v.id === 'vol-ricci' || (v.nome === 'Noemi' && v.cognome === 'Ricci'));
-          if (idxRicci === -1) {
+          if (idxRicci === -1 && !deletedSet.has('vol-ricci')) {
             parsed.push({
               id: 'vol-ricci',
               nome: 'Noemi',
@@ -3487,7 +3496,7 @@ export default function App() {
         }
       }
     } catch {}
-    return [
+    const defaultSeeds: Volontario[] = [
       {
         id: 'vol-admin',
         nome: 'Amministratore',
@@ -3579,8 +3588,7 @@ export default function App() {
           rinnovata: true,
           dataRinnovo: '2026-11-05',
           importoVersato: 0,
-          delibera: 'DEL-2026/01 del 2026-11-05',
-          libroSoci: 'LS-2026/003',
+          note: 'DEL-2026/01 del 2026-11-05 · Libro Soci LS-2026/003',
           copertaDaIscrizioneFineAnnoPrec: false,
           timbroCartaceoEseguito: true
         }
@@ -3609,50 +3617,45 @@ export default function App() {
         dataRegistrazione: '05/11/2026'
       }
     ];
+    return defaultSeeds.filter((v) => !v?.id || !deletedSet.has(String(v.id).trim()));
   });
 
-  // Funzione protettiva di fusione (Smart Non-Destructive Merge)
-  const mergeVolontariLists = useCallback((prev: Volontario[], incoming: Volontario[]): Volontario[] => {
-    if (!Array.isArray(prev)) prev = [];
-    if (!Array.isArray(incoming)) incoming = [];
-    const result: Volontario[] = [];
+  const [volontariEliminatiIds, setVolontariEliminatiIds] = useState<string[]>(() => {
+    try {
+      const raw = localStorage.getItem('CROCE_ORO_VOLONTARI_ELIMINATI');
+      if (raw) return normalizeDeletedIds(JSON.parse(raw));
+    } catch {}
+    return [];
+  });
+  const volontariRef = useRef<Volontario[]>(volontari);
+  volontariRef.current = volontari;
+  const volontariEliminatiRef = useRef<string[]>(volontariEliminatiIds);
+  volontariEliminatiRef.current = volontariEliminatiIds;
 
-    const addOrUpdate = (v: Volontario) => {
-      if (!v) return;
-      const n = (v.nome || '').trim().toLowerCase();
-      const c = (v.cognome || '').trim().toLowerCase();
-      const idx = result.findIndex(existing => {
-        if (existing.id && v.id && existing.id === v.id) return true;
-        if (existing.matricola && v.matricola && existing.matricola.toUpperCase() === v.matricola.toUpperCase()) return true;
-        const exN = (existing.nome || '').trim().toLowerCase();
-        const exC = (existing.cognome || '').trim().toLowerCase();
-        if (n && c && exN === n && exC === c) return true;
-        return false;
-      });
-
-      if (idx !== -1) {
-        result[idx] = { ...result[idx], ...v };
-      } else {
-        result.push({ ...v });
-      }
-    };
-
-    for (const v of prev) addOrUpdate(v);
-    for (const v of incoming) addOrUpdate(v);
-
-    return result;
-  }, []);
-
-  const applicaVolontari = useCallback((incoming: Volontario[]) => {
-    if (!Array.isArray(incoming) || incoming.length === 0) return;
-    setVolontari(prev => {
-      const merged = mergeVolontariLists(prev, incoming);
+  const applicaVolontari = useCallback((incoming: Volontario[], incomingDeletedIds?: string[]) => {
+    const mergedDeleted = normalizeDeletedIds([
+      ...volontariEliminatiRef.current,
+      ...(Array.isArray(incomingDeletedIds) ? incomingDeletedIds : []),
+    ]);
+    if (mergedDeleted.length !== volontariEliminatiRef.current.length) {
+      volontariEliminatiRef.current = mergedDeleted;
+      setVolontariEliminatiIds(mergedDeleted);
       try {
-        localStorage.setItem('CROCE_ORO_VOLONTARI_DB', JSON.stringify(merged));
+        localStorage.setItem('CROCE_ORO_VOLONTARI_ELIMINATI', JSON.stringify(mergedDeleted));
       } catch {}
-      return merged;
-    });
-  }, [mergeVolontariLists]);
+    }
+
+    const safeIncoming = Array.isArray(incoming) ? incoming : [];
+    const baseFiltered = volontariRef.current.filter((v) => !v?.id || !mergedDeleted.includes(v.id));
+    if (safeIncoming.length === 0 && baseFiltered.length === volontariRef.current.length) return;
+
+    const merged = mergeVolontariListsSafe(baseFiltered, safeIncoming, mergedDeleted);
+    volontariRef.current = merged;
+    setVolontari(merged);
+    try {
+      localStorage.setItem('CROCE_ORO_VOLONTARI_DB', JSON.stringify(merged));
+    } catch {}
+  }, []);
 
   // Stato sincronizzazione e connessione cloud in tempo reale
   const [infoConnessione, setInfoConnessione] = useState<ConnectionInfo>(() => realtime.getConnectionInfo());
@@ -3663,16 +3666,17 @@ export default function App() {
   useEffect(() => {
     // 1. Carica subito l'elenco dei volontari dal database cloud con fusione non distruttiva
     realtime.fetchVolontari().then((vols) => {
-      if (vols && Array.isArray(vols) && vols.length > 0) {
-        applicaVolontari(vols);
+      const serverDeleted = realtime.getVolontariEliminatiIds();
+      if ((vols && Array.isArray(vols) && vols.length > 0) || serverDeleted.length > 0) {
+        applicaVolontari(Array.isArray(vols) ? vols : [], serverDeleted);
       }
     });
 
     // 2. Carica subito lo stato operativo generale (missione, turni, allarmi)
     realtime.fetchSyncState().then((s) => {
       if (!s) return;
-      if (s.volontari && Array.isArray(s.volontari) && s.volontari.length > 0) {
-        applicaVolontari(s.volontari);
+      if ((s.volontari && Array.isArray(s.volontari) && s.volontari.length > 0) || Array.isArray(s.volontariEliminatiIds)) {
+        applicaVolontari(Array.isArray(s.volontari) ? s.volontari : [], s.volontariEliminatiIds);
       }
       if (s.activeMission) {
         if (isBlockedOrGhostMission(s.activeMission, s.codiciEliminati)) {
@@ -3752,17 +3756,38 @@ export default function App() {
     });
   }, [applicaVolontari]);
 
-  const aggiornaVolontari = (nuovi: Volontario[]) => {
-    setVolontari(prev => {
-      const merged = mergeVolontariLists(prev, nuovi);
-      try {
-        localStorage.setItem('CROCE_ORO_VOLONTARI_DB', JSON.stringify(merged));
-      } catch {}
-      // Sincronizza istantaneamente su cloud e verso tutti gli altri smartphone/centrali connessi
-      realtime.syncVolontariList(merged);
-      return merged;
-    });
-  };
+  const aggiornaVolontari = useCallback((nuovi: Volontario[]) => {
+    const safeNuovi = Array.isArray(nuovi) ? nuovi : [];
+    const currentDeleted = normalizeDeletedIds(volontariEliminatiRef.current);
+    const base = volontariRef.current.filter((v) => !v?.id || !currentDeleted.includes(String(v.id).trim()));
+    const merged = mergeVolontariListsSafe(base, safeNuovi, currentDeleted);
+    volontariRef.current = merged;
+    setVolontari(merged);
+    try {
+      localStorage.setItem('CROCE_ORO_VOLONTARI_DB', JSON.stringify(merged));
+    } catch {}
+    // Sincronizza istantaneamente su cloud e verso tutti gli altri smartphone/centrali connessi
+    realtime.syncVolontariList(merged, currentDeleted);
+  }, []);
+
+  const handleEliminaVolontario = useCallback((id: string) => {
+    if (!id) return;
+    const nextDeleted = normalizeDeletedIds([...volontariEliminatiRef.current, id]);
+    const deletedSet = new Set(nextDeleted);
+    volontariEliminatiRef.current = nextDeleted;
+    setVolontariEliminatiIds(nextDeleted);
+    try {
+      localStorage.setItem('CROCE_ORO_VOLONTARI_ELIMINATI', JSON.stringify(nextDeleted));
+    } catch {}
+
+    const remaining = volontariRef.current.filter((v) => !v?.id || !deletedSet.has(String(v.id).trim()));
+    volontariRef.current = remaining;
+    setVolontari(remaining);
+    try {
+      localStorage.setItem('CROCE_ORO_VOLONTARI_DB', JSON.stringify(remaining));
+    } catch {}
+    realtime.deleteVolontario(id, remaining, nextDeleted);
+  }, []);
 
   // Volontario attualmente loggato su questo terminale
   const volontarioLoggatoCorrente = useMemo(() => {
@@ -8593,8 +8618,8 @@ KM TOTALI: ${kmTot} KM`;
       realtime.on('INIT_SYNC', (payload: any) => {
         const s = payload.state;
         if (!s) return;
-        if (s.volontari && Array.isArray(s.volontari) && s.volontari.length > 0) {
-          applicaVolontari(s.volontari);
+        if ((s.volontari && Array.isArray(s.volontari) && s.volontari.length > 0) || Array.isArray(s.volontariEliminatiIds)) {
+          applicaVolontari(Array.isArray(s.volontari) ? s.volontari : [], s.volontariEliminatiIds);
         }
         if (s.turni && Array.isArray(s.turni) && s.turni.length > 0) {
           setTurniSedi(s.turni);
@@ -8820,8 +8845,8 @@ KM TOTALI: ${kmTot} KM`;
         if (s.radioEmergency && typeof s.radioEmergency === 'object') {
           setRadioEmergency(s.radioEmergency);
         }
-        if (s.volontari && Array.isArray(s.volontari) && s.volontari.length > 0) {
-          applicaVolontari(s.volontari);
+        if ((s.volontari && Array.isArray(s.volontari) && s.volontari.length > 0) || Array.isArray(s.volontariEliminatiIds)) {
+          applicaVolontari(Array.isArray(s.volontari) ? s.volontari : [], s.volontariEliminatiIds);
         }
         if (s.turni && Array.isArray(s.turni) && s.turni.length > 0) {
           setTurniSedi(s.turni);
@@ -9058,10 +9083,10 @@ KM TOTALI: ${kmTot} KM`;
 
       // Ricezione aggiornamento elenco volontari e PIN in tempo reale dal cloud
       realtime.on('VOLONTARI_UPDATED', (payload: any) => {
-        if (payload && Array.isArray(payload.volontari)) {
-          applicaVolontari(payload.volontari);
+        if (payload && (Array.isArray(payload.volontari) || Array.isArray(payload.volontariEliminatiIds))) {
+          applicaVolontari(Array.isArray(payload.volontari) ? payload.volontari : [], payload.volontariEliminatiIds);
         }
-        if (payload.notification) {
+        if (payload?.notification) {
           setNotificheCentrale(prev => [...prev, payload.notification]);
         }
       }),
@@ -10592,6 +10617,7 @@ KM TOTALI: ${kmTot} KM`;
         };
         realtime.seedMissingShardsFromLocal({
           volontari: readLS('CROCE_ORO_VOLONTARI_DB', []),
+          volontariEliminatiIds: readLS('CROCE_ORO_VOLONTARI_ELIMINATI', []),
           turni: readLS('CROCE_ORO_TURNI_SEDI', TURNI_SEDI_INIZIALI),
           serviziArchivio: readLS('CROCE_ORO_SERVIZI_ARCHIVIO', []),
           bacheca: readLS('CROCE_ORO_BACHECA_COMUNICAZIONI', COMUNICAZIONI_BACHECA_INIZIALI),
@@ -10605,6 +10631,11 @@ KM TOTALI: ${kmTot} KM`;
           checklistsTemplates: readLS('CROCE_ORO_CHECKLISTS_TEMPLATES', CHECKLIST_TEMPLATES_INIZIALI),
           checklistsCompilate: readLS('CROCE_ORO_CHECKLISTS_COMPILATE', []),
           sedi: readLS('CROCE_ORO_SEDI_COMPLETE', SEDI_ASSOCIATIVE_INIZIALI),
+        }).then(() => {
+          return realtime.reconcileLocalVolontariWithCloud(
+            volontariRef.current,
+            volontariEliminatiRef.current
+          );
         }).catch(() => {});
       })
     ];
@@ -10970,15 +11001,50 @@ KM TOTALI: ${kmTot} KM`;
           onAggiornaVolontari={aggiornaVolontari}
           onNotificaRadio={aggiungiNotifica}
           onApriDatabase={() => setModalDatabaseVolontariAperta(true)}
+          infoConnessione={infoConnessione}
+          onApriConnessione={() => setModalConnessioneAperta(true)}
         />
         <DatabaseVolontariModal
           isOpen={modalDatabaseVolontariAperta}
           onClose={() => setModalDatabaseVolontariAperta(false)}
           volontari={volontari}
           onAggiornaVolontari={aggiornaVolontari}
+          onEliminaVolontario={handleEliminaVolontario}
           onNotificaRadio={aggiungiNotifica}
           isAdmin={false}
           timbrature={timbratureVolontari}
+        />
+        <ModalStatoConnessione
+          isOpen={modalConnessioneAperta}
+          onClose={() => setModalConnessioneAperta(false)}
+          info={infoConnessione}
+          volontariCount={volontari.length}
+          onSyncLocalToCloud={async () => {
+            await realtime.pushAllLocalStateToCloud({
+              volontari,
+              volontariEliminatiIds,
+              turni: turniSedi,
+              serviziArchivio: archivioPDF,
+              bacheca: comunicazioniBacheca,
+              giornaleBordo,
+              magazzinoParti,
+              magazzinoMezzi,
+              timbrature: timbratureVolontari,
+              luoghiTimbratura,
+              indirizziCollezionati,
+              contatti,
+              checklistsTemplates,
+              checklistsCompilate,
+              sedi: sediAssociative,
+              activeMission: missione,
+              letturaConfermata,
+              operativeTimes: tempi,
+              datiDestinazione,
+              kmInizio,
+              kmFine,
+              activeShift: sessioneTurno,
+            });
+          }}
         />
         <ModalSetupPermessiIniziali
           isOpen={modalSetupPermessiAperta}
@@ -11466,6 +11532,7 @@ KM TOTALI: ${kmTot} KM`;
           <SezioneVolontari
             volontari={volontari}
             onAggiornaVolontari={aggiornaVolontari}
+            onEliminaVolontario={handleEliminaVolontario}
             timbrature={timbratureVolontari}
             onAggiornaTimbrature={handleAggiornaTimbrature}
             onNotificaRadio={aggiungiNotifica}
@@ -18290,6 +18357,7 @@ KM TOTALI: ${kmTot} KM`;
         onClose={() => setModalDatabaseVolontariAperta(false)}
         volontari={volontari}
         onAggiornaVolontari={aggiornaVolontari}
+        onEliminaVolontario={handleEliminaVolontario}
         onNotificaRadio={aggiungiNotifica}
         isAdmin={isCentraleAdmin}
         timbrature={timbratureVolontari}
@@ -18530,6 +18598,7 @@ KM TOTALI: ${kmTot} KM`;
         onSyncLocalToCloud={async () => {
           await realtime.pushAllLocalStateToCloud({
             volontari,
+            volontariEliminatiIds,
             turni: turniSedi,
             serviziArchivio: archivioPDF,
             bacheca: comunicazioniBacheca,

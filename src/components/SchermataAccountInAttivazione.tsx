@@ -35,7 +35,7 @@ export const SchermataAccountInAttivazione: React.FC<SchermataAccountInAttivazio
       }
     });
 
-    const unsubSync = realtime.on('SYNC_STATE', (state: any) => {
+    const unsubSync = realtime.on('POLL_SYNC', (state: any) => {
       if (Array.isArray(state?.volontari)) {
         const trovato = state.volontari.find((v: Volontario) => v.id === operatore.id || v.pin === operatore.pin);
         if (trovato) {

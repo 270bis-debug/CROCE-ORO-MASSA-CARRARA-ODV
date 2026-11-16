@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Radio, Car, Lock, ChevronRight, KeyRound, UserPlus, Clock, ShieldCheck, CheckCircle2, AlertTriangle, Users, Globe } from 'lucide-react';
 import { CroceOroLogo } from './CroceOroLogo';
-import { realtime } from '../services/realtime';
+import { realtime, ConnectionInfo } from '../services/realtime';
 import { APP_VERSION_LABEL } from '../version';
 import { Volontario } from './DatabaseVolontariModal';
 import { ModalRegistrazioneOperatoreCentrale } from './ModalRegistrazioneOperatoreCentrale';
@@ -19,6 +19,8 @@ interface SchermataSceltaRuoloProps {
   onAggiornaVolontari?: (nuoviVolontari: Volontario[]) => void;
   onNotificaRadio?: (testo: string, tipo?: 'centrale' | 'mezzo' | 'sistema' | 'allarme') => void;
   onApriDatabase?: () => void;
+  infoConnessione?: ConnectionInfo;
+  onApriConnessione?: () => void;
 }
 
 export const SchermataSceltaRuolo: React.FC<SchermataSceltaRuoloProps> = ({
@@ -29,13 +31,15 @@ export const SchermataSceltaRuolo: React.FC<SchermataSceltaRuoloProps> = ({
   onMostraAccountInAttivazione,
   onAggiornaVolontari,
   onNotificaRadio,
-  onApriDatabase
+  onApriDatabase,
+  infoConnessione,
+  onApriConnessione
 }) => {
   const [modalitaCentrale, setModalitaCentrale] = useState<'chiuso' | 'admin' | 'operatore'>('chiuso');
   const [adminTentativiErrati, setAdminTentativiErrati] = useState<number>(0);
   const [pinInput, setPinInput] = useState('');
   const [errorePin, setErrorePin] = useState<string | null>(null);
-  const [connesso, setConnesso] = useState(() => realtime.isConnected);
+  const [connInfo, setConnInfo] = useState<ConnectionInfo>(() => infoConnessione || realtime.getConnectionInfo());
   const [modaleRegistraCentraleAperta, setModaleRegistraCentraleAperta] = useState(false);
   const [modaleResetAperta, setModaleResetAperta] = useState(false);
   const [isWeb, setIsWeb] = useState<boolean>(() => isAccessoDaWeb());
@@ -91,7 +95,11 @@ export const SchermataSceltaRuolo: React.FC<SchermataSceltaRuoloProps> = ({
   });
 
   React.useEffect(() => {
-    return realtime.on('connection_change', (info) => setConnesso(info.connected));
+    if (infoConnessione) setConnInfo(infoConnessione);
+  }, [infoConnessione]);
+
+  React.useEffect(() => {
+    return realtime.on('connection_change', (info) => setConnInfo(info));
   }, []);
 
   // 1. Submit PIN per Amministratore e Presidente (stessi identici privilegi ed autorizzazioni)
@@ -261,14 +269,37 @@ export const SchermataSceltaRuolo: React.FC<SchermataSceltaRuoloProps> = ({
             </p>
 
             <div className="flex items-center justify-center gap-2 mt-2 flex-wrap">
-              <div className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-bold shadow-sm border ${
-                isWeb ? 'bg-slate-100 border-slate-300 text-slate-800' : 'bg-slate-900/90 border-slate-700'
-              }`}>
-                <span className={`w-2 h-2 rounded-full ${connesso ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500'}`} />
-                <span className={connesso ? (isWeb ? 'text-emerald-700 font-extrabold' : 'text-emerald-400') : (isWeb ? 'text-amber-700 font-extrabold' : 'text-amber-400')}>
-                  {connesso ? 'Cloud Server Connesso & Sincronizzato' : 'Connessione Cloud in corso...'}
+              <button
+                type="button"
+                onClick={() => onApriConnessione?.()}
+                className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-bold shadow-sm border transition-all cursor-pointer active:scale-95 ${
+                  connInfo.firestoreActive
+                    ? (isWeb ? 'bg-emerald-50 border-emerald-400 text-emerald-900 hover:bg-emerald-100' : 'bg-emerald-950/80 border-emerald-500/50 text-emerald-300 hover:bg-emerald-900/80')
+                    : connInfo.firebaseStatus === 'pending_approval' || connInfo.firebaseStatus === 'signed_out' || connInfo.status === 'auth_required'
+                    ? (isWeb ? 'bg-amber-50 border-amber-400 text-amber-900 hover:bg-amber-100' : 'bg-amber-950/80 border-amber-500/50 text-amber-300 hover:bg-amber-900/80')
+                    : connInfo.connected
+                    ? (isWeb ? 'bg-emerald-50 border-emerald-300 text-emerald-800 hover:bg-emerald-100' : 'bg-slate-900/90 border-emerald-500/40 text-emerald-300 hover:bg-slate-800')
+                    : (isWeb ? 'bg-slate-100 border-slate-300 text-slate-800 hover:bg-slate-200' : 'bg-slate-900/90 border-slate-700 text-amber-300 hover:bg-slate-800')
+                }`}
+                title="Clicca per aprire lo stato sincronizzazione Cloud multi-dispositivo"
+              >
+                <span className={`w-2 h-2 rounded-full ${
+                  connInfo.firestoreActive || connInfo.connected
+                    ? 'bg-emerald-500 animate-pulse'
+                    : 'bg-amber-500'
+                }`} />
+                <span>
+                  {connInfo.firestoreActive
+                    ? `Cloud Multi-Device Attivo (${volontari.length} profili)`
+                    : connInfo.firebaseStatus === 'pending_approval'
+                    ? 'Cloud in attesa approvazione Admin • Clicca qui'
+                    : connInfo.status === 'auth_required' || connInfo.firebaseStatus === 'signed_out'
+                    ? 'Attiva Cloud Google Sync (PC/Tel) • Clicca qui'
+                    : connInfo.connected
+                    ? `Server Connesso & Sincronizzato (${volontari.length} profili)`
+                    : 'Verifica Connessione Cloud • Clicca qui'}
                 </span>
-              </div>
+              </button>
               <PWAInstallButton />
             </div>
           </div>

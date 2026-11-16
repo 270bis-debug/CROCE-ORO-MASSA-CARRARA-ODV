@@ -21,6 +21,7 @@ import {
   ApprovedOperatorRecord,
 } from './firebase';
 import { formatDateTimeItaly, formatTimeItaly } from '../utils/italianTime';
+import { mergeVolontariListsSafe, normalizeDeletedIds } from '../utils/volontariMerge';
 
 type MessageHandler = (data: any) => void;
 
@@ -131,6 +132,10 @@ class RealtimeService {
   };
   private pendingInitialWrites: Set<SyncShardId> = new Set();
   private cloudShardsReadyEmitted: boolean = false;
+  private shardRetryTimers: Partial<Record<SyncShardId, any>> = {};
+  private shardRetryCounts: Partial<Record<SyncShardId, number>> = {};
+  private lastVolontariRefreshAt: number = 0;
+  private lastExpressVolontariSig: string = '';
 
   // Cache unificata dello stato cloud tra tutti gli shard / server
   private cloudState: Record<string, any> = {};
@@ -153,6 +158,49 @@ class RealtimeService {
     this.initFirebaseRealtime();
     this.connect();
     this.startFallbackPolling();
+    this.setupLifecycleSyncHooks();
+  }
+
+  private setupLifecycleSyncHooks() {
+    if (typeof window === 'undefined' || typeof document === 'undefined') return;
+    const flushPending = () => {
+      (Object.keys(this.shardDirtyTimers) as SyncShardId[]).forEach((shardId) => {
+        if (this.shardDirtyTimers[shardId]) {
+          clearTimeout(this.shardDirtyTimers[shardId]);
+          delete this.shardDirtyTimers[shardId];
+          this.flushShardToFirestore(shardId).catch(() => {});
+        }
+      });
+    };
+
+    window.addEventListener('pagehide', flushPending);
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden') {
+        flushPending();
+      } else if (document.visibilityState === 'visible') {
+        const now = Date.now();
+        if (this.firebaseSession.isAuthorized && now - this.lastVolontariRefreshAt > 15000) {
+          this.lastVolontariRefreshAt = now;
+          this.refreshShardFromServer('volontari').catch(() => {});
+        }
+      }
+    });
+  }
+
+  private async refreshShardFromServer(shardId: SyncShardId) {
+    if (!this.firebaseSession.isAuthorized) return;
+    const res = await readShardDocFromServer(shardId);
+    this.shardLoadedFromCloud[shardId] = true;
+    this.shardExists[shardId] = res.exists;
+    if (res.exists && res.data) {
+      const incomingVer = typeof res.data.version === 'number' ? res.data.version : 1;
+      if (incomingVer > this.shardVersions[shardId]) {
+        this.shardVersions[shardId] = incomingVer;
+      }
+      if (res.data.payload && typeof res.data.payload === 'object') {
+        this.applyCloudShardPayload(shardId, res.data.payload, true);
+      }
+    }
   }
 
   public isServerlessStatic(): boolean {
@@ -258,18 +306,37 @@ class RealtimeService {
           this.shardExists[shardId] = exists;
 
           if (exists && docData) {
-            // Il cloud ha già dati autorevoli: annulla eventuali scritture di bootstrap accodate prima del caricamento
-            if (isFirstSnapshot && this.pendingInitialWrites.has(shardId)) {
-              this.pendingInitialWrites.delete(shardId);
-            }
             const incomingVer = typeof docData.version === 'number' ? docData.version : 1;
             const payload = docData.payload && typeof docData.payload === 'object' ? docData.payload : {};
+            const hadPendingWrite = isFirstSnapshot && this.pendingInitialWrites.has(shardId);
+            if (hadPendingWrite) {
+              this.pendingInitialWrites.delete(shardId);
+            }
 
             if (incomingVer > this.shardVersions[shardId]) {
               this.shardVersions[shardId] = incomingVer;
             }
 
-            if (!fromLocalPendingWrite || isFirstSnapshot) {
+            if (hadPendingWrite) {
+              // Se l'utente aveva già creato/modificato un record prima del primo snapshot Firestore,
+              // fonde in modo non distruttivo invece di scartare la modifica locale e pubblica su cloud
+              if (shardId === 'volontari' && Array.isArray(payload.volontari)) {
+                const deletedIds = normalizeDeletedIds([
+                  ...(Array.isArray(this.cloudState.volontariEliminatiIds) ? this.cloudState.volontariEliminatiIds : []),
+                  ...(Array.isArray(payload.volontariEliminatiIds) ? payload.volontariEliminatiIds : []),
+                ]);
+                const localVols = Array.isArray(this.cloudState.volontari) ? this.cloudState.volontari : [];
+                const merged = mergeVolontariListsSafe(payload.volontari, localVols, deletedIds);
+                this.cloudState.volontariEliminatiIds = deletedIds;
+                this.applyCloudShardPayload('volontari', { ...payload, volontari: merged, volontariEliminatiIds: deletedIds }, false);
+              } else {
+                const localBefore = { ...this.cloudState };
+                this.applyCloudShardPayload(shardId, { ...payload, ...localBefore }, false);
+              }
+              this.flushShardToFirestore(shardId).catch((err) => {
+                this.lastError = err?.message || `Errore sync ${shardId}`;
+              });
+            } else if (!fromLocalPendingWrite || isFirstSnapshot) {
               this.applyCloudShardPayload(shardId, payload, !isFirstSnapshot && !fromLocalPendingWrite);
             }
           } else if (!exists && isFirstSnapshot && this.pendingInitialWrites.has(shardId)) {
@@ -298,6 +365,35 @@ class RealtimeService {
     this.recomputeConnectionStatus();
   }
 
+  private computeVolontariSig(list: any[]): string {
+    if (!Array.isArray(list)) return '';
+    return list
+      .map((v) => `${v?.id || ''}:${v?.pin || ''}:${v?.approvato ? 1 : 0}:${v?.profiloCentrale ? 1 : 0}:${(v?.macroCategorieAbilitate || []).join(',')}`)
+      .sort()
+      .join('|');
+  }
+
+  private pushVolontariToExpressIfNeeded(list: any[], deletedIds?: string[]) {
+    const cleanDeleted = normalizeDeletedIds(deletedIds);
+    if (this.isServerlessStaticHost() || !Array.isArray(list)) return;
+    if (list.length === 0 && cleanDeleted.length === 0) return;
+    const sig = `${this.computeVolontariSig(list)}#${cleanDeleted.join(',')}`;
+    if (sig === this.lastExpressVolontariSig) return;
+    this.lastExpressVolontariSig = sig;
+    try {
+      const baseUrl = this.getApiBaseUrl();
+      fetch(`${baseUrl}/api/volontari`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          volontari: list,
+          volontariEliminatiIds: normalizeDeletedIds(deletedIds),
+        }),
+        cache: 'no-store',
+      }).catch(() => {});
+    } catch {}
+  }
+
   private applyCloudShardPayload(shardId: SyncShardId, payload: Record<string, any>, isRemoteLiveDelta = false) {
     if (!payload || typeof payload !== 'object') return;
 
@@ -306,11 +402,24 @@ class RealtimeService {
     const prevRinging = this.cloudState.ringing || null;
     const prevPttEnabled = Boolean(this.cloudState.radioPtt?.enabled ?? this.cloudState.radioPttEnabled);
 
-    Object.assign(this.cloudState, payload);
-
-    // Emette sia gli eventi granulari che l'aggiornamento stato globale POLL_SYNC
-    if (shardId === 'volontari' && Array.isArray(payload.volontari)) {
-      this.emit('VOLONTARI_UPDATED', { volontari: payload.volontari });
+    if (shardId === 'volontari') {
+      const deletedIds = normalizeDeletedIds([
+        ...(Array.isArray(this.cloudState.volontariEliminatiIds) ? this.cloudState.volontariEliminatiIds : []),
+        ...(Array.isArray(payload.volontariEliminatiIds) ? payload.volontariEliminatiIds : []),
+      ]);
+      const cloudVols = Array.isArray(payload.volontari) ? payload.volontari : [];
+      const currentVols = Array.isArray(this.cloudState.volontari) ? this.cloudState.volontari : [];
+      const mergedVols = mergeVolontariListsSafe(currentVols, cloudVols, deletedIds);
+      this.cloudState.volontariEliminatiIds = deletedIds;
+      this.cloudState.volontari = mergedVols;
+      this.lastVolontariRefreshAt = Date.now();
+      this.pushVolontariToExpressIfNeeded(mergedVols, deletedIds);
+      this.emit('VOLONTARI_UPDATED', {
+        volontari: mergedVols,
+        volontariEliminatiIds: deletedIds,
+      });
+    } else {
+      Object.assign(this.cloudState, payload);
     }
     if (shardId === 'turni' && Array.isArray(payload.turni)) {
       this.emit('TURNI_UPDATED', { turni: payload.turni });
@@ -441,15 +550,42 @@ class RealtimeService {
     if (this.shardDirtyTimers[shardId]) {
       clearTimeout(this.shardDirtyTimers[shardId]);
     }
+    if (this.shardRetryTimers[shardId]) {
+      clearTimeout(this.shardRetryTimers[shardId]);
+      delete this.shardRetryTimers[shardId];
+    }
 
+    const delayMs = shardId === 'volontari' || shardId === 'mission' || shardId === 'servizi' ? 30 : 120;
     this.shardDirtyTimers[shardId] = setTimeout(() => {
       delete this.shardDirtyTimers[shardId];
-      this.flushShardToFirestore(shardId).catch((err) => {
-        console.warn(`[Realtime] Scrittura Firestore shard ${shardId} non riuscita:`, err?.message);
+      this.flushShardToFirestoreWithRetry(shardId);
+    }, delayMs);
+  }
+
+  private flushShardToFirestoreWithRetry(shardId: SyncShardId, attempt = 0) {
+    this.flushShardToFirestore(shardId)
+      .then(() => {
+        this.shardRetryCounts[shardId] = 0;
+        if (this.lastError && this.lastError.includes(shardId)) {
+          this.lastError = null;
+          this.recomputeConnectionStatus();
+        }
+      })
+      .catch((err) => {
+        console.warn(`[Realtime] Scrittura Firestore shard ${shardId} non riuscita (tentativo ${attempt + 1}):`, err?.message);
         this.lastError = err?.message || `Errore scrittura cloud (${shardId})`;
         this.recomputeConnectionStatus();
+        if (attempt < 2 && this.firebaseSession.isAuthorized) {
+          const backoffMs = attempt === 0 ? 1500 : 4500;
+          if (this.shardRetryTimers[shardId]) {
+            clearTimeout(this.shardRetryTimers[shardId]);
+          }
+          this.shardRetryTimers[shardId] = setTimeout(() => {
+            delete this.shardRetryTimers[shardId];
+            this.flushShardToFirestoreWithRetry(shardId, attempt + 1);
+          }, backoffMs);
+        }
       });
-    }, 120);
   }
 
   private getShardPayloadFromCache(shardId: SyncShardId): Record<string, any> {
@@ -494,6 +630,7 @@ class RealtimeService {
       case 'volontari':
         return {
           volontari: Array.isArray(this.cloudState.volontari) ? this.cloudState.volontari : [],
+          volontariEliminatiIds: normalizeDeletedIds(this.cloudState.volontariEliminatiIds),
         };
       case 'servizi':
         return {
@@ -549,6 +686,36 @@ class RealtimeService {
     );
     this.shardExists[shardId] = true;
     this.shardVersions[shardId] = newVer;
+  }
+
+  /**
+   * Riconcilia automaticamente eventuali nuovi account creati localmente (prima del login Google, offline o su altro host)
+   * con lo shard `volontari` su Cloud Firestore ed Express, evitando che restino confinati sul solo dispositivo locale.
+   */
+  public async reconcileLocalVolontariWithCloud(localVolontari: any[], localDeletedIds: string[] = []): Promise<boolean> {
+    if (!Array.isArray(localVolontari) || localVolontari.length === 0) return false;
+    const deletedIds = normalizeDeletedIds([
+      ...(Array.isArray(this.cloudState.volontariEliminatiIds) ? this.cloudState.volontariEliminatiIds : []),
+      ...localDeletedIds,
+    ]);
+    const cloudList = Array.isArray(this.cloudState.volontari) ? this.cloudState.volontari : [];
+    const cloudIds = new Set(cloudList.map((v: any) => v?.id).filter(Boolean));
+    const missingInCloud = localVolontari.filter(
+      (v: any) => v && v.id && !deletedIds.includes(v.id) && !cloudIds.has(v.id)
+    );
+
+    if (missingInCloud.length === 0) return false;
+
+    const merged = mergeVolontariListsSafe(cloudList, localVolontari, deletedIds);
+    this.cloudState.volontari = merged;
+    this.cloudState.volontariEliminatiIds = deletedIds;
+
+    if (this.firebaseSession.isAuthorized) {
+      await this.flushShardToFirestore('volontari');
+    }
+    this.pushVolontariToExpressIfNeeded(merged, deletedIds);
+    this.emit('VOLONTARI_UPDATED', { volontari: merged, volontariEliminatiIds: deletedIds });
+    return true;
   }
 
   // Metodi pubblici gestione Firebase Cloud Sync
@@ -635,7 +802,12 @@ class RealtimeService {
       {
         id: 'volontari',
         hasData: Array.isArray(snapshot.volontari) && snapshot.volontari.length > 0,
-        patch: { volontari: snapshot.volontari || [] },
+        patch: {
+          volontari: snapshot.volontari || [],
+          volontariEliminatiIds: normalizeDeletedIds(
+            snapshot.volontariEliminatiIds ?? this.cloudState.volontariEliminatiIds
+          ),
+        },
       },
       {
         id: 'servizi',
@@ -743,7 +915,23 @@ class RealtimeService {
           gpsPosition: snapshot.gpsPosition ?? this.cloudState.gpsPosition ?? null,
         },
       },
-      { id: 'volontari', patch: { volontari: snapshot.volontari || this.cloudState.volontari || [] } },
+      {
+        id: 'volontari',
+        patch: (() => {
+          const deletedIds = normalizeDeletedIds([
+            ...(Array.isArray(this.cloudState.volontariEliminatiIds) ? this.cloudState.volontariEliminatiIds : []),
+            ...(Array.isArray(snapshot.volontariEliminatiIds) ? snapshot.volontariEliminatiIds : []),
+          ]);
+          const deletedSet = new Set(deletedIds);
+          const rawList = Array.isArray(snapshot.volontari)
+            ? snapshot.volontari
+            : (Array.isArray(this.cloudState.volontari) ? this.cloudState.volontari : []);
+          return {
+            volontari: rawList.filter((v: any) => !v?.id || !deletedSet.has(String(v.id).trim())),
+            volontariEliminatiIds: deletedIds,
+          };
+        })(),
+      },
       {
         id: 'servizi',
         patch: {
@@ -901,7 +1089,27 @@ class RealtimeService {
           const payload = JSON.parse(event.data);
           if (payload && payload.type) {
             if (payload.type === 'INIT_SYNC' && payload.state) {
-              Object.assign(this.cloudState, payload.state);
+              const mergedState = this.mergeIncomingExpressState(payload.state);
+              this.emit('INIT_SYNC', { ...payload, state: mergedState });
+              return;
+            }
+            if (payload.type === 'VOLONTARI_UPDATED' && Array.isArray(payload.volontari)) {
+              const deletedIds = normalizeDeletedIds([
+                ...(Array.isArray(this.cloudState.volontariEliminatiIds) ? this.cloudState.volontariEliminatiIds : []),
+                ...(Array.isArray(payload.volontariEliminatiIds) ? payload.volontariEliminatiIds : []),
+              ]);
+              const currentVols = Array.isArray(this.cloudState.volontari) ? this.cloudState.volontari : [];
+              const mergedVols = mergeVolontariListsSafe(currentVols, payload.volontari, deletedIds);
+              this.cloudState.volontariEliminatiIds = deletedIds;
+              this.cloudState.volontari = mergedVols;
+              if (this.firebaseSession.isAuthorized && this.shardLoadedFromCloud['volontari']) {
+                const cloudIdSet = new Set(currentVols.map((v: any) => v?.id).filter(Boolean));
+                if (mergedVols.some((v: any) => v?.id && !cloudIdSet.has(v.id))) {
+                  this.scheduleShardWrite('volontari', { volontari: mergedVols, volontariEliminatiIds: deletedIds });
+                }
+              }
+              this.emit('VOLONTARI_UPDATED', { ...payload, volontari: mergedVols, volontariEliminatiIds: deletedIds });
+              return;
             }
             this.emit(payload.type, payload);
           }
@@ -926,6 +1134,65 @@ class RealtimeService {
       console.error('[Realtime] Errore connessione WS:', err);
       this.handleDisconnect();
     }
+  }
+
+  private mergeIncomingExpressState(incomingState: Record<string, any>): Record<string, any> {
+    if (!incomingState || typeof incomingState !== 'object') return this.cloudState;
+    const prevVols = Array.isArray(this.cloudState.volontari) ? this.cloudState.volontari : [];
+    const incomingVols = Array.isArray(incomingState.volontari) ? incomingState.volontari : [];
+    const deletedIds = normalizeDeletedIds([
+      ...(Array.isArray(this.cloudState.volontariEliminatiIds) ? this.cloudState.volontariEliminatiIds : []),
+      ...(Array.isArray(incomingState.volontariEliminatiIds) ? incomingState.volontariEliminatiIds : []),
+    ]);
+
+    const mergedVols = mergeVolontariListsSafe(prevVols, incomingVols, deletedIds);
+
+    // Se Firestore è già attivo, non lasciare che Express (più vecchio) sovrascriva le liste cloud più aggiornate
+    if (this.firestoreActive) {
+      for (const [k, v] of Object.entries(incomingState)) {
+        if (k === 'volontari' || k === 'volontariEliminatiIds') continue;
+        if (this.cloudState[k] === undefined || (Array.isArray(this.cloudState[k]) && this.cloudState[k].length === 0)) {
+          this.cloudState[k] = v;
+        }
+      }
+    } else {
+      Object.assign(this.cloudState, incomingState);
+    }
+
+    this.cloudState.volontariEliminatiIds = deletedIds;
+    this.cloudState.volontari = mergedVols;
+
+    // Ponte bidirezionale: se Express ha nuovi account non ancora presenti su Firestore, sincronizza verso Firestore
+    if (this.firebaseSession.isAuthorized && this.shardLoadedFromCloud['volontari']) {
+      const prevIds = new Set(prevVols.map((v: any) => v?.id).filter(Boolean));
+      const hasNewFromExpress = incomingVols.some((v: any) => v?.id && !deletedIds.includes(v.id) && !prevIds.has(v.id));
+      if (hasNewFromExpress) {
+        this.scheduleShardWrite('volontari', { volontari: mergedVols, volontariEliminatiIds: deletedIds });
+      }
+    }
+
+    // E viceversa: se Firestore aveva account assenti su Express, o se Express contiene ancora account eliminati
+    // o non ha ancora tutte le tombstone di eliminazione, riallinea immediatamente Express
+    const incIds = new Set(incomingVols.map((v: any) => v?.id).filter(Boolean));
+    const incDeletedSet = new Set(normalizeDeletedIds(incomingState.volontariEliminatiIds));
+    const expressHasDeletedZombie = incomingVols.some(
+      (v: any) => v?.id && deletedIds.includes(String(v.id).trim())
+    );
+    const expressMissingTombstones = deletedIds.some((id) => !incDeletedSet.has(id));
+    if (
+      expressHasDeletedZombie ||
+      expressMissingTombstones ||
+      prevVols.some((v: any) => v?.id && !deletedIds.includes(v.id) && !incIds.has(v.id))
+    ) {
+      this.pushVolontariToExpressIfNeeded(mergedVols, deletedIds);
+    }
+
+    return {
+      ...incomingState,
+      ...this.cloudState,
+      volontari: mergedVols,
+      volontariEliminatiIds: deletedIds,
+    };
   }
 
   private handleDisconnect() {
@@ -978,9 +1245,9 @@ class RealtimeService {
           if (data && data.state) {
             this.httpPollingOk = true;
             this.lastError = null;
-            Object.assign(this.cloudState, data.state);
+            const mergedState = this.mergeIncomingExpressState(data.state);
             this.recomputeConnectionStatus();
-            this.emit('POLL_SYNC', data.state);
+            this.emit('POLL_SYNC', mergedState);
           } else {
             // Backend serverless privo di stato in-memory (es. Vercel senza Firebase Auth attiva)
             this.httpPollingOk = false;
@@ -1406,21 +1673,73 @@ class RealtimeService {
         break;
       case 'UPDATE_VOLONTARI_LIST':
         if (Array.isArray(data?.volontari)) {
-          this.scheduleShardWrite('volontari', { volontari: data.volontari });
+          const deletedIds = normalizeDeletedIds([
+            ...(Array.isArray(this.cloudState.volontariEliminatiIds) ? this.cloudState.volontariEliminatiIds : []),
+            ...(Array.isArray(data.volontariEliminatiIds) ? data.volontariEliminatiIds : []),
+          ]);
+          const merged = mergeVolontariListsSafe(
+            Array.isArray(this.cloudState.volontari) ? this.cloudState.volontari : [],
+            data.volontari,
+            deletedIds
+          );
+          this.scheduleShardWrite('volontari', {
+            volontari: merged,
+            volontariEliminatiIds: deletedIds,
+          });
         }
         break;
       case 'CREATE_VOLONTARIO': {
         const current = Array.isArray(this.cloudState.volontari) ? [...this.cloudState.volontari] : [];
-        if (data && !current.some((v: any) => v.id === data.id)) {
-          current.push(data);
-          this.scheduleShardWrite('volontari', { volontari: current });
+        if (data) {
+          const deletedIds = normalizeDeletedIds(this.cloudState.volontariEliminatiIds).filter((d) => d !== data.id);
+          const merged = mergeVolontariListsSafe(current, [data], deletedIds);
+          this.scheduleShardWrite('volontari', {
+            volontari: merged,
+            volontariEliminatiIds: deletedIds,
+          });
         }
         break;
       }
       case 'UPDATE_VOLONTARIO': {
         const current = Array.isArray(this.cloudState.volontari) ? [...this.cloudState.volontari] : [];
-        const updated = current.map((v: any) => (v.id === data?.id ? { ...v, ...data } : v));
-        this.scheduleShardWrite('volontari', { volontari: updated });
+        if (data?.id) {
+          const deletedIds = normalizeDeletedIds(this.cloudState.volontariEliminatiIds);
+          const merged = mergeVolontariListsSafe(current, [data], deletedIds);
+          this.scheduleShardWrite('volontari', {
+            volontari: merged,
+            volontariEliminatiIds: deletedIds,
+          });
+        }
+        break;
+      }
+      case 'DELETE_VOLONTARIO': {
+        if (data?.id || Array.isArray(data?.volontariEliminatiIds)) {
+          const deletedIds = normalizeDeletedIds([
+            ...(Array.isArray(this.cloudState.volontariEliminatiIds) ? this.cloudState.volontariEliminatiIds : []),
+            ...(Array.isArray(data?.volontariEliminatiIds) ? data.volontariEliminatiIds : []),
+            ...(data?.id ? [data.id] : []),
+          ]);
+          const deletedSet = new Set(deletedIds);
+          const baseList = Array.isArray(data.volontari)
+            ? data.volontari
+            : (Array.isArray(this.cloudState.volontari) ? this.cloudState.volontari : []);
+          const filtered = baseList.filter((v: any) => !v?.id || !deletedSet.has(String(v.id).trim()));
+          Object.assign(this.cloudState, {
+            volontari: filtered,
+            volontariEliminatiIds: deletedIds,
+          });
+          if (this.firebaseSession.isAuthorized) {
+            if (!this.shardLoadedFromCloud['volontari']) {
+              this.pendingInitialWrites.add('volontari');
+            } else {
+              if (this.shardDirtyTimers['volontari']) {
+                clearTimeout(this.shardDirtyTimers['volontari']);
+                delete this.shardDirtyTimers['volontari'];
+              }
+              void this.flushShardToFirestoreWithRetry('volontari');
+            }
+          }
+        }
         break;
       }
       case 'UPDATE_CHECKLISTS_TEMPLATES':
@@ -1581,6 +1900,10 @@ class RealtimeService {
   }
 
   // --- METODI SPECIFICI PER SINCRONIZZAZIONE VOLONTARI & PIN ---
+  public getVolontariEliminatiIds(): string[] {
+    return normalizeDeletedIds(this.cloudState.volontariEliminatiIds);
+  }
+
   public async fetchVolontari(): Promise<any[]> {
     if (Array.isArray(this.cloudState.volontari) && this.cloudState.volontari.length > 0) {
       return this.cloudState.volontari;
@@ -1590,6 +1913,12 @@ class RealtimeService {
       const res = await fetch(`${baseUrl}/api/volontari`, { cache: 'no-store' });
       if (res.ok) {
         const json = await res.json();
+        if (Array.isArray(json.volontariEliminatiIds)) {
+          this.cloudState.volontariEliminatiIds = normalizeDeletedIds([
+            ...(Array.isArray(this.cloudState.volontariEliminatiIds) ? this.cloudState.volontariEliminatiIds : []),
+            ...json.volontariEliminatiIds,
+          ]);
+        }
         if (json.volontari && Array.isArray(json.volontari)) {
           return json.volontari;
         }
@@ -1682,15 +2011,42 @@ class RealtimeService {
     }
   }
 
-  public syncVolontariList(volontari: any[]) {
-    this.send('UPDATE_VOLONTARI_LIST', { volontari });
+  public syncVolontariList(volontari: any[], volontariEliminatiIds?: string[]) {
+    const deletedIds = normalizeDeletedIds(volontariEliminatiIds);
+    this.send('UPDATE_VOLONTARI_LIST', { volontari, volontariEliminatiIds: deletedIds });
+    this.lastExpressVolontariSig = `${this.computeVolontariSig(volontari)}#${deletedIds.join(',')}`;
     if (!this.isServerlessStaticHost()) {
       try {
         const baseUrl = this.getApiBaseUrl();
         fetch(`${baseUrl}/api/volontari`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ volontari }),
+          body: JSON.stringify({ volontari, volontariEliminatiIds: deletedIds }),
+          cache: 'no-store',
+        }).catch(() => {});
+      } catch {}
+    }
+  }
+
+  public deleteVolontario(id: string, remainingVolontari?: any[], volontariEliminatiIds?: string[]) {
+    const deletedIds = normalizeDeletedIds([
+      ...(Array.isArray(this.cloudState.volontariEliminatiIds) ? this.cloudState.volontariEliminatiIds : []),
+      ...(volontariEliminatiIds || []),
+      id,
+    ]);
+    const deletedSet = new Set(deletedIds);
+    const filteredRemaining = Array.isArray(remainingVolontari)
+      ? remainingVolontari.filter((v: any) => !v?.id || !deletedSet.has(String(v.id).trim()))
+      : (Array.isArray(this.cloudState.volontari)
+          ? this.cloudState.volontari.filter((v: any) => !v?.id || !deletedSet.has(String(v.id).trim()))
+          : []);
+    this.lastExpressVolontariSig = `${this.computeVolontariSig(filteredRemaining)}#${deletedIds.join(',')}`;
+    this.send('DELETE_VOLONTARIO', { id, volontari: filteredRemaining, volontariEliminatiIds: deletedIds });
+    if (!this.isServerlessStaticHost()) {
+      try {
+        const baseUrl = this.getApiBaseUrl();
+        fetch(`${baseUrl}/api/volontari/${encodeURIComponent(id)}`, {
+          method: 'DELETE',
           cache: 'no-store',
         }).catch(() => {});
       } catch {}

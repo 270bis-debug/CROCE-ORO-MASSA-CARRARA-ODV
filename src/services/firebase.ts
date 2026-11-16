@@ -513,18 +513,135 @@ export async function readShardDocFromServer(shardId: string): Promise<{ exists:
   }
 }
 
-// Protezione limite 1 MiB di Firestore: se uno shard supera ~850KB (es. tante firme/foto storiche in archivio),
-// alleggerisce gli allegati base64 più vecchi mantenendo intatti i più recenti e i dati strutturali.
-function fitPayloadWithinFirestoreLimit(shardId: string, payload: Record<string, any>): Record<string, any> {
-  const MAX_BYTES = 850000;
+function getUtf8JsonByteLength(obj: any): number {
   try {
-    if (JSON.stringify(payload).length <= MAX_BYTES) return payload;
+    const json = JSON.stringify(obj);
+    if (typeof TextEncoder !== 'undefined') {
+      return new TextEncoder().encode(json).length;
+    }
+    return json.length * 2;
   } catch {
-    return payload;
+    return 0;
   }
+}
 
-  const copy: Record<string, any> = { ...payload };
-  if (shardId === 'servizi' && Array.isArray(copy.serviziArchivio)) {
+function stripHeavyMediaRecursive(value: any, maxDataUrlLen: number): any {
+  if (value === undefined || value === null) return value;
+  if (typeof value === 'string') {
+    if (value.length > maxDataUrlLen) {
+      const trimmed = value.trim();
+      const looksLikeDataUri = /^data:[a-z0-9.+-]+\/[a-z0-9.+-]+/i.test(trimmed);
+      const looksLikeRawBase64 = trimmed.length > 2048 && !/\s/.test(trimmed) && /^[A-Za-z0-9+/=_-]+$/.test(trimmed.slice(0, 256));
+      if (looksLikeDataUri || looksLikeRawBase64) {
+        return undefined;
+      }
+    }
+    return value;
+  }
+  if (typeof value !== 'object') return value;
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => stripHeavyMediaRecursive(item, maxDataUrlLen))
+      .filter((item) => item !== undefined);
+  }
+  const out: Record<string, any> = {};
+  for (const [k, v] of Object.entries(value)) {
+    if (v === undefined) continue;
+    const isMediaKey = /(base64|fotofronte|fotoretro|filebase64|firmabase64|allegatobase64|pdffirmato|pdfbase64)/i.test(k);
+    if (isMediaKey && typeof v === 'string' && v.length > maxDataUrlLen) {
+      continue;
+    }
+    const cleaned = stripHeavyMediaRecursive(v, maxDataUrlLen);
+    if (cleaned !== undefined) {
+      out[k] = cleaned;
+    }
+  }
+  return out;
+}
+
+// Protezione limite 1 MiB (1.048.576 byte) di Firestore: misura in byte UTF-8 con margine di sicurezza
+// per l'overhead dei metadati Firestore e rimuove progressivamente i blob binari base64 più pesanti
+// preservando al 100% anagrafiche, PIN, ruoli, permessi, documenti testuali e dati strutturali.
+function fitPayloadWithinFirestoreLimit(shardId: string, payload: Record<string, any>): Record<string, any> {
+  const MAX_BYTES = 620000;
+  if (getUtf8JsonByteLength(payload) <= MAX_BYTES) return payload;
+
+  let copy: Record<string, any> = { ...payload };
+  if (shardId === 'volontari' && Array.isArray(copy.volontari)) {
+    // 1. Rimuove prima gli allegati PDF/documenti firmati pesanti (>8KB) mantenendo i metadati
+    let list = copy.volontari.map((v: any) => {
+      if (!v || typeof v !== 'object') return v;
+      const lean: any = { ...v };
+      if (lean.vestiario?.documentoFirmato?.fileBase64 && String(lean.vestiario.documentoFirmato.fileBase64).length > 8000) {
+        lean.vestiario = {
+          ...lean.vestiario,
+          documentoFirmato: {
+            ...lean.vestiario.documentoFirmato,
+            fileBase64: undefined,
+          },
+        };
+      }
+      if (lean.domandaIscrizioneFirmata?.fileBase64 && String(lean.domandaIscrizioneFirmata.fileBase64).length > 8000) {
+        lean.domandaIscrizioneFirmata = {
+          ...lean.domandaIscrizioneFirmata,
+          fileBase64: undefined,
+        };
+      }
+      return sanitizeForFirestore(lean);
+    });
+    copy.volontari = list;
+
+    // 2. Se supera ancora il limite, alleggerisce foto documenti fronte/retro (>12KB)
+    if (getUtf8JsonByteLength(copy) > MAX_BYTES) {
+      list = list.map((v: any) => {
+        if (!v || typeof v !== 'object') return v;
+        const lean: any = { ...v };
+        if (lean.documentoIdentita) {
+          lean.documentoIdentita = {
+            ...lean.documentoIdentita,
+            fotoFronte:
+              typeof lean.documentoIdentita.fotoFronte === 'string' && lean.documentoIdentita.fotoFronte.length > 12000
+                ? undefined
+                : lean.documentoIdentita.fotoFronte,
+            fotoRetro:
+              typeof lean.documentoIdentita.fotoRetro === 'string' && lean.documentoIdentita.fotoRetro.length > 12000
+                ? undefined
+                : lean.documentoIdentita.fotoRetro,
+          };
+        }
+        if (lean.patente) {
+          lean.patente = {
+            ...lean.patente,
+            fotoFronte:
+              typeof lean.patente.fotoFronte === 'string' && lean.patente.fotoFronte.length > 12000
+                ? undefined
+                : lean.patente.fotoFronte,
+            fotoRetro:
+              typeof lean.patente.fotoRetro === 'string' && lean.patente.fotoRetro.length > 12000
+                ? undefined
+                : lean.patente.fotoRetro,
+          };
+        }
+        return sanitizeForFirestore(lean);
+      });
+      copy.volontari = list;
+    }
+
+    // 3. Alleggerisce foto profilo/firme (>10KB)
+    if (getUtf8JsonByteLength(copy) > MAX_BYTES) {
+      copy.volontari = list.map((v: any) => {
+        if (!v || typeof v !== 'object') return v;
+        const lean: any = { ...v };
+        if (typeof lean.fotoBase64 === 'string' && lean.fotoBase64.length > 10000) {
+          lean.fotoBase64 = undefined;
+        }
+        if (typeof lean.firmaBase64 === 'string' && lean.firmaBase64.length > 10000) {
+          lean.firmaBase64 = undefined;
+        }
+        return sanitizeForFirestore(lean);
+      });
+    }
+  } else if (shardId === 'servizi' && Array.isArray(copy.serviziArchivio)) {
     const list = copy.serviziArchivio.map((item: any, idx: number) => {
       if (!item || typeof item !== 'object' || idx < 5) return item;
       const lean = { ...item };
@@ -544,6 +661,17 @@ function fitPayloadWithinFirestoreLimit(shardId: string, payload: Record<string,
   } else if (shardId === 'checklists' && Array.isArray(copy.checklistsCompilate)) {
     copy.checklistsCompilate = copy.checklistsCompilate.slice(0, 60);
   }
+
+  // 4. Passaggio universale su qualsiasi shard/campo annidato: rimuove eventuali altri allegati base64/dataURL > 4KB
+  if (getUtf8JsonByteLength(copy) > MAX_BYTES) {
+    copy = sanitizeForFirestore(stripHeavyMediaRecursive(copy, 4000));
+  }
+
+  // 5. Salvaguardia estrema: rimuove qualunque base64/dataURL > 512B (anche se sommati tra decine di schede)
+  if (getUtf8JsonByteLength(copy) > MAX_BYTES) {
+    copy = sanitizeForFirestore(stripHeavyMediaRecursive(copy, 512));
+  }
+
   return copy;
 }
 
@@ -560,7 +688,8 @@ export async function writeShardDoc(
   const path = `sync_shards/${shardId}`;
   const docRef = doc(db, 'sync_shards', shardId);
   const sanitizedPayload = fitPayloadWithinFirestoreLimit(shardId, sanitizeForFirestore(payload));
-  const email = (user.email || 'operatore@croceoro.org').slice(0, 200);
+  const rawEmail = (user.email || 'operatore@croceoro.org').trim();
+  const email = (rawEmail.length >= 3 ? rawEmail : 'operatore@croceoro.org').slice(0, 200);
   const nextVersion = Math.max(1, knownCurrentVersion + 1);
 
   try {
@@ -578,15 +707,28 @@ export async function writeShardDoc(
         });
         return nextVersion;
       } else {
-        const existingVer = typeof snap.data()?.version === 'number' ? snap.data()!.version : 1;
+        const snapData = snap.data();
+        const existingVer = typeof snapData?.version === 'number' ? snapData.version : 1;
         const bumpedVer = Math.max(nextVersion, existingVer + 1);
-        await updateDoc(docRef, {
-          payload: sanitizedPayload,
-          version: bumpedVer,
-          updatedByUid: user.uid,
-          updatedByEmail: email,
-          updatedAt: serverTimestamp(),
-        });
+        if (!snapData?.createdAt || snapData?.shardId !== shardId) {
+          await setDoc(docRef, {
+            shardId,
+            version: bumpedVer,
+            payload: sanitizedPayload,
+            updatedByUid: user.uid,
+            updatedByEmail: email,
+            createdAt: snapData?.createdAt || serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          });
+        } else {
+          await updateDoc(docRef, {
+            payload: sanitizedPayload,
+            version: bumpedVer,
+            updatedByUid: user.uid,
+            updatedByEmail: email,
+            updatedAt: serverTimestamp(),
+          });
+        }
         return bumpedVer;
       }
     }
@@ -601,12 +743,16 @@ export async function writeShardDoc(
       });
       return nextVersion;
     } catch (firstErr: any) {
-      // Retry una volta rileggendo versione/esistenza reale dal server in caso di conflitto multi-dispositivo
+      // Retry rileggendo versione/esistenza reale dal server in caso di conflitto multi-dispositivo o errore transitorio
       const msg = firstErr?.message || '';
       const code = firstErr?.code || '';
       if (
         code === 'not-found' ||
         code === 'permission-denied' ||
+        code === 'aborted' ||
+        code === 'unavailable' ||
+        code === 'failed-precondition' ||
+        code === 'already-exists' ||
         msg.includes('No document to update') ||
         msg.includes('Missing or insufficient permissions')
       ) {
@@ -623,15 +769,28 @@ export async function writeShardDoc(
           });
           return nextVersion;
         } else {
-          const existingVer = typeof snap.data()?.version === 'number' ? snap.data()!.version : 1;
+          const snapData = snap.data();
+          const existingVer = typeof snapData?.version === 'number' ? snapData.version : 1;
           const bumpedVer = Math.max(nextVersion + 1, existingVer + 1);
-          await updateDoc(docRef, {
-            payload: sanitizedPayload,
-            version: bumpedVer,
-            updatedByUid: user.uid,
-            updatedByEmail: email,
-            updatedAt: serverTimestamp(),
-          });
+          if (!snapData?.createdAt || snapData?.shardId !== shardId) {
+            await setDoc(docRef, {
+              shardId,
+              version: bumpedVer,
+              payload: sanitizedPayload,
+              updatedByUid: user.uid,
+              updatedByEmail: email,
+              createdAt: snapData?.createdAt || serverTimestamp(),
+              updatedAt: serverTimestamp(),
+            });
+          } else {
+            await updateDoc(docRef, {
+              payload: sanitizedPayload,
+              version: bumpedVer,
+              updatedByUid: user.uid,
+              updatedByEmail: email,
+              updatedAt: serverTimestamp(),
+            });
+          }
           return bumpedVer;
         }
       }

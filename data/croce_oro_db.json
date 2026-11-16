@@ -232,6 +232,7 @@
       "dataRegistrazione": "05/11/2026"
     }
   ],
+  "volontariEliminatiIds": [],
   "activeMission": null,
   "letturaConfermata": false,
   "operativeTimes": {},
@@ -1518,7 +1519,22 @@
   ],
   "magazzinoParti": [],
   "magazzinoMezzi": [],
-  "indirizziCollezionati": [],
+  "indirizziCollezionati": [
+    {
+      "id": "ind-1794523662855-iq3m",
+      "nome": "Clinica Veterinaria Malaspina",
+      "indirizzo": "Via Stradella, 57 Massa",
+      "lat": 44.006031,
+      "lng": 10.128239,
+      "placeId": "ChIJe97VG84O1RIR01W3xAZyHTw",
+      "googleMapsUri": "https://www.google.com/maps?q=44.0060309,10.1282388",
+      "origine": "partenza",
+      "dataCreazione": "2026-11-12T22:47:42.854Z",
+      "dataUltimaModifica": "2026-11-12",
+      "ultimoUtilizzo": "2026-11-12T22:47:42.919Z",
+      "utilizzi": 2
+    }
+  ],
   "radioPtt": {
     "enabled": false,
     "activeSpeaker": null

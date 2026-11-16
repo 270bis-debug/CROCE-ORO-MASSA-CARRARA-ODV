@@ -22,6 +22,7 @@ import {
   ITALY_TIMEZONE,
   parseItalianDateTimeMs
 } from './src/utils/italianTime';
+import { mergeVolontariListsSafe, normalizeDeletedIds } from './src/utils/volontariMerge';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -337,6 +338,7 @@ export interface ArchivedService {
 
 export interface ServerState {
   volontari: Volontario[];
+  volontariEliminatiIds?: string[];
   activeMission: MissionData | null;
   letturaConfermata: boolean;
   operativeTimes: OperativeTimes;
@@ -533,35 +535,8 @@ export function calcolaProssimoNumeroMissione(servizi: ArchivedService[], anno: 
   return maxProg + 1;
 }
 
-export function mergeVolontariLists(esistenti: Volontario[], inArrivo: Volontario[]): Volontario[] {
-  if (!Array.isArray(esistenti)) esistenti = [];
-  if (!Array.isArray(inArrivo)) inArrivo = [];
-  const result: Volontario[] = [];
-
-  const addOrUpdate = (v: Volontario) => {
-    if (!v) return;
-    const n = (v.nome || '').trim().toLowerCase();
-    const c = (v.cognome || '').trim().toLowerCase();
-    const idx = result.findIndex(existing => {
-      if (existing.id && v.id && existing.id === v.id) return true;
-      if (existing.matricola && v.matricola && existing.matricola.toUpperCase() === v.matricola.toUpperCase()) return true;
-      const exN = (existing.nome || '').trim().toLowerCase();
-      const exC = (existing.cognome || '').trim().toLowerCase();
-      if (n && c && exN === n && exC === c) return true;
-      return false;
-    });
-
-    if (idx !== -1) {
-      result[idx] = { ...result[idx], ...v };
-    } else {
-      result.push({ ...v });
-    }
-  };
-
-  for (const v of esistenti) addOrUpdate(v);
-  for (const v of inArrivo) addOrUpdate(v);
-
-  return result;
+export function mergeVolontariLists(esistenti: Volontario[], inArrivo: Volontario[], deletedIds?: string[]): Volontario[] {
+  return mergeVolontariListsSafe(esistenti, inArrivo, deletedIds);
 }
 
 let FIRMA_QUATTRINI_B64 = '';
@@ -763,8 +738,10 @@ function loadPersistedState(): ServerState {
           return !DUMMY_PURGE.includes(full);
         });
 
+        const loadedDeletedIds = normalizeDeletedIds(parsed.volontariEliminatiIds);
+
         // Smart merge protettivo: garantisce che nessuno dei volontari fondamentali (Simone Quattrini, Noemi Ricci, Claudio Simonini, Mattia Vignali, Sara Ferretti, Admin) vada mai perso
-        loadedVolontari = mergeVolontariLists(INITIAL_VOLONTARI, loadedVolontari);
+        loadedVolontari = mergeVolontariLists(INITIAL_VOLONTARI, loadedVolontari, loadedDeletedIds);
 
         // Garantisce che Claudio Simonini conservi sempre la carica di Presidente e la firma digitale
         loadedVolontari.forEach((v: any) => {
@@ -776,7 +753,7 @@ function loadPersistedState(): ServerState {
           }
         });
 
-        if (!loadedVolontari.some((v: any) => v.pin === '4451' || v.id === 'vol-admin')) {
+        if (!loadedDeletedIds.includes('vol-admin') && !loadedVolontari.some((v: any) => v.pin === '4451' || v.id === 'vol-admin')) {
           loadedVolontari.unshift({
             id: 'vol-admin',
             nome: 'Amministratore',
@@ -793,6 +770,8 @@ function loadPersistedState(): ServerState {
             firmaBase64: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAGQAAAAyCAYAAACqNX6+AAAAAXNSR0IArs4c6QAAAERlWElmTU0AKgAAAAgAAYdpAAQAAAABAAAAGgAAAAAAA6ABAAMAAAABAAEAAKACAAQAAAABAAAAZKADAAQAAAABAAAAMgAAAACHdE+zAAAB8klEQVR4Ae3Xv0scURTH8e9m3c0m0aRSCwtbETuxs7BQLbXyP0gR/AP+BS1iYWVhIdoIWtlYWEhECyv9CVbZ3V0zc7y7ySRmdr248+A9L27e3TPv5jW7s3m7MggEgkAgEAiE/5dAwE1bWvN8j9tqV9786v9y83/d1f8k/9j/e0m3/W0eBAKBQCAQCFx7Au/tq1r9tM3v7Kz/pE1P/6P7e7t6r+91V55n9eO9/q1f2vW3ev4B7rU/38+v5QcBAAAAAADAj5kAAAAAAADA/7M/573N+s5+x73O7q723v6729l/f1f77e6e580/5n3v50eBAAAAAADAj1kAAAAAAADA/7M/573N+s5+x73O7q723v6729l/f1f77e6e580/5n3v50eBAAAAAADAj1kAAAAAAADA/7M/573N+s5+x73O7q723v6729l/f1f77e6e580/5n3v50eBAAAAAADAj1kAAAAAAADA/7M/573N+s5+x73O7q723v6729l/f1f77e6e580/5n3v50eBAAAAAADAj1kAAAAAAADA/7M/573N+s5+x73O7q723v6729l/f1f77e6e580/5n3v50eBAAAAAADAj1kAAAAAAADA/7M=',
           });
         }
+        const loadedDeletedSet = new Set(loadedDeletedIds);
+        loadedVolontari = loadedVolontari.filter((v: any) => !v?.id || !loadedDeletedSet.has(String(v.id).trim()));
 
         const activeMissionPulita = (parsed.activeMission && !isGhostMission(parsed.activeMission))
           ? parsed.activeMission
@@ -800,6 +779,7 @@ function loadPersistedState(): ServerState {
 
         return {
           volontari: loadedVolontari,
+          volontariEliminatiIds: loadedDeletedIds,
           activeMission: activeMissionPulita,
           letturaConfermata: activeMissionPulita ? !!parsed.letturaConfermata : false,
           operativeTimes: activeMissionPulita ? (parsed.operativeTimes || {}) : {},
@@ -923,6 +903,7 @@ function loadPersistedState(): ServerState {
       },
       ...INITIAL_VOLONTARI
     ],
+    volontariEliminatiIds: [],
     activeMission: null,
     letturaConfermata: false,
     operativeTimes: {},
@@ -2020,19 +2001,27 @@ async function startServer() {
 
       // --- GESTIONE VOLONTARI E PIN IN TEMPO REALE ---
           case 'CREATE_VOLONTARIO': {
-            if (data && data.nome && data.pin) {
-              const esisteIndex = state.volontari.findIndex(v => v.id === data.id);
-              if (esisteIndex >= 0) {
-                state.volontari[esisteIndex] = { ...state.volontari[esisteIndex], ...data };
-              } else {
-                state.volontari = [data, ...state.volontari];
-              }
+            if (data && data.nome) {
+              const idVol = data.id || `vol-${Date.now()}`;
+              const nuovoVol: Volontario = {
+                ...data,
+                id: idVol,
+                pin: String(data.pin || '0000').trim() || '0000',
+              };
+              state.volontariEliminatiIds = normalizeDeletedIds(
+                (state.volontariEliminatiIds || []).filter((id) => id !== idVol)
+              );
+              state.volontari = mergeVolontariLists(
+                state.volontari,
+                [nuovoVol],
+                state.volontariEliminatiIds
+              );
               persistState();
 
               const notif: RadioNotification = {
                 id: generateUniqueNotifId(),
                 orario: formatTimeItaly(),
-                testo: `👤 NUOVO VOLONTARIO: Registrato ${data.nome} ${data.cognome} (${data.qualifica}) con PIN autorizzato`,
+                testo: `👤 NUOVO VOLONTARIO: Registrato ${nuovoVol.nome} ${nuovoVol.cognome || ''} (${nuovoVol.qualifica || 'Volontario'})`,
                 tipo: 'sistema'
               };
               state.notifiche.push(notif);
@@ -2040,14 +2029,15 @@ async function startServer() {
               broadcast({
                 type: 'VOLONTARI_UPDATED',
                 volontari: state.volontari,
+                volontariEliminatiIds: state.volontariEliminatiIds,
                 notification: notif
               });
 
               // Notifica Push alla Centrale
               sendPushNotificationToRole('admin', {
                 title: `👤 NUOVO PROFILO VOLONTARIO`,
-                body: `${data.nome} ${data.cognome} si è registrato con PIN autorizzato (${data.qualifica})`,
-                tag: `vol-${data.id}`,
+                body: `${nuovoVol.nome} ${nuovoVol.cognome || ''} è stato registrato nel database (${nuovoVol.qualifica || 'Volontario'})`,
+                tag: `vol-${idVol}`,
                 urgenza: 'VERDE'
               });
             }
@@ -2056,12 +2046,20 @@ async function startServer() {
 
           case 'UPDATE_VOLONTARIO': {
             if (data && data.id) {
-              state.volontari = state.volontari.map(v => v.id === data.id ? { ...v, ...data } : v);
+              state.volontariEliminatiIds = normalizeDeletedIds(
+                (state.volontariEliminatiIds || []).filter((id) => id !== data.id)
+              );
+              state.volontari = mergeVolontariLists(
+                state.volontari,
+                [data],
+                state.volontariEliminatiIds
+              );
               persistState();
 
               broadcast({
                 type: 'VOLONTARI_UPDATED',
-                volontari: state.volontari
+                volontari: state.volontari,
+                volontariEliminatiIds: state.volontariEliminatiIds
               });
             }
             break;
@@ -2069,14 +2067,42 @@ async function startServer() {
 
           case 'UPDATE_VOLONTARI_LIST': {
             if (Array.isArray(data?.volontari)) {
-              state.volontari = mergeVolontariLists(state.volontari, data.volontari);
+              const mergedDeleted = normalizeDeletedIds([
+                ...(state.volontariEliminatiIds || []),
+                ...(Array.isArray(data?.volontariEliminatiIds) ? data.volontariEliminatiIds : [])
+              ]);
+              state.volontariEliminatiIds = mergedDeleted;
+              state.volontari = mergeVolontariLists(state.volontari, data.volontari, mergedDeleted);
               persistState();
 
               broadcast({
                 type: 'VOLONTARI_UPDATED',
-                volontari: state.volontari
+                volontari: state.volontari,
+                volontariEliminatiIds: state.volontariEliminatiIds
               });
             }
+            break;
+          }
+
+          case 'DELETE_VOLONTARIO': {
+            const delId = data?.id ? String(data.id).trim() : '';
+            const mergedDeleted = normalizeDeletedIds([
+              ...(state.volontariEliminatiIds || []),
+              ...(Array.isArray(data?.volontariEliminatiIds) ? data.volontariEliminatiIds : []),
+              ...(delId ? [delId] : [])
+            ]);
+            state.volontariEliminatiIds = mergedDeleted;
+            if (Array.isArray(data?.volontari)) {
+              state.volontari = mergeVolontariLists(state.volontari, data.volontari, mergedDeleted);
+            }
+            state.volontari = state.volontari.filter((v) => !v.id || !mergedDeleted.includes(v.id));
+            persistState();
+
+            broadcast({
+              type: 'VOLONTARI_UPDATED',
+              volontari: state.volontari,
+              volontariEliminatiIds: state.volontariEliminatiIds
+            });
             break;
           }
 
@@ -4455,7 +4481,11 @@ async function startServer() {
 
   // REST API PER DATABASE VOLONTARI CONDIVISO
   app.get('/api/volontari', (_req, res) => {
-    res.json({ success: true, volontari: state.volontari });
+    res.json({
+      success: true,
+      volontari: state.volontari,
+      volontariEliminatiIds: state.volontariEliminatiIds || []
+    });
   });
 
   // --- DATABASE SERVIZI EFFETTUATI & ARCHIVIO STORICO (MAI AZZERATO) ---
@@ -5672,17 +5702,18 @@ async function startServer() {
 
   app.post('/api/volontari', (req, res) => {
     const data = req.body;
-    if (data && data.nome && data.pin) {
+    if (data && data.nome && !Array.isArray(data.volontari)) {
+      const idVol = data.id || `vol-${Date.now()}`;
       const nuovoVol: any = {
         ...data,
-        id: data.id || `vol-${Date.now()}`,
-        nome: data.nome.trim(),
+        id: idVol,
+        nome: String(data.nome).trim(),
         cognome: data.cognome?.trim() || '',
         matricola: data.matricola?.trim() || `VOL-${Math.floor(100 + Math.random() * 900)}`,
         qualifica: data.qualifica || 'Soccorritore',
         telefono: data.telefono?.trim() || '',
         email: data.email?.trim() || '',
-        pin: String(data.pin).trim(),
+        pin: String(data.pin || '0000').trim() || '0000',
         caricaConsiglioDirettivo: data.caricaConsiglioDirettivo || undefined,
         firmaBase64: data.firmaBase64 || undefined,
         dataRegistrazione: data.dataRegistrazione || formatDateItaly(),
@@ -5694,30 +5725,44 @@ async function startServer() {
         dataRichiestaResetPassword: data.dataRichiestaResetPassword
       };
 
-      const esisteIndex = state.volontari.findIndex(v => v.id === nuovoVol.id);
-      if (esisteIndex >= 0) {
-        state.volontari[esisteIndex] = { ...state.volontari[esisteIndex], ...nuovoVol };
-      } else {
-        state.volontari = [nuovoVol, ...state.volontari];
-      }
+      state.volontariEliminatiIds = normalizeDeletedIds(
+        (state.volontariEliminatiIds || []).filter((id) => id !== idVol)
+      );
+      state.volontari = mergeVolontariLists(state.volontari, [nuovoVol], state.volontariEliminatiIds);
       persistState();
 
       broadcast({
         type: 'VOLONTARI_UPDATED',
-        volontari: state.volontari
+        volontari: state.volontari,
+        volontariEliminatiIds: state.volontariEliminatiIds
       });
 
-      return res.json({ success: true, volontario: state.volontari.find(v => v.id === nuovoVol.id), volontari: state.volontari });
+      return res.json({
+        success: true,
+        volontario: state.volontari.find(v => v.id === idVol),
+        volontari: state.volontari,
+        volontariEliminatiIds: state.volontariEliminatiIds
+      });
     }
 
-    if (Array.isArray(req.body.volontari)) {
-      state.volontari = mergeVolontariLists(state.volontari, req.body.volontari);
+    if (Array.isArray(req.body?.volontari)) {
+      const mergedDeleted = normalizeDeletedIds([
+        ...(state.volontariEliminatiIds || []),
+        ...(Array.isArray(req.body?.volontariEliminatiIds) ? req.body.volontariEliminatiIds : [])
+      ]);
+      state.volontariEliminatiIds = mergedDeleted;
+      state.volontari = mergeVolontariLists(state.volontari, req.body.volontari, mergedDeleted);
       persistState();
       broadcast({
         type: 'VOLONTARI_UPDATED',
-        volontari: state.volontari
+        volontari: state.volontari,
+        volontariEliminatiIds: state.volontariEliminatiIds
       });
-      return res.json({ success: true, volontari: state.volontari });
+      return res.json({
+        success: true,
+        volontari: state.volontari,
+        volontariEliminatiIds: state.volontariEliminatiIds
+      });
     }
 
     res.status(400).json({ success: false, error: 'Dati volontario incompleti' });
@@ -5797,29 +5842,48 @@ async function startServer() {
 
   app.put('/api/volontari/:id', (req, res) => {
     const { id } = req.params;
-    const patch = req.body;
-    const index = state.volontari.findIndex(v => v.id === id);
-    if (index >= 0) {
-      state.volontari[index] = { ...state.volontari[index], ...patch };
-      persistState();
-      broadcast({
-        type: 'VOLONTARI_UPDATED',
-        volontari: state.volontari
-      });
-      return res.json({ success: true, volontario: state.volontari[index], volontari: state.volontari });
-    }
-    res.status(404).json({ success: false, error: 'Volontario non trovato' });
+    const patch = req.body || {};
+    state.volontariEliminatiIds = normalizeDeletedIds(
+      (state.volontariEliminatiIds || []).filter((d) => d !== id)
+    );
+    state.volontari = mergeVolontariLists(
+      state.volontari,
+      [{ ...patch, id }],
+      state.volontariEliminatiIds
+    );
+    persistState();
+    broadcast({
+      type: 'VOLONTARI_UPDATED',
+      volontari: state.volontari,
+      volontariEliminatiIds: state.volontariEliminatiIds
+    });
+    return res.json({
+      success: true,
+      volontario: state.volontari.find(v => v.id === id),
+      volontari: state.volontari,
+      volontariEliminatiIds: state.volontariEliminatiIds
+    });
   });
 
   app.delete('/api/volontari/:id', (req, res) => {
     const { id } = req.params;
-    state.volontari = state.volontari.filter(v => v.id !== id);
+    state.volontariEliminatiIds = normalizeDeletedIds([
+      ...(state.volontariEliminatiIds || []),
+      id
+    ]);
+    const deletedSet = new Set(state.volontariEliminatiIds);
+    state.volontari = state.volontari.filter(v => !v.id || !deletedSet.has(String(v.id).trim()));
     persistState();
     broadcast({
       type: 'VOLONTARI_UPDATED',
-      volontari: state.volontari
+      volontari: state.volontari,
+      volontariEliminatiIds: state.volontariEliminatiIds
     });
-    res.json({ success: true, volontari: state.volontari });
+    res.json({
+      success: true,
+      volontari: state.volontari,
+      volontariEliminatiIds: state.volontariEliminatiIds
+    });
   });
 
   // REST API di sincronizzazione generale (usata anche dal polling di fallback)
