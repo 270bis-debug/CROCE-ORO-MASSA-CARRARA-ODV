@@ -5408,6 +5408,25 @@ export default function App() {
     aggiungiNotifica(`📝 DATABASE: Foglio di viaggio ${cleanedItem.codice} aggiornato dall'operatore mittente nel database!`, 'centrale');
   };
 
+  // Aggiornamento donazione collegata a un servizio già presente nell'archivio
+  const handleCollegaDonazioneServizioArchivio = (servizioAggiornato: any) => {
+    if (!servizioAggiornato) return;
+    setArchivioPDF(prev =>
+      prev.map(s =>
+        (s.id === servizioAggiornato.id || (servizioAggiornato.codice && s.codice === servizioAggiornato.codice))
+          ? servizioAggiornato
+          : s
+      )
+    );
+    if (
+      pdfSelezionato &&
+      (pdfSelezionato.id === servizioAggiornato.id || (servizioAggiornato.codice && pdfSelezionato.codice === servizioAggiornato.codice))
+    ) {
+      setPdfSelezionato(servizioAggiornato);
+    }
+    realtime.centraleUpdateArchivedService(servizioAggiornato);
+  };
+
   // Richiesta di rimozione singolo servizio dal database (Amministratore)
   const chiediConfermaEliminaSingolo = (item: PdfArchiveItem) => {
     if (!isCentraleAdmin) {
@@ -12794,7 +12813,10 @@ KM TOTALI: ${kmTot} KM`;
             conteggioVolontari={volontari.length}
             conteggioMezzi={mezziFlotta.length}
             conteggioMezziFuoriServizio={mezziFlotta.filter(m => m.stato === 'Fuori Servizio').length}
-            conteggioDonazioni={archivioPDF.filter(s => s.donazione && s.donazione.importo && s.donazione.importo > 0).length}
+            conteggioDonazioni={archivioPDF.filter((s: any) => {
+              const imp = Number(s?.donazione?.importo ?? s?.donazione?.somma ?? s?.datiDestinazione?.donazione?.somma ?? s?.donazioneLibera ?? s?.importoDonazione ?? 0);
+              return imp > 0;
+            }).length}
             conteggioCorsi={corsiFormazione.length}
             conteggioSedi={sediAssociative.length}
             conteggioTurniOggi={turniSedi.length}
@@ -12855,6 +12877,7 @@ KM TOTALI: ${kmTot} KM`;
         {ruolo === 'admin' && adminSection === 'contabilita' && (
           <SezioneContabilita
             serviziArchivio={archivioPDF}
+            onAggiornaServizioArchivio={handleCollegaDonazioneServizioArchivio}
             tessere={tessereAssociative}
             onAggiornaTessere={handleAggiornaTessere}
             noteDiDebito={noteDiDebito}

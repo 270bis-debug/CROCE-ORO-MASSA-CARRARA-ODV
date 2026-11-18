@@ -61,6 +61,15 @@ export function calcolaProspettoCommercialista(
 ): ProspettoAnnualeCommercialista {
   const mesi: RigaProspettoMensile[] = [];
 
+  const extractIsoDate = (raw?: string): string => {
+    const str = (raw || '').trim();
+    if (!str) return '';
+    if (/^\d{4}-\d{2}-\d{2}/.test(str)) return str.slice(0, 10);
+    const mIt = /^(\d{2})\/(\d{2})\/(\d{4})/.exec(str);
+    if (mIt) return `${mIt[3]}-${mIt[2]}-${mIt[1]}`;
+    return str;
+  };
+
   for (let m = 0; m < 12; m++) {
     const meseNum = m + 1;
     const meseStr = `${anno}-${String(meseNum).padStart(2, '0')}`;
@@ -69,9 +78,17 @@ export function calcolaProspettoCommercialista(
     let conteggioDon = 0;
     let sommaDon = 0;
     serviziArchivio.forEach((s) => {
-      const dataS = s.data || s.dataServizio || '';
+      const dataS = extractIsoDate(s.dataDonazione || s.data || s.dataServizio || '');
       if (dataS.startsWith(meseStr)) {
-        const importo = parseFloat(s.donazioneLibera || s.importoDonazione || s.offertaLibera || (s.donazione && s.donazione.somma) || '0') || 0;
+        const importo =
+          parseFloat(
+            s.donazioneLibera ||
+              s.importoDonazione ||
+              s.offertaLibera ||
+              (s.donazione && (s.donazione.somma ?? s.donazione.importo)) ||
+              (s.datiDestinazione && s.datiDestinazione.donazione && s.datiDestinazione.donazione.somma) ||
+              '0'
+          ) || 0;
         if (importo > 0) {
           conteggioDon++;
           sommaDon += importo;

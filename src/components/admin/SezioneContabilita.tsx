@@ -69,6 +69,7 @@ import { addDaysISODate, formatISODateItaly, getCurrentYearItaly } from '../../u
 
 interface SezioneContabilitaProps {
   serviziArchivio: any[];
+  onAggiornaServizioArchivio?: (servizioAggiornato: any) => void;
   tessere: TesseraAssociativa[];
   onAggiornaTessere: (tessere: TesseraAssociativa[]) => void;
   noteDiDebito: NotaDiDebito[];
@@ -88,6 +89,7 @@ interface SezioneContabilitaProps {
 
 export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
   serviziArchivio,
+  onAggiornaServizioArchivio,
   tessere,
   onAggiornaTessere,
   noteDiDebito,
@@ -229,6 +231,8 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
 
   // Modale Nuova Donazione & Validazione Limiti (€ > 0 e <= 10.000)
   const [modaleNuovaDonazioneAperta, setModaleNuovaDonazioneAperta] = useState(false);
+  const [formDonazioneServizioCollegatoId, setFormDonazioneServizioCollegatoId] = useState<string>('');
+  const [ricercaServizioDonazione, setRicercaServizioDonazione] = useState<string>('');
   const [formDonazioneCodice, setFormDonazioneCodice] = useState('');
   const [formDonazionePaziente, setFormDonazionePaziente] = useState('');
   const [formDonazioneData, setFormDonazioneData] = useState(() => formatISODateItaly());
@@ -284,38 +288,163 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
     return null;
   }, [formDonazioneImporto, importoNumerico]);
 
-  // Lista unificata di donazioni: servizi archivio + donazioni extra registrate
+  const toISODateOnly = (raw?: string): string => {
+    const str = (raw || '').trim();
+    if (!str) return formatISODateItaly();
+    if (/^\d{4}-\d{2}-\d{2}/.test(str)) return str.slice(0, 10);
+    const mIt = /^(\d{2})\/(\d{2})\/(\d{4})/.exec(str);
+    if (mIt) return `${mIt[3]}-${mIt[2]}-${mIt[1]}`;
+    return formatISODateItaly();
+  };
+
+  const estraiImportoDonazione = (s: any): number => {
+    if (!s) return 0;
+    const raw =
+      s.donazioneLibera ||
+      s.importoDonazione ||
+      s.offertaLibera ||
+      (s.donazione && (s.donazione.somma ?? s.donazione.importo)) ||
+      (s.datiDestinazione && s.datiDestinazione.donazione && s.datiDestinazione.donazione.somma) ||
+      '0';
+    const val = parseFloat(String(raw).replace(',', '.'));
+    return isNaN(val) ? 0 : val;
+  };
+
+  const estraiNomeDonatore = (s: any): string => {
+    if (!s) return 'Richiedente Privato';
+    const propDest = s.datiDestinazione?.proprietario
+      ? `${s.datiDestinazione.proprietario.nome || ''} ${s.datiDestinazione.proprietario.cognome || ''}`.trim()
+      : '';
+    return (
+      s.donatore ||
+      s.paziente ||
+      s.richiedente ||
+      propDest ||
+      s.proprietarioImmobile?.nomeCognome ||
+      s.chiamante ||
+      'Richiedente Privato'
+    );
+  };
+
+  const serviziArchivioOrdinatiPerDonazione = React.useMemo(() => {
+    const q = ricercaServizioDonazione.trim().toLowerCase();
+    return (serviziArchivio || []).filter((s) => {
+      if (!q) return true;
+      const hay = [
+        s.codice,
+        s.id,
+        s.data,
+        s.mezzo,
+        s.ambito,
+        s.tipoServizio,
+        s.chiamante,
+        s.paziente,
+        s.indirizzoIntervento,
+        s.destinazione,
+        s.volontarioNome
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+      return hay.includes(q);
+    });
+  }, [serviziArchivio, ricercaServizioDonazione]);
+
+  const servizioCollegatoSelezionato = React.useMemo(() => {
+    if (!formDonazioneServizioCollegatoId) return null;
+    return (serviziArchivio || []).find((s) => (s.id || s.codice) === formDonazioneServizioCollegatoId) || null;
+  }, [serviziArchivio, formDonazioneServizioCollegatoId]);
+
+  const handleSelezionaServizioPerDonazione = (servizioId: string) => {
+    setFormDonazioneServizioCollegatoId(servizioId);
+    if (!servizioId) {
+      setFormDonazioneCodice('');
+      setFormDonazioneData(formatISODateItaly());
+      setFormDonazionePaziente('');
+      setFormDonazioneMezzo('T4606');
+      setFormDonazioneNote('');
+      return;
+    }
+    const srv = (serviziArchivio || []).find((s) => (s.id || s.codice) === servizioId);
+    if (!srv) return;
+
+    setFormDonazioneCodice(srv.codice || servizioId);
+    setFormDonazioneData(toISODateOnly(srv.dataInizioServizioSpecifico || srv.data || srv.dataServizio));
+    const propNome = srv.datiDestinazione?.proprietario
+      ? `${srv.datiDestinazione.proprietario.nome || ''} ${srv.datiDestinazione.proprietario.cognome || ''}`.trim()
+      : '';
+    const donatoreSuggerito =
+      srv.donatore ||
+      srv.paziente ||
+      srv.richiedente ||
+      propNome ||
+      srv.proprietarioImmobile?.nomeCognome ||
+      srv.chiamante ||
+      '';
+    setFormDonazionePaziente(donatoreSuggerito);
+    setFormDonazioneMezzo(srv.mezzo || 'T4606');
+
+    const tratta = [srv.indirizzoIntervento, srv.destinazione].filter(Boolean).join(' -> ');
+    const tipo = srv.tipoServizio || srv.ambito || 'Servizio Operativo';
+    setFormDonazioneNote(
+      `Erogazione liberale collegata a servizio ${srv.codice || servizioId} (${tipo})${tratta ? ` - ${tratta}` : ''}`
+    );
+
+    const impEsistente = estraiImportoDonazione(srv);
+    if (impEsistente > 0 && !formDonazioneImporto.trim()) {
+      setFormDonazioneImporto(impEsistente.toFixed(2));
+    }
+  };
+
+  // Lista unificata di donazioni: servizi archivio + donazioni extra registrate (senza duplicati se già aggiornato nell'archivio)
   const tuttiServiziDonazioni = React.useMemo(() => {
-    return [...donazioniExtra, ...serviziArchivio];
+    const chiaviArchivioConDonazione = new Set<string>();
+    (serviziArchivio || []).forEach((s) => {
+      if (estraiImportoDonazione(s) > 0 || s.donazioneRicevuta || s.ricevutaDonazione || s.datiDestinazione?.donazione?.ricevuta) {
+        if (s.id) chiaviArchivioConDonazione.add(String(s.id));
+        if (s.codice) chiaviArchivioConDonazione.add(String(s.codice));
+      }
+    });
+    const extraFiltrate = (donazioniExtra || []).filter((d) => {
+      const collId = d.servizioCollegatoId ? String(d.servizioCollegatoId) : '';
+      const cod = d.codice ? String(d.codice) : '';
+      if (collId && chiaviArchivioConDonazione.has(collId)) return false;
+      if (d.servizioCollegato && cod && chiaviArchivioConDonazione.has(cod)) return false;
+      return true;
+    });
+    return [...extraFiltrate, ...(serviziArchivio || [])];
   }, [donazioniExtra, serviziArchivio]);
 
   // =========================================================================
   // 1. FILTRO ESCLUSIVO: SOLO SERVIZI CON DONAZIONI
   // =========================================================================
   const serviziConDonazioni = tuttiServiziDonazioni.filter((s) => {
-    const importo = parseFloat(s.donazioneLibera || s.importoDonazione || s.offertaLibera || (s.donazione && s.donazione.somma) || '0');
+    const importo = estraiImportoDonazione(s);
     const haDonazione = Boolean(
-      (importo > 0) ||
+      importo > 0 ||
       (s.donazioneRicevuta && s.donazioneRicevuta !== '0' && s.donazioneRicevuta !== '') ||
-      (s.ricevutaDonazione && s.ricevutaDonazione !== '')
+      (s.ricevutaDonazione && s.ricevutaDonazione !== '') ||
+      s.datiDestinazione?.donazione?.ricevuta
     );
     if (!haDonazione) return false;
 
+    const nomeDon = estraiNomeDonatore(s);
     const matchRicerca =
       !ricerca.trim() ||
       (s.codice && s.codice.toLowerCase().includes(ricerca.toLowerCase())) ||
-      (s.paziente && s.paziente.toLowerCase().includes(ricerca.toLowerCase())) ||
+      nomeDon.toLowerCase().includes(ricerca.toLowerCase()) ||
       (s.mezzo && s.mezzo.toLowerCase().includes(ricerca.toLowerCase())) ||
-      (s.destinazione && s.destinazione.toLowerCase().includes(ricerca.toLowerCase()));
+      (s.destinazione && s.destinazione.toLowerCase().includes(ricerca.toLowerCase())) ||
+      (s.indirizzoIntervento && s.indirizzoIntervento.toLowerCase().includes(ricerca.toLowerCase()));
 
-    const matchMese = !filtroMese || (s.data && s.data.startsWith(filtroMese));
+    const dataIso = toISODateOnly(s.dataDonazione || s.data || s.dataServizio);
+    const matchMese = !filtroMese || dataIso.startsWith(filtroMese);
 
     return matchRicerca && matchMese;
   });
 
   const totaleDonazioniIncassate = serviziConDonazioni.reduce((acc, curr) => {
-    const val = parseFloat(curr.donazioneLibera || curr.importoDonazione || curr.offertaLibera || (curr.donazione && curr.donazione.somma) || '0') || 0;
-    return acc + val;
+    return acc + estraiImportoDonazione(curr);
   }, 0);
 
   // Esportazione in formato CSV di tutte le donazioni per la Tesoreria
@@ -338,16 +467,22 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
     ];
 
     const righe = serviziConDonazioni.map((s) => {
-      const imp = parseFloat(s.donazioneLibera || s.importoDonazione || s.offertaLibera || (s.donazione && s.donazione.somma) || '0') || 0;
-      const metodo = s.metodoDonazione || s.metodoPagamento || s.donazioneMetodo || (s.ricevutaDonazione ? 'Ricevuta Fiscale' : 'Contanti');
-      const paziente = (s.paziente || s.richiedente || 'Anonimo').replace(/"/g, '""');
+      const imp = estraiImportoDonazione(s);
+      const metodo =
+        s.metodoDonazione ||
+        s.metodoPagamento ||
+        s.donazioneMetodo ||
+        s.donazione?.modalita ||
+        (s.datiDestinazione?.donazione?.metodo === 'pos' ? 'POS Elettronico' : s.datiDestinazione?.donazione?.metodo === 'contanti' ? 'Contanti' : '') ||
+        (s.ricevutaDonazione ? 'Ricevuta Fiscale' : 'Contanti');
+      const paziente = estraiNomeDonatore(s).replace(/"/g, '""');
       const codice = (s.codice || '').replace(/"/g, '""');
       const mezzo = (s.mezzo || 'N/D').replace(/"/g, '""');
       const ricevuta = (s.ricevutaDonazione || 'Art. 82 D.Lgs 117/2017').replace(/"/g, '""');
       const volontario = (s.volontarioNome || 'Equipaggio').replace(/"/g, '""');
-      const note = (s.destinazione || s.luogoIntervento || s.note || '').replace(/"/g, '""').replace(/[\r\n]+/g, ' ');
+      const note = (s.noteDonazione || s.destinazione || s.indirizzoIntervento || s.luogoIntervento || s.note || '').replace(/"/g, '""').replace(/[\r\n]+/g, ' ');
 
-      return `"${s.data || ''}";"${codice}";"${imp.toFixed(2)}";"${metodo}";"${paziente}";"${mezzo}";"${ricevuta}";"${volontario}";"${note}"`;
+      return `"${s.dataDonazione || s.data || ''}";"${codice}";"${imp.toFixed(2)}";"${metodo}";"${paziente}";"${mezzo}";"${ricevuta}";"${volontario}";"${note}"`;
     });
 
     const csvContent = '\uFEFF' + [headers.join(';'), ...righe].join('\r\n');
@@ -365,7 +500,7 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
     onNotificaRadio?.(`📥 TESORERIA: Esportato report CSV donazioni (${serviziConDonazioni.length} record)`, 'sistema');
   };
 
-  // Registrazione nuova donazione con validazione soglie
+  // Registrazione nuova donazione con validazione soglie e collegamento opzionale a servizio in archivio
   const handleRegistraNuovaDonazione = (e: React.FormEvent) => {
     e.preventDefault();
     if (erroreImportoDonazione || isNaN(importoNumerico) || importoNumerico <= 0 || importoNumerico > 10000) {
@@ -374,20 +509,121 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
     }
 
     const annoCorr = getCurrentYearItaly();
+    const numRicevuta = formDonazioneRicevuta.trim() || `DON-${annoCorr}/${String(serviziConDonazioni.length + 1).padStart(3, '0')}`;
+    const donatoreNome = formDonazionePaziente.trim() || 'Donatore Anonimo';
+    const dataDonazione = formDonazioneData || formatISODateItaly();
+    const noteDonazione = formDonazioneNote.trim() || 'Erogazione liberale a sostegno delle attività istituzionali';
+    const codiceFinale = formDonazioneCodice.trim() || `MIS-${annoCorr}-${String(Date.now()).slice(-4)}`;
+
+    const servizioArchivioCollegato = formDonazioneServizioCollegatoId
+      ? (serviziArchivio || []).find((s) => (s.id || s.codice) === formDonazioneServizioCollegatoId)
+      : null;
+
+    if (servizioArchivioCollegato && onAggiornaServizioArchivio) {
+      const metodoBreve: 'pos' | 'contanti' = formDonazioneMetodo === 'POS / Carta' ? 'pos' : 'contanti';
+      const baseDatiDest = servizioArchivioCollegato.datiDestinazione || {
+        proprietario: {
+          nome: '',
+          cognome: '',
+          indirizzo: '',
+          cap: '',
+          comune: '',
+          provincia: '',
+          telefono: '',
+          email: ''
+        },
+        firmaProprietario: null,
+        strutturaVeterinaria: {
+          isVeterinario: false,
+          nomeStrutturaOVeterinario: '',
+          firmaVeterinario: null
+        }
+      };
+
+      const servizioAggiornato = {
+        ...servizioArchivioCollegato,
+        donazioneLibera: importoNumerico.toFixed(2),
+        importoDonazione: importoNumerico.toFixed(2),
+        metodoDonazione: formDonazioneMetodo,
+        metodoPagamento: formDonazioneMetodo,
+        ricevutaDonazione: numRicevuta,
+        donatore: donatoreNome,
+        paziente: servizioArchivioCollegato.paziente || donatoreNome,
+        noteDonazione,
+        dataDonazione,
+        donazione: {
+          importo: importoNumerico,
+          somma: importoNumerico,
+          modalita: formDonazioneMetodo,
+          note: noteDonazione,
+          ricevente: operatoreCorrente
+        },
+        datiDestinazione: {
+          ...baseDatiDest,
+          donazione: {
+            ...(baseDatiDest.donazione || {}),
+            ricevuta: true,
+            somma: importoNumerico,
+            metodo: metodoBreve
+          }
+        }
+      };
+
+      onAggiornaServizioArchivio(servizioAggiornato);
+
+      // Rimuove eventuali record duplicati in donazioniExtra riferiti allo stesso servizio
+      const chiaveColl = String(servizioArchivioCollegato.id || servizioArchivioCollegato.codice);
+      const extraRipulite = donazioniExtra.filter(
+        (d) => String(d.servizioCollegatoId || '') !== chiaveColl && String(d.codice || '') !== String(servizioArchivioCollegato.codice || '')
+      );
+      if (extraRipulite.length !== donazioniExtra.length) {
+        setDonazioniExtra(extraRipulite);
+        try {
+          localStorage.setItem('croceoro_donazioni_extra_v1', JSON.stringify(extraRipulite));
+        } catch {}
+      }
+
+      setModaleNuovaDonazioneAperta(false);
+      mostraAvviso(
+        `Donazione di € ${importoNumerico.toFixed(2)} registrata e collegata al servizio ${servizioArchivioCollegato.codice || chiaveColl} (Ricevuta: ${numRicevuta}).`
+      );
+      onNotificaRadio?.(
+        `💖 CONTABILITÀ: Donazione di € ${importoNumerico.toFixed(2)} (${formDonazioneMetodo}) collegata al servizio ${servizioArchivioCollegato.codice || codiceFinale}`,
+        'sistema'
+      );
+      if (!isAdmin) {
+        inviaNotificaModificaAdmin(
+          'contabilita',
+          'Donazione collegata a servizio in archivio',
+          `Registrata donazione di € ${importoNumerico.toFixed(2)} (${formDonazioneMetodo}) collegata al servizio ${servizioArchivioCollegato.codice || codiceFinale}`,
+          operatoreCorrente
+        );
+      }
+      return;
+    }
+
     const nuovaDonazione = {
       id: `don-${Date.now()}`,
-      codice: formDonazioneCodice.trim() || `MIS-${annoCorr}-${String(Date.now()).slice(-4)}`,
-      data: formDonazioneData || formatISODateItaly(),
-      paziente: formDonazionePaziente.trim() || 'Donatore Anonimo',
+      servizioCollegatoId: servizioArchivioCollegato ? (servizioArchivioCollegato.id || servizioArchivioCollegato.codice) : undefined,
+      servizioCollegato: Boolean(servizioArchivioCollegato),
+      codice: codiceFinale,
+      data: dataDonazione,
+      dataDonazione,
+      paziente: donatoreNome,
+      donatore: donatoreNome,
       donazioneLibera: importoNumerico.toFixed(2),
       importoDonazione: importoNumerico.toFixed(2),
       metodoDonazione: formDonazioneMetodo,
       metodoPagamento: formDonazioneMetodo,
-      ricevutaDonazione: formDonazioneRicevuta.trim() || `DON-${annoCorr}/${String(serviziConDonazioni.length + 1).padStart(3, '0')}`,
-      mezzo: formDonazioneMezzo.trim() || 'T4606',
-      destinazione: formDonazioneNote.trim() || 'Erogazione liberale a sostegno delle attività istituzionali',
-      volontarioNome: operatoreCorrente,
-      tipoServizio: 'Donazione Volontaria'
+      ricevutaDonazione: numRicevuta,
+      mezzo: formDonazioneMezzo.trim() || servizioArchivioCollegato?.mezzo || 'T4606',
+      indirizzoIntervento: servizioArchivioCollegato?.indirizzoIntervento,
+      destinazione: servizioArchivioCollegato
+        ? [servizioArchivioCollegato.indirizzoIntervento, servizioArchivioCollegato.destinazione].filter(Boolean).join(' -> ') || noteDonazione
+        : noteDonazione,
+      noteDonazione,
+      volontarioNome: servizioArchivioCollegato?.volontarioNome || operatoreCorrente,
+      tipoServizio: servizioArchivioCollegato?.tipoServizio || servizioArchivioCollegato?.ambito || 'Donazione Volontaria'
     };
 
     const aggiornate = [nuovaDonazione, ...donazioniExtra];
@@ -1163,6 +1399,8 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
               <button
                 type="button"
                 onClick={() => {
+                  setFormDonazioneServizioCollegatoId('');
+                  setRicercaServizioDonazione('');
                   setFormDonazioneImporto('');
                   setFormDonazioneCodice('');
                   setFormDonazionePaziente('');
@@ -1174,7 +1412,7 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
                   setModaleNuovaDonazioneAperta(true);
                 }}
                 className="px-3.5 py-2 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs uppercase flex items-center gap-1.5 shadow-md active:scale-95 cursor-pointer transition-all"
-                title="Registra una nuova donazione con verifica importo"
+                title="Registra una nuova donazione con verifica importo e collegamento opzionale a servizio in archivio"
               >
                 <PlusCircle className="w-4 h-4" />
                 <span>Registra Donazione</span>
@@ -1189,7 +1427,7 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
                 <thead>
                   <tr className="bg-slate-900/90 text-slate-400 uppercase text-[10px] font-black border-b border-slate-800">
                     <th className="py-3 px-4">Codice & Data</th>
-                    <th className="py-3 px-4">Paziente / Richiedente</th>
+                    <th className="py-3 px-4">Paziente / Donatore</th>
                     <th className="py-3 px-4">Mezzo & Tratta</th>
                     <th className="py-3 px-4 font-mono">Importo Donazione</th>
                     <th className="py-3 px-4">Ricevuta Fiscale</th>
@@ -1205,25 +1443,54 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
                     </tr>
                   ) : (
                     serviziConDonazioni.map((s) => {
-                      const imp = parseFloat(s.donazioneLibera || s.importoDonazione || s.offertaLibera || '0') || 0;
+                      const imp = estraiImportoDonazione(s);
+                      const nomeDonatore = estraiNomeDonatore(s);
+                      const isCollegatoArchivio = Boolean(
+                        s.servizioCollegato ||
+                        s.servizioCollegatoId ||
+                        (serviziArchivio || []).some((arch) => (arch.id || arch.codice) === (s.id || s.codice))
+                      );
+                      const metodoDisplay =
+                        s.metodoDonazione ||
+                        s.metodoPagamento ||
+                        s.donazione?.modalita ||
+                        (s.datiDestinazione?.donazione?.metodo === 'pos' ? 'POS' : s.datiDestinazione?.donazione?.metodo === 'contanti' ? 'Contanti' : '');
                       return (
                         <tr key={s.id || s.codice} className="hover:bg-slate-900/50 transition-colors">
                           <td className="py-3 px-4">
-                            <span className="font-mono font-black text-amber-400 bg-slate-900 px-2 py-0.5 rounded border border-slate-700">
-                              {s.codice}
-                            </span>
-                            <div className="text-[11px] text-slate-400 mt-1">{s.data}</div>
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              <span className="font-mono font-black text-amber-400 bg-slate-900 px-2 py-0.5 rounded border border-slate-700">
+                                {s.codice}
+                              </span>
+                              {isCollegatoArchivio && (
+                                <span
+                                  className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-cyan-950/80 border border-cyan-500/40 text-cyan-300 text-[9px] font-bold uppercase"
+                                  title="Collegata a servizio svolto in archivio"
+                                >
+                                  <Link2 className="w-2.5 h-2.5" />
+                                  Servizio
+                                </span>
+                              )}
+                            </div>
+                            <div className="text-[11px] text-slate-400 mt-1">{s.dataDonazione || s.data}</div>
                           </td>
                           <td className="py-3 px-4">
-                            <div className="font-bold text-white text-sm">{s.paziente || 'Richiedente Privato'}</div>
-                            <div className="text-[11px] text-slate-400">{s.tipoServizio || 'Trasporto Sanitario'}</div>
+                            <div className="font-bold text-white text-sm">{nomeDonatore}</div>
+                            <div className="text-[11px] text-slate-400">{s.tipoServizio || s.ambito || 'Trasporto Sanitario'}</div>
                           </td>
                           <td className="py-3 px-4">
                             <div className="text-slate-300 font-bold">{s.mezzo || 'T4606'}</div>
-                            <div className="text-[11px] text-slate-400 truncate max-w-xs">{s.destinazione || s.luogoIntervento}</div>
+                            <div className="text-[11px] text-slate-400 truncate max-w-xs">
+                              {s.destinazione || s.indirizzoIntervento || s.luogoIntervento || s.noteDonazione}
+                            </div>
                           </td>
-                          <td className="py-3 px-4 font-mono font-black text-emerald-400 text-sm">
-                            € {imp.toFixed(2)}
+                          <td className="py-3 px-4">
+                            <div className="font-mono font-black text-emerald-400 text-sm">
+                              € {imp.toFixed(2)}
+                            </div>
+                            {metodoDisplay && (
+                              <div className="text-[10px] text-slate-400 font-semibold">{metodoDisplay}</div>
+                            )}
                           </td>
                           <td className="py-3 px-4">
                             <span className="px-2 py-0.5 rounded bg-purple-950 text-purple-300 border border-purple-700/50 text-[10px] font-bold">
@@ -2449,6 +2716,91 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
 
             <form onSubmit={handleRegistraNuovaDonazione} className="flex flex-col flex-1 min-h-0 mt-3">
               <div className="flex-1 overflow-y-auto pr-1 sm:pr-2 space-y-3.5 text-xs py-1 overscroll-contain">
+              {/* COLLEGAMENTO OPZIONALE A SERVIZIO GIÀ SVOLTO IN ARCHIVIO */}
+              <div className="bg-slate-950/90 border border-purple-500/40 rounded-2xl p-3 space-y-2.5">
+                <div className="flex items-center justify-between gap-2">
+                  <label className="text-[11px] font-black uppercase text-purple-300 flex items-center gap-1.5">
+                    <Link2 className="w-3.5 h-3.5 text-purple-400 shrink-0" />
+                    <span>Collega a Servizio Svolto in Archivio (Opzionale)</span>
+                  </label>
+                  <span className="text-[10px] font-mono text-slate-400 shrink-0">
+                    {(serviziArchivio || []).length} in archivio
+                  </span>
+                </div>
+
+                {(serviziArchivio || []).length > 5 && (
+                  <div className="relative">
+                    <Search className="w-3.5 h-3.5 absolute left-2.5 top-2.5 text-slate-400" />
+                    <input
+                      type="text"
+                      value={ricercaServizioDonazione}
+                      onChange={(e) => setRicercaServizioDonazione(e.target.value)}
+                      placeholder="Filtra servizi in archivio per codice, data, mezzo, indirizzo o chiamante..."
+                      className="w-full pl-8 pr-3 py-1.5 rounded-xl bg-slate-900 border border-slate-700 text-white text-[11px] placeholder-slate-500 focus:outline-none focus:border-purple-500"
+                    />
+                  </div>
+                )}
+
+                <select
+                  value={formDonazioneServizioCollegatoId}
+                  onChange={(e) => handleSelezionaServizioPerDonazione(e.target.value)}
+                  className="w-full p-2 rounded-xl bg-slate-900 border border-slate-700 text-white text-xs cursor-pointer focus:border-purple-500 focus:outline-none"
+                >
+                  <option value="">-- Nessun servizio collegato (Donazione libera / manuale) --</option>
+                  {serviziArchivioOrdinatiPerDonazione.map((s) => {
+                    const sid = s.id || s.codice;
+                    const impEs = estraiImportoDonazione(s);
+                    const labelPersona = s.paziente || s.chiamante || s.proprietarioImmobile?.nomeCognome || '';
+                    const labelTipo = s.tipoServizio || s.ambito || 'Servizio';
+                    return (
+                      <option key={sid} value={sid}>
+                        [{s.codice || sid}] {s.data || ''} • {labelTipo} ({s.mezzo || 'N/D'})
+                        {labelPersona ? ` • ${labelPersona}` : ''}
+                        {impEs > 0 ? ` [Già con donazione €${impEs.toFixed(2)}]` : ''}
+                      </option>
+                    );
+                  })}
+                </select>
+
+                {servizioCollegatoSelezionato && (
+                  <div className="p-2.5 rounded-xl bg-purple-950/40 border border-purple-500/40 space-y-1 text-[11px]">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="font-black text-purple-200 flex items-center gap-1">
+                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                        Servizio collegato: {servizioCollegatoSelezionato.codice || servizioCollegatoSelezionato.id}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => handleSelezionaServizioPerDonazione('')}
+                        className="text-[10px] font-bold text-slate-300 hover:text-white underline cursor-pointer"
+                      >
+                        Scollega
+                      </button>
+                    </div>
+                    <div className="text-slate-300 flex flex-wrap gap-x-3 gap-y-0.5">
+                      <span>Data: <strong className="text-white">{servizioCollegatoSelezionato.data || '-'}</strong></span>
+                      <span>Mezzo: <strong className="text-amber-300 font-mono">{servizioCollegatoSelezionato.mezzo || 'N/D'}</strong></span>
+                      {servizioCollegatoSelezionato.volontarioNome && (
+                        <span>Equipaggio: <strong className="text-cyan-300">{servizioCollegatoSelezionato.volontarioNome}</strong></span>
+                      )}
+                    </div>
+                    {(servizioCollegatoSelezionato.indirizzoIntervento || servizioCollegatoSelezionato.destinazione) && (
+                      <div className="text-slate-400 truncate">
+                        Tratta: {[servizioCollegatoSelezionato.indirizzoIntervento, servizioCollegatoSelezionato.destinazione].filter(Boolean).join(' → ')}
+                      </div>
+                    )}
+                    {estraiImportoDonazione(servizioCollegatoSelezionato) > 0 && (
+                      <div className="text-amber-300 font-bold flex items-center gap-1 pt-0.5">
+                        <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                        <span>
+                          Questo servizio ha già una donazione di € {estraiImportoDonazione(servizioCollegatoSelezionato).toFixed(2)}: confermando verrà aggiornata.
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="block text-[11px] font-bold text-slate-400 uppercase mb-1">
