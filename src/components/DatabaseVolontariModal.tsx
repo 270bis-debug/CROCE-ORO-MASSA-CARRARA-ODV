@@ -199,6 +199,13 @@ export interface Volontario {
   sezioneAppartenenzaNome?: string; // Nome della sezione territoriale di appartenenza
 }
 
+export interface DatabaseVolontariModalInitialAction {
+  mode: 'nuovo' | 'fascicolo';
+  volontario?: Volontario;
+  tab?: 'anagrafica' | 'tesseramento' | 'documenti' | 'vestiario' | 'domanda_iscrizione';
+  directOnly?: boolean;
+}
+
 interface DatabaseVolontariModalProps {
   isOpen: boolean;
   onClose: () => void;
@@ -214,6 +221,7 @@ interface DatabaseVolontariModalProps {
   onAggiornaMagazzinoVestiario?: (nuovi: ArticoloVestiarioMagazzino[]) => void;
   movimentiMagazzino?: MovimentoMagazzino[];
   onAggiornaMovimentiMagazzino?: (nuovi: MovimentoMagazzino[]) => void;
+  initialAction?: DatabaseVolontariModalInitialAction | null;
 }
 
 export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
@@ -230,7 +238,8 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
   magazzinoVestiario = [],
   onAggiornaMagazzinoVestiario,
   movimentiMagazzino = [],
-  onAggiornaMovimentiMagazzino
+  onAggiornaMovimentiMagazzino,
+  initialAction = null
 }) => {
   const [adminSbloccato, setAdminSbloccato] = useState(false);
   const [pinAdminInput, setPinAdminInput] = useState('');
@@ -1495,6 +1504,35 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
     setModaleEditAperta(true);
   };
 
+  useEffect(() => {
+    if (!isOpen) {
+      setModaleEditAperta(false);
+      return;
+    }
+    if (!initialAction) return;
+    if (initialAction.mode === 'nuovo') {
+      apriAggiungiVolontario();
+      if (initialAction.tab) {
+        setTabModaleEdit(initialAction.tab);
+      }
+    } else if (initialAction.mode === 'fascicolo' && initialAction.volontario) {
+      const target =
+        volontari.find((v) => v.id === initialAction.volontario?.id) || initialAction.volontario;
+      apriModificaVolontario(target);
+      if (initialAction.tab) {
+        setTabModaleEdit(initialAction.tab);
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen, initialAction]);
+
+  const chiudiModaleEdit = () => {
+    setModaleEditAperta(false);
+    if (initialAction?.directOnly) {
+      onClose();
+    }
+  };
+
   if (!isOpen) return null;
 
   if (!isAdminEffettivo) {
@@ -2556,7 +2594,7 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
       }
     }
 
-    setModaleEditAperta(false);
+    chiudiModaleEdit();
   };
 
   const confermaEliminaAccount = () => {
@@ -2575,9 +2613,10 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
       const aggiornati = volontari.filter((v) => v.id !== eliminatoId);
       onAggiornaVolontari(aggiornati);
     }
-    if (volontarioInModifica?.id === eliminatoId) {
-      setModaleEditAperta(false);
+    const stavaModificandoEliminato = volontarioInModifica?.id === eliminatoId;
+    if (stavaModificandoEliminato) {
       setVolontarioInModifica(null);
+      chiudiModaleEdit();
     }
     onNotificaRadio(`🗑️ CENTRALE: Rimosso account ${eliminatoNome} dal database`, 'centrale');
     setAvvisoTemporaneo(`🗑️ Account ${accountDaEliminare.nome} ${accountDaEliminare.cognome} eliminato definitivamente.`);
@@ -2654,6 +2693,7 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
 
   return (
     <div className="fixed inset-0 bg-black/85 backdrop-blur-md z-50 flex flex-col items-center justify-start sm:justify-center p-1 sm:p-2.5 overflow-y-auto">
+      {!(initialAction?.directOnly && modaleEditAperta) && (
       <div
         className="bg-slate-900 border border-slate-700/80 rounded-2xl sm:rounded-3xl w-[98vw] max-w-[99vw] 2xl:max-w-[1720px] my-auto max-h-[96dvh] md:max-h-[95vh] flex flex-col shadow-2xl overflow-y-auto md:overflow-hidden overscroll-contain touch-pan-y text-slate-100"
       >
@@ -5107,6 +5147,7 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
         </div>
 
       </div>
+      )}
 
       {/* SOTTO-MODALE AGGIUNGI / MODIFICA VOLONTARIO */}
       {modaleEditAperta && (
@@ -5142,7 +5183,7 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
               </div>
               <button
                 type="button"
-                onClick={() => setModaleEditAperta(false)}
+                onClick={chiudiModaleEdit}
                 className="w-8 h-8 rounded-full bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white flex items-center justify-center transition-colors cursor-pointer"
               >
                 <X className="w-4 h-4" />
@@ -6772,7 +6813,7 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
                 )}
                 <button
                   type="button"
-                  onClick={() => setModaleEditAperta(false)}
+                  onClick={chiudiModaleEdit}
                   className="py-1.5 sm:py-2 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-[11px] sm:text-xs whitespace-nowrap shrink-0 cursor-pointer transition-colors"
                 >
                   Annulla

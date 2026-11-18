@@ -46,7 +46,7 @@ import {
   ChevronRight,
   Upload
 } from 'lucide-react';
-import { DatabaseVolontariModal, Volontario, SEDI_TURNI_DISPONIBILI } from '../DatabaseVolontariModal';
+import { DatabaseVolontariModal, DatabaseVolontariModalInitialAction, Volontario, SEDI_TURNI_DISPONIBILI } from '../DatabaseVolontariModal';
 import {
   TimbraturaVolontario,
   LuogoTimbratura,
@@ -229,6 +229,26 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
 
   // Stato modale DatabaseVolontari completa
   const [modalDatabaseCompletoAperta, setModalDatabaseCompletoAperta] = useState(false);
+  const [modalDatabaseInitialAction, setModalDatabaseInitialAction] = useState<DatabaseVolontariModalInitialAction | null>(null);
+
+  const apriListaCompletaVolontari = () => {
+    setModalDatabaseInitialAction(null);
+    setModalDatabaseCompletoAperta(true);
+  };
+
+  const apriNuovoVolontarioDiretto = () => {
+    setModalDatabaseInitialAction({ mode: 'nuovo', directOnly: true });
+    setModalDatabaseCompletoAperta(true);
+  };
+
+  const apriFascicoloVolontarioDiretto = (
+    vol: Volontario,
+    tab?: DatabaseVolontariModalInitialAction['tab']
+  ) => {
+    setModalDatabaseInitialAction({ mode: 'fascicolo', volontario: vol, tab, directOnly: true });
+    setModalDatabaseCompletoAperta(true);
+  };
+
   // Modale conferma eliminazione definitiva account/domanda
   const [volontarioDaEliminareSezione, setVolontarioDaEliminareSezione] = useState<{ vol: Volontario; modo: 'account' | 'domanda' } | null>(null);
 
@@ -1186,7 +1206,7 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
           </button>
           <button
             type="button"
-            onClick={() => setModalDatabaseCompletoAperta(true)}
+            onClick={apriListaCompletaVolontari}
             className="px-3.5 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs uppercase flex items-center gap-2 shadow-lg transition-transform active:scale-95 cursor-pointer"
           >
             <Users className="w-4 h-4" />
@@ -1502,7 +1522,7 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
 
               <button
                 type="button"
-                onClick={() => setModalDatabaseCompletoAperta(true)}
+                onClick={apriNuovoVolontarioDiretto}
                 className="px-3.5 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs uppercase flex items-center gap-1.5 shadow-md active:scale-95 cursor-pointer"
               >
                 <UserPlus className="w-4 h-4" />
@@ -1662,7 +1682,7 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
                           <div className="flex items-center justify-end gap-1.5">
                             <button
                               type="button"
-                              onClick={() => setModalDatabaseCompletoAperta(true)}
+                              onClick={() => apriFascicoloVolontarioDiretto(v)}
                               className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-bold text-xs flex items-center gap-1.5 border border-slate-700 transition-colors cursor-pointer"
                             >
                               <Edit2 className="w-3 h-3 text-blue-400" />
@@ -1704,7 +1724,7 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
             </div>
             <button
               type="button"
-              onClick={() => setModalDatabaseCompletoAperta(true)}
+              onClick={apriListaCompletaVolontari}
               className="px-3.5 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs uppercase flex items-center gap-1.5 shadow-md cursor-pointer"
             >
               <Shirt className="w-4 h-4" />
@@ -1779,8 +1799,8 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
                         <td className="py-3 px-4 text-right">
                           <button
                             type="button"
-                            onClick={() => setModalDatabaseCompletoAperta(true)}
-                            className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-blue-300 font-bold text-xs"
+                            onClick={() => apriFascicoloVolontarioDiretto(v, 'vestiario')}
+                            className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-blue-300 font-bold text-xs cursor-pointer"
                           >
                             Dettagli Vestiario
                           </button>
@@ -4526,7 +4546,7 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
                                 <td className="py-3 px-4 text-right align-middle">
                                   <button
                                     type="button"
-                                    onClick={() => setModalDatabaseCompletoAperta(true)}
+                                    onClick={() => apriFascicoloVolontarioDiretto(v)}
                                     className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-[11px] font-bold border border-slate-700 inline-flex items-center gap-1 transition-colors cursor-pointer"
                                     title="Apri fascicolo volontario completo per modificare le mansioni e tutti i dati"
                                   >
@@ -5556,7 +5576,11 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
       {/* MODALE DATABASE VOLONTARI COMPLETO */}
       <DatabaseVolontariModal
         isOpen={modalDatabaseCompletoAperta}
-        onClose={() => setModalDatabaseCompletoAperta(false)}
+        onClose={() => {
+          setModalDatabaseCompletoAperta(false);
+          setModalDatabaseInitialAction(null);
+        }}
+        initialAction={modalDatabaseInitialAction}
         volontari={volontari}
         onAggiornaVolontari={onAggiornaVolontari}
         onEliminaVolontario={onEliminaVolontario}
