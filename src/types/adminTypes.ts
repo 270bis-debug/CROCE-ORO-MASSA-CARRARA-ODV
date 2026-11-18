@@ -90,10 +90,12 @@ export interface MezzoFlotta {
   modello: string; // es. Fiat Ducato Maxi 2.3 Multijet
   annoImmatricolazione: number;
   tipo: string; // Collegato al catalogo Tipologie Mezzo (default: TipologiaMezzoStandard)
+  tipologiaMezzoId?: string; // ID immutabile della Tipologia Mezzo per resilienza alle rinomine
   flotta: 'vet' | 'pc'; // Veterinario / Emergenza o Protezione Civile
   stato: 'Operativo' | 'Fuori Servizio' | 'In Manutenzione' | 'In Sanificazione';
   chilometraggioAttuale: number;
   sedeStazionamento: string; // es. Massa (Le Jare)
+  sedeId?: string; // ID immutabile della Sede associativa per resilienza alle rinomine
   scadenzaRevisione: string; // YYYY-MM-DD
   scadenzaAssicurazione: string; // YYYY-MM-DD
   scadenzaBollo: string; // YYYY-MM-DD

@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   Building2,
   Search,
@@ -33,7 +33,8 @@ import { ContattoEsterno, TipoContattoEsterno, IndirizzoCollezionato } from '../
 import { inviaNotificaModificaAdmin } from '../../utils/notificaModificaAdmin';
 import { MappaIndirizzoCollezionato } from './MappaIndirizzoCollezionato';
 import { formatISODateItaly } from '../../utils/italianTime';
-import { useTitoloDatabase } from '../../hooks/useNomiDatabase';
+import { useTitoloDatabase, useNomiSottosezioniCustom } from '../../hooks/useNomiDatabase';
+import { getTitoloSottosezione } from '../../constants/macroCategorie';
 import { useMetodiPagamentoCustom, formattaEtichettaMetodoPagamento } from '../../utils/metodiPagamentoStore';
 
 interface SezioneContattiProps {
@@ -48,6 +49,8 @@ interface SezioneContattiProps {
   isAdmin?: boolean;
   hasAccess?: boolean; // Accesso autorizzato dall'amministratore
   onNotificaRadio?: (testo: string, tipo?: 'centrale' | 'mezzo' | 'sistema' | 'allarme') => void;
+  allowedSubtabs?: string[] | null;
+  onApriNumeriUtili?: () => void;
 }
 
 export const SezioneContatti: React.FC<SezioneContattiProps> = ({
@@ -61,11 +64,28 @@ export const SezioneContatti: React.FC<SezioneContattiProps> = ({
   operatoreCorrente = 'Amministratore',
   isAdmin = true,
   hasAccess = true,
-  onNotificaRadio
+  onNotificaRadio,
+  allowedSubtabs = null,
+  onApriNumeriUtili
 }) => {
   // Filtro tipologia (include sottosezione Indirizzi Collezionati)
   const titoloDbContatti = useTitoloDatabase('contatti', 'Contatti Fornitori / Clienti / Ecc.');
+  const nomiSubCustom = useNomiSottosezioniCustom();
   const [filtroTipo, setFiltroTipo] = useState<'tutti' | TipoContattoEsterno | 'indirizzi_collezionati'>('tutti');
+  const canShowSubtab = (id: string) => !allowedSubtabs || allowedSubtabs.includes(id);
+
+  useEffect(() => {
+    const ordine = ['fornitore', 'officina', 'cliente_ente', 'donatore', 'indirizzi_collezionati'] as const;
+    if (filtroTipo === 'tutti') {
+      if (allowedSubtabs && ordine.some((t) => !allowedSubtabs.includes(t))) {
+        const prima = ordine.find((t) => allowedSubtabs.includes(t));
+        if (prima) setFiltroTipo(prima);
+      }
+    } else if (!canShowSubtab(filtroTipo)) {
+      const prima = ordine.find((t) => canShowSubtab(t));
+      if (prima) setFiltroTipo(prima);
+    }
+  }, [filtroTipo, allowedSubtabs]);
   const [ricerca, setRicerca] = useState('');
 
   // Modale Indirizzo Collezionato & Mappa Pin
@@ -138,6 +158,7 @@ export const SezioneContatti: React.FC<SezioneContattiProps> = ({
   // Filtraggio contatti
   const contattiFiltrati = useMemo(() => {
     return contatti.filter((c) => {
+      if (!canShowSubtab(c.tipo)) return false;
       const matchTipo = filtroTipo === 'tutti' || c.tipo === filtroTipo;
       const query = ricerca.toLowerCase().trim();
       const matchQuery =
@@ -622,6 +643,19 @@ export const SezioneContatti: React.FC<SezioneContattiProps> = ({
 
         {/* Pulsanti Azioni Rapide */}
         <div className="flex items-center gap-2 flex-wrap w-full md:w-auto justify-end">
+          {onApriNumeriUtili && (
+            <button
+              type="button"
+              onClick={onApriNumeriUtili}
+              className="px-3 py-2 rounded-xl bg-amber-500/20 hover:bg-amber-500/35 text-amber-200 border border-amber-500/50 text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer active:scale-95"
+              title="Apri la rubrica Numeri Utili per aggiungere, modificare o rimuovere i recapiti"
+            >
+              <Phone className="w-3.5 h-3.5 text-amber-400" />
+              <span>Gestisci Numeri Utili</span>
+            </button>
+          )}
+
+          {canShowSubtab('indirizzi_collezionati') && (
           <button
             type="button"
             onClick={() => setFiltroTipo('indirizzi_collezionati')}
@@ -635,6 +669,7 @@ export const SezioneContatti: React.FC<SezioneContattiProps> = ({
             <MapPin className="w-3.5 h-3.5 text-cyan-300" />
             <span>Indirizzi Collezionati ({conteggi.indirizzi_collezionati})</span>
           </button>
+          )}
 
           <button
             type="button"
@@ -680,6 +715,7 @@ export const SezioneContatti: React.FC<SezioneContattiProps> = ({
         <div className="flex flex-col gap-3">
           {/* Tabs Filtro Tipologia (a capo automatico per mostrare sempre tutte le sottosezioni) */}
           <div className="flex flex-wrap items-center gap-2 w-full">
+            {(!allowedSubtabs || ['fornitore', 'officina', 'cliente_ente', 'donatore', 'indirizzi_collezionati'].every((id) => allowedSubtabs.includes(id))) && (
             <button
               type="button"
               onClick={() => setFiltroTipo('tutti')}
@@ -692,7 +728,9 @@ export const SezioneContatti: React.FC<SezioneContattiProps> = ({
               <span>Tutti i Contatti</span>
               <span className="px-1.5 py-0.2 rounded-full bg-white/20 text-[10px] font-mono">{conteggi.tutti}</span>
             </button>
+            )}
 
+            {canShowSubtab('fornitore') && (
             <button
               type="button"
               onClick={() => setFiltroTipo('fornitore')}
@@ -703,10 +741,12 @@ export const SezioneContatti: React.FC<SezioneContattiProps> = ({
               }`}
             >
               <Truck className="w-3.5 h-3.5" />
-              <span>Fornitori DPI & Ricambi</span>
+              <span>{getTitoloSottosezione('contatti', 'fornitore', 'Fornitori DPI & Ricambi', nomiSubCustom)}</span>
               <span className="px-1.5 py-0.2 rounded-full bg-white/20 text-[10px] font-mono">{conteggi.fornitore}</span>
             </button>
+            )}
 
+            {canShowSubtab('officina') && (
             <button
               type="button"
               onClick={() => setFiltroTipo('officina')}
@@ -717,10 +757,12 @@ export const SezioneContatti: React.FC<SezioneContattiProps> = ({
               }`}
             >
               <Wrench className="w-3.5 h-3.5" />
-              <span>Officine & Manutentori</span>
+              <span>{getTitoloSottosezione('contatti', 'officina', 'Officine & Manutentori', nomiSubCustom)}</span>
               <span className="px-1.5 py-0.2 rounded-full bg-white/20 text-[10px] font-mono">{conteggi.officina}</span>
             </button>
+            )}
 
+            {canShowSubtab('cliente_ente') && (
             <button
               type="button"
               onClick={() => setFiltroTipo('cliente_ente')}
@@ -731,10 +773,12 @@ export const SezioneContatti: React.FC<SezioneContattiProps> = ({
               }`}
             >
               <Landmark className="w-3.5 h-3.5" />
-              <span>Clienti & Enti Debitori</span>
+              <span>{getTitoloSottosezione('contatti', 'cliente_ente', 'Clienti & Enti Debitori', nomiSubCustom)}</span>
               <span className="px-1.5 py-0.2 rounded-full bg-white/20 text-[10px] font-mono">{conteggi.cliente_ente}</span>
             </button>
+            )}
 
+            {canShowSubtab('donatore') && (
             <button
               type="button"
               onClick={() => setFiltroTipo('donatore')}
@@ -745,10 +789,12 @@ export const SezioneContatti: React.FC<SezioneContattiProps> = ({
               }`}
             >
               <Heart className="w-3.5 h-3.5 text-red-400" />
-              <span>Donatori Interventi</span>
+              <span>{getTitoloSottosezione('contatti', 'donatore', 'Donatori Interventi', nomiSubCustom)}</span>
               <span className="px-1.5 py-0.2 rounded-full bg-white/20 text-[10px] font-mono">{conteggi.donatore}</span>
             </button>
+            )}
 
+            {canShowSubtab('indirizzi_collezionati') && (
             <button
               type="button"
               onClick={() => setFiltroTipo('indirizzi_collezionati')}
@@ -759,9 +805,10 @@ export const SezioneContatti: React.FC<SezioneContattiProps> = ({
               }`}
             >
               <MapPin className="w-3.5 h-3.5" />
-              <span>Indirizzi Collezionati</span>
+              <span>{getTitoloSottosezione('contatti', 'indirizzi_collezionati', 'Indirizzi Collezionati', nomiSubCustom)}</span>
               <span className="px-1.5 py-0.2 rounded-full bg-white/20 text-[10px] font-mono">{conteggi.indirizzi_collezionati}</span>
             </button>
+            )}
           </div>
 
           {/* Campo di Ricerca */}

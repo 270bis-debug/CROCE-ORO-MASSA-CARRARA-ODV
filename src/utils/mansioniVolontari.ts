@@ -579,24 +579,35 @@ export function ripristinaMansioniDefault(): MansioneOperativa[] {
 export function aggiornaVolontariDopoModificaMansione(
   volontari: Volontario[],
   vecchioNome: string,
-  nuovoNome: string
+  nuovoNome: string,
+  mansioneId?: string
 ): Volontario[] {
   if (!vecchioNome || !nuovoNome || vecchioNome === nuovoNome) return volontari;
+  const vecchioLow = vecchioNome.trim().toLowerCase();
   return volontari.map((v) => {
     let modificato = false;
+    const idsAttuali = Array.isArray(v.mansioniIds) ? [...v.mansioniIds] : [];
+    const hasId = Boolean(mansioneId && idsAttuali.includes(mansioneId));
     let nuoveMansioni = Array.isArray(v.mansioni) ? [...v.mansioni] : [v.qualifica || 'Volontario'];
-    if (nuoveMansioni.includes(vecchioNome)) {
-      nuoveMansioni = nuoveMansioni.map((m) => (m === vecchioNome ? nuovoNome : m));
+    if (nuoveMansioni.some((m) => m.trim().toLowerCase() === vecchioLow)) {
+      nuoveMansioni = nuoveMansioni.map((m) => (m.trim().toLowerCase() === vecchioLow ? nuovoNome : m));
+      modificato = true;
+      if (mansioneId && !idsAttuali.includes(mansioneId)) {
+        idsAttuali.push(mansioneId);
+      }
+    } else if (hasId && !nuoveMansioni.some((m) => m.trim().toLowerCase() === nuovoNome.trim().toLowerCase())) {
+      nuoveMansioni.push(nuovoNome);
       modificato = true;
     }
-    const nuovaPrinc = v.mansione === vecchioNome ? nuovoNome : v.mansione;
-    const nuovaQual = v.qualifica === vecchioNome ? nuovoNome : v.qualifica;
+    const nuovaPrinc = v.mansione && v.mansione.trim().toLowerCase() === vecchioLow ? nuovoNome : v.mansione;
+    const nuovaQual = v.qualifica && v.qualifica.trim().toLowerCase() === vecchioLow ? nuovoNome : v.qualifica;
     if (nuovaPrinc !== v.mansione || nuovaQual !== v.qualifica) modificato = true;
 
     return modificato
       ? {
           ...v,
           mansioni: nuoveMansioni,
+          ...(idsAttuali.length > 0 ? { mansioniIds: Array.from(new Set(idsAttuali)) } : {}),
           mansione: nuovaPrinc || nuoveMansioni[0] || 'Volontario',
           qualifica: nuovaQual || nuoveMansioni[0] || 'Volontario'
         }
@@ -609,22 +620,33 @@ export function aggiornaVolontariDopoModificaMansione(
  */
 export function aggiornaVolontariDopoEliminazioneMansione(
   volontari: Volontario[],
-  nomeMansioneEliminata: string
+  nomeMansioneEliminata: string,
+  mansioneId?: string
 ): Volontario[] {
-  if (!nomeMansioneEliminata) return volontari;
+  if (!nomeMansioneEliminata && !mansioneId) return volontari;
+  const elimLow = (nomeMansioneEliminata || '').trim().toLowerCase();
   return volontari.map((v) => {
     let nuoveMansioni = Array.isArray(v.mansioni) ? [...v.mansioni] : [v.qualifica || 'Volontario'];
-    if (!nuoveMansioni.includes(nomeMansioneEliminata)) return v;
+    const hadName = elimLow ? nuoveMansioni.some((m) => m.trim().toLowerCase() === elimLow) : false;
+    const hadId = Boolean(mansioneId && Array.isArray(v.mansioniIds) && v.mansioniIds.includes(mansioneId));
+    if (!hadName && !hadId) return v;
 
-    nuoveMansioni = nuoveMansioni.filter((m) => m !== nomeMansioneEliminata);
+    if (elimLow) {
+      nuoveMansioni = nuoveMansioni.filter((m) => m.trim().toLowerCase() !== elimLow);
+    }
     if (nuoveMansioni.length === 0) nuoveMansioni = ['Volontario'];
 
-    const nuovaPrinc = v.mansione === nomeMansioneEliminata ? nuoveMansioni[0] : v.mansione;
-    const nuovaQual = v.qualifica === nomeMansioneEliminata ? nuoveMansioni[0] : v.qualifica;
+    const nuoveIds = Array.isArray(v.mansioniIds) && mansioneId
+      ? v.mansioniIds.filter((id) => id !== mansioneId)
+      : v.mansioniIds;
+
+    const nuovaPrinc = elimLow && v.mansione?.trim().toLowerCase() === elimLow ? nuoveMansioni[0] : v.mansione;
+    const nuovaQual = elimLow && v.qualifica?.trim().toLowerCase() === elimLow ? nuoveMansioni[0] : v.qualifica;
 
     return {
       ...v,
       mansioni: nuoveMansioni,
+      ...(Array.isArray(nuoveIds) ? { mansioniIds: nuoveIds } : {}),
       mansione: nuovaPrinc || nuoveMansioni[0] || 'Volontario',
       qualifica: nuovaQual || nuoveMansioni[0] || 'Volontario'
     };
@@ -803,6 +825,17 @@ export function getMansioniEffettiveVolontario(
   const setEffettive = new Set<string>();
   const daEsaminare: string[] = [];
 
+  // Risolvi eventuali mansioniIds immutabili nel nome attuale dal catalogo (resilienza alle rinomine)
+  if (Array.isArray(v.mansioniIds)) {
+    v.mansioniIds.forEach((mId) => {
+      const trovataPerId = catalogoEffettivo.find((m) => m.id === mId);
+      if (trovataPerId?.nome) {
+        daEsaminare.push(trovataPerId.nome.trim());
+      }
+      daEsaminare.push(mId);
+    });
+  }
+
   mansioniDirette.forEach((entry) => {
     const clean = entry.trim();
     if (!clean) return;
@@ -825,14 +858,18 @@ export function getMansioniEffettiveVolontario(
     const normCorrente = corrente.trim();
     if (!normCorrente || setEffettive.has(normCorrente)) continue;
 
-    setEffettive.add(normCorrente);
-
-    // Cerca se questa mansione include mansioni figlie gerarchicamente
+    // Se è un ID di mansione, espandi sia l'ID che il nome corrente
     const trovata = catalogoEffettivo.find(
       (m) => m.nome.toLowerCase() === normCorrente.toLowerCase() || m.id === normCorrente
     );
 
     if (trovata) {
+      setEffettive.add(trovata.id);
+      setEffettive.add(trovata.nome.trim());
+      const defOrig = MANSIONI_DEFAULT.find((d) => d.id === trovata.id);
+      if (defOrig) {
+        setEffettive.add(defOrig.nome.trim());
+      }
       if (Array.isArray(trovata.mansioniIncluse)) {
         trovata.mansioniIncluse.forEach((figlia) => {
           if (figlia && !setEffettive.has(figlia.trim())) {
@@ -850,6 +887,8 @@ export function getMansioniEffettiveVolontario(
           daEsaminare.push(candidateChild.nome.trim());
         }
       });
+    } else {
+      setEffettive.add(normCorrente);
     }
   }
 
@@ -869,59 +908,86 @@ export function volontarioHaMansione(
   catalogo?: MansioneOperativa[]
 ): boolean {
   if (!mansioneRichiesta || !mansioneRichiesta.trim()) return true;
+  const catalogoEffettivo = catalogo || getMansioniCatalogo();
   const target = mansioneRichiesta.trim().toLowerCase();
   if (target === 'volontario') return true;
 
-  const effettive = getMansioniEffettiveVolontario(v, catalogo).map((m) => m.toLowerCase());
-  return effettive.includes(target);
+  const targetItem = catalogoEffettivo.find(
+    (m) => m.nome.toLowerCase() === target || m.id.toLowerCase() === target
+  );
+
+  const effettive = getMansioniEffettiveVolontario(v, catalogoEffettivo).map((m) => m.toLowerCase());
+  if (effettive.includes(target)) return true;
+  if (targetItem && effettive.includes(targetItem.id.toLowerCase())) return true;
+  return false;
 }
 
 /**
- * Restituisce i requisiti di mansione previsti per ciascun ruolo dello slot turno
+ * Verifica se un volontario ricopre il ruolo di Responsabile Parco Automezzi / Responsabile Mezzi
+ * tollerando qualsiasi rinomina della mansione base ('mansione-resp-automezzi').
  */
-export function getMansioniPerRuoloTurno(ruolo: string): string[] {
-  const norm = (ruolo || '').toLowerCase().trim();
-  switch (norm) {
-    case 'autista':
-      return [
-        'Autista Soccorritore 118',
-        'Autista Mezzi Ordinari / Pulmino'
-      ];
-    case 'caposervizio':
-      return [
-        'Soccorritore Avanzato (Caposervizio)',
-        'Autista Soccorritore 118',
-        'Formatore Sanitario / Istruttore BLSD'
-      ];
-    case 'soccorritore2':
-      return [
-        'Soccorritore Base',
-        'Soccorritore Avanzato (Caposervizio)',
-        'Autista Soccorritore 118'
-      ];
-    case 'terzosoccorritore':
-      return [
-        'Barelliere / Accompagnatore Sanitario',
-        'Soccorritore Base',
-        'Soccorritore Avanzato (Caposervizio)',
-        'Autista Soccorritore 118'
-      ];
-    case 'operatorecentrale':
-      return ['Operatore di Centrale Operativa'];
-    case 'centralinista':
-      return [
-        'Centralinista & Accoglienza',
-        'Operatore di Centrale Operativa'
-      ];
-    case 'osservatore':
-    default:
-      return ['Volontario'];
+export function isResponsabileParcoMezzi(
+  v: Partial<Omit<Volontario, 'caricaConsiglioDirettivo'>> & { caricaConsiglioDirettivo?: string },
+  catalogo?: MansioneOperativa[]
+): boolean {
+  if (!v) return false;
+  const catalogoEffettivo = catalogo || getMansioniCatalogo();
+  if (volontarioHaMansione(v, 'mansione-resp-automezzi', catalogoEffettivo)) {
+    return true;
   }
+  const text = `${getMansioniVolontario(v).join(' ')} ${v.qualifica || ''} ${v.caricaConsiglioDirettivo || ''}`.toLowerCase();
+  return (
+    text.includes('responsabile parco automezzi') ||
+    text.includes('responsabile mezzi') ||
+    text.includes('resp. mezzi') ||
+    text.includes('parco automezzi')
+  );
+}
+
+const RUOLO_TURNO_MANSIONI_IDS: Record<string, { ids: string[]; fallbackNomi: string[] }> = {
+  autista: {
+    ids: ['mansione-autista-118', 'mansione-autista-ordinario'],
+    fallbackNomi: ['Autista Soccorritore 118', 'Autista Mezzi Ordinari / Pulmino'],
+  },
+  caposervizio: {
+    ids: ['mansione-socc-avanzato', 'mansione-autista-118', 'mansione-formatore'],
+    fallbackNomi: ['Soccorritore Avanzato (Caposervizio)', 'Autista Soccorritore 118', 'Formatore Sanitario / Istruttore BLSD'],
+  },
+  soccorritore2: {
+    ids: ['mansione-socc-base', 'mansione-socc-avanzato', 'mansione-autista-118'],
+    fallbackNomi: ['Soccorritore Base', 'Soccorritore Avanzato (Caposervizio)', 'Autista Soccorritore 118'],
+  },
+  terzosoccorritore: {
+    ids: ['mansione-barelliere', 'mansione-socc-base', 'mansione-socc-avanzato', 'mansione-autista-118'],
+    fallbackNomi: ['Barelliere / Accompagnatore Sanitario', 'Soccorritore Base', 'Soccorritore Avanzato (Caposervizio)', 'Autista Soccorritore 118'],
+  },
+  operatorecentrale: {
+    ids: ['mansione-op-centrale'],
+    fallbackNomi: ['Operatore di Centrale Operativa'],
+  },
+  centralinista: {
+    ids: ['mansione-centralinista', 'mansione-op-centrale'],
+    fallbackNomi: ['Centralinista & Accoglienza', 'Operatore di Centrale Operativa'],
+  },
+};
+
+/**
+ * Restituisce i requisiti di mansione previsti per ciascun ruolo dello slot turno (risolvendo eventuali rinomine dal catalogo live)
+ */
+export function getMansioniPerRuoloTurno(ruolo: string, catalogo?: MansioneOperativa[]): string[] {
+  const norm = (ruolo || '').toLowerCase().trim();
+  const cfg = RUOLO_TURNO_MANSIONI_IDS[norm];
+  if (!cfg) return ['Volontario'];
+  const lista = catalogo || getMansioniCatalogo();
+  return cfg.ids.map((id, idx) => {
+    const item = lista.find((m) => m.id === id);
+    return item?.nome || cfg.fallbackNomi[idx] || id;
+  });
 }
 
 /**
  * Verifica se un volontario può coprire un determinato ruolo di turno in base alle mansioni assegnate ed ereditate.
- * Ogni volontario può iscriversi ed essere inserito di turno solo se abilitato.
+ * Tollera eventuali rinomine delle mansioni grazie al matching sia per ID immutabile che per nome aggiornato.
  */
 export function puoCoprireRuoloTurno(
   v: Partial<Volontario>,
@@ -935,10 +1001,12 @@ export function puoCoprireRuoloTurno(
 } {
   const catalogoEffettivo = catalogo || getMansioniCatalogo();
   const effettive = getMansioniEffettiveVolontario(v, catalogoEffettivo);
-  const richieste = getMansioniPerRuoloTurno(ruolo);
+  const normRuolo = (ruolo || '').toLowerCase().trim();
+  const cfg = RUOLO_TURNO_MANSIONI_IDS[normRuolo];
+  const richieste = getMansioniPerRuoloTurno(ruolo, catalogoEffettivo);
 
   // Per il ruolo osservatore o ruoli liberi, chiunque è ammesso
-  if (richieste.length === 1 && richieste[0] === 'Volontario') {
+  if (!cfg) {
     return {
       idoneo: true,
       mansioniPossedute: effettive,
@@ -946,9 +1014,14 @@ export function puoCoprireRuoloTurno(
     };
   }
 
-  // Verifica se almeno una delle mansioni richieste è presente nelle mansioni effettive del volontario
+  // Verifica tramite ID immutabili, nomi live rinominati e nomi canonici di fallback
   const effettiveLower = effettive.map((m) => m.toLowerCase());
-  const haRequisito = richieste.some((req) => effettiveLower.includes(req.toLowerCase()));
+  const possibiliTokens = new Set<string>([
+    ...cfg.ids.map((x) => x.toLowerCase()),
+    ...cfg.fallbackNomi.map((x) => x.toLowerCase()),
+    ...richieste.map((x) => x.toLowerCase()),
+  ]);
+  const haRequisito = effettiveLower.some((eff) => possibiliTokens.has(eff));
 
   if (haRequisito) {
     return {
@@ -971,31 +1044,46 @@ export function puoCoprireRuoloTurno(
 
 /**
  * Assegna automaticamente una nuova mansione a un volontario (es. a seguito di corso/esame superato).
- * Non duplica le mansioni e aggiorna correttamente i campi principali.
+ * Non duplica le mansioni e aggiorna correttamente anche gli ID immutabili.
  */
 export function assegnaMansioneAVolontario(
   v: Volontario,
-  nuovaMansioneNome: string
+  nuovaMansioneNome: string,
+  catalogo?: MansioneOperativa[]
 ): Volontario {
   const nomePulito = (nuovaMansioneNome || '').trim();
   if (!nomePulito) return v;
 
+  const lista = catalogo || getMansioniCatalogo();
+  const itemCatalogo = lista.find(
+    (m) => m.nome.toLowerCase() === nomePulito.toLowerCase() || m.id === nomePulito
+  );
+  const nomeFinale = itemCatalogo?.nome || nomePulito;
+
   const mansioniAttuali = getMansioniVolontario(v);
   const giaPosseduta = mansioniAttuali.some(
-    (m) => m.toLowerCase() === nomePulito.toLowerCase()
+    (m) => m.toLowerCase() === nomeFinale.toLowerCase()
   );
 
-  if (giaPosseduta) {
-    return v;
+  const idsAttuali = Array.isArray(v.mansioniIds) ? [...v.mansioniIds] : [];
+  if (itemCatalogo && !idsAttuali.includes(itemCatalogo.id)) {
+    idsAttuali.push(itemCatalogo.id);
   }
 
-  const nuoveMansioni = [...mansioniAttuali, nomePulito];
+  if (giaPosseduta) {
+    return itemCatalogo && idsAttuali.length !== (v.mansioniIds?.length || 0)
+      ? { ...v, mansioniIds: idsAttuali }
+      : v;
+  }
+
+  const nuoveMansioni = [...mansioniAttuali, nomeFinale];
 
   return {
     ...v,
     mansioni: nuoveMansioni,
+    ...(idsAttuali.length > 0 ? { mansioniIds: idsAttuali } : {}),
     // Se la qualifica/mansione precedente era solo generica 'Volontario', promuovi la nuova
-    mansione: (!v.mansione || v.mansione === 'Volontario') ? nomePulito : v.mansione,
-    qualifica: (!v.qualifica || v.qualifica === 'Volontario') ? nomePulito : v.qualifica
+    mansione: (!v.mansione || v.mansione === 'Volontario') ? nomeFinale : v.mansione,
+    qualifica: (!v.qualifica || v.qualifica === 'Volontario') ? nomeFinale : v.qualifica
   };
 }

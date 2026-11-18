@@ -148,6 +148,7 @@ export interface Volontario {
   dataBlocco?: string; // Data e ora del blocco di sicurezza
   firmaBase64?: string; // Firma autografa digitale acquisita sullo schermo del device
   macroCategorieAbilitate?: string[]; // Macro categorie abilitate per accesso delegato
+  sottosezioniAbilitate?: Record<string, string[]>; // Sottosezioni specifiche abilitate per ciascun database
   sediTurniAbilitate?: string[]; // Sedi/sezioni autorizzate per visualizzare il tabellone turni
   sezioneAppartenenzaId?: string;
   sezioneAppartenenzaNome?: string;
@@ -419,6 +420,8 @@ export interface ServerState {
   metodiPagamentoCustom?: any[];
   metodiPagamentoCustomUpdatedAt?: number;
   regolaScadenzeMezzi?: any;
+  rubricaNumeriUtili?: any[];
+  rubricaNumeriUtiliUpdatedAt?: number;
   indirizziCollezionati?: any[];
   contatti?: any[];
   radioPtt?: RadioPttState;
@@ -899,6 +902,8 @@ function loadPersistedState(): ServerState {
           metodiPagamentoCustom: Array.isArray(parsed.metodiPagamentoCustom) ? parsed.metodiPagamentoCustom : undefined,
           metodiPagamentoCustomUpdatedAt: typeof parsed.metodiPagamentoCustomUpdatedAt === 'number' ? parsed.metodiPagamentoCustomUpdatedAt : undefined,
           regolaScadenzeMezzi: parsed.regolaScadenzeMezzi && typeof parsed.regolaScadenzeMezzi === 'object' ? parsed.regolaScadenzeMezzi : undefined,
+          rubricaNumeriUtili: Array.isArray(parsed.rubricaNumeriUtili) ? parsed.rubricaNumeriUtili : undefined,
+          rubricaNumeriUtiliUpdatedAt: typeof parsed.rubricaNumeriUtiliUpdatedAt === 'number' ? parsed.rubricaNumeriUtiliUpdatedAt : undefined,
           indirizziCollezionati: Array.isArray(parsed.indirizziCollezionati) ? parsed.indirizziCollezionati : [],
           contatti: Array.isArray(parsed.contatti) ? parsed.contatti : undefined,
           radioPtt: {
@@ -4782,6 +4787,24 @@ async function startServer() {
             break;
           }
 
+          case 'UPDATE_RUBRICA_NUMERI_UTILI': {
+            if (Array.isArray(data?.rubrica)) {
+              const incomingTs = typeof data?.updatedAt === 'number' && Number.isFinite(data.updatedAt) ? data.updatedAt : Date.now();
+              const currTs = typeof state.rubricaNumeriUtiliUpdatedAt === 'number' ? state.rubricaNumeriUtiliUpdatedAt : 0;
+              if (currTs === 0 || incomingTs >= currTs) {
+                state.rubricaNumeriUtili = data.rubrica;
+                state.rubricaNumeriUtiliUpdatedAt = incomingTs;
+                persistState();
+                broadcast({
+                  type: 'RUBRICA_NUMERI_UTILI_UPDATED',
+                  rubrica: state.rubricaNumeriUtili,
+                  updatedAt: state.rubricaNumeriUtiliUpdatedAt
+                });
+              }
+            }
+            break;
+          }
+
           case 'UPDATE_MEZZI_FLOTTA': {
             if (Array.isArray(data?.mezziFlotta)) {
               const incomingTs = typeof data?.updatedAt === 'number' && Number.isFinite(data.updatedAt) ? data.updatedAt : Date.now();
@@ -6329,6 +6352,36 @@ async function startServer() {
       return res.json({ success: true, metodi: state.metodiPagamentoCustom, updatedAt: ts });
     } catch (err: any) {
       return res.status(500).json({ success: false, error: err?.message || 'Errore salvataggio metodi pagamento' });
+    }
+  });
+
+  // REST API per Numeri Utili di Emergenza & Interni Associazione
+  app.get('/api/rubrica-numeri-utili', (_req, res) => {
+    res.json({
+      success: true,
+      rubrica: Array.isArray(state.rubricaNumeriUtili) ? state.rubricaNumeriUtili : null,
+      updatedAt: state.rubricaNumeriUtiliUpdatedAt || 0
+    });
+  });
+
+  app.post('/api/rubrica-numeri-utili', (req, res) => {
+    try {
+      const { rubrica, updatedAt } = req.body || {};
+      if (!Array.isArray(rubrica)) {
+        return res.status(400).json({ success: false, error: 'Elenco numeri utili non valido' });
+      }
+      const ts = typeof updatedAt === 'number' && Number.isFinite(updatedAt) && updatedAt > 0 ? updatedAt : Date.now();
+      state.rubricaNumeriUtili = rubrica;
+      state.rubricaNumeriUtiliUpdatedAt = ts;
+      persistState();
+      broadcast({
+        type: 'RUBRICA_NUMERI_UTILI_UPDATED',
+        rubrica: state.rubricaNumeriUtili,
+        updatedAt: ts
+      });
+      return res.json({ success: true, rubrica: state.rubricaNumeriUtili, updatedAt: ts });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err?.message || 'Errore salvataggio rubrica numeri utili' });
     }
   });
 

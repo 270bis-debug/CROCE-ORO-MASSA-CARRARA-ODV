@@ -43,7 +43,8 @@ import { MEZZI_FLOTTA_INIZIALI } from '../../data/adminMockData';
 import { MezzoFuoriServizio } from '../../data/suggerimentiMezzi';
 import { Volontario } from '../DatabaseVolontariModal';
 import { TabelloneTurniSettimanale } from '../TabelloneTurniSettimanale';
-import { useTitoloDatabase } from '../../hooks/useNomiDatabase';
+import { useTitoloDatabase, useNomiSottosezioniCustom } from '../../hooks/useNomiDatabase';
+import { getTitoloSottosezione } from '../../constants/macroCategorie';
 import { inviaNotificaModificaAdmin } from '../../utils/notificaModificaAdmin';
 import {
   isGiornoFestivo,
@@ -81,6 +82,7 @@ interface SezioneTurniProps {
   operatoreCorrente?: string;
   isAdmin?: boolean;
   onNotificaRadio?: (testo: string, tipo?: 'centrale' | 'mezzo' | 'sistema' | 'allarme') => void;
+  allowedSubtabs?: string[] | null;
 }
 
 export const SezioneTurni: React.FC<SezioneTurniProps> = ({
@@ -92,8 +94,11 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
   mezziFuoriServizio = {},
   operatoreCorrente = 'Amministratore',
   isAdmin = true,
-  onNotificaRadio
+  onNotificaRadio,
+  allowedSubtabs = null
 }) => {
+  const nomiSubCustom = useNomiSottosezioniCustom();
+  const canShowSubtab = (id: string) => !allowedSubtabs || allowedSubtabs.includes(id);
   // Filtri
   const [dataSelezionata, setDataSelezionata] = useState(() => formatISODateItaly());
   const [filtroSedeId, setFiltroSedeId] = useState('tutte');
@@ -1031,6 +1036,7 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
           </div>
         </div>
 
+        {canShowSubtab('calendario') && (
         <div className="flex items-center gap-2 flex-wrap">
           <button
             type="button"
@@ -1098,6 +1104,21 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
             <span>Aggiungi Nuovo Turno</span>
           </button>
         </div>
+        )}
+      </div>
+
+      {/* Indicatori Sottosezioni Attive */}
+      <div className="flex items-center gap-2 flex-wrap">
+        {canShowSubtab('calendario') && (
+          <span className="px-3 py-1 rounded-xl bg-teal-950/80 border border-teal-500/40 text-teal-200 text-xs font-black uppercase">
+            1. {getTitoloSottosezione('turni', 'calendario', 'Calendario Turni & Equipaggi', nomiSubCustom)}
+          </span>
+        )}
+        {canShowSubtab('candidature') && (
+          <span className="px-3 py-1 rounded-xl bg-amber-950/80 border border-amber-500/40 text-amber-200 text-xs font-black uppercase">
+            2. {getTitoloSottosezione('turni', 'candidature', 'Gestione Candidature Turni', nomiSubCustom)} ({tutteCandidatureInAttesa.length})
+          </span>
+        )}
       </div>
 
       {/* BOX ESCLUSIVO AMMINISTRATORE: LINK DIRETTO AL TABELLONE TURNI SENZA LOGIN */}
@@ -1166,7 +1187,7 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
       </div>
 
       {/* BANNER NOTIFICA CANDIDATURE VOLONTARI IN ATTESA DI APPROVAZIONE */}
-      {tutteCandidatureInAttesa.length > 0 && (
+      {canShowSubtab('candidature') && tutteCandidatureInAttesa.length > 0 && (
         <div className="bg-gradient-to-r from-amber-950/90 via-slate-900 to-amber-950/90 p-4 rounded-3xl border-2 border-amber-500 shadow-xl space-y-3 animate-in fade-in">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div className="flex items-center gap-3">

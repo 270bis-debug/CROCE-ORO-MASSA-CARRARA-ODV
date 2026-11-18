@@ -137,13 +137,16 @@ export const SezioneTipologieMezzo: React.FC<SezioneTipologieMezzoProps> = ({
     return Array.from(map.values());
   }, [tipologie, mezzi]);
 
-  // Calcolo statistiche collegate per ciascuna Tipologia Mezzo
+  // Calcolo statistiche collegate per ciascuna Tipologia Mezzo (matching per ID immutabile o nome)
   const tipologieArricchite = useMemo(() => {
     return tipologieUnificate.map((t) => {
+      const targetName = t.nome.trim().toLowerCase();
       const mezziCollegati = mezzi.filter(
-        (m) => String(m.tipo || '').trim().toLowerCase() === t.nome.trim().toLowerCase()
+        (m) =>
+          (m.tipologiaMezzoId && m.tipologiaMezzoId === t.id) ||
+          String(m.tipo || '').trim().toLowerCase() === targetName
       );
-      const checklistsCollegate = templates.filter((tmpl) => templateCopreTipologia(tmpl, t.nome));
+      const checklistsCollegate = templates.filter((tmpl) => templateCopreTipologia(tmpl, t.nome, t.id));
       return {
         item: t,
         mezziCollegati,
@@ -168,12 +171,13 @@ export const SezioneTipologieMezzo: React.FC<SezioneTipologieMezzoProps> = ({
     });
   }, [tipologieArricchite, ricerca, filtroFlotta]);
 
-  // Helper per aggiornare associazioni tra una tipologia e gli ID checklist selezionati
+  // Helper per aggiornare associazioni tra una tipologia e gli ID checklist selezionati (mantenendo anche tipologieMezzoIds)
   const applicaChecklistATipologia = (
     listaTemplates: ChecklistTemplate[],
     nomeTipologia: string,
     selectedTemplateIds: string[],
-    vecchioNomeTipologia?: string
+    vecchioNomeTipologia?: string,
+    tipologiaId?: string
   ): ChecklistTemplate[] => {
     const selectedSet = new Set(selectedTemplateIds);
     const oldNorm = vecchioNomeTipologia ? vecchioNomeTipologia.trim().toLowerCase() : '';
@@ -182,39 +186,45 @@ export const SezioneTipologieMezzo: React.FC<SezioneTipologieMezzoProps> = ({
 
     return listaTemplates.map((tmpl) => {
       const assocRaw = getTipologieAssociateTemplate(tmpl);
-      // Sostituisci eventuale vecchio nome e normalizza
+      const idsRaw = Array.isArray(tmpl.tipologieMezzoIds) ? [...tmpl.tipologieMezzoIds] : [];
       const assocPulite = assocRaw.filter((tp) => {
         const l = tp.trim().toLowerCase();
         if (oldNorm && l === oldNorm) return false;
         if (l === newNorm) return false;
         return true;
       });
+      const idsPuliti = tipologiaId ? idsRaw.filter((id) => id !== tipologiaId) : idsRaw;
 
       const eraAssociata =
+        (tipologiaId && idsRaw.includes(tipologiaId)) ||
         assocRaw.some((tp) => tp.trim().toLowerCase() === newNorm || (oldNorm && tp.trim().toLowerCase() === oldNorm));
       const deveEssereAssociata = selectedSet.has(tmpl.id);
 
       if (deveEssereAssociata) {
         const nextList = [...assocPulite, nomeTipologia];
+        const nextIds = tipologiaId ? Array.from(new Set([...idsPuliti, tipologiaId])) : idsPuliti;
         return {
           ...tmpl,
           tipologieMezzo: nextList,
+          ...(nextIds.length > 0 ? { tipologieMezzoIds: nextIds } : {}),
           tipologiaMezzo: nextList[0] || nomeTipologia,
           dataUltimaModifica: nowStr,
         };
       } else if (eraAssociata) {
-        // Rimuovi il vecchio/nuovo nome (mantenendo le altre tipologie)
         return {
           ...tmpl,
           tipologieMezzo: assocPulite,
+          ...(Array.isArray(tmpl.tipologieMezzoIds) ? { tipologieMezzoIds: idsPuliti } : {}),
           tipologiaMezzo: assocPulite[0] || 'Non associata',
           dataUltimaModifica: nowStr,
         };
       } else if (oldNorm && assocRaw.some((tp) => tp.trim().toLowerCase() === oldNorm)) {
         const nextList = [...assocPulite, nomeTipologia];
+        const nextIds = tipologiaId ? Array.from(new Set([...idsPuliti, tipologiaId])) : idsPuliti;
         return {
           ...tmpl,
           tipologieMezzo: nextList,
+          ...(nextIds.length > 0 ? { tipologieMezzoIds: nextIds } : {}),
           tipologiaMezzo: nextList[0] || nomeTipologia,
           dataUltimaModifica: nowStr,
         };
@@ -248,12 +258,16 @@ export const SezioneTipologieMezzo: React.FC<SezioneTipologieMezzoProps> = ({
     const cleaned = Array.from(
       new Set(tipologieSelezionatePerChecklist.map((s) => s.trim()).filter(Boolean))
     );
+    const matchedIds = cleaned
+      .map((name) => tipologieUnificate.find((tp) => tp.nome.trim().toLowerCase() === name.toLowerCase())?.id)
+      .filter((id): id is string => Boolean(id));
     const nowStr = formatDateItaly();
     const updatedTemplates = templates.map((t) => {
       if (t.id !== checklistSelezionata.id) return t;
       return {
         ...t,
         tipologieMezzo: cleaned,
+        tipologieMezzoIds: matchedIds,
         tipologiaMezzo: cleaned[0] || 'Non associata',
         dataUltimaModifica: nowStr,
       };
@@ -330,6 +344,7 @@ export const SezioneTipologieMezzo: React.FC<SezioneTipologieMezzoProps> = ({
     const nowStr = formatDateItaly();
     const vecchioNome = tipoInModifica ? tipoInModifica.nome.trim() : '';
     const isRename = Boolean(vecchioNome && vecchioNome.toLowerCase() !== nomePulito.toLowerCase());
+    const tipoSavedId = tipoInModifica ? tipoInModifica.id : `tipo-${Date.now()}`;
 
     let nuoveTipologie: TipologiaMezzoItem[];
     if (tipoInModifica) {
@@ -346,7 +361,7 @@ export const SezioneTipologieMezzo: React.FC<SezioneTipologieMezzoProps> = ({
         : [...tipologie, updatedItem];
     } else {
       const nuovo: TipologiaMezzoItem = {
-        id: `tipo-${Date.now()}`,
+        id: tipoSavedId,
         nome: nomePulito,
         descrizione: formDescrizione.trim(),
         icona: formIcona,
@@ -359,14 +374,17 @@ export const SezioneTipologieMezzo: React.FC<SezioneTipologieMezzoProps> = ({
 
     onAggiornaTipologie(nuoveTipologie);
 
-    // 1. Propaga eventuale rinomina su tutti i mezzi della flotta in archivio
+    // 1. Propaga eventuale rinomina su tutti i mezzi della flotta in archivio (match per ID immutabile o nome)
     let mezziAggCount = 0;
     if (isRename && vecchioNome) {
       const oldLow = vecchioNome.toLowerCase();
       const nuoviMezzi = mezzi.map((m) => {
-        if (String(m.tipo || '').trim().toLowerCase() === oldLow) {
+        if (
+          (m.tipologiaMezzoId && m.tipologiaMezzoId === tipoSavedId) ||
+          String(m.tipo || '').trim().toLowerCase() === oldLow
+        ) {
           mezziAggCount += 1;
-          return { ...m, tipo: nomePulito };
+          return { ...m, tipo: nomePulito, tipologiaMezzoId: tipoSavedId };
         }
         return m;
       });
@@ -390,12 +408,13 @@ export const SezioneTipologieMezzo: React.FC<SezioneTipologieMezzoProps> = ({
       }
     }
 
-    // 3. Aggiorna collegamenti con le Checklist esistenti (propagando anche l'eventuale rinomina)
+    // 3. Aggiorna collegamenti con le Checklist esistenti (propagando anche l'eventuale rinomina e ID immutabile)
     const updatedTemplates = applicaChecklistATipologia(
       templates,
       nomePulito,
       formChecklistAssociateIds,
-      isRename ? vecchioNome : undefined
+      isRename ? vecchioNome : undefined,
+      tipoSavedId
     );
     onAggiornaTemplates(updatedTemplates);
 
@@ -420,11 +439,7 @@ export const SezioneTipologieMezzo: React.FC<SezioneTipologieMezzoProps> = ({
   const apriAssociazioneChecklistPerTipologia = (item: TipologiaMezzoItem) => {
     setTipoPerAssociazioneChecklist(item);
     const ids = templates
-      .filter((t) =>
-        getTipologieAssociateTemplate(t).some(
-          (tp) => tp.trim().toLowerCase() === item.nome.trim().toLowerCase()
-        )
-      )
+      .filter((t) => templateCopreTipologia(t, item.nome, item.id))
       .map((t) => t.id);
     setChecklistIdsPerTipoModal(ids);
   };
@@ -434,7 +449,9 @@ export const SezioneTipologieMezzo: React.FC<SezioneTipologieMezzoProps> = ({
     const updatedTemplates = applicaChecklistATipologia(
       templates,
       tipoPerAssociazioneChecklist.nome,
-      checklistIdsPerTipoModal
+      checklistIdsPerTipoModal,
+      undefined,
+      tipoPerAssociazioneChecklist.id
     );
     onAggiornaTemplates(updatedTemplates);
     const msg = `✓ Associate ${checklistIdsPerTipoModal.length} checklist alla Tipologia Mezzo "${tipoPerAssociazioneChecklist.nome}".`;

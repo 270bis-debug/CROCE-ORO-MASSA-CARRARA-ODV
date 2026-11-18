@@ -59,9 +59,15 @@ import {
   MacroCategoriaId,
   LISTA_MACRO_CATEGORIE,
   TUTTE_LE_MACRO_CATEGORIE,
+  SOTTOSEZIONI_PER_DATABASE,
+  getSottosezioniDelegabili,
   getNomiDatabaseCustom,
   salvaNomiDatabaseCustom,
-  getTitoloDatabase
+  getNomiSottosezioniCustom,
+  salvaNomiSottosezioniCustom,
+  getNomiDatabaseSyncPayload,
+  getTitoloDatabase,
+  getTitoloSottosezione
 } from '../../constants/macroCategorie';
 import { inviaNotificaModificaAdmin } from '../../utils/notificaModificaAdmin';
 import { MappaSelezioneLuogoTimbratura } from './MappaSelezioneLuogoTimbratura';
@@ -105,7 +111,7 @@ import {
   CategoriaMansioneItem
 } from '../../utils/mansioniVolontari';
 import { addDaysISODate, formatDateItaly, formatISODateItaly, formatTimeItaly } from '../../utils/italianTime';
-import { useTitoloDatabase } from '../../hooks/useNomiDatabase';
+import { useTitoloDatabase, useNomiSottosezioniCustom } from '../../hooks/useNomiDatabase';
 
 interface SezioneVolontariProps {
   volontari: Volontario[];
@@ -115,6 +121,7 @@ interface SezioneVolontariProps {
   operatoreCorrente?: string;
   isPresidente?: boolean;
   isAdmin?: boolean;
+  allowedSubtabs?: string[] | null;
   timbrature: TimbraturaVolontario[];
   onAggiornaTimbrature: (timbrature: TimbraturaVolontario[]) => void;
   luoghiTimbratura?: LuogoTimbratura[];
@@ -133,6 +140,7 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
   operatoreCorrente = 'Amministratore',
   isPresidente = false,
   isAdmin = false,
+  allowedSubtabs = null,
   timbrature,
   onAggiornaTimbrature,
   luoghiTimbratura = LUOGHI_TIMBRATURA_DEFAULT,
@@ -171,10 +179,13 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
   const [formCategoriaEmoji, setFormCategoriaEmoji] = useState('📁');
   const [formCategoriaParentId, setFormCategoriaParentId] = useState<string>('');
 
-  // Rinomina Nomi Database (effetto immediato su tutti i device)
+  // Rinomina Nomi Database & Sottosezioni (effetto immediato su tutti i device)
   const titoloDbVolontari = useTitoloDatabase('volontari', 'Database Volontari & Personale Operativo');
+  const nomiSubCustom = useNomiSottosezioniCustom();
   const [nomiDbCustom, setNomiDbCustom] = useState<Record<string, string>>(() => getNomiDatabaseCustom());
   const [draftNomiDb, setDraftNomiDb] = useState<Record<string, string>>(() => getNomiDatabaseCustom());
+  const [draftNomiSub, setDraftNomiSub] = useState<Record<string, string>>(() => getNomiSottosezioniCustom());
+  const [mostraRinominaSub, setMostraRinominaSub] = useState<boolean>(false);
 
   // Modale di conferma in-app (sostituisce confirm() nativi)
   const [confermaAzioneModal, setConfermaAzioneModal] = useState<{
@@ -193,6 +204,7 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
       const agg = getNomiDatabaseCustom();
       setNomiDbCustom(agg);
       setDraftNomiDb(agg);
+      setDraftNomiSub(getNomiSottosezioniCustom());
     };
     window.addEventListener('croceoro_mansioni_updated', onMansioniSync);
     window.addEventListener('croceoro_nomi_db_updated', onNomiDbSync);
@@ -202,18 +214,31 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
     };
   }, []);
 
-  // Stato per Sezione 8: Accesso ai Database (Assegnazione Multipla Volontari <-> Autorizzazioni)
+  // Stato per Sezione 8: Accesso ai Database & Sottosezioni (Assegnazione Singolo / Multi-Account)
   const [selectedVolontariPermessiIds, setSelectedVolontariPermessiIds] = useState<string[]>([]);
   const [selectedCategoriePermessi, setSelectedCategoriePermessi] = useState<MacroCategoriaId[]>([]);
+  const [selectedSubPermessi, setSelectedSubPermessi] = useState<Record<string, string[]>>({});
+  const [expandedDbConfigId, setExpandedDbConfigId] = useState<MacroCategoriaId | null>(null);
+  const [accountDettaglioPermessiId, setAccountDettaglioPermessiId] = useState<string | null>(null);
   const [ricercaPermessiVolontari, setRicercaPermessiVolontari] = useState<string>('');
   const [filtroSezionePermessi, setFiltroSezionePermessi] = useState<string>('tutte');
 
-  // Protezione di sicurezza: se l'utente non è amministratore/presidente, impedisci l'accesso alle sezioni PIN e Autorizzazioni Database
-  useEffect(() => {
-    if (!isEffettivoAdmin && (sottoTab === 'pin' || sottoTab === 'permessi_database')) {
-      setSottoTab('anagrafiche');
+  const canShowSubtab = (id: string) => {
+    if (id === 'pin' || id === 'permessi_database') {
+      return isEffettivoAdmin && (!allowedSubtabs || allowedSubtabs.includes(id));
     }
-  }, [isEffettivoAdmin, sottoTab]);
+    if (!allowedSubtabs) return true;
+    return allowedSubtabs.includes(id);
+  };
+
+  // Protezione di sicurezza: impedisci l'accesso alle sottosezioni non autorizzate
+  useEffect(() => {
+    if (!canShowSubtab(sottoTab)) {
+      const ordine = ['anagrafiche', 'vestiario', 'pin', 'domande', 'timbrature', 'gruppi', 'mansioni', 'permessi_database'] as const;
+      const prima = ordine.find((t) => canShowSubtab(t));
+      if (prima) setSottoTab(prima);
+    }
+  }, [isEffettivoAdmin, sottoTab, allowedSubtabs]);
 
   // Stato per Gruppi Volontari
   const [selectedVolontariGruppoIds, setSelectedVolontariGruppoIds] = useState<string[]>([]);
@@ -913,7 +938,12 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
       realtime.syncMansioniConfig(aggiornato, getCategorieMansioni());
 
       if (vecchioNome !== nuovoNome) {
-        const volontariAggiornati = aggiornaVolontariDopoModificaMansione(volontari, vecchioNome, nuovoNome);
+        const volontariAggiornati = aggiornaVolontariDopoModificaMansione(
+          volontari,
+          vecchioNome,
+          nuovoNome,
+          mansioneInModifica.id
+        );
         onAggiornaVolontari(volontariAggiornati);
       }
 
@@ -965,8 +995,8 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
         setCatalogoMansioni(aggiornato);
         realtime.syncMansioniConfig(aggiornato, getCategorieMansioni());
 
-        if (nome) {
-          const volontariAggiornati = aggiornaVolontariDopoEliminazioneMansione(volontari, nome);
+        if (nome || id) {
+          const volontariAggiornati = aggiornaVolontariDopoEliminazioneMansione(volontari, nome || '', id);
           onAggiornaVolontari(volontariAggiornati);
         }
 
@@ -1180,38 +1210,42 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
         </div>
 
         <div className="flex items-center gap-2 flex-wrap">
-          {isEffettivoAdmin && (
+          {canShowSubtab('permessi_database') && (
             <button
               type="button"
               onClick={() => setSottoTab('permessi_database')}
               className="px-3 py-2 rounded-xl bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-200 border border-indigo-500/40 text-xs font-bold uppercase flex items-center gap-1.5 transition-all cursor-pointer"
-              title="Rinomina i nomi dei Database o gestisci gli accessi"
+              title="Rinomina i nomi dei Database / Sottosezioni o gestisci gli accessi"
             >
               <Edit2 className="w-3.5 h-3.5 text-indigo-300" />
               <span>Rinomina DB</span>
             </button>
           )}
-          <button
-            type="button"
-            onClick={() => setSottoTab('mansioni')}
-            className={`px-3 py-2 rounded-xl text-xs font-black uppercase flex items-center gap-1.5 transition-all cursor-pointer shadow-md ${
-              sottoTab === 'mansioni'
-                ? 'bg-amber-400 text-slate-950 ring-2 ring-amber-300'
-                : 'bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40'
-            }`}
-            title="Vai subito alla sottosezione Mansioni & Competenze"
-          >
-            <Award className="w-4 h-4 text-amber-400" />
-            <span>7. Mansioni & Competenze ({catalogoMansioni.length})</span>
-          </button>
-          <button
-            type="button"
-            onClick={apriListaCompletaVolontari}
-            className="px-3.5 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs uppercase flex items-center gap-2 shadow-lg transition-transform active:scale-95 cursor-pointer"
-          >
-            <Users className="w-4 h-4" />
-            <span>Apri Schede Anagrafiche Dettagliate</span>
-          </button>
+          {canShowSubtab('mansioni') && (
+            <button
+              type="button"
+              onClick={() => setSottoTab('mansioni')}
+              className={`px-3 py-2 rounded-xl text-xs font-black uppercase flex items-center gap-1.5 transition-all cursor-pointer shadow-md ${
+                sottoTab === 'mansioni'
+                  ? 'bg-amber-400 text-slate-950 ring-2 ring-amber-300'
+                  : 'bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40'
+              }`}
+              title="Vai subito alla sottosezione Mansioni & Competenze"
+            >
+              <Award className="w-4 h-4 text-amber-400" />
+              <span>7. {getTitoloSottosezione('volontari', 'mansioni', 'Mansioni & Competenze', nomiSubCustom)} ({catalogoMansioni.length})</span>
+            </button>
+          )}
+          {canShowSubtab('anagrafiche') && (
+            <button
+              type="button"
+              onClick={apriListaCompletaVolontari}
+              className="px-3.5 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs uppercase flex items-center gap-2 shadow-lg transition-transform active:scale-95 cursor-pointer"
+            >
+              <Users className="w-4 h-4" />
+              <span>Apri Schede Anagrafiche Dettagliate</span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -1227,28 +1261,30 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
       <div className="md:hidden bg-slate-950 p-3 rounded-2xl border border-slate-800 space-y-1.5">
         <label className="text-[10px] font-black uppercase text-slate-400 block flex items-center justify-between">
           <span>Seleziona Sottosezione Database:</span>
-          <span className="text-amber-400 font-bold">{isEffettivoAdmin ? '8' : '6'} Sottosezioni Disponibili</span>
+          <span className="text-amber-400 font-bold">
+            {['anagrafiche', 'vestiario', 'pin', 'domande', 'timbrature', 'gruppi', 'mansioni', 'permessi_database'].filter(canShowSubtab).length} Sottosezioni Disponibili
+          </span>
         </label>
         <select
           value={sottoTab}
           onChange={(e) => setSottoTab(e.target.value as any)}
           className="w-full p-2.5 rounded-xl bg-slate-900 border-2 border-blue-500/60 text-white font-bold text-xs focus:ring-2 focus:ring-blue-400 cursor-pointer"
         >
-          <option value="anagrafiche">👥 1. Anagrafiche Volontari ({volontari.length})</option>
-          <option value="vestiario">👕 2. Vestiario Personale & DPI</option>
-          {isEffettivoAdmin && <option value="pin">🔑 3. Visualizzazione & Gestione PIN</option>}
-          <option value="domande">📄 4. Domande di Ammissione {aspirantiInAttesa.length > 0 ? `(${aspirantiInAttesa.length})` : ''}</option>
-          <option value="timbrature">⏱️ 5. Registro Timbrature (Modificabile)</option>
-          <option value="gruppi">🏢 6. Gruppi Volontari</option>
-          <option value="mansioni">🎖️ 7. Mansioni & Competenze ({catalogoMansioni.length})</option>
-          {isEffettivoAdmin && <option value="permessi_database">🔐 8. Accesso ai Database</option>}
+          {canShowSubtab('anagrafiche') && <option value="anagrafiche">👥 1. {getTitoloSottosezione('volontari', 'anagrafiche', 'Anagrafiche Volontari', nomiSubCustom)} ({volontari.length})</option>}
+          {canShowSubtab('vestiario') && <option value="vestiario">👕 2. {getTitoloSottosezione('volontari', 'vestiario', 'Vestiario & DPI Personale', nomiSubCustom)}</option>}
+          {canShowSubtab('pin') && <option value="pin">🔑 3. {getTitoloSottosezione('volontari', 'pin', 'Gestione PIN & Sicurezza', nomiSubCustom)}</option>}
+          {canShowSubtab('domande') && <option value="domande">📄 4. {getTitoloSottosezione('volontari', 'domande', 'Domande Ammissione', nomiSubCustom)} {aspirantiInAttesa.length > 0 ? `(${aspirantiInAttesa.length})` : ''}</option>}
+          {canShowSubtab('timbrature') && <option value="timbrature">⏱️ 5. {getTitoloSottosezione('volontari', 'timbrature', 'Registro Timbrature', nomiSubCustom)}</option>}
+          {canShowSubtab('gruppi') && <option value="gruppi">🏢 6. {getTitoloSottosezione('volontari', 'gruppi', 'Gruppi & Sezioni Territoriali', nomiSubCustom)}</option>}
+          {canShowSubtab('mansioni') && <option value="mansioni">🎖️ 7. {getTitoloSottosezione('volontari', 'mansioni', 'Mansioni & Competenze', nomiSubCustom)} ({catalogoMansioni.length})</option>}
+          {canShowSubtab('permessi_database') && <option value="permessi_database">🔐 8. {getTitoloSottosezione('volontari', 'permessi_database', 'Accesso Database & Permessi', nomiSubCustom)}</option>}
         </select>
       </div>
 
       {/* Suggerimento visivo per scorrimento orizzontale su mobile */}
       <div className="md:hidden flex items-center justify-between px-1 text-[10px] text-slate-400">
         <span>← Scorri le schede per visualizzarle tutte →</span>
-        {isEffettivoAdmin ? (
+        {canShowSubtab('permessi_database') ? (
           <button
             type="button"
             onClick={() => setSottoTab('permessi_database')}
@@ -1256,7 +1292,7 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
           >
             Scheda 8: Accesso Database
           </button>
-        ) : (
+        ) : canShowSubtab('mansioni') ? (
           <button
             type="button"
             onClick={() => setSottoTab('mansioni')}
@@ -1264,38 +1300,42 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
           >
             Scheda 7: Mansioni
           </button>
-        )}
+        ) : null}
       </div>
 
       {/* Barra Navigazione Sotto-Categorie: Griglia Responsiva Completa Visibile Senza Scorrimento */}
       <div className="flex flex-wrap items-stretch gap-2 pb-2 border-b border-slate-800">
-        <button
-          type="button"
-          onClick={() => setSottoTab('anagrafiche')}
-          className={`shrink-0 flex-1 min-w-[130px] sm:min-w-[160px] px-3.5 py-2.5 rounded-xl text-xs font-black uppercase flex items-center justify-center gap-2 transition-all cursor-pointer ${
-            sottoTab === 'anagrafiche'
-              ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/30 border border-blue-400'
-              : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
-          }`}
-        >
-          <Users className="w-4 h-4 shrink-0" />
-          <span>1. Anagrafiche ({volontari.length})</span>
-        </button>
+        {canShowSubtab('anagrafiche') && (
+          <button
+            type="button"
+            onClick={() => setSottoTab('anagrafiche')}
+            className={`shrink-0 flex-1 min-w-[130px] sm:min-w-[160px] px-3.5 py-2.5 rounded-xl text-xs font-black uppercase flex items-center justify-center gap-2 transition-all cursor-pointer ${
+              sottoTab === 'anagrafiche'
+                ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/30 border border-blue-400'
+                : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
+            }`}
+          >
+            <Users className="w-4 h-4 shrink-0" />
+            <span>1. {getTitoloSottosezione('volontari', 'anagrafiche', 'Anagrafiche', nomiSubCustom)} ({volontari.length})</span>
+          </button>
+        )}
 
-        <button
-          type="button"
-          onClick={() => setSottoTab('vestiario')}
-          className={`shrink-0 flex-1 min-w-[130px] sm:min-w-[160px] px-3.5 py-2.5 rounded-xl text-xs font-black uppercase flex items-center justify-center gap-2 transition-all cursor-pointer ${
-            sottoTab === 'vestiario'
-              ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/30 border border-blue-400'
-              : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
-          }`}
-        >
-          <Shirt className="w-4 h-4 shrink-0" />
-          <span>2. Vestiario & DPI</span>
-        </button>
+        {canShowSubtab('vestiario') && (
+          <button
+            type="button"
+            onClick={() => setSottoTab('vestiario')}
+            className={`shrink-0 flex-1 min-w-[130px] sm:min-w-[160px] px-3.5 py-2.5 rounded-xl text-xs font-black uppercase flex items-center justify-center gap-2 transition-all cursor-pointer ${
+              sottoTab === 'vestiario'
+                ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/30 border border-blue-400'
+                : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
+            }`}
+          >
+            <Shirt className="w-4 h-4 shrink-0" />
+            <span>2. {getTitoloSottosezione('volontari', 'vestiario', 'Vestiario & DPI', nomiSubCustom)}</span>
+          </button>
+        )}
 
-        {isEffettivoAdmin && (
+        {canShowSubtab('pin') && (
           <button
             type="button"
             onClick={() => setSottoTab('pin')}
@@ -1306,79 +1346,87 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
             }`}
           >
             <KeyRound className="w-4 h-4 shrink-0" />
-            <span>3. Gestione PIN</span>
+            <span>3. {getTitoloSottosezione('volontari', 'pin', 'Gestione PIN', nomiSubCustom)}</span>
           </button>
         )}
 
-        <button
-          type="button"
-          onClick={() => setSottoTab('domande')}
-          className={`shrink-0 flex-1 min-w-[130px] sm:min-w-[160px] px-3.5 py-2.5 rounded-xl text-xs font-black uppercase flex items-center justify-center gap-2 transition-all cursor-pointer relative ${
-            sottoTab === 'domande'
-              ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/30 border border-blue-400'
-              : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
-          }`}
-        >
-          <FileText className="w-4 h-4 shrink-0" />
-          <span>4. Domande Ammissione</span>
-          {aspirantiInAttesa.length > 0 && (
-            <span className="w-5 h-5 rounded-full bg-amber-500 text-slate-950 font-black text-[10px] flex items-center justify-center animate-pulse shrink-0">
-              {aspirantiInAttesa.length}
-            </span>
-          )}
-        </button>
+        {canShowSubtab('domande') && (
+          <button
+            type="button"
+            onClick={() => setSottoTab('domande')}
+            className={`shrink-0 flex-1 min-w-[130px] sm:min-w-[160px] px-3.5 py-2.5 rounded-xl text-xs font-black uppercase flex items-center justify-center gap-2 transition-all cursor-pointer relative ${
+              sottoTab === 'domande'
+                ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/30 border border-blue-400'
+                : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
+            }`}
+          >
+            <FileText className="w-4 h-4 shrink-0" />
+            <span>4. {getTitoloSottosezione('volontari', 'domande', 'Domande Ammissione', nomiSubCustom)}</span>
+            {aspirantiInAttesa.length > 0 && (
+              <span className="w-5 h-5 rounded-full bg-amber-500 text-slate-950 font-black text-[10px] flex items-center justify-center animate-pulse shrink-0">
+                {aspirantiInAttesa.length}
+              </span>
+            )}
+          </button>
+        )}
 
-        <button
-          type="button"
-          onClick={() => setSottoTab('timbrature')}
-          className={`shrink-0 flex-1 min-w-[130px] sm:min-w-[160px] px-3.5 py-2.5 rounded-xl text-xs font-black uppercase flex items-center justify-center gap-2 transition-all cursor-pointer ${
-            sottoTab === 'timbrature'
-              ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/30 border border-blue-400'
-              : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
-          }`}
-        >
-          <Clock className="w-4 h-4 shrink-0" />
-          <span>5. Timbrature</span>
-        </button>
+        {canShowSubtab('timbrature') && (
+          <button
+            type="button"
+            onClick={() => setSottoTab('timbrature')}
+            className={`shrink-0 flex-1 min-w-[130px] sm:min-w-[160px] px-3.5 py-2.5 rounded-xl text-xs font-black uppercase flex items-center justify-center gap-2 transition-all cursor-pointer ${
+              sottoTab === 'timbrature'
+                ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/30 border border-blue-400'
+                : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
+            }`}
+          >
+            <Clock className="w-4 h-4 shrink-0" />
+            <span>5. {getTitoloSottosezione('volontari', 'timbrature', 'Timbrature', nomiSubCustom)}</span>
+          </button>
+        )}
 
-        <button
-          type="button"
-          onClick={() => setSottoTab('gruppi')}
-          className={`shrink-0 flex-1 min-w-[130px] sm:min-w-[160px] px-3.5 py-2.5 rounded-xl text-xs font-black uppercase flex items-center justify-center gap-2 transition-all cursor-pointer ${
-            sottoTab === 'gruppi'
-              ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/30 border border-blue-400'
-              : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
-          }`}
-        >
-          <Building2 className="w-4 h-4 shrink-0" />
-          <span>6. Gruppi</span>
-          {selectedVolontariGruppoIds.length > 0 && (
-            <span className="w-5 h-5 rounded-full bg-amber-400 text-slate-950 font-black text-[10px] flex items-center justify-center shrink-0">
-              {selectedVolontariGruppoIds.length}
-            </span>
-          )}
-        </button>
+        {canShowSubtab('gruppi') && (
+          <button
+            type="button"
+            onClick={() => setSottoTab('gruppi')}
+            className={`shrink-0 flex-1 min-w-[130px] sm:min-w-[160px] px-3.5 py-2.5 rounded-xl text-xs font-black uppercase flex items-center justify-center gap-2 transition-all cursor-pointer ${
+              sottoTab === 'gruppi'
+                ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/30 border border-blue-400'
+                : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
+            }`}
+          >
+            <Building2 className="w-4 h-4 shrink-0" />
+            <span>6. {getTitoloSottosezione('volontari', 'gruppi', 'Gruppi', nomiSubCustom)}</span>
+            {selectedVolontariGruppoIds.length > 0 && (
+              <span className="w-5 h-5 rounded-full bg-amber-400 text-slate-950 font-black text-[10px] flex items-center justify-center shrink-0">
+                {selectedVolontariGruppoIds.length}
+              </span>
+            )}
+          </button>
+        )}
 
-        <button
-          type="button"
-          onClick={() => setSottoTab('mansioni')}
-          className={`shrink-0 flex-1 min-w-[140px] sm:min-w-[180px] px-3.5 py-2.5 rounded-xl text-xs font-black uppercase flex items-center justify-center gap-2 transition-all cursor-pointer shadow-md ${
-            sottoTab === 'mansioni'
-              ? 'bg-amber-400 text-slate-950 ring-2 ring-amber-300 shadow-amber-500/30'
-              : 'bg-amber-950/50 hover:bg-amber-900/60 text-amber-300 border-2 border-amber-500/70'
-          }`}
-          title="7. Mansioni & Competenze Volontari"
-        >
-          <Award className={`w-4 h-4 shrink-0 ${sottoTab === 'mansioni' ? 'text-slate-950' : 'text-amber-400'}`} />
-          <span>7. Mansioni & Competenze ({catalogoMansioni.length})</span>
-          {selectedVolontariMansioniIds.length > 0 && (
-            <span className="w-5 h-5 rounded-full bg-slate-950 text-amber-300 font-black text-[10px] flex items-center justify-center shrink-0">
-              {selectedVolontariMansioniIds.length}
-            </span>
-          )}
-        </button>
+        {canShowSubtab('mansioni') && (
+          <button
+            type="button"
+            onClick={() => setSottoTab('mansioni')}
+            className={`shrink-0 flex-1 min-w-[140px] sm:min-w-[180px] px-3.5 py-2.5 rounded-xl text-xs font-black uppercase flex items-center justify-center gap-2 transition-all cursor-pointer shadow-md ${
+              sottoTab === 'mansioni'
+                ? 'bg-amber-400 text-slate-950 ring-2 ring-amber-300 shadow-amber-500/30'
+                : 'bg-amber-950/50 hover:bg-amber-900/60 text-amber-300 border-2 border-amber-500/70'
+            }`}
+            title="7. Mansioni & Competenze Volontari"
+          >
+            <Award className={`w-4 h-4 shrink-0 ${sottoTab === 'mansioni' ? 'text-slate-950' : 'text-amber-400'}`} />
+            <span>7. {getTitoloSottosezione('volontari', 'mansioni', 'Mansioni & Competenze', nomiSubCustom)} ({catalogoMansioni.length})</span>
+            {selectedVolontariMansioniIds.length > 0 && (
+              <span className="w-5 h-5 rounded-full bg-slate-950 text-amber-300 font-black text-[10px] flex items-center justify-center shrink-0">
+                {selectedVolontariMansioniIds.length}
+              </span>
+            )}
+          </button>
+        )}
 
-        {isEffettivoAdmin && (
+        {canShowSubtab('permessi_database') && (
           <button
             type="button"
             onClick={() => setSottoTab('permessi_database')}
@@ -1387,7 +1435,7 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
                 ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/30 ring-2 ring-indigo-300 border border-indigo-300'
                 : 'bg-indigo-950/50 hover:bg-indigo-900/60 text-indigo-200 border-2 border-indigo-500/60'
             }`}
-            title="8. Assegnazione Multipla Autorizzazioni Accesso ai Database"
+            title="8. Assegnazione Autorizzazioni Accesso ai Database & Sottosezioni"
           >
             <Shield className={`w-4 h-4 shrink-0 ${sottoTab === 'permessi_database' ? 'text-white' : 'text-indigo-400'}`} />
             <span>8. Accesso Database</span>
@@ -4569,9 +4617,9 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
       })()}
 
       {/* ===================================================================== */}
-      {/* 8. SOTTO-TAB: ACCESSO AI DATABASE (ASSEGNAZIONE MULTIPLA ACCOUNT/DB)   */}
+      {/* 8. SOTTO-TAB: ACCESSO AI DATABASE & SOTTOSEZIONI (SINGOLO / MULTIPLO)  */}
       {/* ===================================================================== */}
-      {isEffettivoAdmin && sottoTab === 'permessi_database' && (() => {
+      {canShowSubtab('permessi_database') && sottoTab === 'permessi_database' && (() => {
         const volontariPermessiFiltrati = volontari.filter((v) => {
           const matchSezione =
             filtroSezionePermessi === 'tutte' ||
@@ -4606,9 +4654,55 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
         };
 
         const toggleCategoriaPermesso = (catId: MacroCategoriaId) => {
-          setSelectedCategoriePermessi((prev) =>
-            prev.includes(catId) ? prev.filter((id) => id !== catId) : [...prev, catId]
-          );
+          const isCurrentlySelected = selectedCategoriePermessi.includes(catId);
+          const subsDelegabili = getSottosezioniDelegabili(catId).map((s) => s.id);
+          if (isCurrentlySelected) {
+            setSelectedCategoriePermessi((prev) => prev.filter((id) => id !== catId));
+            setSelectedSubPermessi((prev) => {
+              const copy = { ...prev };
+              delete copy[catId];
+              return copy;
+            });
+          } else {
+            setSelectedCategoriePermessi((prev) => [...prev, catId]);
+            setSelectedSubPermessi((prev) => ({
+              ...prev,
+              [catId]: prev[catId] && prev[catId].length > 0 ? prev[catId] : subsDelegabili,
+            }));
+          }
+        };
+
+        const toggleSubPermessoNelPannello = (catId: MacroCategoriaId, subId: string) => {
+          const allSubs = getSottosezioniDelegabili(catId).map((s) => s.id);
+          const current = selectedSubPermessi[catId] ?? (selectedCategoriePermessi.includes(catId) ? allSubs : []);
+          const next = current.includes(subId)
+            ? current.filter((id) => id !== subId)
+            : [...current, subId];
+
+          setSelectedSubPermessi((prev) => ({
+            ...prev,
+            [catId]: next,
+          }));
+          if (next.length > 0) {
+            setSelectedCategoriePermessi((prev) => (prev.includes(catId) ? prev : [...prev, catId]));
+          } else {
+            setSelectedCategoriePermessi((prev) => prev.filter((id) => id !== catId));
+          }
+        };
+
+        const impostaTutteSubNelPannello = (catId: MacroCategoriaId, abilitaTutte: boolean) => {
+          if (abilitaTutte) {
+            const allSubs = getSottosezioniDelegabili(catId).map((s) => s.id);
+            setSelectedSubPermessi((prev) => ({ ...prev, [catId]: allSubs }));
+            setSelectedCategoriePermessi((prev) => (prev.includes(catId) ? prev : [...prev, catId]));
+          } else {
+            setSelectedSubPermessi((prev) => {
+              const copy = { ...prev };
+              delete copy[catId];
+              return copy;
+            });
+            setSelectedCategoriePermessi((prev) => prev.filter((id) => id !== catId));
+          }
         };
 
         const applicaPermessiDatabaseMassivi = (modalita: 'aggiungi' | 'sostituisci' | 'rimuovi' | 'revoca_tutti') => {
@@ -4617,7 +4711,7 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
             return;
           }
           if ((modalita === 'aggiungi' || modalita === 'rimuovi') && selectedCategoriePermessi.length === 0) {
-            mostraAvviso('Seleziona almeno un database / autorizzazione da applicare!');
+            mostraAvviso('Seleziona almeno un database / sottosezione da applicare!');
             return;
           }
 
@@ -4627,53 +4721,121 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
             const attuali: MacroCategoriaId[] = Array.isArray(v.macroCategorieAbilitate)
               ? [...(v.macroCategorieAbilitate as MacroCategoriaId[])]
               : [];
+            const prevSubsMap: Record<string, string[]> =
+              v.sottosezioniAbilitate && typeof v.sottosezioniAbilitate === 'object'
+                ? { ...v.sottosezioniAbilitate }
+                : {};
 
-            let nuovi: MacroCategoriaId[] = attuali;
+            let nuovi: MacroCategoriaId[] = [...attuali];
+            const nextSubsMap: Record<string, string[]> = { ...prevSubsMap };
+
             if (modalita === 'aggiungi') {
               selectedCategoriePermessi.forEach((cat) => {
-                if (!nuovi.includes(cat)) nuovi.push(cat);
+                const allDeleg = getSottosezioniDelegabili(cat).map((s) => s.id);
+                const chosenSubs = selectedSubPermessi[cat] && selectedSubPermessi[cat].length > 0
+                  ? selectedSubPermessi[cat]
+                  : allDeleg;
+                const allSelectedForCat = chosenSubs.length >= allDeleg.length;
+                const hadDb = nuovi.includes(cat);
+                if (!hadDb) nuovi.push(cat);
+
+                if (hadDb && nextSubsMap[cat] === undefined) {
+                  // Aveva già accesso completo: mantienilo completo
+                } else if (!allSelectedForCat) {
+                  const base = Array.isArray(nextSubsMap[cat]) ? nextSubsMap[cat] : [];
+                  nextSubsMap[cat] = Array.from(new Set([...base, ...chosenSubs]));
+                } else {
+                  delete nextSubsMap[cat];
+                }
               });
             } else if (modalita === 'sostituisci') {
               nuovi = [...selectedCategoriePermessi];
+              Object.keys(nextSubsMap).forEach((k) => {
+                if (!nuovi.includes(k as MacroCategoriaId)) {
+                  delete nextSubsMap[k];
+                }
+              });
+              selectedCategoriePermessi.forEach((cat) => {
+                const allDeleg = getSottosezioniDelegabili(cat).map((s) => s.id);
+                const chosenSubs = selectedSubPermessi[cat] && selectedSubPermessi[cat].length > 0
+                  ? selectedSubPermessi[cat]
+                  : allDeleg;
+                if (chosenSubs.length >= allDeleg.length) {
+                  delete nextSubsMap[cat];
+                } else {
+                  nextSubsMap[cat] = [...chosenSubs];
+                }
+              });
             } else if (modalita === 'rimuovi') {
-              nuovi = nuovi.filter((cat) => !selectedCategoriePermessi.includes(cat));
+              selectedCategoriePermessi.forEach((cat) => {
+                const allDeleg = getSottosezioniDelegabili(cat).map((s) => s.id);
+                const chosenSubs = selectedSubPermessi[cat] && selectedSubPermessi[cat].length > 0
+                  ? selectedSubPermessi[cat]
+                  : allDeleg;
+                if (chosenSubs.length >= allDeleg.length) {
+                  nuovi = nuovi.filter((c) => c !== cat);
+                  delete nextSubsMap[cat];
+                } else {
+                  const currentAccountSubs = Array.isArray(nextSubsMap[cat]) ? nextSubsMap[cat] : allDeleg;
+                  const rimaste = currentAccountSubs.filter((id) => !chosenSubs.includes(id));
+                  if (rimaste.length === 0) {
+                    nuovi = nuovi.filter((c) => c !== cat);
+                    delete nextSubsMap[cat];
+                  } else {
+                    nextSubsMap[cat] = rimaste;
+                  }
+                }
+              });
             } else if (modalita === 'revoca_tutti') {
               nuovi = [];
+              Object.keys(nextSubsMap).forEach((k) => delete nextSubsMap[k]);
             }
 
             return {
               ...v,
               macroCategorieAbilitate: nuovi,
+              sottosezioniAbilitate: Object.keys(nextSubsMap).length > 0 ? nextSubsMap : undefined,
             };
           });
 
           onAggiornaVolontari(aggiornati);
           const descr =
             modalita === 'aggiungi'
-              ? `Aggiunte ${selectedCategoriePermessi.length} autorizzazioni database`
+              ? `Aggiunte autorizzazioni (${selectedCategoriePermessi.length} database e relative sottosezioni)`
               : modalita === 'sostituisci'
-              ? `Impostate esattamente ${selectedCategoriePermessi.length} autorizzazioni database`
+              ? `Impostate esattamente ${selectedCategoriePermessi.length} autorizzazioni database & sottosezioni`
               : modalita === 'rimuovi'
-              ? `Rimosse ${selectedCategoriePermessi.length} autorizzazioni database`
-              : 'Revocati tutti gli accessi ai database';
+              ? `Rimosse autorizzazioni selezionate (${selectedCategoriePermessi.length} database/sottosezioni)`
+              : 'Revocati tutti gli accessi ai database e sottosezioni';
 
           onNotificaRadio?.(
             `🔐 AUTORIZZAZIONI DATABASE: ${descr} per ${selectedVolontariPermessiIds.length} account da ${operatoreCorrente}`,
             'sistema'
           );
-          mostraAvviso(`${descr} per ${selectedVolontariPermessiIds.length} account selezionati!`);
+          mostraAvviso(`${descr} per ${selectedVolontariPermessiIds.length} account!`);
         };
 
         const toggleSingoloDbAccount = (vol: Volontario, catId: MacroCategoriaId) => {
           const attuali: MacroCategoriaId[] = Array.isArray(vol.macroCategorieAbilitate)
             ? [...(vol.macroCategorieAbilitate as MacroCategoriaId[])]
             : [];
-          const nuovi = attuali.includes(catId)
+          const rimuovi = attuali.includes(catId);
+          const nuovi = rimuovi
             ? attuali.filter((c) => c !== catId)
             : [...attuali, catId];
+          const nextSubs = vol.sottosezioniAbilitate ? { ...vol.sottosezioniAbilitate } : undefined;
+          if (rimuovi && nextSubs) {
+            delete nextSubs[catId];
+          }
 
           const aggiornati = volontari.map((v) =>
-            v.id === vol.id ? { ...v, macroCategorieAbilitate: nuovi } : v
+            v.id === vol.id
+              ? {
+                  ...v,
+                  macroCategorieAbilitate: nuovi,
+                  sottosezioniAbilitate: nextSubs && Object.keys(nextSubs).length > 0 ? nextSubs : undefined,
+                }
+              : v
           );
           onAggiornaVolontari(aggiornati);
           const infoCat = LISTA_MACRO_CATEGORIE.find((c) => c.id === catId);
@@ -4683,33 +4845,84 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
           );
         };
 
+        const toggleSottosezioneSingoloAccount = (
+          vol: Volontario,
+          catId: MacroCategoriaId,
+          subId: string
+        ) => {
+          const allDeleg = getSottosezioniDelegabili(catId).map((s) => s.id);
+          const attualiDb: MacroCategoriaId[] = Array.isArray(vol.macroCategorieAbilitate)
+            ? [...(vol.macroCategorieAbilitate as MacroCategoriaId[])]
+            : [];
+          const dbWasOn = attualiDb.includes(catId);
+          const prevSubs = vol.sottosezioniAbilitate ? { ...vol.sottosezioniAbilitate } : {};
+          const currentSubs = dbWasOn
+            ? (Array.isArray(prevSubs[catId]) ? prevSubs[catId] : allDeleg)
+            : [];
+
+          const nextSubsList = currentSubs.includes(subId)
+            ? currentSubs.filter((id) => id !== subId)
+            : [...currentSubs, subId];
+
+          let nextDbList = [...attualiDb];
+          if (nextSubsList.length === 0) {
+            nextDbList = nextDbList.filter((c) => c !== catId);
+            delete prevSubs[catId];
+          } else {
+            if (!nextDbList.includes(catId)) nextDbList.push(catId);
+            if (nextSubsList.length >= allDeleg.length) {
+              delete prevSubs[catId];
+            } else {
+              prevSubs[catId] = nextSubsList;
+            }
+          }
+
+          const aggiornati = volontari.map((v) =>
+            v.id === vol.id
+              ? {
+                  ...v,
+                  macroCategorieAbilitate: nextDbList,
+                  sottosezioniAbilitate: Object.keys(prevSubs).length > 0 ? prevSubs : undefined,
+                }
+              : v
+          );
+          onAggiornaVolontari(aggiornati);
+        };
+
         const handleSalvaNomiDatabase = () => {
-          const saved = salvaNomiDatabaseCustom(draftNomiDb, true);
+          const saved = salvaNomiDatabaseCustom(draftNomiDb, false);
+          salvaNomiSottosezioniCustom(draftNomiSub, true);
           setNomiDbCustom(saved);
           setDraftNomiDb(saved);
-          realtime.syncNomiDatabase(saved);
+          realtime.syncNomiDatabase(getNomiDatabaseSyncPayload());
           onNotificaRadio?.(
-            `🏷️ NOMI DATABASE AGGIORNATI: ${operatoreCorrente} ha personalizzato i nomi dei database (effetto immediato su tutti i dispositivi).`,
+            `🏷️ NOMI DATABASE E SOTTOSEZIONI AGGIORNATI: ${operatoreCorrente} ha personalizzato i nomi (effetto immediato su tutti i dispositivi).`,
             'sistema'
           );
-          mostraAvviso('✓ Nomi dei Database salvati e propagati immediatamente a tutti i dispositivi!');
+          mostraAvviso('✓ Nomi dei Database e delle Sottosezioni salvati e propagati immediatamente a tutti i dispositivi!');
         };
 
         const handleRipristinaNomiDatabase = () => {
-          const saved = salvaNomiDatabaseCustom({}, true);
+          const saved = salvaNomiDatabaseCustom({}, false);
+          salvaNomiSottosezioniCustom({}, true);
           setNomiDbCustom(saved);
           setDraftNomiDb(saved);
-          realtime.syncNomiDatabase(saved);
+          setDraftNomiSub({});
+          realtime.syncNomiDatabase(getNomiDatabaseSyncPayload());
           onNotificaRadio?.(
-            `🏷️ NOMI DATABASE RIPRISTINATI: ${operatoreCorrente} ha ripristinato i nomi standard dei database.`,
+            `🏷️ NOMI DATABASE RIPRISTINATI: ${operatoreCorrente} ha ripristinato i nomi standard dei database e sottosezioni.`,
             'sistema'
           );
-          mostraAvviso('✓ Nomi dei Database ripristinati ai valori predefiniti su tutti i dispositivi.');
+          mostraAvviso('✓ Nomi dei Database e delle Sottosezioni ripristinati ai valori predefiniti su tutti i dispositivi.');
         };
+
+        const accountInDettaglio = accountDettaglioPermessiId
+          ? volontari.find((v) => v.id === accountDettaglioPermessiId) || null
+          : null;
 
         return (
           <div className="space-y-4 animate-in fade-in">
-            {/* Banner Informativo Autorizzazioni Multi-Account */}
+            {/* Banner Informativo Autorizzazioni Singolo & Multi-Account */}
             <div className="p-4 rounded-3xl bg-gradient-to-r from-indigo-950 via-slate-900 to-purple-950 border-2 border-indigo-500/50 shadow-xl flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
               <div className="flex items-center gap-3">
                 <div className="w-12 h-12 rounded-2xl bg-indigo-500/20 text-indigo-300 flex items-center justify-center border border-indigo-400/40 shrink-0">
@@ -4717,10 +4930,10 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
                 </div>
                 <div>
                   <h3 className="text-base sm:text-lg font-black text-white uppercase tracking-wider">
-                    8. Accesso ai Database • Assegnazione Multipla Account
+                    8. Accesso ai Database & Singole Sottosezioni • Singolo o Multi-Account
                   </h3>
                   <p className="text-xs text-slate-300 max-w-2xl leading-relaxed mt-0.5">
-                    Spunta <strong>uno o più volontari/operatori</strong> nella lista e seleziona <strong>uno o più database</strong> da autorizzare contemporaneamente. Gli account abilitati a <strong>Anagrafiche Volontari</strong> ricevono automaticamente via email anche le <strong>notifiche dei compleanni (🎂)</strong>. I delegati possono consultare, inserire e modificare dati ma <strong>non possono eliminare record</strong>.
+                    Concedi o revoca l&apos;accesso ad <strong>uno singolo account</strong> oppure a <strong>più account simultaneamente</strong>, scegliendo sia gli interi Database sia le <strong>singole sottosezioni</strong> al loro interno. I collegamenti e le funzioni continuano a funzionare anche dopo qualsiasi rinomina.
                   </p>
                 </div>
               </div>
@@ -4759,19 +4972,27 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
               </div>
             </div>
 
-            {/* Riquadro Amministratore: Personalizza e Rinomina Nomi dei Database (Effetto Immediato su tutti i device) */}
+            {/* Riquadro Amministratore: Personalizza e Rinomina Nomi dei Database e Sottosezioni */}
             <div className="bg-slate-900 border-2 border-amber-500/40 rounded-2xl p-4 sm:p-5 shadow-xl space-y-3">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2.5 border-b border-slate-800">
                 <div>
                   <h4 className="text-xs sm:text-sm font-black text-amber-300 uppercase tracking-wider flex items-center gap-2">
                     <Edit2 className="w-4 h-4 text-amber-400" />
-                    <span>Rinomina Nomi Database (Effetto Immediato su Tutti i Dispositivi)</span>
+                    <span>Rinomina Nomi Database & Sottosezioni (Effetto Immediato, Collegamenti Invariati)</span>
                   </h4>
                   <p className="text-[11px] text-slate-400 mt-0.5">
-                    L&apos;amministratore può personalizzare il titolo di ciascun database. Le modifiche diventano subito efficaci su tutti i dispositivi senza aggiornare l&apos;app.
+                    Personalizza il titolo di qualsiasi Database o Sottosezione senza alterare permessi, comandi o collegamenti operativi anche dopo rinomine successive.
                   </p>
                 </div>
                 <div className="flex items-center gap-2 shrink-0 flex-wrap">
+                  <button
+                    type="button"
+                    onClick={() => setMostraRinominaSub((v) => !v)}
+                    className="px-3 py-1.5 rounded-xl bg-indigo-950/70 hover:bg-indigo-900 text-indigo-200 text-xs font-bold flex items-center gap-1.5 border border-indigo-500/40 cursor-pointer"
+                  >
+                    <Layers className="w-3.5 h-3.5 text-indigo-300" />
+                    <span>{mostraRinominaSub ? 'Nascondi Sottosezioni' : 'Rinomina Sottosezioni'}</span>
+                  </button>
                   <button
                     type="button"
                     onClick={handleRipristinaNomiDatabase}
@@ -4810,15 +5031,52 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
                   </div>
                 ))}
               </div>
+
+              {mostraRinominaSub && (
+                <div className="pt-3 border-t border-slate-800 grid grid-cols-1 md:grid-cols-2 gap-3 max-h-80 overflow-y-auto pr-1">
+                  {LISTA_MACRO_CATEGORIE.map((cat) => {
+                    const subs = SOTTOSEZIONI_PER_DATABASE[cat.id] || [];
+                    return (
+                      <div key={`rsub-${cat.id}`} className="p-3 rounded-xl bg-slate-950 border border-slate-800 space-y-2">
+                        <div className="text-[11px] font-black text-amber-300 uppercase">
+                          {cat.icona} {cat.numero}. {getTitoloDatabase(cat.id, cat.titolo, draftNomiDb)}
+                        </div>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                          {subs.map((sub) => {
+                            const key = `${cat.id}.${sub.id}`;
+                            return (
+                              <div key={key} className="space-y-0.5">
+                                <label className="block text-[9.5px] font-bold text-slate-400 truncate">
+                                  {sub.numero}. {sub.titoloDefault}
+                                </label>
+                                <input
+                                  type="text"
+                                  value={draftNomiSub[key] !== undefined ? draftNomiSub[key] : sub.titoloDefault}
+                                  onChange={(e) => {
+                                    const val = e.target.value;
+                                    setDraftNomiSub((prev) => ({ ...prev, [key]: val }));
+                                  }}
+                                  placeholder={sub.titoloDefault}
+                                  className="w-full px-2 py-1 rounded-lg bg-slate-900 border border-slate-700 text-white text-[11px] focus:outline-none focus:border-amber-400"
+                                />
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
 
-            {/* Step 1 + Step 2: Scelta Autorizzazioni Database e Azioni Massive */}
+            {/* Step 1 + Step 2: Scelta Autorizzazioni Database E Singole Sottosezioni */}
             <div className="bg-slate-900 border-2 border-indigo-500/40 rounded-2xl p-4 sm:p-5 shadow-xl space-y-4">
               <div className="flex flex-wrap items-center justify-between gap-2 pb-2.5 border-b border-slate-800">
                 <div className="flex items-center gap-2">
                   <span className="w-5 h-5 rounded-full bg-indigo-600 text-white flex items-center justify-center text-[10px] font-black">1</span>
                   <span className="text-xs font-black uppercase tracking-wider text-indigo-200">
-                    Seleziona uno o più Database / Autorizzazioni ({selectedCategoriePermessi.length} selezionati su {LISTA_MACRO_CATEGORIE.length})
+                    Seleziona Database e/o Singole Sottosezioni ({selectedCategoriePermessi.length} DB scelti su {LISTA_MACRO_CATEGORIE.length})
                   </span>
                 </div>
 
@@ -4826,42 +5084,64 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
                 <div className="flex items-center gap-1.5 flex-wrap">
                   <button
                     type="button"
-                    onClick={() => setSelectedCategoriePermessi([...TUTTE_LE_MACRO_CATEGORIE])}
+                    onClick={() => {
+                      setSelectedCategoriePermessi([...TUTTE_LE_MACRO_CATEGORIE]);
+                      const nextSubs: Record<string, string[]> = {};
+                      TUTTE_LE_MACRO_CATEGORIE.forEach((db) => {
+                        nextSubs[db] = getSottosezioniDelegabili(db).map((s) => s.id);
+                      });
+                      setSelectedSubPermessi(nextSubs);
+                    }}
                     className="px-2.5 py-1 rounded-lg bg-indigo-600/30 hover:bg-indigo-600/50 text-indigo-200 border border-indigo-500/40 text-[11px] font-bold cursor-pointer"
                   >
                     Tutte ({LISTA_MACRO_CATEGORIE.length})
                   </button>
                   <button
                     type="button"
-                    onClick={() => setSelectedCategoriePermessi([])}
+                    onClick={() => {
+                      setSelectedCategoriePermessi([]);
+                      setSelectedSubPermessi({});
+                    }}
                     className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 text-[11px] font-bold cursor-pointer"
                   >
                     Nessuna
                   </button>
                   <button
                     type="button"
-                    onClick={() => setSelectedCategoriePermessi(['turni'])}
+                    onClick={() => {
+                      setSelectedCategoriePermessi(['turni']);
+                      setSelectedSubPermessi({ turni: getSottosezioniDelegabili('turni').map((s) => s.id) });
+                    }}
                     className="px-2.5 py-1 rounded-lg bg-teal-600/25 hover:bg-teal-600/40 text-teal-200 border border-teal-500/40 text-[11px] font-bold cursor-pointer"
                   >
                     Solo Turni
                   </button>
                   <button
                     type="button"
-                    onClick={() => setSelectedCategoriePermessi(['mezzi'])}
+                    onClick={() => {
+                      setSelectedCategoriePermessi(['mezzi']);
+                      setSelectedSubPermessi({ mezzi: getSottosezioniDelegabili('mezzi').map((s) => s.id) });
+                    }}
                     className="px-2.5 py-1 rounded-lg bg-amber-600/25 hover:bg-amber-600/40 text-amber-200 border border-amber-500/40 text-[11px] font-bold cursor-pointer"
                   >
                     Solo Mezzi
                   </button>
                   <button
                     type="button"
-                    onClick={() => setSelectedCategoriePermessi(['volontari'])}
+                    onClick={() => {
+                      setSelectedCategoriePermessi(['volontari']);
+                      setSelectedSubPermessi({ volontari: getSottosezioniDelegabili('volontari').map((s) => s.id) });
+                    }}
                     className="px-2.5 py-1 rounded-lg bg-blue-600/25 hover:bg-blue-600/40 text-blue-200 border border-blue-500/40 text-[11px] font-bold cursor-pointer"
                   >
                     Solo Volontari
                   </button>
                   <button
                     type="button"
-                    onClick={() => setSelectedCategoriePermessi(['centrale'])}
+                    onClick={() => {
+                      setSelectedCategoriePermessi(['centrale']);
+                      setSelectedSubPermessi({ centrale: getSottosezioniDelegabili('centrale').map((s) => s.id) });
+                    }}
                     className="px-2.5 py-1 rounded-lg bg-emerald-600/25 hover:bg-emerald-600/40 text-emerald-200 border border-emerald-500/40 text-[11px] font-bold cursor-pointer"
                   >
                     Solo Centrale
@@ -4869,49 +5149,144 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
                 </div>
               </div>
 
-              {/* Griglia Checkbox delle 10 Macro Categorie */}
+              {/* Griglia Checkbox delle 10 Macro Categorie con espansione per Sottosezioni */}
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2">
                 {LISTA_MACRO_CATEGORIE.map((cat) => {
                   const picked = selectedCategoriePermessi.includes(cat.id);
                   const titoloCorrente = getTitoloDatabase(cat.id, cat.titolo, nomiDbCustom);
+                  const delegabili = getSottosezioniDelegabili(cat.id);
+                  const subsChosen = selectedSubPermessi[cat.id] ?? (picked ? delegabili.map((s) => s.id) : []);
+                  const isExpanded = expandedDbConfigId === cat.id;
+
                   return (
-                    <button
+                    <div
                       key={cat.id}
-                      type="button"
-                      onClick={() => toggleCategoriaPermesso(cat.id)}
-                      className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer flex items-start justify-between gap-2 ${
+                      className={`p-2.5 rounded-xl border transition-all flex flex-col justify-between gap-2 ${
                         picked
-                          ? 'bg-indigo-600/35 border-indigo-400 text-white shadow-md ring-1 ring-indigo-400/50'
+                          ? 'bg-indigo-600/30 border-indigo-400 text-white shadow-md ring-1 ring-indigo-400/50'
                           : 'bg-slate-950/70 border-slate-800 text-slate-300 hover:border-slate-600'
                       }`}
                     >
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-1.5 font-black text-xs text-white">
-                          <span>{cat.icona}</span>
-                          <span className="truncate">{cat.numero}. {titoloCorrente}</span>
+                      <button
+                        type="button"
+                        onClick={() => toggleCategoriaPermesso(cat.id)}
+                        className="text-left cursor-pointer flex items-start justify-between gap-2 w-full"
+                      >
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-1.5 font-black text-xs text-white">
+                            <span>{cat.icona}</span>
+                            <span className="truncate">{cat.numero}. {titoloCorrente}</span>
+                          </div>
+                          <div className="text-[10px] text-slate-400 truncate mt-0.5">{cat.sottotitolo}</div>
                         </div>
-                        <div className="text-[10px] text-slate-400 truncate mt-0.5">{cat.sottotitolo}</div>
-                      </div>
-                      <span
-                        className={`w-4 h-4 rounded flex items-center justify-center shrink-0 mt-0.5 border ${
-                          picked
-                            ? 'bg-emerald-500 border-emerald-300 text-slate-950'
-                            : 'bg-slate-900 border-slate-600 text-transparent'
+                        <span
+                          className={`w-4 h-4 rounded flex items-center justify-center shrink-0 mt-0.5 border ${
+                            picked
+                              ? 'bg-emerald-500 border-emerald-300 text-slate-950'
+                              : 'bg-slate-900 border-slate-600 text-transparent'
+                          }`}
+                        >
+                          <Check className="w-3 h-3 stroke-[3]" />
+                        </span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setExpandedDbConfigId(isExpanded ? null : cat.id)}
+                        className={`w-full px-2 py-1 rounded-lg text-[10px] font-bold flex items-center justify-between border cursor-pointer transition-colors ${
+                          isExpanded
+                            ? 'bg-amber-500 text-slate-950 border-amber-300'
+                            : 'bg-slate-900/90 hover:bg-slate-800 text-indigo-200 border-slate-700'
                         }`}
                       >
-                        <Check className="w-3 h-3 stroke-[3]" />
-                      </span>
-                    </button>
+                        <span>Sottosezioni ({picked ? `${subsChosen.length}/${delegabili.length}` : `0/${delegabili.length}`})</span>
+                        <span>{isExpanded ? '▲ Chiudi' : '▼ Scegli'}</span>
+                      </button>
+                    </div>
                   );
                 })}
               </div>
 
-              {/* Pulsanti Azione Massiva sugli account selezionati */}
+              {/* Pannello Granulare Sottosezioni del DB Espanso */}
+              {expandedDbConfigId && (() => {
+                const catInfo = LISTA_MACRO_CATEGORIE.find((c) => c.id === expandedDbConfigId);
+                if (!catInfo) return null;
+                const delegabili = getSottosezioniDelegabili(expandedDbConfigId);
+                const chosen = selectedSubPermessi[expandedDbConfigId] ?? (selectedCategoriePermessi.includes(expandedDbConfigId) ? delegabili.map((s) => s.id) : []);
+
+                return (
+                  <div className="p-3.5 rounded-2xl bg-slate-950 border-2 border-amber-500/50 space-y-3 animate-in fade-in">
+                    <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-slate-800">
+                      <div className="text-xs font-black text-amber-300 uppercase flex items-center gap-2">
+                        <Layers className="w-4 h-4 text-amber-400" />
+                        <span>
+                          Sottosezioni di {catInfo.icona} {catInfo.numero}. {getTitoloDatabase(catInfo.id, catInfo.titolo, nomiDbCustom)}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => impostaTutteSubNelPannello(expandedDbConfigId, true)}
+                          className="px-2.5 py-1 rounded-lg bg-emerald-600/25 hover:bg-emerald-600/40 text-emerald-200 border border-emerald-500/40 text-[10.5px] font-bold cursor-pointer"
+                        >
+                          Tutte ({delegabili.length})
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => impostaTutteSubNelPannello(expandedDbConfigId, false)}
+                          className="px-2.5 py-1 rounded-lg bg-red-950/60 hover:bg-red-900/60 text-red-200 border border-red-500/40 text-[10.5px] font-bold cursor-pointer"
+                        >
+                          Nessuna
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setExpandedDbConfigId(null)}
+                          className="px-2.5 py-1 rounded-lg bg-slate-800 text-slate-300 text-[10.5px] font-bold cursor-pointer"
+                        >
+                          Chiudi
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
+                      {delegabili.map((sub) => {
+                        const subChecked = chosen.includes(sub.id);
+                        const titoloSub = getTitoloSottosezione(expandedDbConfigId, sub.id, sub.titoloDefault, nomiSubCustom);
+                        return (
+                          <button
+                            key={sub.id}
+                            type="button"
+                            onClick={() => toggleSubPermessoNelPannello(expandedDbConfigId, sub.id)}
+                            className={`p-2 rounded-xl border text-left text-xs font-bold flex items-center justify-between gap-2 cursor-pointer transition-all ${
+                              subChecked
+                                ? 'bg-emerald-500/20 border-emerald-400 text-emerald-100'
+                                : 'bg-slate-900 border-slate-800 text-slate-400 hover:border-slate-700'
+                            }`}
+                          >
+                            <span className="truncate">{sub.numero}. {titoloSub}</span>
+                            <span
+                              className={`w-4 h-4 rounded flex items-center justify-center shrink-0 border ${
+                                subChecked
+                                  ? 'bg-emerald-500 border-emerald-300 text-slate-950'
+                                  : 'bg-slate-950 border-slate-600 text-transparent'
+                              }`}
+                            >
+                              <Check className="w-3 h-3 stroke-[3]" />
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* Pulsanti Azione sugli account selezionati (1 o N account) */}
               <div className="flex flex-wrap items-center justify-between gap-3 pt-3 border-t border-slate-800">
                 <div className="text-xs text-slate-300 flex items-center gap-2">
                   <span className="w-5 h-5 rounded-full bg-emerald-600 text-white flex items-center justify-center text-[10px] font-black">2</span>
                   <span>
-                    Applica a <strong className="text-amber-300">{selectedVolontariPermessiIds.length}</strong> account selezionati con <strong className="text-indigo-300">{selectedCategoriePermessi.length}</strong> database scelti:
+                    Applica a <strong className="text-amber-300">{selectedVolontariPermessiIds.length}</strong> account selezionati ({selectedVolontariPermessiIds.length === 1 ? 'singolo' : 'simultaneamente'}) con <strong className="text-indigo-300">{selectedCategoriePermessi.length}</strong> DB/sottosezioni:
                   </span>
                 </div>
 
@@ -4925,7 +5300,7 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
                         ? 'bg-emerald-600 hover:bg-emerald-500 text-white cursor-pointer active:scale-95'
                         : 'bg-slate-800 text-slate-500 cursor-not-allowed opacity-55'
                     }`}
-                    title="Aggiunge i database selezionati mantenendo eventuali altri accessi già attivi"
+                    title="Aggiunge i database e le sottosezioni selezionate mantenendo gli altri accessi già attivi"
                   >
                     <PlusCircle className="w-3.5 h-3.5" />
                     <span>Aggiungi Accessi (+)</span>
@@ -4940,7 +5315,7 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
                         ? 'bg-indigo-600 hover:bg-indigo-500 text-white cursor-pointer active:scale-95'
                         : 'bg-slate-800 text-slate-500 cursor-not-allowed opacity-55'
                     }`}
-                    title="Imposta esattamente solo i database spuntati sopra per gli account selezionati"
+                    title="Imposta esattamente solo i database e sottosezioni spuntati sopra"
                   >
                     <RefreshCw className="w-3.5 h-3.5" />
                     <span>Imposta Esatti (=)</span>
@@ -4955,7 +5330,7 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
                         ? 'bg-amber-700 hover:bg-amber-600 text-white cursor-pointer active:scale-95'
                         : 'bg-slate-800 text-slate-500 cursor-not-allowed opacity-55'
                     }`}
-                    title="Rimuove solo i database selezionati sopra dagli account scelti"
+                    title="Rimuove i database o le sole sottosezioni selezionate sopra"
                   >
                     <Trash2 className="w-3.5 h-3.5" />
                     <span>Rimuovi Selezionati (-)</span>
@@ -4965,12 +5340,12 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
                     type="button"
                     disabled={selectedVolontariPermessiIds.length === 0}
                     onClick={() => applicaPermessiDatabaseMassivi('revoca_tutti')}
-                    className={`px-3 py-2 rounded-xl text-xs font-black uppercase flex items-center gap-1.5 shadow-md transition-all ${
+                    className={`px-3.5 py-2 rounded-xl text-xs font-black uppercase flex items-center gap-1.5 shadow-md transition-all ${
                       selectedVolontariPermessiIds.length > 0
                         ? 'bg-red-700 hover:bg-red-600 text-white cursor-pointer active:scale-95'
                         : 'bg-slate-800 text-slate-500 cursor-not-allowed opacity-55'
                     }`}
-                    title="Rimuove tutte le autorizzazioni database agli account selezionati"
+                    title="Rimuove tutte le autorizzazioni database e sottosezioni agli account selezionati"
                   >
                     <Lock className="w-3.5 h-3.5" />
                     <span>Revoca Tutti</span>
@@ -4979,7 +5354,7 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
               </div>
             </div>
 
-            {/* Step 3: Lista Multi-Selezione Volontari & Modifica Istantanea per Riga */}
+            {/* Step 3: Lista Singolo / Multi-Selezione Volontari & Modifica Istantanea */}
             <div className="space-y-3">
               <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-2.5 bg-slate-900 p-3 rounded-2xl border border-slate-800">
                 <div className="flex items-center gap-2 flex-wrap">
@@ -5046,8 +5421,8 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
                       <tr className="bg-slate-900/90 text-[10px] font-black uppercase text-slate-400 border-b border-slate-800">
                         <th className="py-3 px-3 w-10 text-center">Sel.</th>
                         <th className="py-3 px-4">Account Volontario / Operatore</th>
-                        <th className="py-3 px-3">Database Abilitati (Clic singolo per attivare/disattivare al volo)</th>
-                        <th className="py-3 px-3 text-center">Totale</th>
+                        <th className="py-3 px-3">Database & Sottosezioni Abilitati (Clic = Toggle DB, Dettaglio = Sottosezioni)</th>
+                        <th className="py-3 px-3 text-center">Azioni</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-800/70">
@@ -5103,6 +5478,12 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
                                   {LISTA_MACRO_CATEGORIE.map((cat) => {
                                     const on = abilitati.includes(cat.id);
                                     const titoloDb = getTitoloDatabase(cat.id, cat.titolo, nomiDbCustom);
+                                    const delegabili = getSottosezioniDelegabili(cat.id);
+                                    const customSubs = v.sottosezioniAbilitate?.[cat.id];
+                                    const subCountLabel =
+                                      on && Array.isArray(customSubs)
+                                        ? ` (${customSubs.length}/${delegabili.length})`
+                                        : '';
                                     return (
                                       <button
                                         key={cat.id}
@@ -5110,13 +5491,15 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
                                         onClick={() => toggleSingoloDbAccount(v, cat.id)}
                                         className={`px-2 py-1 rounded-lg text-[10.5px] font-bold flex items-center gap-1 border transition-all cursor-pointer ${
                                           on
-                                            ? 'bg-emerald-500/20 text-emerald-200 border-emerald-500/60 hover:bg-emerald-500/30'
+                                            ? Array.isArray(customSubs)
+                                              ? 'bg-amber-500/20 text-amber-200 border-amber-500/60 hover:bg-amber-500/30'
+                                              : 'bg-emerald-500/20 text-emerald-200 border-emerald-500/60 hover:bg-emerald-500/30'
                                             : 'bg-slate-900/70 text-slate-500 border-slate-800 hover:text-slate-300 hover:border-slate-700'
                                         }`}
                                         title={`Clicca per ${on ? 'revocare' : 'concedere'} accesso "${titoloDb}" a ${v.nome} ${v.cognome}`}
                                       >
                                         <span>{cat.icona}</span>
-                                        <span>{cat.numero}. {titoloDb.split(' ')[0]}</span>
+                                        <span>{cat.numero}. {titoloDb.split(' ')[0]}{subCountLabel}</span>
                                         {on ? (
                                           <Check className="w-3 h-3 text-emerald-400" />
                                         ) : (
@@ -5127,16 +5510,26 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
                                   })}
                                 </div>
                               </td>
-                              <td className="py-3 px-3 align-middle text-center whitespace-nowrap">
-                                {abilitati.length > 0 ? (
-                                  <span className="px-2 py-0.5 rounded-full bg-indigo-500/25 text-indigo-200 border border-indigo-400/50 font-mono text-[10px] font-bold">
-                                    {abilitati.length}/{LISTA_MACRO_CATEGORIE.length}
-                                  </span>
-                                ) : (
-                                  <span className="px-2 py-0.5 rounded-full bg-slate-900 text-slate-500 border border-slate-800 font-mono text-[10px]">
-                                    Solo App Bordo
-                                  </span>
-                                )}
+                              <td className="py-3 px-3 align-middle text-center whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
+                                <div className="flex flex-col items-center gap-1">
+                                  {abilitati.length > 0 ? (
+                                    <span className="px-2 py-0.5 rounded-full bg-indigo-500/25 text-indigo-200 border border-indigo-400/50 font-mono text-[10px] font-bold">
+                                      {abilitati.length}/{LISTA_MACRO_CATEGORIE.length} DB
+                                    </span>
+                                  ) : (
+                                    <span className="px-2 py-0.5 rounded-full bg-slate-900 text-slate-500 border border-slate-800 font-mono text-[10px]">
+                                      Solo App Bordo
+                                    </span>
+                                  )}
+                                  <button
+                                    type="button"
+                                    onClick={() => setAccountDettaglioPermessiId(v.id)}
+                                    className="px-2.5 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-[10px] font-black uppercase cursor-pointer shadow-sm"
+                                    title={`Gestisci singole sottosezioni per ${v.nome} ${v.cognome}`}
+                                  >
+                                    Sottosezioni
+                                  </button>
+                                </div>
                               </td>
                             </tr>
                           );
@@ -5147,6 +5540,128 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
                 </div>
               </div>
             </div>
+
+            {/* MODALE DETTAGLIO PERMESSI SINGOLO ACCOUNT (DATABASE + SINGOLE SOTTOSEZIONI) */}
+            {accountInDettaglio && (
+              <div
+                className="fixed inset-0 z-[95] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in"
+                onClick={() => setAccountDettaglioPermessiId(null)}
+              >
+                <div
+                  className="bg-slate-900 border-2 border-indigo-500/70 rounded-3xl max-w-4xl w-full max-h-[88vh] flex flex-col overflow-hidden shadow-2xl"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <div className="p-4 sm:p-5 bg-slate-950 border-b border-slate-800 flex items-center justify-between gap-3">
+                    <div>
+                      <div className="text-[10px] font-black uppercase text-indigo-300">
+                        Configurazione Accessi Singolo Account
+                      </div>
+                      <h4 className="text-base sm:text-lg font-black text-white">
+                        🔐 {accountInDettaglio.nome} {accountInDettaglio.cognome} ({accountInDettaglio.qualifica})
+                      </h4>
+                      <p className="text-[11px] text-slate-400">
+                        Spunta o revoca l&apos;intero Database oppure singole sottosezioni. Salvataggio e sincronizzazione immediati.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setAccountDettaglioPermessiId(null)}
+                      className="p-2 rounded-full bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white cursor-pointer"
+                    >
+                      <X className="w-5 h-5" />
+                    </button>
+                  </div>
+
+                  <div className="p-4 sm:p-5 overflow-y-auto grid grid-cols-1 md:grid-cols-2 gap-3 flex-1">
+                    {LISTA_MACRO_CATEGORIE.map((cat) => {
+                      const abilitatiDb = Array.isArray(accountInDettaglio.macroCategorieAbilitate)
+                        ? (accountInDettaglio.macroCategorieAbilitate as MacroCategoriaId[])
+                        : [];
+                      const dbOn = abilitatiDb.includes(cat.id);
+                      const delegabili = getSottosezioniDelegabili(cat.id);
+                      const subExplicit = accountInDettaglio.sottosezioniAbilitate?.[cat.id];
+                      const activeSubs = dbOn
+                        ? (Array.isArray(subExplicit) ? subExplicit : delegabili.map((s) => s.id))
+                        : [];
+                      const titoloDb = getTitoloDatabase(cat.id, cat.titolo, nomiDbCustom);
+
+                      return (
+                        <div
+                          key={`acc-det-${cat.id}`}
+                          className={`p-3.5 rounded-2xl border space-y-2.5 ${
+                            dbOn
+                              ? 'bg-slate-950 border-emerald-500/50'
+                              : 'bg-slate-950/60 border-slate-800'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-2 pb-2 border-b border-slate-800">
+                            <div className="min-w-0">
+                              <div className="text-xs font-black text-white truncate">
+                                {cat.icona} {cat.numero}. {titoloDb}
+                              </div>
+                              <div className="text-[10px] text-slate-400">
+                                {dbOn ? `${activeSubs.length}/${delegabili.length} sottosezioni attive` : 'Accesso Disabilitato'}
+                              </div>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => toggleSingoloDbAccount(accountInDettaglio, cat.id)}
+                              className={`px-2.5 py-1 rounded-xl text-[10.5px] font-black uppercase border cursor-pointer shrink-0 ${
+                                dbOn
+                                  ? 'bg-emerald-500 text-slate-950 border-emerald-300'
+                                  : 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700'
+                              }`}
+                            >
+                              {dbOn ? 'Tutte ON' : 'Abilita DB'}
+                            </button>
+                          </div>
+
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                            {delegabili.map((sub) => {
+                              const subOn = activeSubs.includes(sub.id);
+                              const titoloSub = getTitoloSottosezione(cat.id, sub.id, sub.titoloDefault, nomiSubCustom);
+                              return (
+                                <button
+                                  key={`acc-sub-${cat.id}-${sub.id}`}
+                                  type="button"
+                                  onClick={() => toggleSottosezioneSingoloAccount(accountInDettaglio, cat.id, sub.id)}
+                                  className={`px-2.5 py-1.5 rounded-xl border text-left text-[11px] font-bold flex items-center justify-between gap-1.5 cursor-pointer transition-all ${
+                                    subOn
+                                      ? 'bg-emerald-500/20 border-emerald-500/60 text-emerald-200'
+                                      : 'bg-slate-900 border-slate-800 text-slate-500 hover:text-slate-300'
+                                  }`}
+                                >
+                                  <span className="truncate">{sub.numero}. {titoloSub}</span>
+                                  <span
+                                    className={`w-3.5 h-3.5 rounded flex items-center justify-center shrink-0 border ${
+                                      subOn
+                                        ? 'bg-emerald-500 border-emerald-300 text-slate-950'
+                                        : 'bg-slate-950 border-slate-600 text-transparent'
+                                    }`}
+                                  >
+                                    <Check className="w-2.5 h-2.5 stroke-[3]" />
+                                  </span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  <div className="p-3.5 bg-slate-950 border-t border-slate-800 flex items-center justify-end">
+                    <button
+                      type="button"
+                      onClick={() => setAccountDettaglioPermessiId(null)}
+                      className="px-5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-black text-xs uppercase cursor-pointer"
+                    >
+                      Chiudi
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         );
       })()}

@@ -149,7 +149,16 @@ import { ModalDestinazioneFirme, DatiDestinazione } from './components/ModalDest
 import { ModalRilevazioneMicrochipObiettivo } from './components/ModalRilevazioneMicrochipObiettivo';
 import { LISTA_ANIMALI_DIFFUSI, TipoAnimaleDiffuso, DatiProprietarioCentrale, FotoDocumentoIdentita } from './data/animali';
 import { AdminPortalDashboard, AdminSectionId } from './components/admin/AdminPortalDashboard';
-import { TUTTE_LE_MACRO_CATEGORIE, getNomiDatabaseCustom, salvaNomiDatabaseCustom, applicaNomiDatabaseDaSync } from './constants/macroCategorie';
+import {
+  TUTTE_LE_MACRO_CATEGORIE,
+  getNomiDatabaseCustom,
+  getNomiDatabaseSyncPayload,
+  salvaNomiDatabaseCustom,
+  applicaNomiDatabaseDaSync,
+  getAllowedSubtabsForDatabase,
+  getTitoloSottosezione,
+} from './constants/macroCategorie';
+import { useNomiSottosezioniCustom } from './hooks/useNomiDatabase';
 import {
   getMansioniCatalogo,
   getCategorieMansioni,
@@ -244,6 +253,13 @@ import {
   sincronizzaDatiCartaIntestataDaServer,
   applicaDatiCartaIntestataRemoti,
 } from './utils/cartaIntestataStore';
+import { ModalNumeriUtili } from './components/ModalNumeriUtili';
+import {
+  getRubricaNumeriUtili,
+  getRubricaNumeriUtiliUpdatedAt,
+  applicaRubricaNumeriUtiliDaSync,
+  sincronizzaRubricaNumeriUtiliDaServer,
+} from './utils/rubricaNumeriUtiliStore';
 import {
   addDaysISODate,
   formatDateItaly,
@@ -695,44 +711,6 @@ const FLOTTA_PC = [
   "T4615"
 ];
 
-const RUBRICA_CONTATTI = [
-  {
-    categoria: "🚨 Emergenze Nazionali (NUE)",
-    voci: [
-      { nome: "Numero Unico Europeo (NUE)", numero: "112" },
-      { nome: "Emergenza Sanitaria", numero: "118" },
-      { nome: "Vigili del Fuoco (Soccorso Tecnico)", numero: "115" },
-      { nome: "Polizia di Stato", numero: "113" },
-    ]
-  },
-  {
-    categoria: "🚓 Forze dell'Ordine & Polizia Locale",
-    voci: [
-      { nome: "Questura Massa (Centrale Operativa)", numero: "0585494782" },
-      { nome: "Commisariato Carrara", numero: "0585766351" },
-      { nome: "Carabinieri Massa (Centrale Operativa)", numero: "05854951" },
-      { nome: "Polizia Locale Massa", numero: "058543560" },
-      { nome: "Polizia Locale Carrara", numero: "058570000" },
-    ]
-  },
-  {
-    categoria: "🏛️ C.O.C. Massa (Centro Operativo Comunale)",
-    voci: [
-      { nome: "C.O.C. Massa (Centrale Operativa)", numero: "0585812465" },
-      { nome: "C.O.C. Massa (Centrale Operativa 2)", numero: "0585489420" },
-      { nome: "C.O.C. Massa (Segnalazioni dei cittadini)", numero: "0585490249" },
-    ]
-  },
-  {
-    categoria: "🚑 Interni Croce Oro Massa Carrara",
-    voci: [
-      { nome: "Reperibile Associazione", numero: "3518130878" },
-      { nome: "Telefono di Servizio Presidente", numero: "3667024146" },
-      { nome: "Unità Logistica T4615", numero: "3517984414" },
-    ]
-  }
-];
-
 export const CODICI_RIENTRO = [
   { codice: '0', label: '0 = Rientro in sede', breve: 'Rientro Sede (0)', color: 'bg-slate-700 hover:bg-slate-600 text-white border-slate-600' },
   { codice: '1', label: '1 = Codice Verde', breve: 'Codice Verde (1)', color: 'bg-emerald-600 hover:bg-emerald-500 text-white border-emerald-500' },
@@ -1093,6 +1071,7 @@ export default function App() {
     caricaConsiglioDirettivo?: string;
     firmaBase64?: string;
     macroCategorieAbilitate?: string[];
+    sottosezioniAbilitate?: Record<string, string[]>;
   } | null>(() => {
     try {
       const saved = localStorage.getItem('CROCE_ORO_UTENTE_CENTRALE');
@@ -1237,8 +1216,11 @@ export default function App() {
     } catch {}
     return [...MEZZI_FLOTTA_INIZIALI].sort((a, b) => a.sigla.localeCompare(b.sigla, 'it', { numeric: true, sensitivity: 'base' }));
   });
+  const mezziFlottaRef = useRef<MezzoFlotta[]>(mezziFlotta);
+  mezziFlottaRef.current = mezziFlotta;
   const handleAggiornaMezziFlotta = (nuovi: MezzoFlotta[]) => {
     const ordinati = [...nuovi].sort((a, b) => a.sigla.localeCompare(b.sigla, 'it', { numeric: true, sensitivity: 'base' }));
+    mezziFlottaRef.current = ordinati;
     setMezziFlotta(ordinati);
     try {
       localStorage.setItem('CROCE_ORO_MEZZI_FLOTTA', JSON.stringify(ordinati));
@@ -1471,8 +1453,11 @@ export default function App() {
     } catch {}
     return normalizzaCorsiFormazione(CORSI_FORMAZIONE_INIZIALI, SEDI_ASSOCIATIVE_INIZIALI);
   });
+  const corsiFormazioneRef = useRef<CorsoFormazione[]>(corsiFormazione);
+  corsiFormazioneRef.current = corsiFormazione;
   const handleAggiornaCorsi = (nuovi: CorsoFormazione[]) => {
     const norm = normalizzaCorsiFormazione(rimuoviCorsiLegacy(nuovi), sediAssociativeRef.current);
+    corsiFormazioneRef.current = norm;
     setCorsiFormazione(norm);
     try {
       localStorage.setItem('CROCE_ORO_CORSI', JSON.stringify(norm));
@@ -1564,8 +1549,27 @@ export default function App() {
   const sediAssociativeRef = useRef<SedeAssociativaCompleta[]>(sediAssociative);
   sediAssociativeRef.current = sediAssociative;
 
+  const aggiornaVolontariDeferredRef = useRef<(nuovi: Volontario[]) => void>(() => {});
+  const turniSediRef = useRef<TurnoSedeOperativa[]>([]);
+
   const handleAggiornaSedi = (nuove: SedeAssociativaCompleta[]) => {
+    const vecchieSedi = sediAssociativeRef.current || [];
     const sediNorm = normalizzaListaSediAssociative(nuove);
+
+    // Rileva eventuali rinomine di sedi per ID e propaga il nuovo nome in tutta l'app
+    const renameMap = new Map<string, { vecchioNomeLower: string; nuovoNome: string; sedeId: string }>();
+    sediNorm.forEach((s) => {
+      const prev = vecchieSedi.find((old) => old.id === s.id);
+      if (prev && prev.nome && s.nome && prev.nome.trim() !== s.nome.trim()) {
+        renameMap.set(s.id, {
+          vecchioNomeLower: prev.nome.trim().toLowerCase(),
+          nuovoNome: s.nome.trim(),
+          sedeId: s.id,
+        });
+      }
+    });
+
+    sediAssociativeRef.current = sediNorm;
     setSediAssociative(sediNorm);
     try {
       localStorage.setItem('CROCE_ORO_SEDI_COMPLETE', JSON.stringify(sediNorm));
@@ -1577,6 +1581,106 @@ export default function App() {
     try {
       localStorage.setItem('CROCE_ORO_LUOGHI_TIMBRATURA', JSON.stringify(luoghiNorm));
     } catch {}
+
+    if (renameMap.size > 0) {
+      const trovaSedeRinominata = (id?: string, nome?: string) => {
+        if (id && renameMap.has(id)) return renameMap.get(id)!;
+        const nomeLow = String(nome || '').trim().toLowerCase();
+        if (!nomeLow) return undefined;
+        for (const entry of renameMap.values()) {
+          if (entry.vecchioNomeLower === nomeLow) return entry;
+        }
+        return undefined;
+      };
+
+      // 1. Propaga su Flotta Mezzi
+      let mezziMod = false;
+      const mezziAgg = (mezziFlottaRef.current || []).map((m) => {
+        const hit = trovaSedeRinominata(m.sedeId, m.sedeStazionamento);
+        if (hit && (m.sedeStazionamento !== hit.nuovoNome || m.sedeId !== hit.sedeId)) {
+          mezziMod = true;
+          return { ...m, sedeId: hit.sedeId, sedeStazionamento: hit.nuovoNome };
+        }
+        return m;
+      });
+      if (mezziMod) handleAggiornaMezziFlotta(mezziAgg);
+
+      // 2. Propaga su Turni Sedi
+      let turniMod = false;
+      const turniAgg = (turniSediRef.current || []).map((t) => {
+        const hit = trovaSedeRinominata(t.sedeId, t.sedeNome);
+        if (hit && (t.sedeNome !== hit.nuovoNome || t.sedeId !== hit.sedeId)) {
+          turniMod = true;
+          return { ...t, sedeId: hit.sedeId, sedeNome: hit.nuovoNome };
+        }
+        return t;
+      });
+      if (turniMod) handleAggiornaTurni(turniAgg);
+
+      // 3. Propaga su Corsi di Formazione
+      let corsiMod = false;
+      const mappaNomiSedeById = new Map<string, string>();
+      nuoveSedi.forEach((ns) => {
+        if (ns?.id && ns?.nome) mappaNomiSedeById.set(ns.id, ns.nome);
+      });
+      const corsiAgg = (corsiFormazioneRef.current || []).map((c) => {
+        let changed = false;
+        const hitSede = trovaSedeRinominata(c.sedeSvolgimentoSedeId, c.sedeCorso);
+        const nuovoSedeCorso = hitSede ? hitSede.nuovoNome : c.sedeCorso;
+        let nuovoSedeId = c.sedeSvolgimentoSedeId;
+        if (hitSede && (c.sedeCorso !== hitSede.nuovoNome || c.sedeSvolgimentoSedeId !== hitSede.sedeId)) {
+          changed = true;
+          nuovoSedeId = hitSede.sedeId;
+        }
+        let nuoveSezNomi = c.sezioniDestinatarieNomi;
+        if (Array.isArray(c.sezioniDestinatarieIds) && c.sezioniDestinatarieIds.length > 0) {
+          const aggiornatiNomi = c.sezioniDestinatarieIds.map((id, idx) => {
+            const nomeNuovo = mappaNomiSedeById.get(id);
+            return nomeNuovo || (c.sezioniDestinatarieNomi?.[idx] ?? '');
+          });
+          if (JSON.stringify(aggiornatiNomi) !== JSON.stringify(c.sezioniDestinatarieNomi || [])) {
+            changed = true;
+            nuoveSezNomi = aggiornatiNomi;
+          }
+        }
+        const lezioniAgg = Array.isArray(c.lezioni)
+          ? c.lezioni.map((l) => {
+              const hitL = trovaSedeRinominata(l.sedeSvolgimentoSedeId, l.sedeNome);
+              if (hitL && (l.sedeNome !== hitL.nuovoNome || l.sedeSvolgimentoSedeId !== hitL.sedeId)) {
+                changed = true;
+                return { ...l, sedeSvolgimentoSedeId: hitL.sedeId, sedeNome: hitL.nuovoNome };
+              }
+              return l;
+            })
+          : c.lezioni;
+        if (changed) {
+          corsiMod = true;
+          return {
+            ...c,
+            sedeSvolgimentoSedeId: nuovoSedeId,
+            sedeCorso: nuovoSedeCorso,
+            sezioniDestinatarieNomi: nuoveSezNomi,
+            lezioni: lezioniAgg
+          };
+        }
+        return c;
+      });
+      if (corsiMod) handleAggiornaCorsi(corsiAgg);
+
+      // 4. Propaga su Volontari (sezioneAppartenenzaNome)
+      if (typeof aggiornaVolontariDeferredRef.current === 'function' && Array.isArray(volontariRef?.current)) {
+        let volMod = false;
+        const volAgg = volontariRef.current.map((v) => {
+          const hit = trovaSedeRinominata(v.sezioneAppartenenzaId, v.sezioneAppartenenzaNome);
+          if (hit && (v.sezioneAppartenenzaNome !== hit.nuovoNome || v.sezioneAppartenenzaId !== hit.sedeId)) {
+            volMod = true;
+            return { ...v, sezioneAppartenenzaId: hit.sedeId, sezioneAppartenenzaNome: hit.nuovoNome };
+          }
+          return v;
+        });
+        if (volMod) aggiornaVolontariDeferredRef.current(volAgg);
+      }
+    }
   };
 
   // 12. Turni Sedi Operative
@@ -1593,8 +1697,10 @@ export default function App() {
     } catch {}
     return normalizzaTurniSedi(TURNI_SEDI_INIZIALI);
   });
+  turniSediRef.current = turniSedi;
   const handleAggiornaTurni = (nuovi: TurnoSedeOperativa[]) => {
     const norm = normalizzaTurniSedi(nuovi);
+    turniSediRef.current = norm;
     setTurniSedi(norm);
     try {
       localStorage.setItem('CROCE_ORO_TURNI_SEDI', JSON.stringify(norm));
@@ -1605,6 +1711,7 @@ export default function App() {
   // Caricamento sincronizzato turni e sedi dal backend cloud con push immediato se vuoto
   useEffect(() => {
     sincronizzaDatiCartaIntestataDaServer();
+    sincronizzaRubricaNumeriUtiliDaServer();
 
     // Su hosting statico Vercel la sorgente unica è Cloud Firestore: evita chiamate REST stub che riscriverebbero valori di default
     if (!realtime.isServerlessStatic()) {
@@ -3058,8 +3165,6 @@ export default function App() {
   const [modalBachecaVolontarioAperta, setModalBachecaVolontarioAperta] = useState<boolean>(false);
   const [servizioTurnoCopiatoId, setServizioTurnoCopiatoId] = useState<string | null>(null);
   const [rubricaAperta, setRubricaAperta] = useState(false);
-  const [filtroRubrica, setFiltroRubrica] = useState('');
-  const [rubricaCopied, setRubricaCopied] = useState<string | null>(null);
   const [modalCopiaAperta, setModalCopiaAperta] = useState(false);
   const [modalNotificheAperta, setModalNotificheAperta] = useState(false);
   const [modalGuidaVolumeAperta, setModalGuidaVolumeAperta] = useState(false);
@@ -4236,6 +4341,7 @@ export default function App() {
     // Sincronizza istantaneamente su cloud e verso tutti gli altri smartphone/centrali connessi
     realtime.syncVolontariList(merged, currentDeleted);
   }, []);
+  aggiornaVolontariDeferredRef.current = aggiornaVolontari;
 
   const syncInTurnoConTimbrature = useCallback((timbList: TimbraturaVolontario[], broadcastToServer = false) => {
     let changed = false;
@@ -4341,18 +4447,56 @@ export default function App() {
     });
   }, [volontarioLoggatoCorrente, corsiFormazione]);
 
+  const nomiSubCustom = useNomiSottosezioniCustom();
+
+  // Utente centrale live (con permessi DB & sottosezioni sempre aggiornati dal registro volontari)
+  const utenteCentraleLive = useMemo(() => {
+    if (!utenteCentrale) return null;
+    const currentVol = volontari.find(
+      (v) =>
+        (utenteCentrale.id && v.id === utenteCentrale.id) ||
+        (utenteCentrale.pin && v.pin === utenteCentrale.pin)
+    );
+    if (!currentVol) return utenteCentrale;
+    return {
+      ...utenteCentrale,
+      isAdmin: isCentraleAdmin || utenteCentrale.isAdmin,
+      macroCategorieAbilitate: currentVol.macroCategorieAbilitate ?? utenteCentrale.macroCategorieAbilitate,
+      sottosezioniAbilitate: currentVol.sottosezioniAbilitate ?? utenteCentrale.sottosezioniAbilitate,
+      profiloCentrale: currentVol.profiloCentrale,
+      qualifica: currentVol.qualifica,
+    };
+  }, [utenteCentrale, volontari, isCentraleAdmin]);
+
   // Calcolo delle macro categorie autorizzate per la sessione corrente
   const sezioniAbilitateUtente = useMemo<AdminSectionId[]>(() => {
     if (isCentraleAdmin) {
       return TUTTE_LE_MACRO_CATEGORIE as AdminSectionId[];
     }
-    const currentVol = volontari.find(v => (utenteCentrale?.id && v.id === utenteCentrale.id) || (utenteCentrale?.pin && v.pin === utenteCentrale.pin));
-    const list = currentVol?.macroCategorieAbilitate || utenteCentrale?.macroCategorieAbilitate || [];
-    if (list.length === 0 && (currentVol?.profiloCentrale || currentVol?.qualifica === 'Operatore Centrale')) {
-      return ['centrale'];
+    const list = (utenteCentraleLive?.macroCategorieAbilitate || []) as MacroCategoriaId[];
+    const volLive = utenteCentraleLive as (typeof utenteCentraleLive & { profiloCentrale?: boolean; qualifica?: string }) | null;
+    const base: MacroCategoriaId[] =
+      list.length === 0 && (volLive?.profiloCentrale || volLive?.qualifica === 'Operatore Centrale')
+        ? (['centrale'] as MacroCategoriaId[])
+        : list;
+
+    return base.filter((secId) => {
+      const subs = getAllowedSubtabsForDatabase(utenteCentraleLive, secId);
+      return subs === null || subs.length > 0;
+    }) as AdminSectionId[];
+  }, [isCentraleAdmin, utenteCentraleLive]);
+
+  const centraleAllowedSubtabs = useMemo<string[] | null>(() => {
+    if (isCentraleAdmin) return null;
+    return getAllowedSubtabsForDatabase(utenteCentraleLive, 'centrale');
+  }, [isCentraleAdmin, utenteCentraleLive]);
+
+  useEffect(() => {
+    if (centraleAllowedSubtabs && !centraleAllowedSubtabs.includes(subSezioneCentrale)) {
+      const prima = (['missioni', 'giornale_bordo'] as const).find((t) => centraleAllowedSubtabs.includes(t));
+      if (prima) setSubSezioneCentrale(prima);
     }
-    return list as AdminSectionId[];
-  }, [isCentraleAdmin, utenteCentrale, volontari]);
+  }, [centraleAllowedSubtabs, subSezioneCentrale]);
 
 
 
@@ -9676,6 +9820,9 @@ KM TOTALI: ${kmTot} KM`;
         if (Array.isArray(s.tipologieMezzo) && s.tipologieMezzo.length > 0) {
           applicaTipologieMezzoDaSync(s.tipologieMezzo, s.tipologieMezzoUpdatedAt);
         }
+        if (Array.isArray(s.rubricaNumeriUtili)) {
+          applicaRubricaNumeriUtiliDaSync(s.rubricaNumeriUtili, s.rubricaNumeriUtiliUpdatedAt);
+        }
         if (s.ringing && s.ringing.active) {
           const rTs = Number(s.ringing.timestamp || 0);
           if (rTs > lastServerRingTsRef.current) lastServerRingTsRef.current = rTs;
@@ -9866,6 +10013,9 @@ KM TOTALI: ${kmTot} KM`;
         }
         if (Array.isArray(s.tipologieMezzo) && s.tipologieMezzo.length > 0) {
           applicaTipologieMezzoDaSync(s.tipologieMezzo, s.tipologieMezzoUpdatedAt);
+        }
+        if (Array.isArray(s.rubricaNumeriUtili)) {
+          applicaRubricaNumeriUtiliDaSync(s.rubricaNumeriUtili, s.rubricaNumeriUtiliUpdatedAt);
         }
         if (s.activeMission) {
           if (isBlockedOrGhostMission(s.activeMission, s.codiciEliminati)) {
@@ -11807,6 +11957,11 @@ KM TOTALI: ${kmTot} KM`;
           applicaTipologieMezzoDaSync(payload.tipologieMezzo, payload.updatedAt);
         }
       }),
+      realtime.on('RUBRICA_NUMERI_UTILI_UPDATED', (payload: any) => {
+        if (Array.isArray(payload?.rubrica)) {
+          applicaRubricaNumeriUtiliDaSync(payload.rubrica, payload.updatedAt);
+        }
+      }),
       realtime.on('FORZATURA_CAUZIONE_ALERT', (payload: any) => {
         if (!payload) return;
         const currentRole = ruoloRef.current;
@@ -11863,7 +12018,9 @@ KM TOTALI: ${kmTot} KM`;
           catalogoMansioni: getMansioniCatalogo(),
           categorieMansioni: getCategorieMansioni(),
           tipologieMezzo: getTipologieMezzoCatalogo(),
-          nomiDatabase: getNomiDatabaseCustom(),
+          nomiDatabase: getNomiDatabaseSyncPayload(),
+          rubricaNumeriUtili: getRubricaNumeriUtili(),
+          rubricaNumeriUtiliUpdatedAt: getRubricaNumeriUtiliUpdatedAt(),
           timbrature: readLS('CROCE_ORO_TIMBRATURE', []),
           luoghiTimbratura: normalizzaListaLuoghiTimbratura(readLS('CROCE_ORO_LUOGHI_TIMBRATURA', LUOGHI_TIMBRATURA_DEFAULT), sediLocali),
           indirizziCollezionati: readLS('CROCE_ORO_INDIRIZZI_COLLEZIONATI', []),
@@ -12286,7 +12443,9 @@ KM TOTALI: ${kmTot} KM`;
               categorieMansioni: getCategorieMansioni(),
               tipologieMezzo: getTipologieMezzoCatalogo(),
               mezziFlotta,
-              nomiDatabase: getNomiDatabaseCustom(),
+              nomiDatabase: getNomiDatabaseSyncPayload(),
+              rubricaNumeriUtili: getRubricaNumeriUtili(),
+              rubricaNumeriUtiliUpdatedAt: getRubricaNumeriUtiliUpdatedAt(),
               timbrature: timbratureVolontari,
               luoghiTimbratura,
               indirizziCollezionati,
@@ -12632,10 +12791,8 @@ KM TOTALI: ${kmTot} KM`;
 
           {/* Tasto Numeri Utili Unificato in alto nella barra principale */}
           <button
-            onClick={() => {
-              setFiltroRubrica('');
-              setRubricaAperta(true);
-            }}
+            type="button"
+            onClick={() => setRubricaAperta(true)}
             className={`px-2.5 py-1.5 rounded-xl font-bold text-xs flex items-center gap-1.5 shadow-sm active:scale-95 transition-all cursor-pointer border ${
               isWeb ? 'bg-amber-100 hover:bg-amber-200 text-amber-950 border-amber-400 font-black' : 'bg-[#bfa353]/20 hover:bg-[#bfa353]/30 text-[#bfa353] border border-[#bfa353]/40'
             }`}
@@ -12841,6 +12998,7 @@ KM TOTALI: ${kmTot} KM`;
             operatoreCorrente={utenteCentrale?.nome ? `${utenteCentrale.nome} ${utenteCentrale.cognome || ''}` : 'Amministratore'}
             isPresidente={!!utenteCentrale?.caricaConsiglioDirettivo?.toLowerCase().includes('presidente')}
             isAdmin={isCentraleAdmin}
+            allowedSubtabs={isCentraleAdmin ? null : getAllowedSubtabsForDatabase(utenteCentraleLive, 'volontari')}
             luoghiTimbratura={luoghiTimbratura}
             onAggiornaLuoghiTimbratura={handleAggiornaLuoghiTimbratura}
             magazzinoVestiario={magazzinoVestiario}
@@ -12875,6 +13033,7 @@ KM TOTALI: ${kmTot} KM`;
               checklistsCompilate={checklistsCompilate}
               onAggiornaChecklistsCompilate={handleAggiornaChecklistsCompilate}
               sedi={sediAssociative}
+              onAggiornaSedi={handleAggiornaSedi}
               operatoreCorrente={utenteCentrale?.nome ? `${utenteCentrale.nome} ${utenteCentrale.cognome || ''}`.trim() : 'Amministratore'}
               isAdmin={isCentraleAdmin}
               puoModificareRegolaScadenze={puoModificareRegolaScadenze}
@@ -12883,6 +13042,7 @@ KM TOTALI: ${kmTot} KM`;
               onNotificaRadio={aggiungiNotifica}
               contatti={contatti}
               serviziArchivio={archivioPDF}
+              allowedSubtabs={isCentraleAdmin ? null : getAllowedSubtabsForDatabase(utenteCentraleLive, 'mezzi')}
             />
           );
         })()}
@@ -12906,6 +13066,7 @@ KM TOTALI: ${kmTot} KM`;
             onAggiungiContatto={handleAggiungiContatto}
             manutenzioni={manutenzioniMezzi}
             sedi={sediAssociative}
+            allowedSubtabs={isCentraleAdmin ? null : getAllowedSubtabsForDatabase(utenteCentraleLive, 'contabilita')}
           />
         )}
 
@@ -12920,6 +13081,7 @@ KM TOTALI: ${kmTot} KM`;
             operatoreCorrente={utenteCentrale?.nome ? `${utenteCentrale.nome} ${utenteCentrale.cognome || ''}` : 'Amministratore'}
             isAdmin={isCentraleAdmin}
             onNotificaRadio={aggiungiNotifica}
+            allowedSubtabs={isCentraleAdmin ? null : getAllowedSubtabsForDatabase(utenteCentraleLive, 'formazione')}
           />
         )}
 
@@ -12936,6 +13098,7 @@ KM TOTALI: ${kmTot} KM`;
             isAdmin={isCentraleAdmin}
             onNotificaRadio={aggiungiNotifica}
             contatti={contatti}
+            allowedSubtabs={isCentraleAdmin ? null : getAllowedSubtabsForDatabase(utenteCentraleLive, 'magazzino')}
           />
         )}
 
@@ -12949,6 +13112,7 @@ KM TOTALI: ${kmTot} KM`;
             operatoreCorrente={utenteCentrale?.nome ? `${utenteCentrale.nome} ${utenteCentrale.cognome || ''}` : 'Amministratore'}
             isAdmin={isCentraleAdmin}
             onNotificaRadio={aggiungiNotifica}
+            allowedSubtabs={isCentraleAdmin ? null : getAllowedSubtabsForDatabase(utenteCentraleLive, 'sedi')}
           />
         )}
 
@@ -12964,6 +13128,7 @@ KM TOTALI: ${kmTot} KM`;
             operatoreCorrente={utenteCentrale?.nome ? `${utenteCentrale.nome} ${utenteCentrale.cognome || ''}` : 'Amministratore'}
             isAdmin={isCentraleAdmin}
             onNotificaRadio={aggiungiNotifica}
+            allowedSubtabs={isCentraleAdmin ? null : getAllowedSubtabsForDatabase(utenteCentraleLive, 'turni')}
           />
         )}
 
@@ -12978,6 +13143,7 @@ KM TOTALI: ${kmTot} KM`;
             isAdmin={isCentraleAdmin}
             isPresidente={Boolean(utenteCentrale?.caricaConsiglioDirettivo?.toLowerCase().includes('presidente'))}
             onNotificaRadio={aggiungiNotifica}
+            allowedSubtabs={isCentraleAdmin ? null : getAllowedSubtabsForDatabase(utenteCentraleLive, 'bacheca')}
           />
         )}
 
@@ -12995,6 +13161,8 @@ KM TOTALI: ${kmTot} KM`;
             isAdmin={isCentraleAdmin}
             hasAccess={sezioniAbilitateUtente.includes('contatti')}
             onNotificaRadio={aggiungiNotifica}
+            allowedSubtabs={isCentraleAdmin ? null : getAllowedSubtabsForDatabase(utenteCentraleLive, 'contatti')}
+            onApriNumeriUtili={() => setRubricaAperta(true)}
           />
         )}
 
@@ -15083,146 +15251,6 @@ KM TOTALI: ${kmTot} KM`;
               )}
             </div>
 
-                {/* DRAWER A COMPARSA: NUMERI UTILI SUL PROFILO VOLONTARIO */}
-                {rubricaAperta && (
-                  <div className="absolute inset-0 bg-black/60 z-50 rounded-[36px] flex flex-col justify-end p-2 animate-in fade-in duration-200">
-                    <div className="bg-white rounded-2xl max-h-[88%] flex flex-col overflow-hidden border-2 border-[#bfa353] shadow-2xl">
-                      {/* Intestazione Drawer */}
-                      <div className="bg-[#1d1a60] text-white p-3 flex items-center justify-between border-b-2 border-[#bfa353]">
-                        <div className="flex items-center gap-2">
-                          <CroceOroLogo size="sm" />
-                          <div>
-                            <span className="font-bold text-xs uppercase tracking-wide block text-amber-300">
-                              Numeri Utili di Emergenza
-                            </span>
-                            <span className="text-[10px] text-slate-300 block">
-                              Massa-Carrara & Interni Associazione
-                            </span>
-                          </div>
-                        </div>
-                        <button
-                          onClick={() => setRubricaAperta(false)}
-                          className="w-7 h-7 rounded-full bg-white/10 hover:bg-white/20 text-amber-400 flex items-center justify-center text-sm font-bold transition-colors cursor-pointer"
-                        >
-                          ✕
-                        </button>
-                      </div>
-
-                      {/* Barra di ricerca rapida */}
-                      <div className="p-2 bg-slate-100 border-b border-slate-200 flex items-center gap-2">
-                        <input
-                          type="text"
-                          value={filtroRubrica}
-                          onChange={(e) => setFiltroRubrica(e.target.value)}
-                          placeholder="🔍 Cerca comando, C.O.C., Questura, Polizia..."
-                          className="w-full p-2 text-xs rounded-lg border border-slate-300 bg-white text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-[#1d1a60]"
-                        />
-                        {filtroRubrica && (
-                          <button
-                            onClick={() => setFiltroRubrica('')}
-                            className="text-[11px] text-slate-600 hover:text-slate-900 px-2 py-1 bg-slate-200 rounded font-semibold cursor-pointer"
-                          >
-                            Reset
-                          </button>
-                        )}
-                      </div>
-
-                      {/* Lista Contatti Filtrabili */}
-                      <div className="p-3 overflow-y-auto space-y-3 text-xs text-slate-800 flex-1">
-                        {RUBRICA_CONTATTI.map((cat, idx) => {
-                          const vociFiltrate = cat.voci.filter(
-                            (v) =>
-                              v.nome.toLowerCase().includes(filtroRubrica.toLowerCase()) ||
-                              v.numero.includes(filtroRubrica)
-                          );
-                          if (vociFiltrate.length === 0) return null;
-
-                          return (
-                            <div key={idx} className="space-y-1.5">
-                              <span className="text-[10px] font-black uppercase text-[#1d1a60] bg-amber-500/15 px-2 py-0.5 rounded border border-amber-500/30 tracking-wide block">
-                                {cat.categoria}
-                              </span>
-                              <div className="space-y-1.5">
-                                {vociFiltrate.map((voce, vIdx) => {
-                                  const isCopied = rubricaCopied === voce.numero;
-                                  return (
-                                    <div
-                                      key={vIdx}
-                                      className="flex items-center justify-between p-2 rounded-xl bg-slate-50 border-l-4 border-[#1d1a60] hover:bg-slate-100 transition-all shadow-sm"
-                                    >
-                                      <div className="pr-2 min-w-0 flex-1">
-                                        <div className="font-bold text-slate-900 text-xs truncate">
-                                          {voce.nome}
-                                        </div>
-                                        <div className="font-mono text-[11px] font-semibold text-slate-600 tracking-wide mt-0.5">
-                                          {voce.numero}
-                                        </div>
-                                      </div>
-
-                                      <div className="flex items-center gap-1.5 shrink-0">
-                                        {/* Copia numero */}
-                                        <button
-                                          onClick={() => {
-                                            navigator.clipboard.writeText(voce.numero);
-                                            setRubricaCopied(voce.numero);
-                                            setTimeout(() => setRubricaCopied(null), 2000);
-                                          }}
-                                          className={`h-7 px-2.5 rounded-lg text-[11px] font-bold transition-colors flex items-center justify-center gap-1 cursor-pointer shadow-sm active:scale-95 ${
-                                            isCopied
-                                              ? 'bg-emerald-600 text-white'
-                                              : 'bg-slate-200 hover:bg-slate-300 text-slate-700'
-                                          }`}
-                                          title="Copia numero"
-                                        >
-                                          {isCopied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
-                                          <span>{isCopied ? 'Copiato' : 'Copia'}</span>
-                                        </button>
-
-                                        {/* Chiama direttamente */}
-                                        <a
-                                          href={`tel:${voce.numero}`}
-                                          className="h-7 bg-[#1d1a60] hover:bg-blue-900 text-white font-bold px-2.5 rounded-lg text-[11px] flex items-center justify-center gap-1 shadow-sm transition-transform active:scale-95"
-                                        >
-                                          <Phone className="w-3.5 h-3.5 text-amber-400" />
-                                          <span>Chiama</span>
-                                        </a>
-                                      </div>
-                                    </div>
-                                  );
-                                })}
-                              </div>
-                            </div>
-                          );
-                        })}
-
-                        {/* Messaggio nessun risultato */}
-                        {RUBRICA_CONTATTI.every(cat =>
-                          cat.voci.filter(
-                            (v) =>
-                              v.nome.toLowerCase().includes(filtroRubrica.toLowerCase()) ||
-                              v.numero.includes(filtroRubrica)
-                          ).length === 0
-                        ) && (
-                          <div className="text-center py-6 text-slate-500 text-xs">
-                            Nessun contatto trovato per "{filtroRubrica}".
-                          </div>
-                        )}
-                      </div>
-
-                      {/* Footer Drawer */}
-                      <div className="p-2.5 bg-slate-50 border-t border-slate-200 flex items-center justify-between text-[11px] text-slate-500">
-                        <span className="font-semibold text-slate-600">Centrale Operativa Croce Oro</span>
-                        <button
-                          onClick={() => setRubricaAperta(false)}
-                          className="px-3 py-1 rounded-lg bg-[#1d1a60] hover:bg-blue-900 text-white font-bold text-xs cursor-pointer"
-                        >
-                          Chiudi
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                )}
-
                 {/* MODALE COPIA RAPIDA DATI (RICOPIDATI) */}
                 {modalCopiaAperta && (
                   <div className="absolute inset-0 bg-black/60 z-50 rounded-[36px] flex items-center justify-center p-3 animate-in fade-in duration-200">
@@ -15520,6 +15548,7 @@ KM TOTALI: ${kmTot} KM`;
             {/* SUB-NAVBAR CENTRALE OPERATIVA: GESTIONE MISSIONI vs GIORNALE DI BORDO */}
             <div className="bg-slate-900 border border-slate-800 p-2 sm:p-2.5 rounded-2xl flex flex-wrap items-center justify-between gap-2 shadow-lg">
               <div className="flex items-center gap-2 flex-wrap">
+                {(!centraleAllowedSubtabs || centraleAllowedSubtabs.includes('missioni')) && (
                 <button
                   type="button"
                   onClick={() => setSubSezioneCentrale('missioni')}
@@ -15530,11 +15559,13 @@ KM TOTALI: ${kmTot} KM`;
                   }`}
                 >
                   <Send className="w-3.5 h-3.5" />
-                  <span>Invio Schede & Missioni</span>
+                  <span>{getTitoloSottosezione('centrale', 'missioni', 'Invio Schede & Missioni', nomiSubCustom)}</span>
                   {missione && !missione.archiviata && (
                     <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
                   )}
                 </button>
+                )}
+                {(!centraleAllowedSubtabs || centraleAllowedSubtabs.includes('giornale_bordo')) && (
                 <button
                   type="button"
                   onClick={() => setSubSezioneCentrale('giornale_bordo')}
@@ -15545,7 +15576,7 @@ KM TOTALI: ${kmTot} KM`;
                   }`}
                 >
                   <BookOpen className="w-3.5 h-3.5 text-cyan-400" />
-                  <span>Giornale di Bordo & Brogliaccio</span>
+                  <span>{getTitoloSottosezione('centrale', 'giornale_bordo', 'Giornale di Bordo & Brogliaccio', nomiSubCustom)}</span>
                   {giornaleBordo.length > 0 && (
                     <span className={`px-2 py-0.5 rounded-full text-[10px] font-mono font-black ${
                       subSezioneCentrale === 'giornale_bordo' ? 'bg-black/30 text-white' : 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30'
@@ -15554,6 +15585,7 @@ KM TOTALI: ${kmTot} KM`;
                     </span>
                   )}
                 </button>
+                )}
               </div>
 
               <div className="flex items-center gap-2 text-xs text-slate-400 font-mono">
@@ -15565,7 +15597,7 @@ KM TOTALI: ${kmTot} KM`;
               </div>
             </div>
 
-            {subSezioneCentrale === 'giornale_bordo' ? (
+            {subSezioneCentrale === 'giornale_bordo' && (!centraleAllowedSubtabs || centraleAllowedSubtabs.includes('giornale_bordo')) ? (
               <GiornaleBordoCentrale
                 voci={giornaleBordo}
                 onAggiungiVoce={handleAggiungiVoceGiornaleBordo}
@@ -15575,7 +15607,7 @@ KM TOTALI: ${kmTot} KM`;
                 mezziFlotta={mezziFlotta}
                 onTornaAllaCentrale={() => setSubSezioneCentrale('missioni')}
               />
-            ) : (
+            ) : (!centraleAllowedSubtabs || centraleAllowedSubtabs.includes('missioni')) ? (
               <>
                 {/* Box Form Compilazione Scheda */}
             <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 sm:p-5 shadow-xl">
@@ -15618,6 +15650,7 @@ KM TOTALI: ${kmTot} KM`;
                     )}
                   </button>
 
+                  {(!centraleAllowedSubtabs || centraleAllowedSubtabs.includes('giornale_bordo')) && (
                   <button
                     type="button"
                     onClick={() => setSubSezioneCentrale('giornale_bordo')}
@@ -15632,6 +15665,7 @@ KM TOTALI: ${kmTot} KM`;
                       </span>
                     )}
                   </button>
+                  )}
 
                   <button
                     type="button"
@@ -19359,6 +19393,10 @@ KM TOTALI: ${kmTot} KM`;
               )}
             </div>
               </>
+            ) : (
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 text-center text-slate-400 text-xs">
+                Nessuna sottosezione autorizzata per questo account nella Centrale Operativa.
+              </div>
             )}
 
           </div>
@@ -20146,7 +20184,9 @@ KM TOTALI: ${kmTot} KM`;
             categorieMansioni: getCategorieMansioni(),
             tipologieMezzo: getTipologieMezzoCatalogo(),
             mezziFlotta,
-            nomiDatabase: getNomiDatabaseCustom(),
+            nomiDatabase: getNomiDatabaseSyncPayload(),
+            rubricaNumeriUtili: getRubricaNumeriUtili(),
+            rubricaNumeriUtiliUpdatedAt: getRubricaNumeriUtiliUpdatedAt(),
             timbrature: timbratureVolontari,
             luoghiTimbratura,
             indirizziCollezionati,
@@ -22034,6 +22074,19 @@ KM TOTALI: ${kmTot} KM`;
         flottaMezzi={FLOTTA_COMPLETA}
         getKmInizialiSuggeriti={getUltimiKmMezzo}
         onConferma={handleAvviaServizioAutonomo}
+      />
+
+      {/* MODALE UNIVERSALE NUMERI UTILI (CENTRALE + VOLONTARIO + GESTIONE RECAPITI) */}
+      <ModalNumeriUtili
+        isOpen={rubricaAperta}
+        onClose={() => setRubricaAperta(false)}
+        canManage={ruolo === 'admin'}
+        operatoreCorrente={
+          ruolo === 'admin'
+            ? (utenteCentrale ? `${utenteCentrale.nome} ${utenteCentrale.cognome || ''}`.trim() : 'Amministratore')
+            : (sessioneTurno.volontarioNome || 'Volontario')
+        }
+        onNotificaRadio={aggiungiNotifica}
       />
 
       {/* BANNER NOTIFICA AGGIORNAMENTO DISPONIBILE */}

@@ -29,7 +29,8 @@ import { inviaNotificaModificaAdmin } from '../../utils/notificaModificaAdmin';
 import { CommentiBachecaPost } from '../bacheca/CommentiBachecaPost';
 import { realtime } from '../../services/realtime';
 import { formatISODateItaly, formatTimeItaly } from '../../utils/italianTime';
-import { useTitoloDatabase } from '../../hooks/useNomiDatabase';
+import { useTitoloDatabase, useNomiSottosezioniCustom } from '../../hooks/useNomiDatabase';
+import { getTitoloSottosezione } from '../../constants/macroCategorie';
 
 interface SezioneBachecaProps {
   comunicazioni: ComunicazioneBacheca[];
@@ -40,6 +41,7 @@ interface SezioneBachecaProps {
   isAdmin?: boolean;
   isPresidente?: boolean;
   onNotificaRadio?: (testo: string, tipo?: 'centrale' | 'mezzo' | 'sistema' | 'allarme') => void;
+  allowedSubtabs?: string[] | null;
 }
 
 export const SezioneBacheca: React.FC<SezioneBachecaProps> = ({
@@ -50,8 +52,13 @@ export const SezioneBacheca: React.FC<SezioneBachecaProps> = ({
   operatoreId,
   isAdmin = true,
   isPresidente = false,
-  onNotificaRadio
+  onNotificaRadio,
+  allowedSubtabs = null
 }) => {
+  const nomiSubCustom = useNomiSottosezioniCustom();
+  const canShowSubtab = (id: string) => !allowedSubtabs || allowedSubtabs.includes(id);
+  const canPubblicaBacheca = canShowSubtab('pubblica');
+  const canVediElencoBacheca = canShowSubtab('elenco');
   // Filtri di ricerca
   const [ricerca, setRicerca] = useState('');
   const [filtroSede, setFiltroSede] = useState('tutte');
@@ -369,6 +376,7 @@ export const SezioneBacheca: React.FC<SezioneBachecaProps> = ({
         </div>
 
         <div className="flex items-center gap-2.5 flex-wrap self-end md:self-auto relative z-10">
+          {canPubblicaBacheca && (
           <button
             type="button"
             onClick={() => apriNuova()}
@@ -377,7 +385,22 @@ export const SezioneBacheca: React.FC<SezioneBachecaProps> = ({
             <PlusCircle className="w-4 h-4" />
             <span>Nuova Comunicazione</span>
           </button>
+          )}
         </div>
+      </div>
+
+      {/* Sottosezioni Bacheca Autorizzate */}
+      <div className="flex items-center gap-2 flex-wrap">
+        {canVediElencoBacheca && (
+          <span className="px-3 py-1 rounded-xl bg-violet-950/70 border border-violet-500/40 text-violet-200 text-xs font-black uppercase">
+            1. {getTitoloSottosezione('bacheca', 'elenco', 'Consultazione Bacheca & Avvisi', nomiSubCustom)}
+          </span>
+        )}
+        {canPubblicaBacheca && (
+          <span className="px-3 py-1 rounded-xl bg-emerald-950/70 border border-emerald-500/40 text-emerald-200 text-xs font-black uppercase">
+            2. {getTitoloSottosezione('bacheca', 'pubblica', 'Pubblica & Modifica Comunicazioni', nomiSubCustom)}
+          </span>
+        )}
       </div>
 
       {/* ------------------------------------------------------------- */}
@@ -521,6 +544,7 @@ export const SezioneBacheca: React.FC<SezioneBachecaProps> = ({
           <p className="text-xs text-slate-500 max-w-sm mx-auto">
             Non ci sono comunicazioni che corrispondono ai filtri selezionati. Fai clic su "Nuova Comunicazione" per crearne una.
           </p>
+          {canPubblicaBacheca && (
           <button
             type="button"
             onClick={() => apriNuova()}
@@ -528,6 +552,7 @@ export const SezioneBacheca: React.FC<SezioneBachecaProps> = ({
           >
             + Nuova Comunicazione
           </button>
+          )}
         </div>
       ) : (
         <div className="space-y-3">
@@ -633,6 +658,7 @@ export const SezioneBacheca: React.FC<SezioneBachecaProps> = ({
 
                   <div className="flex items-center gap-1.5 flex-wrap self-end sm:self-auto">
                     {/* Toggle Evidenziata (Pin) */}
+                    {canPubblicaBacheca && (
                     <button
                       type="button"
                       onClick={() => toggleEvidenziata(com.id)}
@@ -646,8 +672,10 @@ export const SezioneBacheca: React.FC<SezioneBachecaProps> = ({
                       {com.evidenziata ? <PinOff className="w-3.5 h-3.5 text-violet-300" /> : <Pin className="w-3.5 h-3.5 text-slate-400" />}
                       <span>{com.evidenziata ? 'Sfissa' : 'Evidenzia'}</span>
                     </button>
+                    )}
 
                     {/* Toggle Attiva / Archivia */}
+                    {canPubblicaBacheca && (
                     <button
                       type="button"
                       onClick={() => toggleAttiva(com.id)}
@@ -661,9 +689,10 @@ export const SezioneBacheca: React.FC<SezioneBachecaProps> = ({
                       {com.attiva ? <EyeOff className="w-3.5 h-3.5 text-slate-400" /> : <Eye className="w-3.5 h-3.5 text-emerald-400" />}
                       <span>{com.attiva ? 'Archivia' : 'Riattiva'}</span>
                     </button>
+                    )}
 
                     {/* Modifica: consentita all'autore del post o all'Amministratore */}
-                    {puoModificarePost && (
+                    {canPubblicaBacheca && puoModificarePost && (
                       <button
                         type="button"
                         onClick={() => apriModifica(com)}
@@ -676,7 +705,7 @@ export const SezioneBacheca: React.FC<SezioneBachecaProps> = ({
                     )}
 
                     {/* Elimina: consentita all'autore del post o all'Amministratore */}
-                    {puoEliminarePost && (
+                    {canPubblicaBacheca && puoEliminarePost && (
                       <button
                         type="button"
                         onClick={() => setIdDaEliminare(com.id)}

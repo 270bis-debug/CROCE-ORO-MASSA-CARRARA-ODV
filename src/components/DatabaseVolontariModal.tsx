@@ -162,12 +162,13 @@ export interface Volontario {
   qualifica: 'Autista' | 'Soccorritore' | 'Operatore Centrale' | string;
   mansione?: string; // Mansione principale del volontario (nuova nomenclatura)
   mansioni?: string[]; // Mansioni multiple assegnate contemporaneamente
+  mansioniIds?: string[]; // ID immutabili delle mansioni assegnate (resistenti a rinomine consecutive)
   caricaConsiglioDirettivo?: CaricaConsiglioDirettivo; // Carica nel Consiglio Direttivo
   tesseramento?: DatiTesseramento; // Tesseramento, rinnovo, ricevuta sequenziale e timbro cartaceo
   telefono: string;
   email: string; // Indirizzo email obbligatorio
   pin: string; // 4 cifre
-  pinProvvisorio?: boolean; // Se true, generato provvisoriamente dal sistema
+  pinProvvisorio?: boolean; // Se true, generato provvisororiamente dal sistema
   resetToken?: string; // Token univoco per reimpostazione autonoma da pagina web dedicata
   dataInvioInvitoReset?: string; // Data e ora invio email con PIN provvisorio e link
   dataRegistrazione: string;
@@ -194,6 +195,7 @@ export interface Volontario {
   esenteQuotaAssociativa?: boolean; // Se true, non riceve la quota associativa
   motivoEsenzioneQuota?: 'Benemerito' | 'Giovane' | 'LPU / MAP' | 'Onorario' | string;
   macroCategorieAbilitate?: MacroCategoriaId[]; // Macro categorie a cui l'utente ha accesso delegato (visualizzazione, inserimento e modifica)
+  sottosezioniAbilitate?: Record<string, string[]>; // Sottosezioni specifiche abilitate per ciascun database (se assente: tutte)
   sediTurniAbilitate?: string[]; // Sedi/sezioni autorizzate per visualizzare il tabellone turni (modificabile da centrale)
   sezioneAppartenenzaId?: string; // Sezione territoriale di appartenenza dell'associazione
   sezioneAppartenenzaNome?: string; // Nome della sezione territoriale di appartenenza

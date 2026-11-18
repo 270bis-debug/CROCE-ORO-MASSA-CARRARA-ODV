@@ -38,7 +38,9 @@ import {
 import { MezzoFlotta, InterventoManutenzione, RicambioUtilizzatoManutenzione, DotazioneMagazzinoMezzo, SedeAssociativaCompleta, ArticoloMagazzinoMezzi, ContattoEsterno, TipologiaMezzoItem } from '../../types/adminTypes';
 import { SEDI_ASSOCIATIVE_INIZIALI } from '../../data/adminMockData';
 import { inviaNotificaModificaAdmin } from '../../utils/notificaModificaAdmin';
-import { useTitoloDatabase } from '../../hooks/useNomiDatabase';
+import { useTitoloDatabase, useNomiSottosezioniCustom } from '../../hooks/useNomiDatabase';
+import { getTitoloSottosezione } from '../../constants/macroCategorie';
+import { isResponsabileParcoMezzi } from '../../utils/mansioniVolontari';
 import {
   calcolaManutenzioniInScadenza,
   getEmailResponsabileMezzi,
@@ -105,6 +107,7 @@ interface SezioneMezziProps {
   onAggiornaChecklistsTemplates?: (templates: ChecklistTemplate[]) => void;
   checklistsCompilate?: ChecklistCompilataTurno[];
   onAggiornaChecklistsCompilate?: (compilate: ChecklistCompilataTurno[]) => void;
+  allowedSubtabs?: string[] | null;
 }
 
 export const SezioneMezzi: React.FC<SezioneMezziProps> = ({
@@ -129,7 +132,8 @@ export const SezioneMezzi: React.FC<SezioneMezziProps> = ({
   checklistsTemplates,
   onAggiornaChecklistsTemplates,
   checklistsCompilate,
-  onAggiornaChecklistsCompilate
+  onAggiornaChecklistsCompilate,
+  allowedSubtabs = null
 }) => {
   const haCaricaDirettivo = Boolean(
     caricaConsiglioDirettivo &&
@@ -141,7 +145,18 @@ export const SezioneMezzi: React.FC<SezioneMezziProps> = ({
   // Lista sicura di tutte le sezioni associative territoriali (fallback completo se sedi non ancora caricate)
   const listaSedi = (sedi && sedi.length > 0) ? sedi : SEDI_ASSOCIATIVE_INIZIALI;
 
+  const nomiSubCustom = useNomiSottosezioniCustom();
   const [sottoTab, setSottoTab] = useState<'flotta' | 'manutenzione' | 'consumi' | 'dotazione' | 'magazzinoMezzi' | 'monitoraggio' | 'checklist' | 'tipologie'>('flotta');
+
+  const canShowSubtab = (id: string) => !allowedSubtabs || allowedSubtabs.includes(id);
+
+  useEffect(() => {
+    if (!canShowSubtab(sottoTab)) {
+      const ordine = ['flotta', 'manutenzione', 'dotazione', 'magazzinoMezzi', 'consumi', 'checklist', 'tipologie', 'monitoraggio'] as const;
+      const prima = ordine.find((t) => canShowSubtab(t));
+      if (prima) setSottoTab(prima);
+    }
+  }, [sottoTab, allowedSubtabs]);
 
   // Catalogo sincronizzato Tipologie Mezzo
   const tipologieMezzo = useTipologieMezzo();
@@ -315,11 +330,7 @@ export const SezioneMezzi: React.FC<SezioneMezziProps> = ({
       (volontari || []).forEach((v) => {
         if (!v?.email || !v.email.includes('@')) return;
         const caricaLow = String(v.caricaConsiglioDirettivo || '').toLowerCase();
-        const mansioniStr = [v.qualifica, v.mansione, ...(Array.isArray(v.mansioni) ? v.mansioni : [])]
-          .filter(Boolean)
-          .join(' ')
-          .toLowerCase();
-        if (caricaLow.includes('presidente') || mansioniStr.includes('responsabile mezzi') || mansioniStr.includes('autoparco')) {
+        if (caricaLow.includes('presidente') || isResponsabileParcoMezzi(v)) {
           emailsExtra.push(v.email.trim());
         }
       });
@@ -776,6 +787,13 @@ export const SezioneMezzi: React.FC<SezioneMezziProps> = ({
   // Salva Mezzo (Nuovo o Modifica)
   const handleSalvaMezzo = (e: React.FormEvent) => {
     e.preventDefault();
+    const tipologiaMatch = tipologieSelectOptions.find(
+      (t) => t.nome.trim().toLowerCase() === String(formTipo || '').trim().toLowerCase()
+    );
+    const sedeMatch = listaSedi.find(
+      (s) => s.nome.trim().toLowerCase() === String(formSede || '').trim().toLowerCase()
+    );
+
     if (mezzoInModifica) {
       // Modifica
       const aggiornati = mezzi.map((m) => {
@@ -787,9 +805,11 @@ export const SezioneMezzi: React.FC<SezioneMezziProps> = ({
             modello: formModello.trim(),
             annoImmatricolazione: Number(formAnno),
             tipo: formTipo,
+            tipologiaMezzoId: tipologiaMatch?.id || m.tipologiaMezzoId,
             flotta: formFlotta,
             chilometraggioAttuale: Number(formKm),
             sedeStazionamento: formSede,
+            sedeId: sedeMatch?.id || m.sedeId,
             scadenzaRevisione: formScadRevisione,
             scadenzaAssicurazione: formScadAssicurazione,
             scadenzaBollo: formScadBollo,
@@ -817,10 +837,12 @@ export const SezioneMezzi: React.FC<SezioneMezziProps> = ({
         modello: formModello.trim(),
         annoImmatricolazione: Number(formAnno),
         tipo: formTipo,
+        tipologiaMezzoId: tipologiaMatch?.id,
         flotta: formFlotta,
         stato: 'Operativo',
         chilometraggioAttuale: Number(formKm),
         sedeStazionamento: formSede,
+        sedeId: sedeMatch?.id,
         scadenzaRevisione: formScadRevisione,
         scadenzaAssicurazione: formScadAssicurazione,
         scadenzaBollo: formScadBollo,
@@ -1129,6 +1151,7 @@ export const SezioneMezzi: React.FC<SezioneMezziProps> = ({
 
       {/* Sotto-Schede Sezione 3 */}
       <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-none border-b border-slate-800">
+        {canShowSubtab('flotta') && (
         <button
           type="button"
           onClick={() => setSottoTab('flotta')}
@@ -1139,9 +1162,11 @@ export const SezioneMezzi: React.FC<SezioneMezziProps> = ({
           }`}
         >
           <Ambulance className="w-4 h-4" />
-          <span>1. Flotta Mezzi ({mezzi.length})</span>
+          <span>1. {getTitoloSottosezione('mezzi', 'flotta', 'Flotta Mezzi', nomiSubCustom)} ({mezzi.length})</span>
         </button>
+        )}
 
+        {canShowSubtab('manutenzione') && (
         <button
           type="button"
           onClick={() => setSottoTab('manutenzione')}
@@ -1152,9 +1177,11 @@ export const SezioneMezzi: React.FC<SezioneMezziProps> = ({
           }`}
         >
           <Wrench className="w-4 h-4" />
-          <span>2. Manutenzione Mezzi & Tagliandi ({manutenzioni.length})</span>
+          <span>2. {getTitoloSottosezione('mezzi', 'manutenzione', 'Manutenzione Mezzi & Tagliandi', nomiSubCustom)} ({manutenzioni.length})</span>
         </button>
+        )}
 
+        {canShowSubtab('dotazione') && (
         <button
           type="button"
           onClick={() => setSottoTab('dotazione')}
@@ -1165,9 +1192,11 @@ export const SezioneMezzi: React.FC<SezioneMezziProps> = ({
           }`}
         >
           <Package className="w-4 h-4" />
-          <span>3. Dotazione Mezzi ({magazzinoMezzi.length})</span>
+          <span>3. {getTitoloSottosezione('mezzi', 'dotazione', 'Dotazione Mezzi', nomiSubCustom)} ({magazzinoMezzi.length})</span>
         </button>
+        )}
 
+        {canShowSubtab('magazzinoMezzi') && (
         <button
           type="button"
           onClick={() => setSottoTab('magazzinoMezzi')}
@@ -1178,9 +1207,11 @@ export const SezioneMezzi: React.FC<SezioneMezziProps> = ({
           }`}
         >
           <Package className="w-4 h-4" />
-          <span>4. Magazzino Mezzi ({magazzinoParti.length})</span>
+          <span>4. {getTitoloSottosezione('mezzi', 'magazzinoMezzi', 'Magazzino Mezzi', nomiSubCustom)} ({magazzinoParti.length})</span>
         </button>
+        )}
 
+        {canShowSubtab('consumi') && (
         <button
           type="button"
           onClick={() => setSottoTab('consumi')}
@@ -1191,9 +1222,11 @@ export const SezioneMezzi: React.FC<SezioneMezziProps> = ({
           }`}
         >
           <Fuel className="w-4 h-4 text-amber-400" />
-          <span>5. Consumi & Costo KM ({rifornimenti.length} rifornimenti)</span>
+          <span>5. {getTitoloSottosezione('mezzi', 'consumi', 'Consumi & Costo KM', nomiSubCustom)} ({rifornimenti.length} rifornimenti)</span>
         </button>
+        )}
 
+        {canShowSubtab('checklist') && (
         <button
           type="button"
           onClick={() => setSottoTab('checklist')}
@@ -1204,9 +1237,11 @@ export const SezioneMezzi: React.FC<SezioneMezziProps> = ({
           }`}
         >
           <ClipboardCheck className="w-4 h-4 text-amber-400" />
-          <span>6. Checklist Inizio Turno ({templatesChecklist.length} Modelli)</span>
+          <span>6. {getTitoloSottosezione('mezzi', 'checklist', 'Checklist Inizio Turno', nomiSubCustom)} ({templatesChecklist.length} Modelli)</span>
         </button>
+        )}
 
+        {canShowSubtab('tipologie') && (
         <button
           type="button"
           onClick={() => setSottoTab('tipologie')}
@@ -1217,8 +1252,9 @@ export const SezioneMezzi: React.FC<SezioneMezziProps> = ({
           }`}
         >
           <Tags className={`w-4 h-4 ${sottoTab === 'tipologie' ? 'text-slate-950' : 'text-amber-400'}`} />
-          <span>7. Tipologia Mezzo ({tipologieMezzo.length})</span>
+          <span>7. {getTitoloSottosezione('mezzi', 'tipologie', 'Tipologia Mezzo', nomiSubCustom)} ({tipologieMezzo.length})</span>
         </button>
+        )}
       </div>
 
       {/* ===================================================================== */}

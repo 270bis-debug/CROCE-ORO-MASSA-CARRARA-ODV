@@ -24,6 +24,7 @@ export interface ChecklistTemplate {
   descrizione: string;
   tipologiaMezzo: string; // Tipologia principale o etichetta riepilogativa per retrocompatibilità
   tipologieMezzo?: string[]; // Una o più Tipologie Mezzo associate a questa checklist
+  tipologieMezzoIds?: string[]; // ID immutabili delle Tipologie Mezzo per resilienza alle rinomine
   mezziAssegnati?: string[]; // Sigle specifiche se limitata (es. ['T4606', 'T4609'])
   attiva: boolean;
   dataCreazione: string;
@@ -46,16 +47,23 @@ export function getTipologieAssociateTemplate(
 }
 
 export function templateCopreTipologia(
-  tmpl: Pick<ChecklistTemplate, 'tipologiaMezzo' | 'tipologieMezzo'>,
-  tipologiaNome: string
+  tmpl: Pick<ChecklistTemplate, 'tipologiaMezzo' | 'tipologieMezzo' | 'tipologieMezzoIds'>,
+  tipologiaNome: string,
+  tipologiaId?: string
 ): boolean {
+  if (tipologiaId && Array.isArray(tmpl.tipologieMezzoIds) && tmpl.tipologieMezzoIds.includes(tipologiaId)) {
+    return true;
+  }
   const target = String(tipologiaNome || '').trim().toLowerCase();
-  if (!target) return false;
   const associate = getTipologieAssociateTemplate(tmpl);
-  return associate.some((t) => {
+  if (associate.some((t) => {
     const norm = t.toLowerCase();
-    return norm === target || norm === 'tutte' || norm === 'tutte le tipologie';
-  });
+    return norm === 'tutte' || norm === 'tutte le tipologie';
+  })) {
+    return true;
+  }
+  if (!target) return false;
+  return associate.some((t) => t.toLowerCase() === target);
 }
 
 export interface RisultatoVoceChecklist {

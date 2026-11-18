@@ -39,7 +39,8 @@ import { CONTI_CORRENTI_CROCE_ORO_DEFAULT } from '../../data/adminMockData';
 import { GeolocalizzazioneMappaSede } from './GeolocalizzazioneMappaSede';
 import { inviaNotificaModificaAdmin } from '../../utils/notificaModificaAdmin';
 import { realtime } from '../../services/realtime';
-import { useTitoloDatabase } from '../../hooks/useNomiDatabase';
+import { useTitoloDatabase, useNomiSottosezioniCustom } from '../../hooks/useNomiDatabase';
+import { getTitoloSottosezione } from '../../constants/macroCategorie';
 import { GestioneMetodiPagamentoCustomPanel } from './GestioneMetodiPagamentoCustomPanel';
 import {
   DatiCartaIntestata,
@@ -64,6 +65,7 @@ interface SezioneSediProps {
   operatoreCorrente?: string;
   isAdmin?: boolean;
   onNotificaRadio?: (testo: string, tipo?: 'centrale' | 'mezzo' | 'sistema' | 'allarme') => void;
+  allowedSubtabs?: string[] | null;
 }
 
 export const SezioneSedi: React.FC<SezioneSediProps> = ({
@@ -73,9 +75,20 @@ export const SezioneSedi: React.FC<SezioneSediProps> = ({
   onAggiornaMezzi,
   operatoreCorrente = 'Amministratore',
   isAdmin = true,
-  onNotificaRadio
+  onNotificaRadio,
+  allowedSubtabs = null
 }) => {
+  const nomiSubCustom = useNomiSottosezioniCustom();
   const [sottoTab, setSottoTab] = useState<'elenco' | 'mappa' | 'autoparco' | 'cartaIntestata' | 'contiCorrenti'>('elenco');
+  const canShowSubtab = (id: string) => !allowedSubtabs || allowedSubtabs.includes(id);
+
+  useEffect(() => {
+    if (!canShowSubtab(sottoTab)) {
+      const ordine = ['elenco', 'mappa', 'autoparco', 'cartaIntestata', 'contiCorrenti'] as const;
+      const prima = ordine.find((t) => canShowSubtab(t));
+      if (prima) setSottoTab(prima);
+    }
+  }, [sottoTab, allowedSubtabs]);
 
   // Dati Carta Intestata (Macro Categoria Sedi Associative - Sezione 4)
   const [datiCarta, setDatiCarta] = useState<DatiCartaIntestata>(() => getDatiCartaIntestata());
@@ -650,6 +663,7 @@ export const SezioneSedi: React.FC<SezioneSediProps> = ({
         </div>
 
         <div className="flex items-center gap-2 flex-wrap">
+          {canShowSubtab('contiCorrenti') && (
           <button
             type="button"
             onClick={() => setSottoTab('contiCorrenti')}
@@ -662,6 +676,7 @@ export const SezioneSedi: React.FC<SezioneSediProps> = ({
             <Landmark className="w-4 h-4 text-emerald-400" />
             <span>Coordinate Bancarie OdV</span>
           </button>
+          )}
 
           <button
             type="button"
@@ -713,6 +728,7 @@ export const SezioneSedi: React.FC<SezioneSediProps> = ({
 
       {/* Barra Navigazione Sotto-Categorie */}
       <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-none border-b border-slate-800">
+        {canShowSubtab('elenco') && (
         <button
           type="button"
           onClick={() => setSottoTab('elenco')}
@@ -723,9 +739,11 @@ export const SezioneSedi: React.FC<SezioneSediProps> = ({
           }`}
         >
           <Building2 className="w-4 h-4" />
-          <span>1. Elenco Sedi Ufficiali ({sedi.length})</span>
+          <span>1. {getTitoloSottosezione('sedi', 'elenco', 'Elenco Sedi Ufficiali', nomiSubCustom)} ({sedi.length})</span>
         </button>
+        )}
 
+        {canShowSubtab('mappa') && (
         <button
           type="button"
           onClick={() => setSottoTab('mappa')}
@@ -736,9 +754,11 @@ export const SezioneSedi: React.FC<SezioneSediProps> = ({
           }`}
         >
           <Navigation className="w-4 h-4" />
-          <span>2. Mappa Territoriale Sedi</span>
+          <span>2. {getTitoloSottosezione('sedi', 'mappa', 'Mappa Territoriale Sedi', nomiSubCustom)}</span>
         </button>
+        )}
 
+        {canShowSubtab('autoparco') && (
         <button
           type="button"
           onClick={() => setSottoTab('autoparco')}
@@ -749,9 +769,11 @@ export const SezioneSedi: React.FC<SezioneSediProps> = ({
           }`}
         >
           <Car className="w-4 h-4" />
-          <span>3. Mezzi Assegnati per Sede</span>
+          <span>3. {getTitoloSottosezione('sedi', 'autoparco', 'Mezzi Assegnati per Sede', nomiSubCustom)}</span>
         </button>
+        )}
 
+        {canShowSubtab('cartaIntestata') && (
         <button
           type="button"
           onClick={() => setSottoTab('cartaIntestata')}
@@ -762,9 +784,11 @@ export const SezioneSedi: React.FC<SezioneSediProps> = ({
           }`}
         >
           <FileText className="w-4 h-4" />
-          <span>4. DATI PER CARTA INTESTATA</span>
+          <span>4. {getTitoloSottosezione('sedi', 'cartaIntestata', 'DATI PER CARTA INTESTATA', nomiSubCustom)}</span>
         </button>
+        )}
 
+        {canShowSubtab('contiCorrenti') && (
         <button
           type="button"
           onClick={() => setSottoTab('contiCorrenti')}
@@ -775,8 +799,9 @@ export const SezioneSedi: React.FC<SezioneSediProps> = ({
           }`}
         >
           <Landmark className="w-4 h-4 text-emerald-400" />
-          <span>5. COORDINATE BANCARIE & POSTALI (2 CONTI)</span>
+          <span>5. {getTitoloSottosezione('sedi', 'contiCorrenti', 'COORDINATE BANCARIE & POSTALI', nomiSubCustom)} (2 CONTI)</span>
         </button>
+        )}
       </div>
 
       {/* ===================================================================== */}

@@ -37,7 +37,8 @@ import {
   Landmark,
   Copy
 } from 'lucide-react';
-import { useTitoloDatabase } from '../../hooks/useNomiDatabase';
+import { useTitoloDatabase, useNomiSottosezioniCustom } from '../../hooks/useNomiDatabase';
+import { getTitoloSottosezione } from '../../constants/macroCategorie';
 import {
   TesseraAssociativa,
   NotaDiDebito,
@@ -89,6 +90,7 @@ interface SezioneContabilitaProps {
   manutenzioni?: InterventoManutenzione[];
   rifornimenti?: RifornimentoCarburante[];
   sedi?: SedeAssociativaCompleta[];
+  allowedSubtabs?: string[] | null;
 }
 
 export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
@@ -108,9 +110,20 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
   onAggiungiContatto,
   manutenzioni = [],
   rifornimenti: rifornimentiProp,
-  sedi = []
+  sedi = [],
+  allowedSubtabs = null
 }) => {
+  const nomiSubCustom = useNomiSottosezioniCustom();
   const [sottoTab, setSottoTab] = useState<'donazioni' | 'tesseramento' | 'noteDebito' | 'commercialista' | 'costiServizio' | 'contiCorrenti'>('donazioni');
+  const canShowSubtab = (id: string) => !allowedSubtabs || allowedSubtabs.includes(id);
+
+  useEffect(() => {
+    if (!canShowSubtab(sottoTab)) {
+      const ordine = ['donazioni', 'tesseramento', 'noteDebito', 'commercialista', 'costiServizio', 'contiCorrenti'] as const;
+      const prima = ordine.find((t) => canShowSubtab(t));
+      if (prima) setSottoTab(prima);
+    }
+  }, [sottoTab, allowedSubtabs]);
   const [annoProspetto, setAnnoProspetto] = useState<number>(() => getCurrentYearItaly());
   const [meseDettaglioSelezionato, setMeseDettaglioSelezionato] = useState<RigaProspettoMensile | null>(null);
 
@@ -1278,6 +1291,7 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
 
       {/* Barra Navigazione Sotto-Categorie */}
       <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-none border-b border-slate-800">
+        {canShowSubtab('donazioni') && (
         <button
           type="button"
           onClick={() => setSottoTab('donazioni')}
@@ -1288,9 +1302,11 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
           }`}
         >
           <Heart className="w-4 h-4 text-pink-400" />
-          <span>1. Servizi con Donazioni ({serviziConDonazioni.length})</span>
+          <span>1. {getTitoloSottosezione('contabilita', 'donazioni', 'Servizi con Donazioni', nomiSubCustom)} ({serviziConDonazioni.length})</span>
         </button>
+        )}
 
+        {canShowSubtab('tesseramento') && (
         <button
           type="button"
           onClick={() => setSottoTab('tesseramento')}
@@ -1301,9 +1317,11 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
           }`}
         >
           <CreditCard className="w-4 h-4" />
-          <span>2. Tesseramento & Soci ({tessere.length})</span>
+          <span>2. {getTitoloSottosezione('contabilita', 'tesseramento', 'Tesseramento & Soci', nomiSubCustom)} ({tessere.length})</span>
         </button>
+        )}
 
+        {canShowSubtab('noteDebito') && (
         <button
           type="button"
           onClick={() => setSottoTab('noteDebito')}
@@ -1314,9 +1332,11 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
           }`}
         >
           <FileText className="w-4 h-4" />
-          <span>3. Note di Debito ({noteDiDebito.length})</span>
+          <span>3. {getTitoloSottosezione('contabilita', 'noteDebito', 'Note di Debito', nomiSubCustom)} ({noteDiDebito.length})</span>
         </button>
+        )}
 
+        {canShowSubtab('commercialista') && (
         <button
           type="button"
           onClick={() => setSottoTab('commercialista')}
@@ -1327,9 +1347,11 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
           }`}
         >
           <FileSpreadsheet className="w-4 h-4 text-emerald-400" />
-          <span>4. Prospetto Mensile Commercialista</span>
+          <span>4. {getTitoloSottosezione('contabilita', 'commercialista', 'Prospetto Mensile Commercialista', nomiSubCustom)}</span>
         </button>
+        )}
 
+        {canShowSubtab('costiServizio') && (
         <button
           type="button"
           onClick={() => setSottoTab('costiServizio')}
@@ -1340,9 +1362,11 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
           }`}
         >
           <Tag className="w-4 h-4 text-amber-400" />
-          <span>5. Costi di Servizio ({tariffeCostiServizio.length})</span>
+          <span>5. {getTitoloSottosezione('contabilita', 'costiServizio', 'Costi di Servizio', nomiSubCustom)} ({tariffeCostiServizio.length})</span>
         </button>
+        )}
 
+        {canShowSubtab('contiCorrenti') && (
         <button
           type="button"
           onClick={() => setSottoTab('contiCorrenti')}
@@ -1353,8 +1377,9 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
           }`}
         >
           <Landmark className="w-4 h-4 text-yellow-400" />
-          <span>6. Coordinate Bancarie & Postali ({2 + metodiPagamentoCustom.filter((m) => m.attivo).length})</span>
+          <span>6. {getTitoloSottosezione('contabilita', 'contiCorrenti', 'Coordinate Bancarie & Postali', nomiSubCustom)} ({2 + metodiPagamentoCustom.filter((m) => m.attivo).length})</span>
         </button>
+        )}
       </div>
 
       {/* ===================================================================== */}

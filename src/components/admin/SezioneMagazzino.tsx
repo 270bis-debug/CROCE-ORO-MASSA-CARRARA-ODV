@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Package,
   Search,
@@ -25,7 +25,8 @@ import {
 import { ArticoloVestiarioMagazzino, AttrezzaturaOperativa, MovimentoMagazzino, ContattoEsterno, ChiaveVestiarioAccount } from '../../types/adminTypes';
 import { TAGLIE_DISPONIBILI } from '../../data/vestiarioDocumenti';
 import { inviaNotificaModificaAdmin } from '../../utils/notificaModificaAdmin';
-import { useTitoloDatabase } from '../../hooks/useNomiDatabase';
+import { useTitoloDatabase, useNomiSottosezioniCustom } from '../../hooks/useNomiDatabase';
+import { getTitoloSottosezione } from '../../constants/macroCategorie';
 
 interface SezioneMagazzinoProps {
   vestiarioMagazzino: ArticoloVestiarioMagazzino[];
@@ -38,6 +39,7 @@ interface SezioneMagazzinoProps {
   isAdmin?: boolean;
   onNotificaRadio?: (testo: string, tipo?: 'centrale' | 'mezzo' | 'sistema' | 'allarme') => void;
   contatti?: ContattoEsterno[];
+  allowedSubtabs?: string[] | null;
 }
 
 export const SezioneMagazzino: React.FC<SezioneMagazzinoProps> = ({
@@ -50,9 +52,20 @@ export const SezioneMagazzino: React.FC<SezioneMagazzinoProps> = ({
   operatoreCorrente = 'Amministratore',
   isAdmin = true,
   onNotificaRadio,
-  contatti = []
+  contatti = [],
+  allowedSubtabs = null
 }) => {
+  const nomiSubCustom = useNomiSottosezioniCustom();
   const [sottoTab, setSottoTab] = useState<'vestiario' | 'attrezzature' | 'movimenti'>('vestiario');
+  const canShowSubtab = (id: string) => !allowedSubtabs || allowedSubtabs.includes(id);
+
+  useEffect(() => {
+    if (!canShowSubtab(sottoTab)) {
+      const ordine = ['vestiario', 'attrezzature', 'movimenti'] as const;
+      const prima = ordine.find((t) => canShowSubtab(t));
+      if (prima) setSottoTab(prima);
+    }
+  }, [sottoTab, allowedSubtabs]);
 
   // Filtri e ricerca
   const [ricerca, setRicerca] = useState('');
@@ -391,6 +404,7 @@ export const SezioneMagazzino: React.FC<SezioneMagazzinoProps> = ({
 
       {/* Barra Navigazione Sotto-Categorie */}
       <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-none border-b border-slate-800">
+        {canShowSubtab('vestiario') && (
         <button
           type="button"
           onClick={() => {
@@ -404,9 +418,11 @@ export const SezioneMagazzino: React.FC<SezioneMagazzinoProps> = ({
           }`}
         >
           <Shirt className="w-4 h-4" />
-          <span>1. Magazzino Vestiario & DPI ({vestiarioMagazzino.length})</span>
+          <span>1. {getTitoloSottosezione('magazzino', 'vestiario', 'Magazzino Vestiario & DPI', nomiSubCustom)} ({vestiarioMagazzino.length})</span>
         </button>
+        )}
 
+        {canShowSubtab('attrezzature') && (
         <button
           type="button"
           onClick={() => {
@@ -420,9 +436,11 @@ export const SezioneMagazzino: React.FC<SezioneMagazzinoProps> = ({
           }`}
         >
           <Radio className="w-4 h-4" />
-          <span>2. Attrezzature & Presidi ({attrezzature.length})</span>
+          <span>2. {getTitoloSottosezione('magazzino', 'attrezzature', 'Attrezzature & Presidi', nomiSubCustom)} ({attrezzature.length})</span>
         </button>
+        )}
 
+        {canShowSubtab('movimenti') && (
         <button
           type="button"
           onClick={() => setSottoTab('movimenti')}
@@ -433,8 +451,9 @@ export const SezioneMagazzino: React.FC<SezioneMagazzinoProps> = ({
           }`}
         >
           <Layers className="w-4 h-4" />
-          <span>3. Registro Movimentazioni ({movimenti.length})</span>
+          <span>3. {getTitoloSottosezione('magazzino', 'movimenti', 'Registro Movimentazioni', nomiSubCustom)} ({movimenti.length})</span>
         </button>
+        )}
       </div>
 
       {/* ===================================================================== */}

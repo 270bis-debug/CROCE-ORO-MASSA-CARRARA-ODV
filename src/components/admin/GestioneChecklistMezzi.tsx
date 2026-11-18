@@ -235,6 +235,9 @@ export const GestioneChecklistMezzi: React.FC<GestioneChecklistMezziProps> = ({
     }
 
     const tipologiePulite = Array.from(new Set(formTipologieMezzo.map(t => t.trim()).filter(Boolean)));
+    const tipologieIds = tipologiePulite
+      .map(nome => tipologieCatalogo.find(tc => tc.nome.trim().toLowerCase() === nome.toLowerCase())?.id)
+      .filter((id): id is string => Boolean(id));
     const tipoPrimario = tipologiePulite[0] || 'Tutte le tipologie';
     const labelLog = tipologiePulite.join(', ');
     const nowStr = formatDateItaly();
@@ -248,6 +251,7 @@ export const GestioneChecklistMezzi: React.FC<GestioneChecklistMezziProps> = ({
               descrizione: formDescrizione.trim(),
               tipologiaMezzo: tipoPrimario,
               tipologieMezzo: tipologiePulite,
+              tipologieMezzoIds: tipologieIds,
               voci: formVoci,
               dataUltimaModifica: nowStr
             }
@@ -262,6 +266,7 @@ export const GestioneChecklistMezzi: React.FC<GestioneChecklistMezziProps> = ({
         descrizione: formDescrizione.trim(),
         tipologiaMezzo: tipoPrimario,
         tipologieMezzo: tipologiePulite,
+        tipologieMezzoIds: tipologieIds,
         attiva: true,
         dataCreazione: nowStr,
         dataUltimaModifica: nowStr,
@@ -289,7 +294,8 @@ export const GestioneChecklistMezzi: React.FC<GestioneChecklistMezziProps> = ({
 
   // Filtraggio Modelli
   const templatesFiltrati = templates.filter(t => {
-    const matchTipo = filtroTipoMezzo === 'TUTTE' || templateCopreTipologia(t, filtroTipoMezzo);
+    const tipoItem = tipologieCatalogo.find(tc => tc.nome.trim().toLowerCase() === filtroTipoMezzo.trim().toLowerCase());
+    const matchTipo = filtroTipoMezzo === 'TUTTE' || templateCopreTipologia(t, filtroTipoMezzo, tipoItem?.id);
     const matchQ = !ricerca.trim() || t.titolo.toLowerCase().includes(ricerca.toLowerCase()) || t.descrizione.toLowerCase().includes(ricerca.toLowerCase()) || t.voci.some(v => v.titolo.toLowerCase().includes(ricerca.toLowerCase()));
     return matchTipo && matchQ;
   });

@@ -4,7 +4,7 @@
 // 2. Strategia Network-First su navigazione per caricare SEMPRE l'ultima release pubblicata
 // 3. Notifiche Push in Background ad Alta Priorità e Risveglio Schermo Bloccato
 
-const CACHE_NAME = 'croce-oro-cache-v4.6.0';
+const CACHE_NAME = 'croce-oro-cache-v4.7.0';
 
 const PRECACHE_ASSETS = [
   '/',

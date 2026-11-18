@@ -38,7 +38,8 @@ import {
   Mail,
   Send
 } from 'lucide-react';
-import { useTitoloDatabase } from '../../hooks/useNomiDatabase';
+import { useTitoloDatabase, useNomiSottosezioniCustom } from '../../hooks/useNomiDatabase';
+import { getTitoloSottosezione } from '../../constants/macroCategorie';
 import {
   CorsoFormazione,
   PartecipanteCorso,
@@ -126,6 +127,7 @@ interface SezioneFormazioneProps {
   operatoreCorrente?: string;
   isAdmin?: boolean;
   onNotificaRadio?: (testo: string, tipo?: 'centrale' | 'mezzo' | 'sistema' | 'allarme') => void;
+  allowedSubtabs?: string[] | null;
 }
 
 export const SezioneFormazione: React.FC<SezioneFormazioneProps> = ({
@@ -136,9 +138,20 @@ export const SezioneFormazione: React.FC<SezioneFormazioneProps> = ({
   sedi = [],
   operatoreCorrente = 'Amministratore',
   isAdmin = true,
-  onNotificaRadio
+  onNotificaRadio,
+  allowedSubtabs = null
 }) => {
+  const nomiSubCustom = useNomiSottosezioniCustom();
   const [sottoTab, setSottoTab] = useState<'corsi' | 'iscritti' | 'scadenziario'>('corsi');
+  const canShowSubtab = (id: string) => !allowedSubtabs || allowedSubtabs.includes(id);
+
+  useEffect(() => {
+    if (!canShowSubtab(sottoTab)) {
+      const ordine = ['corsi', 'iscritti', 'scadenziario'] as const;
+      const prima = ordine.find((t) => canShowSubtab(t));
+      if (prima) setSottoTab(prima);
+    }
+  }, [sottoTab, allowedSubtabs]);
 
   // Ricerca e filtri
   const [ricerca, setRicerca] = useState('');
@@ -790,6 +803,7 @@ export const SezioneFormazione: React.FC<SezioneFormazioneProps> = ({
 
       {/* Barra Navigazione Sotto-Categorie */}
       <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-none border-b border-slate-800">
+        {canShowSubtab('corsi') && (
         <button
           type="button"
           onClick={() => setSottoTab('corsi')}
@@ -800,9 +814,11 @@ export const SezioneFormazione: React.FC<SezioneFormazioneProps> = ({
           }`}
         >
           <BookOpen className="w-4 h-4" />
-          <span>1. Catalogo Corsi & Piano Formativo ({corsi.length})</span>
+          <span>1. {getTitoloSottosezione('formazione', 'corsi', 'Catalogo Corsi & Piano Formativo', nomiSubCustom)} ({corsi.length})</span>
         </button>
+        )}
 
+        {canShowSubtab('iscritti') && (
         <button
           type="button"
           onClick={() => setSottoTab('iscritti')}
@@ -813,9 +829,11 @@ export const SezioneFormazione: React.FC<SezioneFormazioneProps> = ({
           }`}
         >
           <Users className="w-4 h-4" />
-          <span>2. Iscrizioni & Registro Presenze</span>
+          <span>2. {getTitoloSottosezione('formazione', 'iscritti', 'Iscrizioni & Registro Presenze', nomiSubCustom)}</span>
         </button>
+        )}
 
+        {canShowSubtab('scadenziario') && (
         <button
           type="button"
           onClick={() => setSottoTab('scadenziario')}
@@ -826,8 +844,9 @@ export const SezioneFormazione: React.FC<SezioneFormazioneProps> = ({
           }`}
         >
           <Award className="w-4 h-4" />
-          <span>3. Scadenziario Brevetti & Attestati ({tuttiGliAttestati.length})</span>
+          <span>3. {getTitoloSottosezione('formazione', 'scadenziario', 'Scadenziario Brevetti & Attestati', nomiSubCustom)} ({tuttiGliAttestati.length})</span>
         </button>
+        )}
       </div>
 
       {/* ===================================================================== */}

@@ -51,6 +51,7 @@ import { applicaNomiDatabaseDaSync, getNomiDatabaseUpdatedAt } from '../constant
 import { applicaTipologieMezzoDaSync, getTipologieMezzoUpdatedAt } from '../utils/tipologieMezzo';
 import { applicaMetodiPagamentoDaSync } from '../utils/metodiPagamentoStore';
 import { applicaRegolaNotificaScadenzeDaSync } from '../utils/avvisiManutenzioneMezzi';
+import { applicaRubricaNumeriUtiliDaSync, getRubricaNumeriUtiliUpdatedAt } from '../utils/rubricaNumeriUtiliStore';
 
 const stripLegacyCorsi = (list: any): any[] => {
   if (!Array.isArray(list)) return [];
@@ -658,6 +659,17 @@ class RealtimeService {
         this.cloudState.regolaScadenzeMezzi = payload.regolaScadenzeMezzi;
         applicaRegolaNotificaScadenzeDaSync(payload.regolaScadenzeMezzi);
       }
+      if (Array.isArray(payload.rubricaNumeriUtili)) {
+        this.cloudState.rubricaNumeriUtili = payload.rubricaNumeriUtili;
+        if (payload.rubricaNumeriUtiliUpdatedAt) {
+          this.cloudState.rubricaNumeriUtiliUpdatedAt = payload.rubricaNumeriUtiliUpdatedAt;
+        }
+        applicaRubricaNumeriUtiliDaSync(payload.rubricaNumeriUtili, payload.rubricaNumeriUtiliUpdatedAt);
+        this.emit('RUBRICA_NUMERI_UTILI_UPDATED', {
+          rubrica: payload.rubricaNumeriUtili,
+          updatedAt: payload.rubricaNumeriUtiliUpdatedAt,
+        });
+      }
       if (typeof payload.publicAppUrl === 'string' && payload.publicAppUrl.trim() && !isProtectedAiStudioHost(payload.publicAppUrl)) {
         const saved = saveConfiguredPublicUrlLocal(payload.publicAppUrl);
         this.cloudState.publicAppUrl = saved;
@@ -912,6 +924,8 @@ class RealtimeService {
           nomiDatabaseUpdatedAt: this.cloudState.nomiDatabaseUpdatedAt || undefined,
           tipologieMezzo: Array.isArray(this.cloudState.tipologieMezzo) ? this.cloudState.tipologieMezzo : undefined,
           tipologieMezzoUpdatedAt: this.cloudState.tipologieMezzoUpdatedAt || undefined,
+          rubricaNumeriUtili: Array.isArray(this.cloudState.rubricaNumeriUtili) ? this.cloudState.rubricaNumeriUtili : undefined,
+          rubricaNumeriUtiliUpdatedAt: this.cloudState.rubricaNumeriUtiliUpdatedAt || undefined,
         };
     }
   }
@@ -1139,6 +1153,7 @@ class RealtimeService {
           (Array.isArray(snapshot.categorieMansioni) && snapshot.categorieMansioni.length > 0) ||
           (Array.isArray(snapshot.tipologieMezzo) && snapshot.tipologieMezzo.length > 0) ||
           Boolean(snapshot.nomiDatabase && Object.keys(snapshot.nomiDatabase).length > 0) ||
+          (Array.isArray(snapshot.rubricaNumeriUtili) && snapshot.rubricaNumeriUtili.length > 0) ||
           Boolean(getConfiguredPublicUrl()),
         patch: {
           sedi: snapshot.sedi || [],
@@ -1152,6 +1167,8 @@ class RealtimeService {
           tipologieMezzoUpdatedAt: getTipologieMezzoUpdatedAt() || Date.now(),
           nomiDatabase: snapshot.nomiDatabase,
           nomiDatabaseUpdatedAt: getNomiDatabaseUpdatedAt() || Date.now(),
+          rubricaNumeriUtili: snapshot.rubricaNumeriUtili,
+          rubricaNumeriUtiliUpdatedAt: getRubricaNumeriUtiliUpdatedAt() || Date.now(),
           publicAppUrl: this.cloudState.publicAppUrl || getConfiguredPublicUrl() || '',
         },
       },
@@ -1276,6 +1293,8 @@ class RealtimeService {
           tipologieMezzoUpdatedAt: getTipologieMezzoUpdatedAt() || Date.now(),
           nomiDatabase: snapshot.nomiDatabase ?? this.cloudState.nomiDatabase,
           nomiDatabaseUpdatedAt: getNomiDatabaseUpdatedAt() || Date.now(),
+          rubricaNumeriUtili: snapshot.rubricaNumeriUtili ?? this.cloudState.rubricaNumeriUtili,
+          rubricaNumeriUtiliUpdatedAt: getRubricaNumeriUtiliUpdatedAt() || Date.now(),
           publicAppUrl: this.cloudState.publicAppUrl || getConfiguredPublicUrl() || '',
         },
       },
@@ -1432,6 +1451,10 @@ class RealtimeService {
             } else if (payload.type === 'REGOLA_SCADENZE_MEZZI_UPDATED' && payload.regola) {
               this.cloudState.regolaScadenzeMezzi = payload.regola;
               applicaRegolaNotificaScadenzeDaSync(payload.regola);
+            } else if (payload.type === 'RUBRICA_NUMERI_UTILI_UPDATED' && Array.isArray(payload.rubrica)) {
+              this.cloudState.rubricaNumeriUtili = payload.rubrica;
+              if (payload.updatedAt) this.cloudState.rubricaNumeriUtiliUpdatedAt = payload.updatedAt;
+              applicaRubricaNumeriUtiliDaSync(payload.rubrica, payload.updatedAt);
             }
             this.emit(payload.type, payload);
           }
@@ -1513,6 +1536,9 @@ class RealtimeService {
     }
     if (this.cloudState.regolaScadenzeMezzi && typeof this.cloudState.regolaScadenzeMezzi === 'object') {
       applicaRegolaNotificaScadenzeDaSync(this.cloudState.regolaScadenzeMezzi);
+    }
+    if (Array.isArray(this.cloudState.rubricaNumeriUtili)) {
+      applicaRubricaNumeriUtiliDaSync(this.cloudState.rubricaNumeriUtili, this.cloudState.rubricaNumeriUtiliUpdatedAt);
     }
 
     // Ponte bidirezionale: se Express ha nuovi account non ancora presenti su Firestore, sincronizza verso Firestore
@@ -2272,6 +2298,14 @@ class RealtimeService {
           this.scheduleShardWrite('config', {
             tipologieMezzo: data.tipologieMezzo,
             tipologieMezzoUpdatedAt: data?.updatedAt || Date.now(),
+          });
+        }
+        break;
+      case 'UPDATE_RUBRICA_NUMERI_UTILI':
+        if (Array.isArray(data?.rubrica)) {
+          this.scheduleShardWrite('config', {
+            rubricaNumeriUtili: data.rubrica,
+            rubricaNumeriUtiliUpdatedAt: data?.updatedAt || Date.now(),
           });
         }
         break;
@@ -3519,6 +3553,22 @@ class RealtimeService {
   public syncTipologieMezzo(tipologieMezzo: any[]) {
     const updatedAt = getTipologieMezzoUpdatedAt() || Date.now();
     this.send('UPDATE_TIPOLOGIE_MEZZO', { tipologieMezzo, updatedAt });
+  }
+
+  public syncRubricaNumeriUtili(rubrica: any[]) {
+    const updatedAt = getRubricaNumeriUtiliUpdatedAt() || Date.now();
+    this.send('UPDATE_RUBRICA_NUMERI_UTILI', { rubrica, updatedAt });
+    if (!this.isServerlessStaticHost()) {
+      try {
+        const baseUrl = this.getApiBaseUrl();
+        fetch(`${baseUrl}/api/rubrica-numeri-utili`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ rubrica, updatedAt }),
+          cache: 'no-store',
+        }).catch(() => {});
+      } catch {}
+    }
   }
 }
 
