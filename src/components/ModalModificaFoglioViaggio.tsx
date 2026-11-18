@@ -21,6 +21,7 @@ import {
 import { TIPOLOGIE_SERVIZIO_ISTITUTO, TIPOLOGIE_PROTEZIONE_CIVILE } from '../data/tipologieServizio';
 import { isServizioVeterinario } from '../utils/pdfGenerator';
 import { formatTimeItaly, getCurrentYearItaly } from '../utils/italianTime';
+import { useMetodiPagamentoCustom, formattaEtichettaMetodoPagamento } from '../utils/metodiPagamentoStore';
 
 export interface OperativeTimes {
   partenza?: string;
@@ -252,12 +253,16 @@ export const ModalModificaFoglioViaggio: React.FC<ModalModificaFoglioViaggioProp
     destInfo?.strutturaVeterinaria?.noteClinicheConsegna || ''
   );
 
+  const metodiPagamentoCustom = useMetodiPagamentoCustom();
+  const metodiDonazioneCustom = React.useMemo(
+    () => metodiPagamentoCustom.filter((m) => m.attivo && (m.tipo === 'entrambi' || m.tipo === 'donazioni')),
+    [metodiPagamentoCustom]
+  );
+
   const donazioneInit = destInfo?.donazione || {};
   const [donazioneRicevuta, setDonazioneRicevuta] = useState(Boolean(donazioneInit.ricevuta || (donazioneInit.somma && donazioneInit.somma > 0)));
   const [donazioneSomma, setDonazioneSomma] = useState<number>(Number(donazioneInit.somma) || 0);
-  const [donazioneMetodo, setDonazioneMetodo] = useState<'contanti' | 'pos' | ''>(
-    donazioneInit.metodo === 'pos' ? 'pos' : (donazioneInit.metodo === 'contanti' ? 'contanti' : '')
-  );
+  const [donazioneMetodo, setDonazioneMetodo] = useState<string>(donazioneInit.metodo || '');
 
   // 7. MANOVRE EFFETTUATE / PATOLOGIE (Volontario)
   const [manovreEffettuatePatologie, setManovreEffettuatePatologie] = useState(
@@ -393,7 +398,8 @@ export const ModalModificaFoglioViaggio: React.FC<ModalModificaFoglioViaggioProp
         docTesto += `RESIDENZA: ${updatedProprietario.indirizzo || '-'}, ${updatedProprietario.comune || '-'} (${updatedProprietario.provincia || '-'}), CAP ${updatedProprietario.cap || '-'}\n`;
       }
       if (donazioneRicevuta) {
-        docTesto += `DONAZIONE RICEVUTA: € ${donazioneSomma} (${donazioneMetodo === 'pos' ? 'POS Elettronico' : 'Contanti'})\n`;
+        const metodoLabel = donazioneMetodo === 'pos' ? 'POS Elettronico' : donazioneMetodo === 'contanti' ? 'Contanti' : (donazioneMetodo || 'Contanti');
+        docTesto += `DONAZIONE RICEVUTA: € ${donazioneSomma} (${metodoLabel})\n`;
       }
       if (strutturaRicevente.trim()) {
         docTesto += `STRUTTURA RICEVENTE: ${strutturaRicevente.trim()}\n`;
@@ -1527,7 +1533,7 @@ export const ModalModificaFoglioViaggio: React.FC<ModalModificaFoglioViaggioProp
                           ) : donazioneMetodo ? (
                             <span className="text-[9.5px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 flex items-center gap-1">
                               <Check className="w-3 h-3 text-emerald-400" />
-                              <span>{donazioneMetodo === 'contanti' ? 'Contanti' : 'POS'}</span>
+                              <span>{donazioneMetodo === 'contanti' ? 'Contanti' : donazioneMetodo === 'pos' ? 'POS Elettronico' : donazioneMetodo}</span>
                             </span>
                           ) : null}
                         </div>
@@ -1588,12 +1594,48 @@ export const ModalModificaFoglioViaggio: React.FC<ModalModificaFoglioViaggioProp
                               <span className="text-[9.5px] text-slate-400 block truncate">Terminale POS di bordo</span>
                             </div>
                           </div>
+
+                          {metodiDonazioneCustom.map((m) => {
+                            const val = formattaEtichettaMetodoPagamento(m);
+                            const isSel = donazioneMetodo === val;
+                            return (
+                              <div
+                                key={m.id}
+                                onClick={() => {
+                                  if (!puoModificare) return;
+                                  setDonazioneMetodo((prev) => (prev === val ? '' : val));
+                                }}
+                                className={`p-2.5 rounded-xl border cursor-pointer select-none flex items-center gap-2.5 transition-all ${
+                                  isSel
+                                    ? 'bg-purple-950/60 border-purple-400 shadow-sm ring-1 ring-purple-400 text-white'
+                                    : 'bg-slate-950 border-slate-800 text-slate-300 hover:border-slate-700'
+                                }`}
+                              >
+                                <input
+                                  type="checkbox"
+                                  disabled={!puoModificare}
+                                  checked={isSel}
+                                  onChange={() => {}}
+                                  className="w-4 h-4 rounded text-purple-600 bg-slate-900 border-slate-700 focus:ring-purple-400 cursor-pointer accent-purple-500"
+                                />
+                                <div className="flex-1 min-w-0">
+                                  <div className="flex items-center gap-1.5 font-bold text-xs text-white">
+                                    <CreditCard className="w-3.5 h-3.5 text-purple-400 shrink-0" />
+                                    <span className="truncate">{m.nome}</span>
+                                  </div>
+                                  <span className="text-[9.5px] text-slate-400 block truncate">
+                                    {m.coordinateODettagli || 'Metodo personalizzato'}
+                                  </span>
+                                </div>
+                              </div>
+                            );
+                          })}
                         </div>
 
                         {donazioneSomma > 0 && !donazioneMetodo && (
                           <div className="mt-2 p-2 rounded-lg bg-red-950/60 border border-red-500/50 text-red-200 text-[10.5px] font-bold flex items-center gap-1.5">
                             <AlertTriangle className="w-3.5 h-3.5 text-red-400 shrink-0" />
-                            <span>È obbligatorio spuntare la casella Contanti o POS!</span>
+                            <span>È obbligatorio selezionare un metodo di pagamento donazione!</span>
                           </div>
                         )}
                       </div>

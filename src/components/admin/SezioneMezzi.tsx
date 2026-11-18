@@ -32,7 +32,8 @@ import {
   Coins,
   Download,
   ClipboardCheck,
-  Tags
+  Tags,
+  Lock
 } from 'lucide-react';
 import { MezzoFlotta, InterventoManutenzione, RicambioUtilizzatoManutenzione, DotazioneMagazzinoMezzo, SedeAssociativaCompleta, ArticoloMagazzinoMezzi, ContattoEsterno, TipologiaMezzoItem } from '../../types/adminTypes';
 import { SEDI_ASSOCIATIVE_INIZIALI } from '../../data/adminMockData';
@@ -47,7 +48,11 @@ import {
   AlertManutenzioneProgrammata,
   EMAIL_RESPONSABILE_PARCO_MEZZI_DEFAULT,
   EMAIL_RESPONSABILE_PARCO_MEZZI,
-  EMAIL_PRESIDENZA_CROCE_ORO
+  EMAIL_PRESIDENZA_CROCE_ORO,
+  RegolaNotificaScadenzeMezzi,
+  REGOLA_NOTIFICA_SCADENZE_DEFAULT,
+  useRegolaNotificaScadenzeMezzi,
+  salvaRegolaNotificaScadenzeMezzi
 } from '../../utils/avvisiManutenzioneMezzi';
 import { MonitoraggioFlotta } from './MonitoraggioFlotta';
 import { SezioneConsumiMezzi } from './SezioneConsumiMezzi';
@@ -81,6 +86,18 @@ interface SezioneMezziProps {
   onAggiornaSedi?: (sedi: SedeAssociativaCompleta[]) => void;
   operatoreCorrente?: string;
   isAdmin?: boolean;
+  puoModificareRegolaScadenze?: boolean;
+  caricaConsiglioDirettivo?: string;
+  volontari?: Array<{
+    id: string;
+    nome: string;
+    cognome: string;
+    email?: string;
+    qualifica?: string;
+    mansione?: string;
+    mansioni?: string[];
+    caricaConsiglioDirettivo?: string;
+  }>;
   onNotificaRadio?: (testo: string, tipo?: 'centrale' | 'mezzo' | 'sistema' | 'allarme') => void;
   contatti?: ContattoEsterno[];
   serviziArchivio?: any[];
@@ -103,6 +120,9 @@ export const SezioneMezzi: React.FC<SezioneMezziProps> = ({
   onAggiornaSedi,
   operatoreCorrente = 'Amministratore',
   isAdmin = true,
+  puoModificareRegolaScadenze,
+  caricaConsiglioDirettivo,
+  volontari = [],
   onNotificaRadio,
   contatti = [],
   serviziArchivio = [],
@@ -111,6 +131,13 @@ export const SezioneMezzi: React.FC<SezioneMezziProps> = ({
   checklistsCompilate,
   onAggiornaChecklistsCompilate
 }) => {
+  const haCaricaDirettivo = Boolean(
+    caricaConsiglioDirettivo &&
+      !['nessuna', 'nessuna carica direttivo', 'nessun incarico', '-'].includes(caricaConsiglioDirettivo.trim().toLowerCase())
+  );
+  const canEditRegolaNotificaScadenze =
+    puoModificareRegolaScadenze !== undefined ? puoModificareRegolaScadenze : (isAdmin || haCaricaDirettivo);
+
   // Lista sicura di tutte le sezioni associative territoriali (fallback completo se sedi non ancora caricate)
   const listaSedi = (sedi && sedi.length > 0) ? sedi : SEDI_ASSOCIATIVE_INIZIALI;
 
@@ -176,6 +203,21 @@ export const SezioneMezzi: React.FC<SezioneMezziProps> = ({
   const [filtroUrgenza15Gg, setFiltroUrgenza15Gg] = useState<boolean>(false);
   const [salvataggioEmailConfermato, setSalvataggioEmailConfermato] = useState(false);
 
+  // Regola editabile notifica scadenza mezzi (solo Amministratore e Consiglio Direttivo, escluso Operatore Centrale)
+  const regolaNotifica = useRegolaNotificaScadenzeMezzi();
+  const [editRegolaTestuale, setEditRegolaTestuale] = useState<string>(() => regolaNotifica.regolaTestuale);
+  const [editRegolaGiorniSoglia, setEditRegolaGiorniSoglia] = useState<number>(() => regolaNotifica.giorniSogliaNotificaEmail);
+  const [editRegolaGiorniScadenzario, setEditRegolaGiorniScadenzario] = useState<number>(() => regolaNotifica.giorniPreavvisoScadenzario);
+  const [editRegolaAutoAttiva, setEditRegolaAutoAttiva] = useState<boolean>(() => regolaNotifica.invioAutomaticoAttivo);
+  const [salvataggioRegolaConfermato, setSalvataggioRegolaConfermato] = useState(false);
+
+  useEffect(() => {
+    setEditRegolaTestuale(regolaNotifica.regolaTestuale);
+    setEditRegolaGiorniSoglia(regolaNotifica.giorniSogliaNotificaEmail);
+    setEditRegolaGiorniScadenzario(regolaNotifica.giorniPreavvisoScadenzario);
+    setEditRegolaAutoAttiva(regolaNotifica.invioAutomaticoAttivo);
+  }, [regolaNotifica]);
+
   // Registro Rifornimenti Carburante (persiste in localStorage)
   const [rifornimenti, setRifornimenti] = useState<RifornimentoCarburante[]>(() => {
     try {
@@ -229,15 +271,100 @@ export const SezioneMezzi: React.FC<SezioneMezziProps> = ({
     avvisa(`Indirizzi ripristinati: ${EMAIL_RESPONSABILE_PARCO_MEZZI} e ${EMAIL_PRESIDENZA_CROCE_ORO}`);
   };
 
-  // Calcolo automatico avvisi interventi manutenzione e scadenze entro 30 giorni (incluse dotazioni e bombole O2)
-  const avvisiManutenzione = React.useMemo(() => {
-    return calcolaManutenzioniInScadenza(mezzi, manutenzioni, 30, new Date(), magazzinoMezzi);
-  }, [mezzi, manutenzioni, magazzinoMezzi]);
+  const handleSalvaRegolaNotificaScadenze = async (ripristinaDefault: boolean = false) => {
+    if (!canEditRegolaNotificaScadenze) {
+      avvisa('⛔ Solo l\'Amministratore o i membri del Consiglio Direttivo possono modificare questa regola.');
+      return;
+    }
 
-  // Avvisi urgenti entro 15 giorni
+    const vecchiaRegola: RegolaNotificaScadenzeMezzi = { ...regolaNotifica };
+    const nextSoglia = ripristinaDefault
+      ? REGOLA_NOTIFICA_SCADENZE_DEFAULT.giorniSogliaNotificaEmail
+      : Math.max(1, Math.min(365, Math.round(Number(editRegolaGiorniSoglia) || 15)));
+    const nextScad = ripristinaDefault
+      ? REGOLA_NOTIFICA_SCADENZE_DEFAULT.giorniPreavvisoScadenzario
+      : Math.max(nextSoglia, Math.min(365, Math.round(Number(editRegolaGiorniScadenzario) || 30)));
+    const nextAuto = ripristinaDefault ? REGOLA_NOTIFICA_SCADENZE_DEFAULT.invioAutomaticoAttivo : editRegolaAutoAttiva;
+    const nextTesto = ripristinaDefault
+      ? REGOLA_NOTIFICA_SCADENZE_DEFAULT.regolaTestuale
+      : (editRegolaTestuale.trim() ||
+        `Invia avviso automatico email a Responsabile Mezzi e Presidenza entro ${nextSoglia} giorni dalla scadenza (rilevazione scadenzario a ${nextScad} giorni).`);
+
+    const modificata =
+      vecchiaRegola.giorniSogliaNotificaEmail !== nextSoglia ||
+      vecchiaRegola.giorniPreavvisoScadenzario !== nextScad ||
+      vecchiaRegola.invioAutomaticoAttivo !== nextAuto ||
+      vecchiaRegola.regolaTestuale.trim() !== nextTesto.trim();
+
+    const nuovaRegola = salvaRegolaNotificaScadenzeMezzi({
+      giorniSogliaNotificaEmail: nextSoglia,
+      giorniPreavvisoScadenzario: nextScad,
+      invioAutomaticoAttivo: nextAuto,
+      regolaTestuale: nextTesto,
+      ultimoAggiornamentoDa: operatoreCorrente,
+      ultimoAggiornamentoCarica: caricaConsiglioDirettivo || (isAdmin ? 'Amministratore' : undefined),
+      ultimoAggiornamentoDataOra: formatDateTimeItaly(),
+      updatedAt: Date.now()
+    });
+
+    setSalvataggioRegolaConfermato(true);
+    setTimeout(() => setSalvataggioRegolaConfermato(false), 3000);
+
+    if (modificata) {
+      const emailsExtra: string[] = [];
+      (volontari || []).forEach((v) => {
+        if (!v?.email || !v.email.includes('@')) return;
+        const caricaLow = String(v.caricaConsiglioDirettivo || '').toLowerCase();
+        const mansioniStr = [v.qualifica, v.mansione, ...(Array.isArray(v.mansioni) ? v.mansioni : [])]
+          .filter(Boolean)
+          .join(' ')
+          .toLowerCase();
+        if (caricaLow.includes('presidente') || mansioniStr.includes('responsabile mezzi') || mansioniStr.includes('autoparco')) {
+          emailsExtra.push(v.email.trim());
+        }
+      });
+
+      onNotificaRadio?.(
+        `⚙️ REGOLA SCADENZE MEZZI AGGIORNATA da ${operatoreCorrente}: notificati Responsabile Mezzi e Presidente ("${nuovaRegola.regolaTestuale}" • Soglia: ${nuovaRegola.giorniSogliaNotificaEmail} gg / Scadenzario: ${nuovaRegola.giorniPreavvisoScadenzario} gg).`,
+        'sistema'
+      );
+
+      try {
+        await fetch('/api/notifica-cambio-regola-scadenze-mezzi', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            operatoreNome: operatoreCorrente,
+            operatoreCarica: caricaConsiglioDirettivo || (isAdmin ? 'Amministratore' : 'Consiglio Direttivo'),
+            vecchiaRegola,
+            nuovaRegola,
+            destinatariExtra: emailsExtra,
+            dataOra: formatDateTimeItaly()
+          })
+        });
+      } catch {}
+
+      avvisa(`✓ Regola salvata (${nuovaRegola.giorniSogliaNotificaEmail} gg). Notifica inviata al Responsabile Mezzi e al Presidente!`);
+    } else {
+      avvisa('✓ Regola notifica scadenze mezzi confermata.');
+    }
+  };
+
+  // Calcolo automatico avvisi interventi manutenzione e scadenze in base alla regola configurata
+  const avvisiManutenzione = React.useMemo(() => {
+    return calcolaManutenzioniInScadenza(
+      mezzi,
+      manutenzioni,
+      regolaNotifica.giorniPreavvisoScadenzario,
+      new Date(),
+      magazzinoMezzi
+    );
+  }, [mezzi, manutenzioni, magazzinoMezzi, regolaNotifica.giorniPreavvisoScadenzario]);
+
+  // Avvisi urgenti entro la soglia configurata (default 15 giorni)
   const avvisiUrgenti15Gg = React.useMemo(() => {
-    return avvisiManutenzione.filter(a => a.giorniRimanenti <= 15);
-  }, [avvisiManutenzione]);
+    return avvisiManutenzione.filter(a => a.giorniRimanenti <= regolaNotifica.giorniSogliaNotificaEmail);
+  }, [avvisiManutenzione, regolaNotifica.giorniSogliaNotificaEmail]);
 
   // Registro in memoria delle scadenze dei mezzi già notificate per evitare duplicati ravvicinati
   const ultimoStatoScadenzeNotificateRef = useRef<Record<string, string>>({});
@@ -251,7 +378,7 @@ export const SezioneMezzi: React.FC<SezioneMezziProps> = ({
   ) => {
     if (!scadenze || scadenze.length === 0) return;
 
-    // Filtra quelle scadute o entro 30 giorni
+    // Filtra quelle scadute o entro la soglia configurata
     const daNotificare = force
       ? scadenze
       : scadenze.filter((s) => {
@@ -275,6 +402,8 @@ export const SezioneMezzi: React.FC<SezioneMezziProps> = ({
         body: JSON.stringify({
           alerts: daNotificare,
           causale,
+          sogliaGiorni: regolaNotifica.giorniPreavvisoScadenzario,
+          sogliaUrgenza: regolaNotifica.giorniSogliaNotificaEmail,
           operatore: operatoreCorrente || 'Ufficio Mezzi & Autoparco',
           dataOra: formatDateTimeItaly(),
           force
@@ -298,15 +427,15 @@ export const SezioneMezzi: React.FC<SezioneMezziProps> = ({
     }
   };
 
-  // Controllo automatico delle scadenze flotta urgenti (entro 15 giorni o scadute)
+  // Controllo automatico delle scadenze flotta urgenti secondo la regola configurata
   useEffect(() => {
-    if (avvisiUrgenti15Gg.length > 0) {
+    if (regolaNotifica.invioAutomaticoAttivo && avvisiUrgenti15Gg.length > 0) {
       inviaEmailScadenzeAutomatico(
         avvisiUrgenti15Gg,
-        'Verifica automatica scadenze flotta veicoli urgenti (≤ 15 giorni o scadute)'
+        `Verifica automatica scadenze flotta veicoli urgenti (≤ ${regolaNotifica.giorniSogliaNotificaEmail} giorni o scadute)`
       );
     }
-  }, [avvisiUrgenti15Gg]);
+  }, [avvisiUrgenti15Gg, regolaNotifica.invioAutomaticoAttivo, regolaNotifica.giorniSogliaNotificaEmail]);
 
   // Magazzino Parti Mezzi (Ricambi, tagliandi, lubrificanti, lampadine, pastiglie freni, ecc.)
   const isDemoParteId = (id?: string) => /^part-0(0[1-9]|1[0-2])$/.test(String(id || ''));
@@ -1097,49 +1226,6 @@ export const SezioneMezzi: React.FC<SezioneMezziProps> = ({
       {/* ===================================================================== */}
       {sottoTab === 'flotta' && (
         <div className="space-y-4">
-          {/* Banner Scadenze Flotta Imminenti o Scadute (Assicurazione, Tagliando, Bollo, Revisione) */}
-          {avvisiManutenzione.length > 0 && (
-            <div className={`p-4 rounded-2xl border flex flex-col md:flex-row items-start md:items-center justify-between gap-3 ${
-              avvisiUrgenti15Gg.length > 0
-                ? 'bg-rose-950/40 border-rose-600/60 text-rose-200'
-                : 'bg-amber-950/30 border-amber-500/50 text-amber-200'
-            }`}>
-              <div className="flex items-center gap-3">
-                <ShieldAlert className={`w-5 h-5 shrink-0 ${avvisiUrgenti15Gg.length > 0 ? 'text-rose-400 animate-pulse' : 'text-amber-400'}`} />
-                <div>
-                  <div className="text-xs font-black uppercase text-white flex items-center gap-2">
-                    <span>Scadenze Flotta Rilevate: {avvisiManutenzione.length} totali</span>
-                    {avvisiUrgenti15Gg.length > 0 && (
-                      <span className="px-2 py-0.5 rounded-full bg-rose-600 text-white font-mono text-[10px] font-bold">
-                        {avvisiUrgenti15Gg.length} urgenti (≤ 15 gg o scadute)
-                      </span>
-                    )}
-                  </div>
-                  <div className="text-[11px] text-slate-300 mt-0.5">
-                    Assicurazioni RCA, tagliandi, collaudi ministeriali e bolli per i mezzi di soccorso. Email automatica indirizzata a <strong>mezzi@croceoro.org</strong> e <strong>presidenza@croceoro.org</strong>.
-                  </div>
-                </div>
-              </div>
-
-              <button
-                type="button"
-                disabled={invioEmailScadenzeInCorso}
-                onClick={async () => {
-                  await inviaEmailScadenzeAutomatico(
-                    avvisiManutenzione,
-                    `Sollecito manuale scadenze flotta veicolare da tab Flotta (${avvisiManutenzione.length} scadenze)`,
-                    true
-                  );
-                  avvisa(`✓ Notifica scadenze inviata con successo a mezzi@croceoro.org e presidenza@croceoro.org (${avvisiManutenzione.length} scadenze).`);
-                }}
-                className="px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-slate-950 font-black text-xs uppercase flex items-center gap-1.5 shrink-0 transition-transform active:scale-95 cursor-pointer shadow-md"
-              >
-                <Mail className="w-3.5 h-3.5" />
-                <span>{invioEmailScadenzeInCorso ? 'Invio in corso...' : 'Invia Email Scadenze (mezzi@ & presidenza@)'}</span>
-              </button>
-            </div>
-          )}
-
           {/* Filtri */}
           <div className="bg-slate-900 p-4 rounded-2xl border border-slate-800 flex flex-col md:flex-row items-center justify-between gap-3">
             <div className="relative w-full md:w-80">
@@ -1405,10 +1491,10 @@ export const SezioneMezzi: React.FC<SezioneMezziProps> = ({
                       ? 'bg-rose-950 text-rose-300 border border-rose-700 animate-pulse'
                       : 'bg-emerald-950 text-emerald-300 border border-emerald-700/60'
                   }`}>
-                    {avvisiUrgenti15Gg.length} {avvisiUrgenti15Gg.length === 1 ? 'scadenza urgente' : 'scadenze urgenti'} (≤ 15 giorni)
+                    {avvisiUrgenti15Gg.length} {avvisiUrgenti15Gg.length === 1 ? 'scadenza urgente' : 'scadenze urgenti'} (≤ {regolaNotifica.giorniSogliaNotificaEmail} giorni)
                   </span>
                   <span className="text-xs text-slate-400 font-mono">
-                    Totale scadenze a 30 gg: <strong className="text-white">{avvisiManutenzione.length}</strong>
+                    Totale scadenze a {regolaNotifica.giorniPreavvisoScadenzario} gg: <strong className="text-white">{avvisiManutenzione.length}</strong>
                   </span>
                 </div>
                 <h4 className="text-sm font-black text-white uppercase tracking-wide">
@@ -1427,7 +1513,9 @@ export const SezioneMezzi: React.FC<SezioneMezziProps> = ({
                       : 'bg-slate-950 text-slate-300 border-slate-700 hover:text-white'
                   }`}
                 >
-                  {filtroUrgenza15Gg ? 'Mostra Tutte (≤ 30 gg)' : 'Filtra Solo Urgenti (≤ 15 gg)'}
+                  {filtroUrgenza15Gg
+                    ? `Mostra Tutte (≤ ${regolaNotifica.giorniPreavvisoScadenzario} gg)`
+                    : `Filtra Solo Urgenti (≤ ${regolaNotifica.giorniSogliaNotificaEmail} gg)`}
                 </button>
 
                 <button
@@ -1455,6 +1543,150 @@ export const SezioneMezzi: React.FC<SezioneMezziProps> = ({
               </div>
             </div>
 
+            {/* RIGA EDITABILE REGOLA NOTIFICA SCADENZA MEZZI (Solo Amministratore e Consiglio Direttivo, escluso Operatore Centrale) */}
+            <div className={`p-3.5 rounded-xl border space-y-2.5 text-xs ${
+              canEditRegolaNotificaScadenze
+                ? 'bg-slate-950 border-amber-500/40'
+                : 'bg-slate-950/70 border-slate-800'
+            }`}>
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div className="flex items-center gap-2 font-bold text-amber-300 uppercase tracking-wide text-[11px]">
+                  {canEditRegolaNotificaScadenze ? (
+                    <Edit2 className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                  ) : (
+                    <Lock className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                  )}
+                  <span>Regola di Notifica Scadenza Mezzi (Riga Editabile)</span>
+                </div>
+
+                {canEditRegolaNotificaScadenze ? (
+                  <span className="text-[10px] font-bold px-2.5 py-0.5 rounded-full bg-emerald-950/80 text-emerald-300 border border-emerald-700/50">
+                    Modifica abilitata (ogni cambio notifica Responsabile Mezzi e Presidente)
+                  </span>
+                ) : (
+                  <span className="text-[10px] font-bold px-2.5 py-0.5 rounded-full bg-slate-900 text-slate-400 border border-slate-700 flex items-center gap-1">
+                    <Lock className="w-3 h-3" />
+                    <span>Sola lettura • Modificabile solo da Amministratore e Consiglio Direttivo</span>
+                  </span>
+                )}
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-2 items-end">
+                <div className="lg:col-span-5">
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">
+                    Comando / Testo Regola Notifica Scadenza Mezzi
+                  </label>
+                  <input
+                    type="text"
+                    disabled={!canEditRegolaNotificaScadenze}
+                    value={editRegolaTestuale}
+                    onChange={(e) => setEditRegolaTestuale(e.target.value)}
+                    placeholder="Descrivi la regola attiva di notifica scadenze..."
+                    className={`w-full px-3 py-1.5 rounded-lg border text-xs focus:outline-none ${
+                      canEditRegolaNotificaScadenze
+                        ? 'bg-slate-900 border-slate-700 text-white focus:border-amber-400'
+                        : 'bg-slate-900/50 border-slate-800 text-slate-400 cursor-not-allowed'
+                    }`}
+                  />
+                </div>
+
+                <div className="lg:col-span-2">
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">
+                    Soglia Email (gg)
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={365}
+                    disabled={!canEditRegolaNotificaScadenze}
+                    value={editRegolaGiorniSoglia}
+                    onChange={(e) => {
+                      const v = Math.max(1, Math.min(365, Number(e.target.value) || 1));
+                      setEditRegolaGiorniSoglia(v);
+                      if (editRegolaGiorniScadenzario < v) setEditRegolaGiorniScadenzario(v);
+                    }}
+                    className={`w-full px-2.5 py-1.5 rounded-lg border text-xs font-mono font-bold focus:outline-none ${
+                      canEditRegolaNotificaScadenze
+                        ? 'bg-slate-900 border-slate-700 text-amber-300 focus:border-amber-400'
+                        : 'bg-slate-900/50 border-slate-800 text-slate-400 cursor-not-allowed'
+                    }`}
+                  />
+                </div>
+
+                <div className="lg:col-span-2">
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">
+                    Scadenzario (gg)
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={365}
+                    disabled={!canEditRegolaNotificaScadenze}
+                    value={editRegolaGiorniScadenzario}
+                    onChange={(e) => setEditRegolaGiorniScadenzario(Math.max(editRegolaGiorniSoglia, Math.min(365, Number(e.target.value) || 30)))}
+                    className={`w-full px-2.5 py-1.5 rounded-lg border text-xs font-mono font-bold focus:outline-none ${
+                      canEditRegolaNotificaScadenze
+                        ? 'bg-slate-900 border-slate-700 text-cyan-300 focus:border-amber-400'
+                        : 'bg-slate-900/50 border-slate-800 text-slate-400 cursor-not-allowed'
+                    }`}
+                  />
+                </div>
+
+                <div className="lg:col-span-3 flex items-center gap-2">
+                  <div className="flex-1">
+                    <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">
+                      Modalità Invio
+                    </label>
+                    <select
+                      disabled={!canEditRegolaNotificaScadenze}
+                      value={editRegolaAutoAttiva ? 'auto' : 'manuale'}
+                      onChange={(e) => setEditRegolaAutoAttiva(e.target.value === 'auto')}
+                      className={`w-full px-2.5 py-1.5 rounded-lg border text-xs font-bold focus:outline-none ${
+                        canEditRegolaNotificaScadenze
+                          ? 'bg-slate-900 border-slate-700 text-white focus:border-amber-400 cursor-pointer'
+                          : 'bg-slate-900/50 border-slate-800 text-slate-400 cursor-not-allowed'
+                      }`}
+                    >
+                      <option value="auto">Automatica + Email</option>
+                      <option value="manuale">Solo Invio Manuale</option>
+                    </select>
+                  </div>
+
+                  {canEditRegolaNotificaScadenze && (
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => handleSalvaRegolaNotificaScadenze(false)}
+                        className="px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs uppercase transition-colors cursor-pointer shadow"
+                        title="Salva la nuova regola e notifica Responsabile Mezzi e Presidente"
+                      >
+                        {salvataggioRegolaConfermato ? 'Salvata!' : 'Salva Regola'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleSalvaRegolaNotificaScadenze(true)}
+                        className="px-2 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-xs font-bold transition-colors cursor-pointer"
+                        title="Ripristina regola predefinita (15 gg / 30 gg)"
+                      >
+                        Default
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {regolaNotifica.ultimoAggiornamentoDa && (
+                <div className="text-[10px] text-slate-400 flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-slate-800/70">
+                  <span>
+                    Ultima modifica: <strong className="text-slate-200">{regolaNotifica.ultimoAggiornamentoDa}</strong>
+                    {regolaNotifica.ultimoAggiornamentoCarica ? ` (${regolaNotifica.ultimoAggiornamentoCarica})` : ''}
+                    {regolaNotifica.ultimoAggiornamentoDataOra ? ` • ${regolaNotifica.ultimoAggiornamentoDataOra}` : ''}
+                  </span>
+                  <span className="text-emerald-400 font-semibold">✓ Responsabile Mezzi e Presidente notificati</span>
+                </div>
+              )}
+            </div>
+
             {/* Box Configurazione Email Responsabile Parco Mezzi & Presidenza */}
             <div className="bg-slate-950 p-3.5 rounded-xl border border-slate-800 space-y-2.5 text-xs">
               <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2">
@@ -1474,14 +1706,14 @@ export const SezioneMezzi: React.FC<SezioneMezziProps> = ({
 
               <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 pt-2 border-t border-slate-800/80">
                 <p className="text-[11px] text-slate-400">
-                  Gli avvisi singoli e cumulativi per scadenze entro 15 giorni vengono inviati contemporaneamente a entrambi i referenti associativi.
+                  Gli avvisi singoli e cumulativi per scadenze entro {regolaNotifica.giorniSogliaNotificaEmail} giorni vengono inviati contemporaneamente a entrambi i referenti associativi ({regolaNotifica.invioAutomaticoAttivo ? 'invio automatico attivo' : 'invio solo manuale'}).
                 </p>
                 <div className="flex items-center gap-2 w-full sm:w-auto">
                   <input
                     type="text"
                     value={emailResponsabileMezzi}
                     onChange={(e) => setEmailResponsabileMezzi(e.target.value)}
-                    placeholder="nicodemimarmi@gmail.com, presidenza@croceoro.org"
+                    placeholder="mezzi@croceoro.org, presidenza@croceoro.org"
                     className="px-3 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-xs font-mono text-white focus:outline-none focus:border-amber-400 w-full sm:w-80"
                     title="Indirizzi email destinatari (separati da virgola)"
                   />
@@ -1496,7 +1728,7 @@ export const SezioneMezzi: React.FC<SezioneMezziProps> = ({
                     type="button"
                     onClick={handleRipristinaEmailPredefinite}
                     className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-xs font-bold transition-colors shrink-0 cursor-pointer"
-                    title="Ripristina a nicodemimarmi@gmail.com e presidenza@croceoro.org"
+                    title="Ripristina a mezzi@croceoro.org e presidenza@croceoro.org"
                   >
                     Ripristina
                   </button>
@@ -1511,14 +1743,14 @@ export const SezioneMezzi: React.FC<SezioneMezziProps> = ({
                 return (
                   <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 text-center text-xs text-slate-400">
                     <CheckCircle2 className="w-5 h-5 text-emerald-400 mx-auto mb-1" />
-                    Nessun intervento di manutenzione, tagliando o revisione in scadenza {filtroUrgenza15Gg ? 'entro i prossimi 15 giorni' : 'entro i prossimi 30 giorni'}. Tutti i mezzi risultano in regola.
+                    Nessun intervento di manutenzione, tagliando o revisione in scadenza {filtroUrgenza15Gg ? `entro i prossimi ${regolaNotifica.giorniSogliaNotificaEmail} giorni` : `entro i prossimi ${regolaNotifica.giorniPreavvisoScadenzario} giorni`}. Tutti i mezzi risultano in regola.
                   </div>
                 );
               }
               return (
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
                   {elencoVisualizzato.map((a) => {
-                    const isUrgentissima = a.giorniRimanenti <= 15;
+                    const isUrgentissima = a.giorniRimanenti <= regolaNotifica.giorniSogliaNotificaEmail;
                     return (
                       <div
                         key={a.id}

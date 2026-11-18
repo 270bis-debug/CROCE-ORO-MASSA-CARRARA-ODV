@@ -416,6 +416,9 @@ export interface ServerState {
   mezziFlottaUpdatedAt?: number;
   tipologieMezzo?: any[];
   tipologieMezzoUpdatedAt?: number;
+  metodiPagamentoCustom?: any[];
+  metodiPagamentoCustomUpdatedAt?: number;
+  regolaScadenzeMezzi?: any;
   indirizziCollezionati?: any[];
   contatti?: any[];
   radioPtt?: RadioPttState;
@@ -893,6 +896,9 @@ function loadPersistedState(): ServerState {
           mezziFlottaUpdatedAt: typeof parsed.mezziFlottaUpdatedAt === 'number' ? parsed.mezziFlottaUpdatedAt : undefined,
           tipologieMezzo: Array.isArray(parsed.tipologieMezzo) ? parsed.tipologieMezzo : undefined,
           tipologieMezzoUpdatedAt: typeof parsed.tipologieMezzoUpdatedAt === 'number' ? parsed.tipologieMezzoUpdatedAt : undefined,
+          metodiPagamentoCustom: Array.isArray(parsed.metodiPagamentoCustom) ? parsed.metodiPagamentoCustom : undefined,
+          metodiPagamentoCustomUpdatedAt: typeof parsed.metodiPagamentoCustomUpdatedAt === 'number' ? parsed.metodiPagamentoCustomUpdatedAt : undefined,
+          regolaScadenzeMezzi: parsed.regolaScadenzeMezzi && typeof parsed.regolaScadenzeMezzi === 'object' ? parsed.regolaScadenzeMezzi : undefined,
           indirizziCollezionati: Array.isArray(parsed.indirizziCollezionati) ? parsed.indirizziCollezionati : [],
           contatti: Array.isArray(parsed.contatti) ? parsed.contatti : undefined,
           radioPtt: {
@@ -6296,6 +6302,182 @@ async function startServer() {
     }
   });
 
+  // REST API per Ulteriori Metodi di Ricezione Donazioni e Pagamenti (Coordinate Bancarie & Postali)
+  app.get('/api/metodi-pagamento', (_req, res) => {
+    res.json({
+      success: true,
+      metodi: Array.isArray(state.metodiPagamentoCustom) ? state.metodiPagamentoCustom : [],
+      updatedAt: state.metodiPagamentoCustomUpdatedAt || 0
+    });
+  });
+
+  app.post('/api/metodi-pagamento', (req, res) => {
+    try {
+      const { metodi, updatedAt } = req.body || {};
+      if (!Array.isArray(metodi)) {
+        return res.status(400).json({ success: false, error: 'Elenco metodi pagamento non valido' });
+      }
+      const ts = typeof updatedAt === 'number' && Number.isFinite(updatedAt) && updatedAt > 0 ? updatedAt : Date.now();
+      state.metodiPagamentoCustom = metodi;
+      state.metodiPagamentoCustomUpdatedAt = ts;
+      persistState();
+      broadcast({
+        type: 'METODI_PAGAMENTO_UPDATED',
+        metodi: state.metodiPagamentoCustom,
+        updatedAt: ts
+      });
+      return res.json({ success: true, metodi: state.metodiPagamentoCustom, updatedAt: ts });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err?.message || 'Errore salvataggio metodi pagamento' });
+    }
+  });
+
+  // REST API per Regola Notifica Scadenza Mezzi
+  app.get('/api/regola-scadenze-mezzi', (_req, res) => {
+    res.json({
+      success: true,
+      regola: state.regolaScadenzeMezzi || null
+    });
+  });
+
+  app.post('/api/regola-scadenze-mezzi', (req, res) => {
+    try {
+      const { regola } = req.body || {};
+      if (!regola || typeof regola !== 'object') {
+        return res.status(400).json({ success: false, error: 'Regola scadenze non valida' });
+      }
+      state.regolaScadenzeMezzi = regola;
+      persistState();
+      broadcast({
+        type: 'REGOLA_SCADENZE_MEZZI_UPDATED',
+        regola: state.regolaScadenzeMezzi
+      });
+      return res.json({ success: true, regola: state.regolaScadenzeMezzi });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err?.message || 'Errore salvataggio regola scadenze' });
+    }
+  });
+
+  // ENDPOINT: Notifica automatica a Responsabile Mezzi e Presidente quando cambia la regola di notifica scadenza mezzi
+  app.post('/api/notifica-cambio-regola-scadenze-mezzi', async (req, res) => {
+    try {
+      const {
+        operatoreNome = 'Amministratore / Consiglio Direttivo',
+        operatoreCarica = '',
+        vecchiaRegola,
+        nuovaRegola,
+        destinatariExtra = [],
+        dataOra = formatDateTimeItaly()
+      } = req.body || {};
+
+      const destinatari = Array.from(
+        new Set([
+          'mezzi@croceoro.org',
+          'presidenza@croceoro.org',
+          ...(Array.isArray(destinatariExtra) ? destinatariExtra : []).filter(
+            (e: any) => typeof e === 'string' && e.includes('@')
+          )
+        ])
+      );
+
+      const descVecchia = vecchiaRegola
+        ? `Soglia notifica: ${vecchiaRegola.giorniSogliaNotificaEmail} gg | Scadenzario: ${vecchiaRegola.giorniPreavvisoScadenzario} gg | Auto: ${vecchiaRegola.invioAutomaticoAttivo ? 'ATTIVA' : 'DISATTIVA'} | Comando: "${vecchiaRegola.regolaTestuale || '-'}"`
+        : 'Regola precedente predefinita';
+
+      const descNuova = nuovaRegola
+        ? `Soglia notifica: ${nuovaRegola.giorniSogliaNotificaEmail} gg | Scadenzario: ${nuovaRegola.giorniPreavvisoScadenzario} gg | Auto: ${nuovaRegola.invioAutomaticoAttivo ? 'ATTIVA' : 'DISATTIVA'} | Comando: "${nuovaRegola.regolaTestuale || '-'}"`
+        : 'Nuova regola aggiornata';
+
+      const oggetto = `[PARCO MEZZI CROCE ORO] Modifica Regola Notifica Scadenze Mezzi da ${operatoreNome}`;
+      const testoEmail =
+        `Spettabili Responsabile Parco Mezzi e Presidente Croce Oro Massa Carrara OdV,\n\n` +
+        `SI NOTIFICA CHE LA REGOLA DI NOTIFICA SCADENZA MEZZI È STATA MODIFICATA.\n\n` +
+        `• Modificata da: ${operatoreNome}${operatoreCarica ? ` (${operatoreCarica})` : ''}\n` +
+        `• Data e Ora: ${dataOra}\n\n` +
+        `• REGOLA PRECEDENTE:\n  ${descVecchia}\n\n` +
+        `• NUOVA REGOLA ATTIVA:\n  ${descNuova}\n\n` +
+        `Croce Oro Massa Carrara OdV - Sistemi Informativi Centrali`;
+
+      const htmlEmail = `
+        <div style="font-family: Arial, sans-serif; color: #1e293b; max-width: 680px; margin: 0 auto; border: 1px solid #e2e8f0; border-radius: 12px; overflow: hidden;">
+          <div style="background-color: #1d1a60; color: #fbbf24; padding: 20px; text-align: center;">
+            <h1 style="margin: 0; font-size: 18px; font-weight: 800;">CROCE ORO MASSA CARRARA OdV</h1>
+            <p style="margin: 4px 0 0; font-size: 12px; color: #e2e8f0;">Aggiornamento Regola Notifica Scadenze Parco Mezzi</p>
+          </div>
+          <div style="padding: 20px; background-color: #ffffff; font-size: 13px; line-height: 1.55;">
+            <p>Spettabili <strong>Responsabile Mezzi</strong> e <strong>Presidente</strong>,</p>
+            <p>si comunica che in data <strong>${dataOra}</strong> l'utente <strong>${operatoreNome}</strong>${operatoreCarica ? ` (<em>${operatoreCarica}</em>)` : ''} ha modificato la regola di notifica scadenze nella sottosezione <em>Manutenzione Mezzi &amp; Tagliandi</em>.</p>
+            <div style="background-color: #fef2f2; border-left: 4px solid #ef4444; padding: 10px 14px; border-radius: 6px; margin: 12px 0;">
+              <strong style="color: #991b1b;">Regola Precedente:</strong><br/>
+              <span style="font-size: 12px; color: #7f1d1d;">${descVecchia}</span>
+            </div>
+            <div style="background-color: #ecfdf5; border-left: 4px solid #10b981; padding: 10px 14px; border-radius: 6px; margin: 12px 0;">
+              <strong style="color: #065f46;">Nuova Regola Attiva:</strong><br/>
+              <span style="font-size: 12px; color: #064e3b;">${descNuova}</span>
+            </div>
+          </div>
+          <div style="background-color: #f1f5f9; padding: 12px 16px; font-size: 11px; color: #64748b; text-align: center;">
+            Notifica automatica inviata al Responsabile Mezzi e al Presidente • Portale Gestionale Croce Oro OdV
+          </div>
+        </div>
+      `;
+
+      const smtpHost = process.env.SMTP_HOST || 'mail.tophost.it';
+      const smtpPass = process.env.SMTP_PASS || 'Applicazione26!';
+      const smtpPort = Number(process.env.SMTP_PORT) || 587;
+      const isSecure = smtpPort === 465;
+      const candidateUsers = Array.from(new Set([
+        'croceoro.org10175',
+        'croceoro.org',
+        'sistemiautomatizzati@croceoro.org',
+        process.env.SMTP_USER
+      ].filter(Boolean) as string[]));
+
+      let speditoViaSmtp = false;
+      for (const candidate of candidateUsers) {
+        try {
+          const t = nodemailer.createTransport({
+            host: smtpHost,
+            port: smtpPort,
+            secure: isSecure,
+            auth: { user: candidate, pass: smtpPass },
+            tls: { rejectUnauthorized: false }
+          });
+          await t.verify();
+          await t.sendMail({
+            from: { name: MITTENTE_UFFICIALE, address: EMAIL_MITTENTE_UFFICIALE },
+            sender: EMAIL_MITTENTE_UFFICIALE,
+            replyTo: EMAIL_MITTENTE_UFFICIALE,
+            to: destinatari,
+            subject: oggetto,
+            text: testoEmail,
+            html: htmlEmail
+          });
+          speditoViaSmtp = true;
+          break;
+        } catch {}
+      }
+
+      const notificaCambio: RadioNotification = {
+        id: generateUniqueNotifId(),
+        orario: formatTimeItaly(),
+        testo: `⚙️ REGOLA SCADENZE MEZZI MODIFICATA da ${operatoreNome}${operatoreCarica ? ` (${operatoreCarica})` : ''}: notificati Responsabile Mezzi e Presidente (${nuovaRegola?.regolaTestuale || descNuova}).`,
+        tipo: 'sistema'
+      };
+      state.notifiche.push(notificaCambio);
+      if (state.notifiche.length > 50) state.notifiche.shift();
+      persistState();
+      broadcast({
+        type: 'NOTIFICATION_BROADCAST',
+        notification: notificaCambio
+      });
+
+      return res.json({ success: true, speditoViaSmtp, destinatari });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err?.message || 'Errore notifica cambio regola' });
+    }
+  });
+
   // REST API per il Database Anagrafiche Sedi Associative
   app.get('/api/sedi', (_req, res) => {
     res.json(normalizzaListaSediAssociative(state.sedi || []));
@@ -8064,12 +8246,13 @@ async function startServer() {
         return res.status(400).json({ success: false, error: 'Nessuna scadenza mezzo fornita per la notifica' });
       }
 
-      // Filtra le scadenze: devono essere scadute (giorniRimanenti <= 0 o scaduta = true) o in scadenza entro 30 giorni
+      // Filtra le scadenze: devono essere scadute (giorniRimanenti <= 0 o scaduta = true) o in scadenza entro la soglia configurata (default 30 giorni)
+      const sogliaScadServer = Number(req.body?.sogliaGiorni) || Number(state.regolaScadenzeMezzi?.giorniPreavvisoScadenzario) || 30;
       const ora = Date.now();
       const scadenzeFiltrate = rawAlerts.filter((a: any) => {
         const giorni = Number(a.giorniRimanenti);
         const isScaduta = a.scaduta === true || (!isNaN(giorni) && giorni <= 0);
-        const isInScadenza = !isNaN(giorni) && giorni <= 30;
+        const isInScadenza = !isNaN(giorni) && giorni <= sogliaScadServer;
 
         if (!isScaduta && !isInScadenza && !force) return false;
 

@@ -28,6 +28,7 @@ import { SignaturePad } from './SignaturePad';
 import { PROVINCE_ITALIANE } from '../data/provinceItaliane';
 import { LISTA_ANIMALI_VOLONTARIO, DatiProprietarioCentrale, FotoDocumentoIdentita } from '../data/animali';
 import { formatDateTimeItaly, formatTimeItaly } from '../utils/italianTime';
+import { useMetodiPagamentoCustom, formattaEtichettaMetodoPagamento } from '../utils/metodiPagamentoStore';
 
 export interface ComuneItaliano {
   nome: string;
@@ -67,7 +68,7 @@ export interface DatiDestinazione {
   donazione: {
     ricevuta: boolean;
     somma: number;
-    metodo: 'contanti' | 'pos' | '';
+    metodo: string;
     tipoDonatore?: 'proprietario' | 'chiamante' | 'altra_persona';
     donatoreAltro?: {
       nome?: string;
@@ -247,15 +248,19 @@ export const ModalDestinazioneFirme: React.FC<ModalDestinazioneFirmeProps> = ({
   );
   const [fotoDocPreviewModal, setFotoDocPreviewModal] = useState<{ url: string; titolo: string } | null>(null);
 
+  const metodiPagamentoCustom = useMetodiPagamentoCustom();
+  const metodiDonazioneCustom = useMemo(
+    () => metodiPagamentoCustom.filter((m) => m.attivo && (m.tipo === 'entrambi' || m.tipo === 'donazioni')),
+    [metodiPagamentoCustom]
+  );
+
   // --- SEZIONE 3: DONAZIONE ---
   const [haDonazione, setHaDonazione] = useState<boolean>(initialDati?.donazione?.ricevuta || false);
   const [sommaDonata, setSommaDonata] = useState<string>(
     initialDati?.donazione?.somma ? String(initialDati.donazione.somma) : ''
   );
-  const [metodoDonazione, setMetodoDonazione] = useState<'contanti' | 'pos' | ''>(
-    initialDati?.donazione?.metodo === 'pos'
-      ? 'pos'
-      : (initialDati?.donazione?.metodo === 'contanti' ? 'contanti' : '')
+  const [metodoDonazione, setMetodoDonazione] = useState<string>(
+    initialDati?.donazione?.metodo || ''
   );
   const [tipoDonatore, setTipoDonatore] = useState<'proprietario' | 'chiamante' | 'altra_persona'>(
     initialDati?.donazione?.tipoDonatore || 'proprietario'
@@ -512,11 +517,7 @@ export const ModalDestinazioneFirme: React.FC<ModalDestinazioneFirmeProps> = ({
       setEmail(privoEmail ? '' : (initialDati.proprietario.email || datiProprietarioCentrale?.email || ''));
       setHaDonazione(Boolean(initialDati.donazione?.ricevuta));
       setSommaDonata(initialDati.donazione?.somma ? String(initialDati.donazione.somma) : '');
-      setMetodoDonazione(
-        initialDati.donazione?.metodo === 'pos'
-          ? 'pos'
-          : (initialDati.donazione?.metodo === 'contanti' ? 'contanti' : '')
-      );
+      setMetodoDonazione(initialDati.donazione?.metodo || '');
       setTipoDonatore(initialDati.donazione?.tipoDonatore || 'proprietario');
       if (initialDati.donazione?.donatoreAltro) {
         setDonatoreAltroNome(initialDati.donazione.donatoreAltro.nome || '');
@@ -844,9 +845,9 @@ export const ModalDestinazioneFirme: React.FC<ModalDestinazioneFirmeProps> = ({
         setErroreValidazione("Hai selezionato 'Donazione Ricevuta': inserisci la somma donata in Euro (es. € 20, € 50)!");
         return;
       }
-      if (!metodoDonazione || (metodoDonazione !== 'contanti' && metodoDonazione !== 'pos')) {
+      if (!metodoDonazione || !metodoDonazione.trim()) {
         setErroreValidazione(
-          `Hai inserito un importo di donazione di € ${importoDonazioneNum.toFixed(2)}: devi obbligatoriamente dichiarare se la donazione è stata effettuata in Contanti o con il POS spuntando una delle due apposite caselle!`
+          `Hai inserito un importo di donazione di € ${importoDonazioneNum.toFixed(2)}: devi obbligatoriamente dichiarare il metodo di donazione (Contanti, POS o altro metodo configurato) spuntando una delle apposite caselle!`
         );
         return;
       }
@@ -1787,12 +1788,12 @@ export const ModalDestinazioneFirme: React.FC<ModalDestinazioneFirmeProps> = ({
                     {parseFloat(sommaDonata) > 0 && !metodoDonazione ? (
                       <span className="text-[10px] font-black px-2.5 py-1 rounded-full bg-red-500/20 text-red-300 border border-red-500/50 flex items-center gap-1 animate-pulse">
                         <AlertTriangle className="w-3 h-3 text-red-400" />
-                        <span>Spunta obbligatoria: Contanti o POS</span>
+                        <span>Spunta obbligatoria: scegli un metodo</span>
                       </span>
                     ) : metodoDonazione ? (
                       <span className="text-[10px] font-bold px-2.5 py-1 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 flex items-center gap-1.5">
                         <Check className="w-3.5 h-3.5 text-emerald-400" />
-                        <span>Dichiarato: <strong>{metodoDonazione === 'contanti' ? 'Contanti' : 'POS'}</strong></span>
+                        <span>Dichiarato: <strong>{metodoDonazione === 'contanti' ? 'Contanti' : metodoDonazione === 'pos' ? 'POS Elettronico' : metodoDonazione}</strong></span>
                       </span>
                     ) : (
                       <span className="text-[10px] font-semibold text-slate-400">
@@ -1802,10 +1803,10 @@ export const ModalDestinazioneFirme: React.FC<ModalDestinazioneFirmeProps> = ({
                   </div>
 
                   <p className="text-[11px] text-slate-300 mb-2.5 leading-snug">
-                    Seleziona obbligatoriamente come è stata versata l'offerta spuntando una delle due caselle sottostanti:
+                    Seleziona obbligatoriamente come è stata versata l'offerta spuntando una delle caselle sottostanti:
                   </p>
 
-                  {/* LE DUE CASELLE DIFFERENTI DA FREGARE (CHECKBOXES SEPARATE) */}
+                  {/* CASELLE METODO DONAZIONE (CONTANTI, POS E ULTERIORI METODI CONFIGURATI) */}
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     {/* CASELLA 1: CONTANTI */}
                     <div
@@ -1862,6 +1863,40 @@ export const ModalDestinazioneFirme: React.FC<ModalDestinazioneFirmeProps> = ({
                         </div>
                       </div>
                     </div>
+
+                    {metodiDonazioneCustom.map((m) => {
+                      const val = formattaEtichettaMetodoPagamento(m);
+                      const isSel = metodoDonazione === val;
+                      return (
+                        <div
+                          key={m.id}
+                          onClick={() => setMetodoDonazione((prev) => (prev === val ? '' : val))}
+                          className={`p-3.5 rounded-xl border-2 cursor-pointer select-none flex items-start gap-3 transition-all ${
+                            isSel
+                              ? 'bg-purple-950/60 border-purple-400 shadow-md ring-2 ring-purple-500/40 text-white'
+                              : 'bg-slate-950 border-slate-800 text-slate-300 hover:border-slate-700 hover:bg-slate-900/80'
+                          }`}
+                        >
+                          <div className="pt-0.5">
+                            <input
+                              type="checkbox"
+                              checked={isSel}
+                              onChange={() => {}}
+                              className="w-5 h-5 rounded-md text-purple-500 bg-slate-900 border-slate-600 focus:ring-purple-400 cursor-pointer accent-purple-500"
+                            />
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 font-black text-sm text-white">
+                              <CreditCard className="w-4 h-4 text-purple-400 shrink-0" />
+                              <span className="truncate">{m.nome}</span>
+                            </div>
+                            <div className="text-[10.5px] text-slate-400 mt-1 leading-snug break-all">
+                              {m.coordinateODettagli || m.note || 'Metodo personalizzato configurato in Coordinate Bancarie'}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
 
                   {/* Messaggio di Alert esplicito quando manca la scelta */}
@@ -1869,7 +1904,7 @@ export const ModalDestinazioneFirme: React.FC<ModalDestinazioneFirmeProps> = ({
                     <div className="mt-2.5 p-2.5 rounded-xl bg-red-950/70 border border-red-500/60 text-red-200 text-xs font-bold flex items-center gap-2 animate-pulse">
                       <AlertTriangle className="w-4 h-4 text-red-400 shrink-0" />
                       <span>
-                        Dichiarazione obbligatoria: hai inserito una donazione di € {parseFloat(sommaDonata).toFixed(2)}. Spunta obbligatoriamente la casella <strong>Contanti</strong> oppure <strong>POS</strong> per proseguire e salvare!
+                        Dichiarazione obbligatoria: hai inserito una donazione di € {parseFloat(sommaDonata).toFixed(2)}. Spunta uno dei metodi disponibili per proseguire e salvare!
                       </span>
                     </div>
                   )}

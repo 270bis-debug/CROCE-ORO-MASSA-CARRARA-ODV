@@ -40,6 +40,7 @@ import { GeolocalizzazioneMappaSede } from './GeolocalizzazioneMappaSede';
 import { inviaNotificaModificaAdmin } from '../../utils/notificaModificaAdmin';
 import { realtime } from '../../services/realtime';
 import { useTitoloDatabase } from '../../hooks/useNomiDatabase';
+import { GestioneMetodiPagamentoCustomPanel } from './GestioneMetodiPagamentoCustomPanel';
 import {
   DatiCartaIntestata,
   getDatiCartaIntestata,
@@ -1975,6 +1976,15 @@ export const SezioneSedi: React.FC<SezioneSediProps> = ({
               </div>
             </div>
           </div>
+
+          <GestioneMetodiPagamentoCustomPanel
+            operatoreCorrente={operatoreCorrente}
+            isAdmin={isAdmin}
+            onNotificaRadio={onNotificaRadio}
+            onAvviso={mostraAvviso}
+            intestatarioDefault="CROCE ORO MASSA CARRARA ODV"
+            fonteSezione="Sedi Associative — Coordinate Bancarie & Postali"
+          />
         </div>
       )}
       {modaleSedeAperta && (

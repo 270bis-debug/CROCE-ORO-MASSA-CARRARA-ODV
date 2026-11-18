@@ -49,6 +49,8 @@ import { LEGACY_MOCK_CORSI_IDS } from '../data/adminMockData';
 import { applicaMansioniConfigDaSync, getMansioniConfigUpdatedAt } from '../utils/mansioniVolontari';
 import { applicaNomiDatabaseDaSync, getNomiDatabaseUpdatedAt } from '../constants/macroCategorie';
 import { applicaTipologieMezzoDaSync, getTipologieMezzoUpdatedAt } from '../utils/tipologieMezzo';
+import { applicaMetodiPagamentoDaSync } from '../utils/metodiPagamentoStore';
+import { applicaRegolaNotificaScadenzeDaSync } from '../utils/avvisiManutenzioneMezzi';
 
 const stripLegacyCorsi = (list: any): any[] => {
   if (!Array.isArray(list)) return [];
@@ -644,6 +646,17 @@ class RealtimeService {
           tipologieMezzo: payload.tipologieMezzo,
           updatedAt: payload.tipologieMezzoUpdatedAt,
         });
+      }
+      if (Array.isArray(payload.metodiPagamentoCustom)) {
+        this.cloudState.metodiPagamentoCustom = payload.metodiPagamentoCustom;
+        if (payload.metodiPagamentoCustomUpdatedAt) {
+          this.cloudState.metodiPagamentoCustomUpdatedAt = payload.metodiPagamentoCustomUpdatedAt;
+        }
+        applicaMetodiPagamentoDaSync(payload.metodiPagamentoCustom, payload.metodiPagamentoCustomUpdatedAt);
+      }
+      if (payload.regolaScadenzeMezzi && typeof payload.regolaScadenzeMezzi === 'object') {
+        this.cloudState.regolaScadenzeMezzi = payload.regolaScadenzeMezzi;
+        applicaRegolaNotificaScadenzeDaSync(payload.regolaScadenzeMezzi);
       }
       if (typeof payload.publicAppUrl === 'string' && payload.publicAppUrl.trim() && !isProtectedAiStudioHost(payload.publicAppUrl)) {
         const saved = saveConfiguredPublicUrlLocal(payload.publicAppUrl);
@@ -1412,6 +1425,13 @@ class RealtimeService {
               this.cloudState.tipologieMezzo = payload.tipologieMezzo;
               if (payload.updatedAt) this.cloudState.tipologieMezzoUpdatedAt = payload.updatedAt;
               applicaTipologieMezzoDaSync(payload.tipologieMezzo, payload.updatedAt);
+            } else if (payload.type === 'METODI_PAGAMENTO_UPDATED' && Array.isArray(payload.metodi)) {
+              this.cloudState.metodiPagamentoCustom = payload.metodi;
+              if (payload.updatedAt) this.cloudState.metodiPagamentoCustomUpdatedAt = payload.updatedAt;
+              applicaMetodiPagamentoDaSync(payload.metodi, payload.updatedAt);
+            } else if (payload.type === 'REGOLA_SCADENZE_MEZZI_UPDATED' && payload.regola) {
+              this.cloudState.regolaScadenzeMezzi = payload.regola;
+              applicaRegolaNotificaScadenzeDaSync(payload.regola);
             }
             this.emit(payload.type, payload);
           }
@@ -1487,6 +1507,12 @@ class RealtimeService {
     }
     if (Array.isArray(this.cloudState.tipologieMezzo) && this.cloudState.tipologieMezzo.length > 0) {
       applicaTipologieMezzoDaSync(this.cloudState.tipologieMezzo, this.cloudState.tipologieMezzoUpdatedAt);
+    }
+    if (Array.isArray(this.cloudState.metodiPagamentoCustom)) {
+      applicaMetodiPagamentoDaSync(this.cloudState.metodiPagamentoCustom, this.cloudState.metodiPagamentoCustomUpdatedAt);
+    }
+    if (this.cloudState.regolaScadenzeMezzi && typeof this.cloudState.regolaScadenzeMezzi === 'object') {
+      applicaRegolaNotificaScadenzeDaSync(this.cloudState.regolaScadenzeMezzi);
     }
 
     // Ponte bidirezionale: se Express ha nuovi account non ancora presenti su Firestore, sincronizza verso Firestore

@@ -6062,7 +6062,8 @@ export default function App() {
         docPDF += `RESIDENZA: ${destInfo.proprietario?.indirizzo || '-'}, ${destInfo.proprietario?.comune || '-'} (${destInfo.proprietario?.provincia || '-'}), CAP ${destInfo.proprietario?.cap || '-'}\n`;
       }
       if (destInfo.donazione?.ricevuta) {
-        docPDF += `DONAZIONE RICEVUTA: € ${destInfo.donazione.somma} (${destInfo.donazione.metodo === 'pos' ? 'POS Elettronico' : 'Contanti'})\n`;
+        const metodoLabel = destInfo.donazione.metodo === 'pos' ? 'POS Elettronico' : destInfo.donazione.metodo === 'contanti' ? 'Contanti' : (destInfo.donazione.metodo || 'Contanti');
+        docPDF += `DONAZIONE RICEVUTA: € ${destInfo.donazione.somma} (${metodoLabel})\n`;
       }
       if (destInfo.strutturaVeterinaria?.isVeterinario) {
         docPDF += `STRUTTURA RICEVENTE: ${destInfo.strutturaVeterinaria?.nomeStrutturaOVeterinario || 'Struttura Veterinaria'}\n`;
@@ -12850,28 +12851,41 @@ KM TOTALI: ${kmTot} KM`;
         )}
 
         {/* VISTA 3: DATABASE MEZZI, STATO, MANUTENZIONE & MAGAZZINO DOTAZIONI MEZZI */}
-        {ruolo === 'admin' && adminSection === 'mezzi' && (
-          <SezioneMezzi
-            mezzi={mezziFlotta}
-            onAggiornaMezzi={handleAggiornaMezziFlotta}
-            manutenzioni={manutenzioniMezzi}
-            onAggiornaManutenzioni={handleAggiornaManutenzioni}
-            magazzinoMezzi={magazzinoMezzi}
-            onAggiornaMagazzinoMezzi={handleAggiornaMagazzinoMezzi}
-            magazzinoParti={magazzinoParti}
-            onAggiornaMagazzinoParti={handleAggiornaMagazzinoParti}
-            checklistsTemplates={checklistsTemplates}
-            onAggiornaChecklistsTemplates={handleAggiornaChecklistsTemplates}
-            checklistsCompilate={checklistsCompilate}
-            onAggiornaChecklistsCompilate={handleAggiornaChecklistsCompilate}
-            sedi={sediAssociative}
-            operatoreCorrente={utenteCentrale?.nome ? `${utenteCentrale.nome} ${utenteCentrale.cognome || ''}` : 'Amministratore'}
-            isAdmin={isCentraleAdmin}
-            onNotificaRadio={aggiungiNotifica}
-            contatti={contatti}
-            serviziArchivio={archivioPDF}
-          />
-        )}
+        {ruolo === 'admin' && adminSection === 'mezzi' && (() => {
+          const volCentraleCorr = utenteCentrale?.id ? volontari.find((v) => v.id === utenteCentrale.id) : undefined;
+          const caricaDirettivoCorr = (utenteCentrale?.caricaConsiglioDirettivo || volCentraleCorr?.caricaConsiglioDirettivo || '').trim();
+          const hasCaricaDirettivo = Boolean(
+            caricaDirettivoCorr &&
+            !['nessuna', 'nessuna carica direttivo', 'nessun incarico', '-'].includes(caricaDirettivoCorr.toLowerCase())
+          );
+          const isAdminEffettivo = Boolean(utenteCentrale?.isAdmin || utenteCentrale?.pin === '4451' || isCentraleAdmin);
+          const puoModificareRegolaScadenze = isAdminEffettivo || hasCaricaDirettivo;
+          return (
+            <SezioneMezzi
+              mezzi={mezziFlotta}
+              onAggiornaMezzi={handleAggiornaMezziFlotta}
+              manutenzioni={manutenzioniMezzi}
+              onAggiornaManutenzioni={handleAggiornaManutenzioni}
+              magazzinoMezzi={magazzinoMezzi}
+              onAggiornaMagazzinoMezzi={handleAggiornaMagazzinoMezzi}
+              magazzinoParti={magazzinoParti}
+              onAggiornaMagazzinoParti={handleAggiornaMagazzinoParti}
+              checklistsTemplates={checklistsTemplates}
+              onAggiornaChecklistsTemplates={handleAggiornaChecklistsTemplates}
+              checklistsCompilate={checklistsCompilate}
+              onAggiornaChecklistsCompilate={handleAggiornaChecklistsCompilate}
+              sedi={sediAssociative}
+              operatoreCorrente={utenteCentrale?.nome ? `${utenteCentrale.nome} ${utenteCentrale.cognome || ''}`.trim() : 'Amministratore'}
+              isAdmin={isCentraleAdmin}
+              puoModificareRegolaScadenze={puoModificareRegolaScadenze}
+              caricaConsiglioDirettivo={caricaDirettivoCorr}
+              volontari={volontari}
+              onNotificaRadio={aggiungiNotifica}
+              contatti={contatti}
+              serviziArchivio={archivioPDF}
+            />
+          );
+        })()}
 
         {/* VISTA 4: DATABASE CONTABILITÀ, DONAZIONI, TESSERAMENTO & NOTE DI DEBITO */}
         {ruolo === 'admin' && adminSection === 'contabilita' && (
@@ -18759,7 +18773,7 @@ KM TOTALI: ${kmTot} KM`;
                         item.testoCompleto?.includes('DONAZIONE RICEVUTA:')
                       );
                       const sommaDonata = destInfo?.donazione?.somma || 0;
-                      const metodoDonazione = destInfo?.donazione?.metodo === 'pos' ? 'POS' : 'Contanti';
+                      const metodoDonazione = destInfo?.donazione?.metodo === 'pos' ? 'POS' : destInfo?.donazione?.metodo === 'contanti' ? 'Contanti' : (destInfo?.donazione?.metodo || 'Contanti');
 
                       return (
                         <div
@@ -19032,7 +19046,7 @@ KM TOTALI: ${kmTot} KM`;
                             item.testoCompleto?.includes('DONAZIONE RICEVUTA:')
                           );
                           const sommaDonata = destInfo?.donazione?.somma || 0;
-                          const metodoDonazione = destInfo?.donazione?.metodo === 'pos' ? 'POS' : 'Contanti';
+                          const metodoDonazione = destInfo?.donazione?.metodo === 'pos' ? 'POS' : destInfo?.donazione?.metodo === 'contanti' ? 'Contanti' : (destInfo?.donazione?.metodo || 'Contanti');
                           const isSelezionato = selectedArchiveIds.includes(item.id || item.codice);
 
                           return (

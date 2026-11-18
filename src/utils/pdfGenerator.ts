@@ -1182,7 +1182,7 @@ export function generaDocumentoPDF(data: ReportDataPDF): jsPDF {
       doc.setFont('helvetica', 'bold');
       doc.setTextColor(16, 185, 129);
       const importoStr = `€ ${(destData.donazione.somma || 0).toFixed(2)}`;
-      const metodoStr = destData.donazione.metodo === 'pos' ? 'POS Elettronico' : 'Contanti';
+      const metodoStr = destData.donazione.metodo === 'pos' ? 'POS Elettronico' : destData.donazione.metodo === 'contanti' ? 'Contanti' : (destData.donazione.metodo || 'Contanti');
       const donatoreStr = destData.donazione.tipoDonatore === 'chiamante'
         ? `Donatore: Chiamante (${data.chiamante || 'Segnalante'})`
         : destData.donazione.tipoDonatore === 'altra_persona' && destData.donazione.donatoreAltro
@@ -1419,7 +1419,8 @@ export async function inviaPerEmailPDF(data: ReportDataPDF): Promise<{ method: '
   const haDonazione = Boolean(data.datiDestinazione?.donazione?.ricevuta);
   const destinatario = haDonazione ? 'tesoreria@croceoro.org' : '';
   const importo = data.datiDestinazione?.donazione?.somma || 0;
-  const metodo = data.datiDestinazione?.donazione?.metodo === 'pos' ? 'POS Elettronico' : 'Contanti';
+  const rawMetodo = data.datiDestinazione?.donazione?.metodo;
+  const metodo = rawMetodo === 'pos' ? 'POS Elettronico' : rawMetodo === 'contanti' ? 'Contanti' : (rawMetodo || 'Contanti');
 
   const oggetto = encodeURIComponent(
     haDonazione
@@ -2643,7 +2644,8 @@ export function generaRegistroCartaceoPDF(servizi: ReportDataPDF[], infoFiltro?:
       item.testoCompleto?.includes('DONAZIONE RICEVUTA:')
     );
     const sommaDonata = destInfo?.donazione?.somma || 0;
-    const metodoDonazione = destInfo?.donazione?.metodo === 'pos' ? 'POS' : 'Contanti';
+    const rawMetodo = destInfo?.donazione?.metodo;
+    const metodoDonazione = rawMetodo === 'pos' ? 'POS' : rawMetodo === 'contanti' ? 'Contanti' : (rawMetodo || 'Contanti');
 
     // Testo per le colonne
     const dataOraStr = formattaDataEOraCompleta(item.data, item.testoCompleto);

@@ -33,7 +33,9 @@ import {
   Edit3,
   Link2,
   Percent,
-  SlidersHorizontal
+  SlidersHorizontal,
+  Landmark,
+  Copy
 } from 'lucide-react';
 import { useTitoloDatabase } from '../../hooks/useNomiDatabase';
 import {
@@ -66,6 +68,8 @@ import {
 import { RIFORNIMENTI_INIZIALI } from '../../data/rifornimentiMockData';
 import { RifornimentoCarburante } from '../../types/consumiTypes';
 import { addDaysISODate, formatISODateItaly, getCurrentYearItaly } from '../../utils/italianTime';
+import { useMetodiPagamentoCustom, formattaEtichettaMetodoPagamento } from '../../utils/metodiPagamentoStore';
+import { GestioneMetodiPagamentoCustomPanel } from './GestioneMetodiPagamentoCustomPanel';
 
 interface SezioneContabilitaProps {
   serviziArchivio: any[];
@@ -106,7 +110,7 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
   rifornimenti: rifornimentiProp,
   sedi = []
 }) => {
-  const [sottoTab, setSottoTab] = useState<'donazioni' | 'tesseramento' | 'noteDebito' | 'commercialista' | 'costiServizio'>('donazioni');
+  const [sottoTab, setSottoTab] = useState<'donazioni' | 'tesseramento' | 'noteDebito' | 'commercialista' | 'costiServizio' | 'contiCorrenti'>('donazioni');
   const [annoProspetto, setAnnoProspetto] = useState<number>(() => getCurrentYearItaly());
   const [meseDettaglioSelezionato, setMeseDettaglioSelezionato] = useState<RigaProspettoMensile | null>(null);
 
@@ -123,6 +127,16 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
 
   const defaultMetodoNota = `Bonifico Bancario - ${bancaCreditAgricole} (IBAN: ${ibanCreditAgricole})`;
   const [ibanCopiatoFeedback, setIbanCopiatoFeedback] = useState<string | null>(null);
+
+  const metodiPagamentoCustom = useMetodiPagamentoCustom();
+  const metodiPerDonazioni = React.useMemo(
+    () => metodiPagamentoCustom.filter((m) => m.attivo && (m.tipo === 'entrambi' || m.tipo === 'donazioni')),
+    [metodiPagamentoCustom]
+  );
+  const metodiPerPagamenti = React.useMemo(
+    () => metodiPagamentoCustom.filter((m) => m.attivo && (m.tipo === 'entrambi' || m.tipo === 'pagamenti')),
+    [metodiPagamentoCustom]
+  );
 
   // Rifornimenti per calcolo uscite carburante
   const rifornimentiCarburante: RifornimentoCarburante[] = React.useMemo(() => {
@@ -237,7 +251,7 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
   const [formDonazionePaziente, setFormDonazionePaziente] = useState('');
   const [formDonazioneData, setFormDonazioneData] = useState(() => formatISODateItaly());
   const [formDonazioneImporto, setFormDonazioneImporto] = useState('');
-  const [formDonazioneMetodo, setFormDonazioneMetodo] = useState<'Contanti' | 'Bonifico Bancario IBAN' | 'POS / Carta' | 'Assegno Bancario'>('Contanti');
+  const [formDonazioneMetodo, setFormDonazioneMetodo] = useState<string>('Contanti');
   const [formDonazioneRicevuta, setFormDonazioneRicevuta] = useState('');
   const [formDonazioneMezzo, setFormDonazioneMezzo] = useState('T4606');
   const [formDonazioneNote, setFormDonazioneNote] = useState('');
@@ -473,7 +487,7 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
         s.metodoPagamento ||
         s.donazioneMetodo ||
         s.donazione?.modalita ||
-        (s.datiDestinazione?.donazione?.metodo === 'pos' ? 'POS Elettronico' : s.datiDestinazione?.donazione?.metodo === 'contanti' ? 'Contanti' : '') ||
+        (s.datiDestinazione?.donazione?.metodo === 'pos' ? 'POS Elettronico' : s.datiDestinazione?.donazione?.metodo === 'contanti' ? 'Contanti' : (s.datiDestinazione?.donazione?.metodo || '')) ||
         (s.ricevutaDonazione ? 'Ricevuta Fiscale' : 'Contanti');
       const paziente = estraiNomeDonatore(s).replace(/"/g, '""');
       const codice = (s.codice || '').replace(/"/g, '""');
@@ -520,7 +534,12 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
       : null;
 
     if (servizioArchivioCollegato && onAggiornaServizioArchivio) {
-      const metodoBreve: 'pos' | 'contanti' = formDonazioneMetodo === 'POS / Carta' ? 'pos' : 'contanti';
+      const metodoBreve: string =
+        formDonazioneMetodo === 'POS / Carta'
+          ? 'pos'
+          : formDonazioneMetodo === 'Contanti'
+            ? 'contanti'
+            : formDonazioneMetodo;
       const baseDatiDest = servizioArchivioCollegato.datiDestinazione || {
         proprietario: {
           nome: '',
@@ -921,11 +940,18 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
 
   const handleEmettiNotaDiDebito = (e: React.FormEvent) => {
     e.preventDefault();
-    const isPoste = formNotaMetodo.includes('Poste') || formNotaMetodo.includes('00001007035676') || formNotaMetodo.includes('C/C Postale');
-    const isCredit = formNotaMetodo.includes('Credit Agricole') || formNotaMetodo.includes('Agricole') || (!isPoste && formNotaMetodo.includes('Bonifico'));
+    const metodoCustomSel = metodiPerPagamenti.find((m) => formattaEtichettaMetodoPagamento(m) === formNotaMetodo);
+    const isPoste = !metodoCustomSel && (formNotaMetodo.includes('Poste') || formNotaMetodo.includes('00001007035676') || formNotaMetodo.includes('C/C Postale'));
+    const isCredit = !metodoCustomSel && (formNotaMetodo.includes('Credit Agricole') || formNotaMetodo.includes('Agricole') || (!isPoste && formNotaMetodo.includes('Bonifico')));
 
-    const contoAccredito = isPoste ? 'Poste Italiane' : isCredit ? 'Credit Agricole' : 'Altro';
-    const ibanAccredito = isPoste ? ibanPoste : isCredit ? ibanCreditAgricole : undefined;
+    const contoAccredito = metodoCustomSel
+      ? metodoCustomSel.nome
+      : isPoste
+        ? 'Poste Italiane'
+        : isCredit
+          ? 'Credit Agricole'
+          : 'Altro';
+    const ibanAccredito = metodoCustomSel?.coordinateODettagli || (isPoste ? ibanPoste : isCredit ? ibanCreditAgricole : undefined);
     const ccPostaleAccredito = isPoste ? ccPostale : undefined;
 
     const haPropImmobile = Boolean(
@@ -1316,6 +1342,19 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
           <Tag className="w-4 h-4 text-amber-400" />
           <span>5. Costi di Servizio ({tariffeCostiServizio.length})</span>
         </button>
+
+        <button
+          type="button"
+          onClick={() => setSottoTab('contiCorrenti')}
+          className={`px-4 py-2.5 rounded-xl text-xs font-black uppercase flex items-center gap-2 transition-all cursor-pointer shrink-0 ${
+            sottoTab === 'contiCorrenti'
+              ? 'bg-purple-600 text-white shadow-lg shadow-purple-600/30 border border-purple-400 font-black'
+              : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
+          }`}
+        >
+          <Landmark className="w-4 h-4 text-yellow-400" />
+          <span>6. Coordinate Bancarie & Postali ({2 + metodiPagamentoCustom.filter((m) => m.attivo).length})</span>
+        </button>
       </div>
 
       {/* ===================================================================== */}
@@ -1454,7 +1493,7 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
                         s.metodoDonazione ||
                         s.metodoPagamento ||
                         s.donazione?.modalita ||
-                        (s.datiDestinazione?.donazione?.metodo === 'pos' ? 'POS' : s.datiDestinazione?.donazione?.metodo === 'contanti' ? 'Contanti' : '');
+                        (s.datiDestinazione?.donazione?.metodo === 'pos' ? 'POS' : s.datiDestinazione?.donazione?.metodo === 'contanti' ? 'Contanti' : (s.datiDestinazione?.donazione?.metodo || ''));
                       return (
                         <tr key={s.id || s.codice} className="hover:bg-slate-900/50 transition-colors">
                           <td className="py-3 px-4">
@@ -2686,6 +2725,168 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
           </div>
         </div>
       )}
+
+      {/* ===================================================================== */}
+      {/* 6. SOTTO-TAB: COORDINATE BANCARIE & POSTALI + ULTERIORI METODI        */}
+      {/* ===================================================================== */}
+      {sottoTab === 'contiCorrenti' && (
+        <div className="space-y-5 animate-in fade-in">
+          <div className="bg-slate-900 p-5 rounded-3xl border border-yellow-500/40 shadow-xl flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div className="space-y-1">
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] font-black uppercase px-2.5 py-0.5 rounded-full bg-yellow-500 text-slate-950">
+                  Tesoreria Ufficiale Ente ETS
+                </span>
+                <span className="text-xs font-mono text-emerald-400 font-bold">
+                  C.F. 92035360459 • Collegati a Note di Debito & Donazioni
+                </span>
+              </div>
+              <h3 className="text-lg font-black text-white uppercase tracking-wide flex items-center gap-2">
+                <Landmark className="w-5 h-5 text-yellow-400" />
+                <span>Coordinate Bancarie, Postali & Metodi di Ricezione</span>
+              </h3>
+              <p className="text-xs text-slate-300 max-w-3xl leading-relaxed">
+                Riferimenti ufficiali dell'Organizzazione di Volontariato e configurazione centralizzata di ulteriori metodi di ricezione donazioni e pagamenti collegati a tutto il gestionale.
+              </p>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+            {/* CONTO 1: POSTE ITALIANE */}
+            <div className="bg-slate-950 rounded-3xl border-2 border-yellow-500/50 p-5 shadow-2xl space-y-4">
+              <div className="flex items-start justify-between gap-3 border-b border-slate-800 pb-3">
+                <div className="flex items-center gap-3">
+                  <div className="w-11 h-11 rounded-2xl bg-gradient-to-br from-yellow-400 to-amber-500 text-slate-950 flex items-center justify-center font-black text-lg shadow-lg">
+                    🟡
+                  </div>
+                  <div>
+                    <span className="text-[10px] font-black uppercase text-yellow-400 tracking-wider">
+                      Conto Corrente Postale
+                    </span>
+                    <h4 className="text-lg font-black text-white">{bancaPoste}</h4>
+                    <span className="text-xs text-slate-400">BancoPosta Impresa • Circuito Postale & SEPA</span>
+                  </div>
+                </div>
+                <span className="text-[10px] uppercase font-bold text-yellow-300 bg-yellow-950/70 px-2.5 py-1 rounded-xl border border-yellow-600/40 font-mono">
+                  Attivo
+                </span>
+              </div>
+
+              <div className="space-y-2.5 text-xs">
+                <div className="p-3 rounded-2xl bg-slate-900 border border-slate-800">
+                  <span className="text-slate-400 font-bold block">Intestatario Ufficiale:</span>
+                  <span className="text-sm font-black text-white">{intestatarioUfficiale}</span>
+                </div>
+
+                <div className="p-3 rounded-2xl bg-yellow-950/30 border border-yellow-500/40 space-y-1">
+                  <div className="flex items-center justify-between">
+                    <span className="text-yellow-300 font-bold uppercase text-[11px]">Numero C/C Postale:</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        navigator.clipboard?.writeText(ccPostale).catch(() => {});
+                        setIbanCopiatoFeedback(ccPostale);
+                        mostraAvviso(`Copiato C/C Postale: ${ccPostale}`);
+                        setTimeout(() => setIbanCopiatoFeedback(null), 2500);
+                      }}
+                      className="text-[10px] px-2.5 py-1 rounded-lg bg-yellow-500 text-slate-950 font-black flex items-center gap-1 cursor-pointer"
+                    >
+                      <Copy className="w-3 h-3" />
+                      <span>{ibanCopiatoFeedback === ccPostale ? 'Copiato!' : 'Copia C/C'}</span>
+                    </button>
+                  </div>
+                  <div className="font-mono text-base font-black text-yellow-400 select-all">{ccPostale}</div>
+                </div>
+
+                <div className="p-3 rounded-2xl bg-slate-900 border-2 border-yellow-500/50 space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-slate-300 font-bold uppercase text-[11px]">Codice IBAN Ufficiale:</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        navigator.clipboard?.writeText(ibanPoste).catch(() => {});
+                        setIbanCopiatoFeedback(ibanPoste);
+                        mostraAvviso(`Copiato IBAN Poste Italiane: ${ibanPoste}`);
+                        setTimeout(() => setIbanCopiatoFeedback(null), 2500);
+                      }}
+                      className="text-[11px] px-2.5 py-1 rounded-lg bg-gradient-to-r from-yellow-400 to-amber-500 text-slate-950 font-black flex items-center gap-1 cursor-pointer"
+                    >
+                      <Copy className="w-3 h-3" />
+                      <span>{ibanCopiatoFeedback === ibanPoste ? 'Copiato!' : 'Copia IBAN'}</span>
+                    </button>
+                  </div>
+                  <div className="font-mono text-sm font-black text-white bg-slate-950 p-2.5 rounded-xl border border-slate-800 select-all break-all text-center">
+                    {ibanPoste}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* CONTO 2: CREDIT AGRICOLE */}
+            <div className="bg-slate-950 rounded-3xl border-2 border-emerald-500/50 p-5 shadow-2xl space-y-4">
+              <div className="flex items-start justify-between gap-3 border-b border-slate-800 pb-3">
+                <div className="flex items-center gap-3">
+                  <div className="w-11 h-11 rounded-2xl bg-gradient-to-br from-emerald-400 to-teal-500 text-slate-950 flex items-center justify-center font-black text-lg shadow-lg">
+                    🏛️
+                  </div>
+                  <div>
+                    <span className="text-[10px] font-black uppercase text-emerald-400 tracking-wider">
+                      Conto Corrente Bancario
+                    </span>
+                    <h4 className="text-lg font-black text-white">{bancaCreditAgricole}</h4>
+                    <span className="text-xs text-slate-400">Circuito Bancario SEPA • Tesoreria Centrale</span>
+                  </div>
+                </div>
+                <span className="text-[10px] uppercase font-bold text-emerald-300 bg-emerald-950/70 px-2.5 py-1 rounded-xl border border-emerald-700/50 font-mono">
+                  Attivo
+                </span>
+              </div>
+
+              <div className="space-y-2.5 text-xs">
+                <div className="p-3 rounded-2xl bg-slate-900 border border-slate-800">
+                  <span className="text-slate-400 font-bold block">Intestatario Ufficiale:</span>
+                  <span className="text-sm font-black text-white">{intestatarioUfficiale}</span>
+                </div>
+
+                <div className="p-3 rounded-2xl bg-emerald-950/30 border border-emerald-500/40 text-slate-300 leading-relaxed">
+                  Conto bancario principale per bonifici SEPA, convenzioni sanitarie ASL, contributi enti e donazioni liberali.
+                </div>
+
+                <div className="p-3 rounded-2xl bg-slate-900 border-2 border-emerald-500/50 space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-slate-300 font-bold uppercase text-[11px]">Codice IBAN Ufficiale:</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        navigator.clipboard?.writeText(ibanCreditAgricole).catch(() => {});
+                        setIbanCopiatoFeedback(ibanCreditAgricole);
+                        mostraAvviso(`Copiato IBAN Credit Agricole: ${ibanCreditAgricole}`);
+                        setTimeout(() => setIbanCopiatoFeedback(null), 2500);
+                      }}
+                      className="text-[11px] px-2.5 py-1 rounded-lg bg-gradient-to-r from-emerald-400 to-teal-500 text-slate-950 font-black flex items-center gap-1 cursor-pointer"
+                    >
+                      <Copy className="w-3 h-3" />
+                      <span>{ibanCopiatoFeedback === ibanCreditAgricole ? 'Copiato!' : 'Copia IBAN'}</span>
+                    </button>
+                  </div>
+                  <div className="font-mono text-sm font-black text-white bg-slate-950 p-2.5 rounded-xl border border-slate-800 select-all break-all text-center">
+                    {ibanCreditAgricole}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <GestioneMetodiPagamentoCustomPanel
+            operatoreCorrente={operatoreCorrente}
+            isAdmin={isAdmin}
+            onNotificaRadio={onNotificaRadio}
+            onAvviso={mostraAvviso}
+            intestatarioDefault={intestatarioUfficiale}
+            fonteSezione="Contabilità — Coordinate Bancarie & Postali"
+          />
+        </div>
+      )}
       {modaleNuovaDonazioneAperta && (
         <div
           className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-2 sm:p-4 backdrop-blur-sm animate-in fade-in overflow-y-auto"
@@ -2900,13 +3101,28 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
                   </label>
                   <select
                     value={formDonazioneMetodo}
-                    onChange={(e) => setFormDonazioneMetodo(e.target.value as any)}
+                    onChange={(e) => setFormDonazioneMetodo(e.target.value)}
                     className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white focus:outline-none focus:border-purple-500"
                   >
                     <option value="Contanti">Contanti (Cassa Sede)</option>
-                    <option value="Bonifico Bancario IBAN">Bonifico Bancario IBAN</option>
+                    <option value="Bonifico Bancario IBAN">Bonifico Bancario IBAN ({bancaCreditAgricole})</option>
+                    <option value={`Bonifico Postale - ${bancaPoste} (IBAN: ${ibanPoste})`}>
+                      Bonifico / Bollettino {bancaPoste} (C/C {ccPostale})
+                    </option>
                     <option value="POS / Carta">POS / Carta di Credito</option>
                     <option value="Assegno Bancario">Assegno Bancario</option>
+                    {metodiPerDonazioni.length > 0 && (
+                      <optgroup label="Ulteriori Metodi Configurati">
+                        {metodiPerDonazioni.map((m) => {
+                          const val = formattaEtichettaMetodoPagamento(m);
+                          return (
+                            <option key={m.id} value={val}>
+                              {val}
+                            </option>
+                          );
+                        })}
+                      </optgroup>
+                    )}
                   </select>
                 </div>
 
@@ -2923,6 +3139,24 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
                   />
                 </div>
               </div>
+
+              {(() => {
+                const customDonSel = metodiPerDonazioni.find((m) => formattaEtichettaMetodoPagamento(m) === formDonazioneMetodo);
+                if (!customDonSel) return null;
+                return (
+                  <div className="p-2.5 rounded-xl bg-slate-950 border border-purple-500/40 text-[11px] space-y-1">
+                    <div className="font-black text-purple-300">
+                      Metodo selezionato: {customDonSel.nome}
+                    </div>
+                    {customDonSel.coordinateODettagli && (
+                      <div className="font-mono text-amber-300 select-all break-all">
+                        Riferimento / Coordinate: {customDonSel.coordinateODettagli}
+                      </div>
+                    )}
+                    {customDonSel.note && <div className="text-slate-400 italic">{customDonSel.note}</div>}
+                  </div>
+                );
+              })()}
 
               <div>
                 <label className="block text-[11px] font-bold text-slate-400 uppercase mb-1">
@@ -3596,6 +3830,29 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
                           ...{ibanPoste.slice(-8)}
                         </span>
                       </button>
+                      {metodiPerPagamenti.map((m) => {
+                        const val = formattaEtichettaMetodoPagamento(m);
+                        const active = formNotaMetodo === val;
+                        return (
+                          <button
+                            key={m.id}
+                            type="button"
+                            onClick={() => setFormNotaMetodo(val)}
+                            className={`p-2 rounded-xl text-[11px] font-bold border flex flex-col items-center justify-center text-center transition-all cursor-pointer ${
+                              active
+                                ? 'bg-purple-950/80 border-purple-500 text-purple-200 ring-2 ring-purple-500/40 shadow-sm'
+                                : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white hover:border-slate-700'
+                            }`}
+                          >
+                            <span className="flex items-center gap-1 font-black truncate max-w-full">
+                              <span>💳</span> {m.nome}
+                            </span>
+                            <span className="text-[9px] font-mono text-purple-300/90 truncate max-w-full">
+                              {m.coordinateODettagli || 'Metodo personalizzato'}
+                            </span>
+                          </button>
+                        );
+                      })}
                     </div>
                   </div>
                 </div>
@@ -3608,7 +3865,7 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
                       <span>Metodo di Pagamento & Conto IBAN Destinazione *</span>
                     </label>
                     <span className="text-[10px] text-purple-300 font-mono font-semibold">
-                      2 Conti Attivi
+                      {2 + metodiPerPagamenti.length} Metodi Attivi
                     </span>
                   </div>
 
@@ -3643,11 +3900,71 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
                         💵 Contanti / Cassa di Sede (con rilascio quietanza numerata)
                       </option>
                     </optgroup>
+
+                    {metodiPerPagamenti.length > 0 && (
+                      <optgroup label="✨ Ulteriori Metodi Configurati (Coordinate Bancarie & Postali)">
+                        {metodiPerPagamenti.map((m) => {
+                          const val = formattaEtichettaMetodoPagamento(m);
+                          return (
+                            <option key={m.id} value={val}>
+                              💳 {val}
+                            </option>
+                          );
+                        })}
+                      </optgroup>
+                    )}
                   </select>
                 </div>
 
                 {/* Riquadro Dettaglio Coordinate e Verifica IBAN Sedi Associative */}
                 {(() => {
+                  const customNotaSel = metodiPerPagamenti.find((m) => formattaEtichettaMetodoPagamento(m) === formNotaMetodo);
+                  if (customNotaSel) {
+                    return (
+                      <div className="p-3 rounded-2xl border-2 bg-purple-950/30 border-purple-500/60 text-purple-200 space-y-2">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-1.5 font-black text-xs uppercase tracking-wide">
+                            <span>💳</span>
+                            <span>Metodo Selezionato: <strong>{customNotaSel.nome}</strong></span>
+                          </div>
+                          <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-slate-900/80 border border-slate-700">
+                            Personalizzato
+                          </span>
+                        </div>
+
+                        <div className="bg-slate-950/90 p-2.5 rounded-xl border border-slate-800 space-y-1">
+                          {customNotaSel.coordinateODettagli && (
+                            <>
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="text-[10px] uppercase font-bold text-slate-400">Coordinate / Riferimento:</span>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    navigator.clipboard?.writeText(customNotaSel.coordinateODettagli);
+                                    setIbanCopiatoFeedback(customNotaSel.coordinateODettagli);
+                                    setTimeout(() => setIbanCopiatoFeedback(null), 2500);
+                                  }}
+                                  className="text-[10px] px-2 py-0.5 rounded-md bg-purple-600 hover:bg-purple-500 text-white font-bold cursor-pointer transition-colors"
+                                >
+                                  {ibanCopiatoFeedback === customNotaSel.coordinateODettagli ? '✓ Copiato!' : 'Copia'}
+                                </button>
+                              </div>
+                              <div className="font-mono font-black text-xs tracking-wider text-white select-all break-all">
+                                {customNotaSel.coordinateODettagli}
+                              </div>
+                            </>
+                          )}
+                          <div className="text-[10px] text-slate-400 pt-0.5">
+                            Intestatario: <strong className="text-slate-200">{customNotaSel.intestatario || intestatarioUfficiale}</strong>
+                          </div>
+                          {customNotaSel.note && (
+                            <div className="text-[10px] text-purple-300 italic">{customNotaSel.note}</div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  }
+
                   const isPosteSel = formNotaMetodo.includes('Poste') || formNotaMetodo.includes('00001007035676') || formNotaMetodo.includes('C/C Postale');
                   const isCreditSel = formNotaMetodo.includes('Credit Agricole') || formNotaMetodo.includes('Agricole') || (!isPosteSel && formNotaMetodo.includes('Bonifico'));
                   const activeIban = isPosteSel ? ibanPoste : isCreditSel ? ibanCreditAgricole : null;

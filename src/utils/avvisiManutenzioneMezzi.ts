@@ -1,3 +1,4 @@
+import { useState, useEffect } from 'react';
 import { MezzoFlotta, InterventoManutenzione, DotazioneMagazzinoMezzo } from '../types/adminTypes';
 import { formatDateTimeItaly } from './italianTime';
 
@@ -52,6 +53,112 @@ export function salvaEmailResponsabileMezzi(email: string) {
   try {
     localStorage.setItem('croceoro_email_responsabile_mezzi', email.trim());
   } catch {}
+}
+
+export interface RegolaNotificaScadenzeMezzi {
+  giorniPreavvisoScadenzario: number;
+  giorniSogliaNotificaEmail: number;
+  invioAutomaticoAttivo: boolean;
+  regolaTestuale: string;
+  ultimoAggiornamentoDa?: string;
+  ultimoAggiornamentoCarica?: string;
+  ultimoAggiornamentoDataOra?: string;
+  updatedAt?: number;
+}
+
+export const REGOLA_NOTIFICA_SCADENZE_STORAGE_KEY = 'croceoro_regola_notifica_scadenze_mezzi_v1';
+export const REGOLA_NOTIFICA_SCADENZE_EVENT = 'croceoro_regola_scadenze_mezzi_updated';
+
+export const REGOLA_NOTIFICA_SCADENZE_DEFAULT: RegolaNotificaScadenzeMezzi = {
+  giorniPreavvisoScadenzario: 30,
+  giorniSogliaNotificaEmail: 15,
+  invioAutomaticoAttivo: true,
+  regolaTestuale:
+    'Invia avviso automatico email a Responsabile Mezzi e Presidenza entro 15 giorni dalla scadenza (rilevazione scadenzario a 30 giorni) per assicurazioni, tagliandi, revisioni, bolli e dotazioni.'
+};
+
+export function normalizzaRegolaNotificaScadenzeMezzi(raw: any): RegolaNotificaScadenzeMezzi {
+  const src = raw && typeof raw === 'object' ? raw : {};
+  const sogliaNotifica = Math.max(1, Math.min(365, Math.round(Number(src.giorniSogliaNotificaEmail) || REGOLA_NOTIFICA_SCADENZE_DEFAULT.giorniSogliaNotificaEmail)));
+  const preavvisoScad = Math.max(sogliaNotifica, Math.min(365, Math.round(Number(src.giorniPreavvisoScadenzario) || REGOLA_NOTIFICA_SCADENZE_DEFAULT.giorniPreavvisoScadenzario)));
+  const regolaTestuale = String(src.regolaTestuale || '').trim() ||
+    `Invia avviso automatico email a Responsabile Mezzi e Presidenza entro ${sogliaNotifica} giorni dalla scadenza (rilevazione scadenzario a ${preavvisoScad} giorni).`;
+  return {
+    giorniPreavvisoScadenzario: preavvisoScad,
+    giorniSogliaNotificaEmail: sogliaNotifica,
+    invioAutomaticoAttivo: src.invioAutomaticoAttivo !== false,
+    regolaTestuale,
+    ultimoAggiornamentoDa: src.ultimoAggiornamentoDa ? String(src.ultimoAggiornamentoDa) : undefined,
+    ultimoAggiornamentoCarica: src.ultimoAggiornamentoCarica ? String(src.ultimoAggiornamentoCarica) : undefined,
+    ultimoAggiornamentoDataOra: src.ultimoAggiornamentoDataOra ? String(src.ultimoAggiornamentoDataOra) : undefined,
+    updatedAt: typeof src.updatedAt === 'number' && Number.isFinite(src.updatedAt) ? src.updatedAt : undefined
+  };
+}
+
+export function getRegolaNotificaScadenzeMezzi(): RegolaNotificaScadenzeMezzi {
+  if (typeof window === 'undefined') return { ...REGOLA_NOTIFICA_SCADENZE_DEFAULT };
+  try {
+    const raw = localStorage.getItem(REGOLA_NOTIFICA_SCADENZE_STORAGE_KEY);
+    if (raw) {
+      return normalizzaRegolaNotificaScadenzeMezzi(JSON.parse(raw));
+    }
+  } catch {}
+  return { ...REGOLA_NOTIFICA_SCADENZE_DEFAULT };
+}
+
+export function salvaRegolaNotificaScadenzeMezzi(
+  regola: Partial<RegolaNotificaScadenzeMezzi>,
+  skipServerPost: boolean = false
+): RegolaNotificaScadenzeMezzi {
+  const corrente = getRegolaNotificaScadenzeMezzi();
+  const norm = normalizzaRegolaNotificaScadenzeMezzi({
+    ...corrente,
+    ...regola,
+    updatedAt: typeof regola.updatedAt === 'number' && regola.updatedAt > 0 ? regola.updatedAt : Date.now()
+  });
+  if (typeof window !== 'undefined') {
+    try {
+      localStorage.setItem(REGOLA_NOTIFICA_SCADENZE_STORAGE_KEY, JSON.stringify(norm));
+      window.dispatchEvent(new CustomEvent(REGOLA_NOTIFICA_SCADENZE_EVENT));
+    } catch {}
+    if (!skipServerPost) {
+      fetch('/api/regola-scadenze-mezzi', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ regola: norm })
+      }).catch(() => {});
+    }
+  }
+  return norm;
+}
+
+export function applicaRegolaNotificaScadenzeDaSync(regola?: any): boolean {
+  if (!regola || typeof regola !== 'object') return false;
+  const local = getRegolaNotificaScadenzeMezzi();
+  const incomingTs = typeof regola.updatedAt === 'number' ? regola.updatedAt : 0;
+  const localTs = typeof local.updatedAt === 'number' ? local.updatedAt : 0;
+  if (incomingTs > 0 && localTs > incomingTs) return false;
+  salvaRegolaNotificaScadenzeMezzi(regola, true);
+  return true;
+}
+
+export function useRegolaNotificaScadenzeMezzi(): RegolaNotificaScadenzeMezzi {
+  const [regola, setRegola] = useState<RegolaNotificaScadenzeMezzi>(() => getRegolaNotificaScadenzeMezzi());
+
+  useEffect(() => {
+    const refresh = () => setRegola(getRegolaNotificaScadenzeMezzi());
+    const storageHandler = (e: StorageEvent) => {
+      if (!e.key || e.key === REGOLA_NOTIFICA_SCADENZE_STORAGE_KEY) refresh();
+    };
+    window.addEventListener(REGOLA_NOTIFICA_SCADENZE_EVENT, refresh);
+    window.addEventListener('storage', storageHandler);
+    return () => {
+      window.removeEventListener(REGOLA_NOTIFICA_SCADENZE_EVENT, refresh);
+      window.removeEventListener('storage', storageHandler);
+    };
+  }, []);
+
+  return regola;
 }
 
 /**
@@ -275,15 +382,16 @@ Portale Gestionale Amministrativo • Croce Oro Massa Carrara OdV`;
  */
 export function generaReportCumulativoEmail(
   alerts: AlertManutenzioneProgrammata[],
-  emailDestinatario?: string
+  emailDestinatario?: string,
+  sogliaGiorni: number = 15
 ): { oggetto: string; corpo: string; mailtoUrl: string; totaleAlerts: number } {
   const dest = emailDestinatario || getEmailResponsabileMezzi();
-  const alertFiltrati = alerts.filter(a => a.giorniRimanenti <= 15);
+  const alertFiltrati = alerts.filter(a => a.giorniRimanenti <= sogliaGiorni);
 
-  const oggetto = `[PARCO MEZZI CROCE ORO] Riepilogo Scadenze Flotta (Entro 15 gg: ${alertFiltrati.length} veicoli)`;
+  const oggetto = `[PARCO MEZZI CROCE ORO] Riepilogo Scadenze Flotta (Entro ${sogliaGiorni} gg: ${alertFiltrati.length} veicoli)`;
 
   let corpo = `CROCE ORO MASSA CARRARA OdV
-REPORT CUMULATIVO SCADENZE FLOTTA & MANUTENZIONE (ENTRO 15 GIORNI)
+REPORT CUMULATIVO SCADENZE FLOTTA & MANUTENZIONE (ENTRO ${sogliaGiorni} GIORNI)
 Data generazione: ${formatDateTimeItaly()}
 
 DESTINATARI NOTIFICA AUTOMATICA:
@@ -294,7 +402,7 @@ Totale veicoli con interventi urgenti o in scadenza: ${alertFiltrati.length}
 --------------------------------------------------------------------------------\n\n`;
 
   if (alertFiltrati.length === 0) {
-    corpo += 'Nessun mezzo ha interventi o scadenze nei prossimi 15 giorni. Tutti i veicoli risultano in regola.\n';
+    corpo += `Nessun mezzo ha interventi o scadenze nei prossimi ${sogliaGiorni} giorni. Tutti i veicoli risultano in regola.\n`;
   } else {
     alertFiltrati.forEach((a, idx) => {
       const urgenza = a.scaduta

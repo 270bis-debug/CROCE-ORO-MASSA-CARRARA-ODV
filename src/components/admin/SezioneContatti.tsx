@@ -34,6 +34,7 @@ import { inviaNotificaModificaAdmin } from '../../utils/notificaModificaAdmin';
 import { MappaIndirizzoCollezionato } from './MappaIndirizzoCollezionato';
 import { formatISODateItaly } from '../../utils/italianTime';
 import { useTitoloDatabase } from '../../hooks/useNomiDatabase';
+import { useMetodiPagamentoCustom, formattaEtichettaMetodoPagamento } from '../../utils/metodiPagamentoStore';
 
 interface SezioneContattiProps {
   contatti: ContattoEsterno[];
@@ -95,9 +96,15 @@ export const SezioneContatti: React.FC<SezioneContattiProps> = ({
   const [formDonazCodiceServizio, setFormDonazCodiceServizio] = useState('');
   const [formDonazData, setFormDonazData] = useState(formatISODateItaly());
   const [formDonazImporto, setFormDonazImporto] = useState<number>(50);
-  const [formDonazMetodo, setFormDonazMetodo] = useState<'Contanti' | 'POS' | 'Bonifico'>('Contanti');
+  const [formDonazMetodo, setFormDonazMetodo] = useState<string>('Contanti');
   const [formDonazMezzo, setFormDonazMezzo] = useState('T4606');
   const [formDonazNote, setFormDonazNote] = useState('');
+
+  const metodiPagamentoCustom = useMetodiPagamentoCustom();
+  const metodiDonazioneCustomAttivi = useMemo(
+    () => metodiPagamentoCustom.filter((m) => m.attivo && (m.tipo === 'entrambi' || m.tipo === 'donazioni')),
+    [metodiPagamentoCustom]
+  );
 
   // Notifiche locali
   const [avviso, setAvviso] = useState<string | null>(null);
@@ -478,7 +485,7 @@ export const SezioneContatti: React.FC<SezioneContattiProps> = ({
               codiceServizio: s.codice,
               dataIntervento: s.data || formatISODateItaly(),
               importo: Number(somma),
-              metodoPagamento: don.metodo === 'pos' ? 'POS' : 'Contanti',
+              metodoPagamento: don.metodo === 'pos' ? 'POS' : don.metodo === 'contanti' ? 'Contanti' : (don.metodo || 'Contanti'),
               mezzo: s.mezzo,
               note: `Ricevuta n. ${don.ricevutaNumero || 'Liberale'}`
             },
@@ -1396,12 +1403,24 @@ export const SezioneContatti: React.FC<SezioneContattiProps> = ({
                       <label className="block text-slate-400 mb-0.5 text-[11px]">Metodo di Pagamento Donazione</label>
                       <select
                         value={formDonazMetodo}
-                        onChange={(e) => setFormDonazMetodo(e.target.value as any)}
+                        onChange={(e) => setFormDonazMetodo(e.target.value)}
                         className="w-full p-2 rounded-xl bg-slate-900 border border-slate-700 text-white"
                       >
                         <option value="Contanti">Contanti (Con Ricevuta a Bordo)</option>
                         <option value="POS">Terminale POS di Bordo Mezzo</option>
                         <option value="Bonifico">Bonifico Bancario su C/C Associazione</option>
+                        {metodiDonazioneCustomAttivi.length > 0 && (
+                          <optgroup label="Ulteriori Metodi Configurati">
+                            {metodiDonazioneCustomAttivi.map((m) => {
+                              const label = formattaEtichettaMetodoPagamento(m);
+                              return (
+                                <option key={m.id} value={label}>
+                                  {label}
+                                </option>
+                              );
+                            })}
+                          </optgroup>
+                        )}
                       </select>
                     </div>
                     <div>
