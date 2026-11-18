@@ -2,6 +2,7 @@ import jsPDF from 'jspdf';
 import { LOGO_IPOTESI_SEMITRASP_BASE64 } from '../assets/logoBase64';
 import { getDatiCartaIntestata, formattaSocialCartaIntestata } from './cartaIntestataStore';
 import { formatDateItaly, formatDateTimeItaly, formatISODateItaly, formatTimeItaly, getItalianDateParts } from './italianTime';
+import { sanitizeWinAnsi } from './pdfInstitutionalLayout';
 
 export interface OperativeTimesPDF {
   partenza?: string;
@@ -133,6 +134,16 @@ export interface ReportDataPDF {
   enteIstituzionale?: string;
   urgenza?: string;
   ambito?: string;
+  sottoAmbitoVet?: string;
+  dataInizioServizioSpecifico?: string;
+  oraInizioServizioSpecifico?: string;
+  dataArrivoRichiestaServizio?: string;
+  oraArrivoRichiestaServizio?: string;
+  proprietarioImmobile?: {
+    nomeCognome?: string;
+    codiceFiscale?: string;
+    indirizzoResidenza?: string;
+  };
   tipoAnimale?: string;
   tipoAnimaleAltro?: string;
   nonDiProprieta?: boolean;
@@ -224,13 +235,7 @@ export function formattaDataEOraCompleta(dataString?: string, testoCompleto?: st
  * per evitare la comparsa di caratteri spuri o mojibake (es. [Ø=ÜÍ al posto di emoji 📍)
  */
 export function sanitizePdfText(str?: string): string {
-  if (!str) return '';
-  return str
-    .replace(/\[?Ø=ÜÍ\]?/g, '') // rimuove esplicitamente i residui del mojibake dell'emoji pin
-    .replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g, '') // surrogate pairs (es. emoji come 📍)
-    .replace(/[\u2600-\u27BF]|\uFE0F|\u200D/g, '') // simboli vari e variation selectors
-    .replace(/[^\x20-\x7E\xA0-\xFF]/g, '') // rimuove caratteri non ASCII o non Latin-1 standard
-    .trim();
+  return sanitizeWinAnsi(str);
 }
 
 /**
@@ -308,10 +313,12 @@ export function isServizioVeterinario(data?: {
     sottoAmbitoUpper.includes('SOCCORSO VETERINARIO') ||
     sottoAmbitoUpper.includes('RECUPERO ANIMALE') ||
     sottoAmbitoUpper.includes('TRASPORTO ANIMALE') ||
+    sottoAmbitoUpper.includes('ASSISTENZA ATTO ESECUTIVO') ||
     testoUpper.includes('AMBITO: SERVIZIO VETERINARIO') ||
     testoUpper.includes('AMBITO: SOCCORSO VETERINARIO') ||
     testoUpper.includes('SOCCORSO VETERINARIO') ||
-    testoUpper.includes('TRASPORTO ANIMALE')
+    testoUpper.includes('TRASPORTO ANIMALE') ||
+    testoUpper.includes('ASSISTENZA ATTO ESECUTIVO')
   ) {
     return true;
   }
@@ -345,137 +352,224 @@ export function generaDocumentoPDF(data: ReportDataPDF): jsPDF {
   const pageWidth = doc.internal.pageSize.getWidth();
   const margin = 14;
   const contentWidth = pageWidth - margin * 2;
-
-  // --- HEADER SUPERIORE BLU NOTTE & ORO ---
-  doc.setFillColor(15, 23, 42); // slate-900
-  doc.rect(0, 0, pageWidth, 36, 'F');
-
-  // Barra dorata di accento
-  doc.setFillColor(217, 119, 6); // amber-600
-  doc.rect(0, 36, pageWidth, 2.5, 'F');
-
-  // 1. Logo ufficiale dell'Associazione (Ipotesi logo nuovo semitrasp) in alto a sinistra
-  // Mantenuto assolutamente intatto (trasparenza, canale alpha, linee, scritte, cerchi)
-  try {
-    doc.addImage(LOGO_IPOTESI_SEMITRASP_BASE64, 'PNG', margin, 5, 26, 26, undefined, 'FAST');
-  } catch (err) {
-    console.error('Errore rendering logo nel PDF:', err);
-  }
-
-  // 2. Testi Intestazione posizionati accanto al logo
-  const headerTextX = margin + 30; // 14 + 30 = 44 mm
-
-  const cInfoDoc = getDatiCartaIntestata();
-  doc.setTextColor(251, 191, 36); // amber-400
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(14.5);
-  doc.text((cInfoDoc.denominazione || 'CROCE ORO MASSA CARRARA ODV').toUpperCase(), headerTextX, 16);
-
-  doc.setTextColor(241, 245, 249); // slate-100
-  doc.setFont('helvetica', 'normal');
-  doc.setFontSize(8.2);
-  doc.text('Associazione Volontari del Soccorso & Protezione Civile - Ente del Terzo Settore', headerTextX, 23);
-
-  // 3. Badge Tipo Documento a destra
+  const headerTextX = margin + 30;
   const badgeW = 46;
   const badgeH = 18;
   const badgeX = pageWidth - margin - badgeW;
-  doc.setFillColor(245, 158, 11); // amber-500
-  doc.roundedRect(badgeX, 8, badgeW, badgeH, 2, 2, 'F');
-  doc.setTextColor(15, 23, 42);
+  const headerMaxW = badgeX - headerTextX - 4;
+  const cInfoDoc = getDatiCartaIntestata();
+
+  const drawFoglioHeaderPage1 = (badgeTitle: string, badgeSub: string, isGreen = false) => {
+    doc.setFillColor(15, 23, 42);
+    doc.rect(0, 0, pageWidth, 36, 'F');
+    doc.setFillColor(217, 119, 6);
+    doc.rect(0, 36, pageWidth, 2.5, 'F');
+    try {
+      doc.addImage(LOGO_IPOTESI_SEMITRASP_BASE64, 'PNG', margin, 5, 26, 26, undefined, 'FAST');
+    } catch {}
+    doc.setTextColor(251, 191, 36);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(13.5);
+    doc.text(sanitizeWinAnsi(cInfoDoc.denominazione || 'CROCE ORO MASSA CARRARA ODV').toUpperCase(), headerTextX, 15.5, {
+      maxWidth: headerMaxW
+    });
+    doc.setTextColor(241, 245, 249);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7.8);
+    doc.text('Associazione Volontari del Soccorso & Protezione Civile - Ente del Terzo Settore', headerTextX, 22.5, {
+      maxWidth: headerMaxW
+    });
+    doc.setFillColor(isGreen ? 16 : 245, isGreen ? 185 : 158, isGreen ? 129 : 11);
+    doc.roundedRect(badgeX, 8, badgeW, badgeH, 2, 2, 'F');
+    doc.setTextColor(15, 23, 42);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(7.8);
+    doc.text(sanitizeWinAnsi(badgeTitle), badgeX + 3.5, 15, { maxWidth: badgeW - 6 });
+    doc.setFontSize(9.5);
+    doc.text(sanitizeWinAnsi(badgeSub), badgeX + 3.5, 22, { maxWidth: badgeW - 6 });
+  };
+
+  const drawFoglioFooter = (sottoTitolo: string) => {
+    const footerH = 28;
+    const footerY = 269;
+    doc.setFillColor(15, 23, 42);
+    doc.rect(0, footerY, pageWidth, footerH, 'F');
+    doc.setFillColor(217, 119, 6);
+    doc.rect(0, footerY, pageWidth, 1.2, 'F');
+    const centerX = pageWidth / 2;
+    const cInfo = getDatiCartaIntestata();
+    const socialStr = sanitizeWinAnsi(formattaSocialCartaIntestata(cInfo));
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(7.0);
+    doc.setTextColor(251, 191, 36);
+    doc.text(
+      sanitizeWinAnsi(`${(cInfo.denominazione || 'CROCE ORO MASSA CARRARA ODV').toUpperCase()} - ${sottoTitolo}`),
+      centerX,
+      footerY + 6.0,
+      { align: 'center', maxWidth: pageWidth - 16 }
+    );
+
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(6.5);
+    doc.setTextColor(203, 213, 225);
+    const dataDoc = formattaDataEOraCompleta(data.data, data.testoCompleto);
+    doc.text(
+      sanitizeWinAnsi(`Documento generato digitalmente il ${dataDoc} | Codice Identificativo: ${data.codice}`),
+      centerX,
+      footerY + 11.0,
+      { align: 'center', maxWidth: pageWidth - 16 }
+    );
+
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(socialStr ? 4.8 : 5.2);
+    doc.setTextColor(254, 240, 138);
+    const sediStr = sanitizeWinAnsi(
+      `Sede Legale: ${cInfo.sedeLegale} - Massa: ${cInfo.sedeMassa} - Carrara: ${cInfo.sedeCarrara} - Pietrasanta: ${cInfo.sedePietrasanta} | Tel: ${cInfo.centraleTel}` +
+        (socialStr ? ` | ${socialStr}` : '')
+    );
+    const sediLines = doc.splitTextToSize(sediStr, pageWidth - 16).slice(0, 2);
+    doc.text(sediLines, centerX, footerY + 15.8, { align: 'center' });
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(6.4);
+    doc.setTextColor(148, 163, 184);
+    doc.text(
+      sanitizeWinAnsi(`CF: ${cInfo.codiceFiscale} - ${cInfo.sitoWeb} - Email: ${cInfo.email} - Pec: ${cInfo.pec}`),
+      centerX,
+      footerY + 23.8,
+      { align: 'center', maxWidth: pageWidth - 16 }
+    );
+  };
+
+  drawFoglioHeaderPage1('FOGLIO DI VIAGGIO', 'UFFICIALE');
+  let y = 42.5;
+
+  // --- BOX 1: DATI PRINCIPALI MISSIONE (altezza dinamica senza sovrapposizioni) ---
+  const dataRegistrazione = sanitizeWinAnsi(formattaDataEOraCompleta(data.data, data.testoCompleto));
+  const formatPdfShortDate = (raw?: string): string => {
+    const t = sanitizeWinAnsi(raw || '').trim();
+    if (!t) return '-';
+    const m = t.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    return m ? `${m[3]}/${m[2]}/${m[1]}` : t;
+  };
+  const hasRichiestaServ = Boolean(data.dataArrivoRichiestaServizio || data.oraArrivoRichiestaServizio);
+  const hasInizioSpec = Boolean(data.dataInizioServizioSpecifico || data.oraInizioServizioSpecifico);
+  const hasDateProgrammate = hasRichiestaServ || hasInizioSpec;
+
+  const colRightX = margin + contentWidth / 2 + 2;
+  const leftValMaxW = colRightX - (margin + 38) - 2;
+  const rightValMaxW = margin + contentWidth - (colRightX + 26) - 3;
+
+  const capoTurno = sanitizeWinAnsi(
+    data.volontarioNome ? `${data.volontarioNome} (${data.qualificaTurno || 'Autista'})` : 'Capo Turno di Servizio'
+  );
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(8.2);
+  const capoLines = doc.splitTextToSize(capoTurno, rightValMaxW + 2);
+  const kmText = sanitizeWinAnsi(`${data.kmTotali} KM (Inizio: ${data.kmInizio} - Fine: ${data.kmFine})`);
+  const kmLines = doc.splitTextToSize(kmText, rightValMaxW);
+
+  const reqStr = hasRichiestaServ
+    ? `Arrivo Richiesta: ${formatPdfShortDate(data.dataArrivoRichiestaServizio)} ${sanitizeWinAnsi(data.oraArrivoRichiestaServizio || '')}`.trim()
+    : '';
+  const startStr = hasInizioSpec
+    ? `Inizio Servizio Specifico: ${formatPdfShortDate(data.dataInizioServizioSpecifico)} ${sanitizeWinAnsi(data.oraInizioServizioSpecifico || '')}`.trim()
+    : '';
+  const combinedDates = [reqStr, startStr].filter(Boolean).join('   |   ');
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(8);
-  doc.text('FOGLIO DI VIAGGIO', badgeX + 4, 15);
-  doc.setFontSize(10.5);
-  doc.text('UFFICIALE', badgeX + 4, 22);
+  doc.setFontSize(7.5);
+  const dateLines: string[] = hasDateProgrammate ? doc.splitTextToSize(combinedDates, contentWidth - 8) : [];
 
-  let y = 43;
+  const extraRightH = (Math.max(1, capoLines.length) - 1) * 4 + (Math.max(1, kmLines.length) - 1) * 4;
+  const datesBlockH = hasDateProgrammate ? Math.max(1, dateLines.length) * 4 + 3.5 : 0;
+  const boxDatiH = 31 + extraRightH + datesBlockH;
 
-  // --- BOX DATI PRINCIPALI MISSIONE ---
-  doc.setFillColor(248, 250, 252); // slate-50
+  doc.setFillColor(248, 250, 252);
   doc.setDrawColor(203, 213, 225);
-  doc.roundedRect(margin, y, contentWidth, 34, 2, 2, 'FD');
+  doc.roundedRect(margin, y, contentWidth, boxDatiH, 2, 2, 'FD');
 
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(10);
-  doc.setTextColor(30, 41, 59); // slate-800
+  doc.setFontSize(9.5);
+  doc.setTextColor(30, 41, 59);
   doc.text('DATI DELLA MISSIONE E DEL MEZZO', margin + 4, y + 6);
-
   doc.setDrawColor(226, 232, 240);
   doc.line(margin + 4, y + 8, margin + contentWidth - 4, y + 8);
 
-  doc.setFontSize(9);
+  doc.setFontSize(8.3);
   doc.setFont('helvetica', 'bold');
   doc.setTextColor(71, 85, 105);
-  doc.text('Codice Missione:', margin + 4, y + 14);
-  doc.setFont('helvetica', 'bold');
-  doc.setTextColor(180, 83, 9); // amber-700
-  doc.text(data.codice || 'N/D', margin + 35, y + 14);
+  doc.text('Codice Missione:', margin + 4, y + 13.5);
+  doc.setTextColor(180, 83, 9);
+  doc.text(sanitizeWinAnsi(data.codice || 'N/D'), margin + 35, y + 13.5, { maxWidth: leftValMaxW });
 
-  doc.setFont('helvetica', 'bold');
   doc.setTextColor(71, 85, 105);
-  doc.text('Mezzo Operativo:', margin + 4, y + 20);
-  doc.setFont('helvetica', 'bold');
+  doc.text('Mezzo Operativo:', margin + 4, y + 19.5);
   doc.setTextColor(15, 23, 42);
-  doc.text(data.mezzo || 'N/D', margin + 35, y + 20);
+  doc.text(sanitizeWinAnsi(data.mezzo || 'N/D'), margin + 35, y + 19.5, { maxWidth: leftValMaxW });
 
-  doc.setFont('helvetica', 'bold');
   doc.setTextColor(71, 85, 105);
-  doc.text('Data & Registrazione:', margin + 4, y + 26);
+  doc.text('Registrazione:', margin + 4, y + 25.5);
   doc.setFont('helvetica', 'normal');
   doc.setTextColor(15, 23, 42);
-  const dataRegistrazione = formattaDataEOraCompleta(data.data, data.testoCompleto);
-  doc.text(dataRegistrazione, margin + 42, y + 26);
+  doc.text(dataRegistrazione, margin + 35, y + 25.5, { maxWidth: leftValMaxW });
 
-  // Colonna destra del box
-  const colRightX = margin + (contentWidth / 2) + 2;
-
+  // Colonna destra Box 1
   doc.setFont('helvetica', 'bold');
   doc.setTextColor(71, 85, 105);
-  doc.text('Urgenza:', colRightX, y + 14);
-  const urgenza = data.urgenza || 'ROSSO';
+  doc.text('Urgenza:', colRightX, y + 13.5);
+  const urgenza = sanitizeWinAnsi(data.urgenza || 'ROSSO');
   if (urgenza === 'ROSSO') doc.setTextColor(220, 38, 38);
   else if (urgenza === 'GIALLO') doc.setTextColor(217, 119, 6);
   else doc.setTextColor(22, 163, 74);
-  doc.setFont('helvetica', 'bold');
-  doc.text(`Codice ${urgenza}`, colRightX + 24, y + 14);
+  doc.text(`Codice ${urgenza}`, colRightX + 24, y + 13.5);
 
-  // Modificato: da "Equipaggio:" a "Capo Turno:"
   doc.setFont('helvetica', 'bold');
   doc.setTextColor(71, 85, 105);
-  doc.text('Capo Turno:', colRightX, y + 20);
+  doc.text('Capo Turno:', colRightX, y + 19.5);
   doc.setFont('helvetica', 'normal');
   doc.setTextColor(15, 23, 42);
-  const capoTurno = data.volontarioNome
-    ? `${data.volontarioNome} (${data.qualificaTurno || 'Autista'})`
-    : 'Capo Turno di Servizio';
-  doc.text(capoTurno, colRightX + 24, y + 20);
+  doc.text(capoLines.slice(0, 2), colRightX + 24, y + 19.5);
 
+  const kmY = y + 25.5 + (Math.max(1, capoLines.length) - 1) * 4;
   doc.setFont('helvetica', 'bold');
   doc.setTextColor(71, 85, 105);
-  doc.text('Chilometri Percorsi:', colRightX, y + 26);
-  doc.setFont('helvetica', 'bold');
-  doc.setTextColor(16, 185, 129); // emerald-500
-  doc.text(`${data.kmTotali} KM (Inizio: ${data.kmInizio} - Fine: ${data.kmFine})`, colRightX + 35, y + 26);
+  doc.text('KM Percorsi:', colRightX, kmY);
+  doc.setTextColor(16, 185, 129);
+  doc.text(kmLines.slice(0, 2), colRightX + 24, kmY);
 
-  y += 38;
-
-  // Banner Intervento Annullato se pertinente
-  if (data.annullata) {
-    doc.setFillColor(254, 242, 242);
-    doc.setDrawColor(239, 68, 68);
-    doc.roundedRect(margin, y, contentWidth, 10, 2, 2, 'FD');
+  if (hasDateProgrammate && dateLines.length > 0) {
+    const rowDateY = y + 31 + extraRightH + 2.5;
     doc.setFont('helvetica', 'bold');
-    doc.setFontSize(8.5);
-    doc.setTextColor(185, 28, 28);
-    const mot = data.motivoAnnullamento ? ` - MOTIVO: ${sanitizePdfText(data.motivoAnnullamento)}` : '';
-    const req = data.richiedenteAnnullamento ? ` (RICHIESTO DA: ${sanitizePdfText(data.richiedenteAnnullamento)}${data.orarioAnnullamento ? ` ORE ${sanitizePdfText(data.orarioAnnullamento)}` : ''})` : '';
-    doc.text(`STATO INTERVENTO: ANNULLATO DALLA CENTRALE OPERATIVA${mot}${req}`, margin + 4, y + 6.5, { maxWidth: contentWidth - 8 });
-    y += 13;
+    doc.setFontSize(7.5);
+    doc.setTextColor(30, 58, 138);
+    doc.text(dateLines, margin + 4, rowDateY);
   }
 
-  // --- BOX LUOGHI E DESTINAZIONI ---
-  // Risoluzione indirizzo reale dell'intervento fornito al terminale di bordo
+  y += boxDatiH + 3.5;
+
+  // Banner Intervento Annullato
+  if (data.annullata) {
+    const mot = data.motivoAnnullamento ? ` - MOTIVO: ${sanitizeWinAnsi(data.motivoAnnullamento)}` : '';
+    const req = data.richiedenteAnnullamento
+      ? ` (RICHIESTO DA: ${sanitizeWinAnsi(data.richiedenteAnnullamento)}${data.orarioAnnullamento ? ` ORE ${sanitizeWinAnsi(data.orarioAnnullamento)}` : ''})`
+      : '';
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(8.0);
+    const bannerLines = doc.splitTextToSize(
+      `STATO INTERVENTO: ANNULLATO DALLA CENTRALE OPERATIVA${mot}${req}`,
+      contentWidth - 8
+    );
+    const bannerH = Math.max(9.5, bannerLines.length * 4.2 + 4);
+    doc.setFillColor(254, 242, 242);
+    doc.setDrawColor(239, 68, 68);
+    doc.roundedRect(margin, y, contentWidth, bannerH, 2, 2, 'FD');
+    doc.setTextColor(185, 28, 28);
+    doc.text(bannerLines, margin + 4, y + 5.2);
+    y += bannerH + 3;
+  }
+
+  // --- BOX 2: LUOGHI E DESTINAZIONI (calcolo altezze dinamiche per ogni riga) ---
   let indirizzoEvento = data.indirizzoIntervento || (data as any).indirizzo;
   if (!indirizzoEvento || indirizzoEvento.trim() === '' || indirizzoEvento.trim() === '-' || indirizzoEvento.toLowerCase().includes('vedi testo')) {
     const match = data.testoCompleto?.match(/INDIRIZZO(?:\s+INTERVENTO)?:\s*([^\n]+)/i);
@@ -487,93 +581,160 @@ export function generaDocumentoPDF(data: ReportDataPDF): jsPDF {
     indirizzoEvento = 'Marina di Massa, Viale Vespucci 12';
   }
 
-  // Informazione Animale su Foglio di Viaggio: ESCLUSIVAMENTE per servizi e soccorsi veterinari
   const effAnimaleTipo = isVet ? (data.tipoAnimale || data.datiDestinazione?.animale?.tipo) : undefined;
   const isProtezioneCivile = Boolean(
     (data.ambito && data.ambito.toUpperCase().includes('PROTEZIONE CIVILE')) ||
-    (data.codice && (data.codice.includes('-PC-') || data.codice.includes('-PC_')))
+      (data.codice && (data.codice.includes('-PC-') || data.codice.includes('-PC_')))
   );
   const showPcRow = isProtezioneCivile || Boolean(data.numeroSegreteriaSoupRt || data.allertaMeteo);
-  const boxLuoghiH = effAnimaleTipo ? 40 : (showPcRow ? 41 : 34);
+
+  const indClean = sanitizeWinAnsi(indirizzoEvento);
+  const destClean = sanitizeWinAnsi(data.destinazione || 'Rientro in Sede / Da definire');
+  const contattoClean = sanitizeWinAnsi(
+    data.enteIstituzionale
+      ? `[${data.enteIstituzionale}] ${data.chiamante || ''} (${data.telefono || 'N/D'})`
+      : data.chiamante
+      ? `${data.chiamante} (${data.telefono || 'N/D'})`
+      : 'Centrale Operativa 112 / 118'
+  );
+
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(8.0);
+  const indLines = doc.splitTextToSize(indClean, contentWidth - 46).slice(0, 2);
+  const destLines = doc.splitTextToSize(destClean, contentWidth - 52).slice(0, 2);
+  const contLines = doc.splitTextToSize(contattoClean, contentWidth - 48).slice(0, 2);
+
+  const sottoSpecStr = data.sottoAmbitoVet ? sanitizeWinAnsi(data.sottoAmbitoVet) : '';
+  const propImmobile = data.proprietarioImmobile;
+  const hasPropImm = Boolean(
+    propImmobile && (propImmobile.nomeCognome || propImmobile.codiceFiscale || propImmobile.indirizzoResidenza)
+  );
+  const propImmStr = hasPropImm
+    ? sanitizeWinAnsi(
+        `Proprietario Immobile (Atto Esecutivo): ${propImmobile?.nomeCognome || '-'} | CF: ${propImmobile?.codiceFiscale || '-'} | Residenza: ${propImmobile?.indirizzoResidenza || '-'}`
+      )
+    : '';
+  const propImmLines = propImmStr ? doc.splitTextToSize(propImmStr, contentWidth - 8) : [];
+
+  const pcText = showPcRow
+    ? sanitizeWinAnsi(
+        `Numero Segreteria Soup_RT: ${data.numeroSegreteriaSoupRt?.trim() || 'Non indicato'}   |   Allerta meteo: ${data.allertaMeteo?.trim() || 'Nessuna'}`
+      )
+    : '';
+  const pcLines = pcText ? doc.splitTextToSize(pcText, contentWidth - 8) : [];
+
+  let vetAnimaleLines: string[] = [];
+  if (isVet && effAnimaleTipo) {
+    const isNonProp = Boolean(data.nonDiProprieta || data.datiDestinazione?.animale?.nonDiProprieta);
+    const effChip =
+      data.microchip ||
+      data.datiDestinazione?.animale?.microchip ||
+      (data.noMicrochip || data.datiDestinazione?.animale?.noMicrochip ? 'NO MICROCHIP' : 'Non rilevato');
+    vetAnimaleLines = doc.splitTextToSize(
+      sanitizeWinAnsi(
+        `Animale Trasportato: ${effAnimaleTipo}${data.tipoAnimaleAltro ? ` (${data.tipoAnimaleAltro})` : ''} - [${isNonProp ? 'NON DI PROPRIETA' : 'DI PROPRIETA'}] - Chip: ${effChip}`
+      ),
+      contentWidth - 8
+    );
+  }
+
+  const lineStep = 4.0;
+  const boxLuoghiH =
+    12 +
+    indLines.length * lineStep + 1.5 +
+    destLines.length * lineStep + 1.5 +
+    contLines.length * lineStep + 1.5 +
+    (sottoSpecStr ? 5.2 : 0) +
+    (propImmLines.length > 0 ? propImmLines.length * 3.8 + 1.8 : 0) +
+    (pcLines.length > 0 ? pcLines.length * 3.8 + 1.8 : 0) +
+    (vetAnimaleLines.length > 0 ? vetAnimaleLines.length * 3.8 + 1.8 : 0) +
+    2;
 
   doc.setFillColor(248, 250, 252);
   doc.setDrawColor(203, 213, 225);
   doc.roundedRect(margin, y, contentWidth, boxLuoghiH, 2, 2, 'FD');
 
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(10);
+  doc.setFontSize(9.5);
   doc.setTextColor(30, 41, 59);
-  doc.text('LOCALIZZAZIONE E DETTAGLI INTERVENTO', margin + 4, y + 6);
-  doc.line(margin + 4, y + 8, margin + contentWidth - 4, y + 8);
+  doc.text('LOCALIZZAZIONE E DETTAGLI INTERVENTO', margin + 4, y + 5.8);
+  doc.line(margin + 4, y + 7.8, margin + contentWidth - 4, y + 7.8);
 
-  doc.setFontSize(8.2);
+  let yL = y + 12.8;
+  doc.setFontSize(8.0);
   doc.setFont('helvetica', 'bold');
   doc.setTextColor(71, 85, 105);
-  doc.text('Indirizzo Evento:', margin + 4, y + 13.5);
+  doc.text('Indirizzo Evento:', margin + 4, yL);
   doc.setFont('helvetica', 'normal');
   doc.setTextColor(15, 23, 42);
-  doc.text(indirizzoEvento, margin + 35, y + 13.5, { maxWidth: contentWidth - 40 });
-
-  doc.setFont('helvetica', 'bold');
-  doc.setTextColor(71, 85, 105);
-  doc.text('Destinazione / Struttura:', margin + 4, y + 19.5);
-  doc.setFont('helvetica', 'normal');
-  doc.setTextColor(15, 23, 42);
-  doc.text(data.destinazione || 'Rientro in Sede / Da definire', margin + 45, y + 19.5, { maxWidth: contentWidth - 50 });
+  doc.text(indLines, margin + 38, yL);
+  yL += indLines.length * lineStep + 1.5;
 
   doc.setFont('helvetica', 'bold');
   doc.setTextColor(71, 85, 105);
-  doc.text('Segnalante / Contatto:', margin + 4, y + 25.5);
+  doc.text('Destinazione / Struttura:', margin + 4, yL);
   doc.setFont('helvetica', 'normal');
   doc.setTextColor(15, 23, 42);
-  const contatto = data.enteIstituzionale
-    ? `[${data.enteIstituzionale}] ${data.chiamante || ''} (${data.telefono || 'N/D'})`
-    : (data.chiamante ? `${data.chiamante} (${data.telefono || 'N/D'})` : 'Centrale Operativa 112 / 118');
-  doc.text(contatto, margin + 42, y + 25.5, { maxWidth: contentWidth - 46 });
+  doc.text(destLines, margin + 46, yL);
+  yL += destLines.length * lineStep + 1.5;
 
-  if (showPcRow) {
-    const soupRtTxt = sanitizePdfText(data.numeroSegreteriaSoupRt?.trim() || 'Non indicato');
-    const allertaTxt = sanitizePdfText(data.allertaMeteo?.trim() || 'Nessuna');
-    doc.setFont('helvetica', 'bold');
-    doc.setTextColor(30, 58, 138);
-    doc.text(
-      `Numero Segreteria Soup_RT: ${soupRtTxt}   |   Eventuale allerta meteo in corso: ${allertaTxt}`,
-      margin + 4,
-      y + 33.5,
-      { maxWidth: contentWidth - 8 }
-    );
-  }
+  doc.setFont('helvetica', 'bold');
+  doc.setTextColor(71, 85, 105);
+  doc.text('Segnalante / Contatto:', margin + 4, yL);
+  doc.setFont('helvetica', 'normal');
+  doc.setTextColor(15, 23, 42);
+  doc.text(contLines, margin + 42, yL);
+  yL += contLines.length * lineStep + 1.5;
 
-  // Informazione Animale su Foglio di Viaggio: ESCLUSIVAMENTE per servizi e soccorsi veterinari
-  if (isVet && effAnimaleTipo) {
-    const isNonProp = Boolean(data.nonDiProprieta || data.datiDestinazione?.animale?.nonDiProprieta);
-    const effChip = data.microchip || data.datiDestinazione?.animale?.microchip || (data.noMicrochip || data.datiDestinazione?.animale?.noMicrochip ? 'NO MICROCHIP' : 'Non rilevato');
+  if (sottoSpecStr) {
     doc.setFont('helvetica', 'bold');
     doc.setTextColor(180, 83, 9);
-    doc.text(`Animale Trasportato: ${effAnimaleTipo}${data.tipoAnimaleAltro ? ` (${data.tipoAnimaleAltro})` : ''} - [${isNonProp ? 'NON DI PROPRIETÀ' : 'DI PROPRIETÀ'}] - Chip: ${effChip}`, margin + 4, y + 33.5, { maxWidth: contentWidth - 8 });
+    doc.text(`Tipologia Specifica: ${sottoSpecStr}`, margin + 4, yL, { maxWidth: contentWidth - 8 });
+    yL += 5.2;
+  }
+
+  if (propImmLines.length > 0) {
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(7.5);
+    doc.setTextColor(146, 64, 14);
+    doc.text(propImmLines, margin + 4, yL);
+    yL += propImmLines.length * 3.8 + 1.8;
+  }
+
+  if (pcLines.length > 0) {
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(7.5);
+    doc.setTextColor(30, 58, 138);
+    doc.text(pcLines, margin + 4, yL);
+    yL += pcLines.length * 3.8 + 1.8;
+  }
+
+  if (vetAnimaleLines.length > 0) {
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(7.6);
+    doc.setTextColor(180, 83, 9);
+    doc.text(vetAnimaleLines, margin + 4, yL);
   }
 
   y += boxLuoghiH + 3.5;
 
-  // --- CRONOLOGIA ORARI OPERATIVI (TABELLA DETTAGLIATA) ---
+  // --- CRONOLOGIA ORARI OPERATIVI ---
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(10.5);
+  doc.setFontSize(9.5);
   doc.setTextColor(15, 23, 42);
-  doc.text('CRONOLOGIA ORARI OPERATIVI (REGISTRATI DALLA CENTRALE & BORDO MEZZO)', margin, y + 3.5);
-  y += 6.5;
+  doc.text('CRONOLOGIA ORARI OPERATIVI (REGISTRATI DALLA CENTRALE & BORDO MEZZO)', margin, y + 3.2);
+  y += 6.0;
 
-  const rowHeight = 6.2;
-
-  // Intestazione tabella
-  doc.setFillColor(30, 41, 59); // slate-800
-  doc.rect(margin, y, contentWidth, rowHeight, 'F');
+  const rowHeadH = 6.2;
+  doc.setFillColor(30, 41, 59);
+  doc.rect(margin, y, contentWidth, rowHeadH, 'F');
   doc.setTextColor(255, 255, 255);
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(8);
+  doc.setFontSize(7.8);
   doc.text('#', margin + 3, y + 4.2);
-  doc.text('FASE OPERATIVA', margin + 14, y + 4.2);
-  doc.text('ORARIO REGISTRATO', margin + 116, y + 4.2);
-  y += rowHeight;
+  doc.text('FASE OPERATIVA', margin + 12, y + 4.2);
+  doc.text('ORARIO REGISTRATO', margin + 92, y + 4.2);
+  y += rowHeadH;
 
   const tempi = data.tempi || {};
   const coordSulPosto = data.coordinateSulPosto || tempi.coordinateSulPosto;
@@ -581,81 +742,83 @@ export function generaDocumentoPDF(data: ReportDataPDF): jsPDF {
 
   const formattatoreCoord = (coord?: { lat: number; lng: number; accuracy?: number }) => {
     if (!coord) return '';
-    return sanitizePdfText(` [GPS Cert.: ${coord.lat.toFixed(4)}, ${coord.lng.toFixed(4)}${coord.accuracy ? ` acc. ${coord.accuracy}m` : ''}]`);
+    return sanitizeWinAnsi(` [GPS Cert.: ${coord.lat.toFixed(4)}, ${coord.lng.toFixed(4)}${coord.accuracy ? ` acc. ${coord.accuracy}m` : ''}]`);
   };
 
   const fasiOperative = [
-    { num: '1', fase: 'Partenza da Sede Operativa', ora: sanitizePdfText(tempi.partenza) || '-' },
+    { num: '1', fase: 'Partenza da Sede Operativa', ora: sanitizeWinAnsi(tempi.partenza) || '-' },
     {
       num: '2',
       fase: 'Arrivo Sul Posto / Obiettivo',
       ora: data.annullata
         ? 'NON EFFETTUATO (INTERVENTO ANNULLATO)'
-        : (tempi.sulPosto ? sanitizePdfText(`${tempi.sulPosto}${formattatoreCoord(coordSulPosto)}`) : '-')
+        : tempi.sulPosto
+        ? sanitizeWinAnsi(`${tempi.sulPosto}${formattatoreCoord(coordSulPosto)}`)
+        : '-'
     },
     {
       num: '3',
       fase: 'Partenza da Obiettivo',
       ora: data.annullata
         ? 'NON EFFETTUATO (INTERVENTO ANNULLATO)'
-        : (sanitizePdfText(tempi.partenzaObiettivo) || '-')
+        : sanitizeWinAnsi(tempi.partenzaObiettivo) || '-'
     },
     {
       num: '4',
       fase: 'Arrivo in Destinazione / Clinica / Struttura',
       ora: data.annullata
         ? 'NON EFFETTUATO (INTERVENTO ANNULLATO)'
-        : (tempi.arrivoDestinazione ? sanitizePdfText(`${tempi.arrivoDestinazione}${formattatoreCoord(coordDest)}`) : '-')
+        : tempi.arrivoDestinazione
+        ? sanitizeWinAnsi(`${tempi.arrivoDestinazione}${formattatoreCoord(coordDest)}`)
+        : '-'
     },
-    { num: '5', fase: 'Fine Missione Operativa', ora: sanitizePdfText(tempi.fineMissione) || '-' },
-    { num: '6', fase: 'Rientro in Sede (Disponibile)', ora: sanitizePdfText(tempi.rientro) || '-' }
+    { num: '5', fase: 'Fine Missione Operativa', ora: sanitizeWinAnsi(tempi.fineMissione) || '-' },
+    { num: '6', fase: 'Rientro in Sede (Disponibile)', ora: sanitizeWinAnsi(tempi.rientro) || '-' }
   ];
 
+  const oraColMaxW = contentWidth - 95;
   fasiOperative.forEach((fase, idx) => {
-    if (idx % 2 === 0) {
-      doc.setFillColor(248, 250, 252);
-    } else {
-      doc.setFillColor(255, 255, 255);
-    }
-    doc.rect(margin, y, contentWidth, rowHeight, 'F');
+    const hasGps = fase.ora.includes('GPS');
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(hasGps ? 6.4 : 7.4);
+    const oraText = fase.ora !== '-' ? fase.ora : 'Non registrato';
+    const oraLines = doc.splitTextToSize(oraText, oraColMaxW).slice(0, 2);
+    const rH = Math.max(6.2, oraLines.length * 3.5 + 2.5);
+
+    doc.setFillColor(idx % 2 === 0 ? 248 : 255, idx % 2 === 0 ? 250 : 255, idx % 2 === 0 ? 252 : 255);
+    doc.rect(margin, y, contentWidth, rH, 'F');
     doc.setDrawColor(226, 232, 240);
-    doc.rect(margin, y, contentWidth, rowHeight, 'S');
+    doc.rect(margin, y, contentWidth, rH, 'S');
 
     doc.setFont('helvetica', 'bold');
-    doc.setFontSize(7.5);
+    doc.setFontSize(7.4);
     doc.setTextColor(100, 116, 139);
-    doc.text(fase.num, margin + 4, y + 4.2);
+    doc.text(fase.num, margin + 3.5, y + 4.2);
 
-    doc.setFont('helvetica', 'bold');
     doc.setTextColor(30, 41, 59);
-    doc.text(fase.fase, margin + 14, y + 4.2);
+    doc.text(fase.fase, margin + 12, y + 4.2, { maxWidth: 77 });
 
-    doc.setFont('helvetica', 'bold');
     doc.setTextColor(fase.ora !== '-' ? 180 : 156, fase.ora !== '-' ? 83 : 163, fase.ora !== '-' ? 9 : 175);
-    if (fase.ora.includes('GPS')) {
-      doc.setFontSize(6.5);
-    } else {
-      doc.setFontSize(7.5);
-    }
-    doc.text(fase.ora !== '-' ? `${fase.ora}` : 'Non registrato', margin + 95, y + 4.2);
+    doc.setFontSize(hasGps ? 6.4 : 7.4);
+    doc.text(oraLines, margin + 92, y + 4.2);
 
-    y += rowHeight;
+    y += rH;
   });
 
-  const boxFirmaY = 227;
+  const safeBottomP1 = 265;
+  const boxFirmaH = 37;
   y += 3.5;
 
   // --- BOX MANOVRE EFFETTUATE / PATOLOGIE O NOTE NON-VET ---
-  const manovreTesto = (data.manovreEffettuatePatologie || data.datiDestinazione?.manovreEffettuatePatologie || '').trim();
+  const manovreTesto = sanitizeWinAnsi(data.manovreEffettuatePatologie || data.datiDestinazione?.manovreEffettuatePatologie || '');
   const isAmbitoNonVet = Boolean(
     (data.ambito && (data.ambito.toUpperCase().includes('PROTEZIONE CIVILE') || data.ambito.toUpperCase().includes('ISTITUTO'))) ||
-    (data.codice && (data.codice.includes('-PC-') || data.codice.includes('-IST-')))
+      (data.codice && (data.codice.includes('-PC-') || data.codice.includes('-IST-')))
   );
 
-  // Se c'è spazio sufficiente prima del riquadro firme (almeno 20mm)
-  if (manovreTesto && (boxFirmaY - y) >= 20) {
+  if (manovreTesto && safeBottomP1 - (y + boxFirmaH + 4) >= 16) {
     doc.setFont('helvetica', 'bold');
-    doc.setFontSize(8.0);
+    doc.setFontSize(7.8);
     doc.setTextColor(30, 41, 59);
     const titoloNote = isAmbitoNonVet
       ? 'NOTE E OSSERVAZIONI SUL SERVIZIO (BORDO MEZZO):'
@@ -663,73 +826,78 @@ export function generaDocumentoPDF(data: ReportDataPDF): jsPDF {
     doc.text(titoloNote, margin, y + 2);
     y += 3.5;
 
-    doc.setFillColor(254, 243, 199); // ambra chiarissimo (#fef3c7)
-    doc.setDrawColor(245, 158, 11);  // bordo ambra solido (#f59e0b)
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(7.0);
+    const righeManovre = doc.splitTextToSize(manovreTesto, contentWidth - 8).slice(0, 3);
+    const availH = safeBottomP1 - boxFirmaH - 6 - y;
+    const boxManovreH = Math.min(Math.max(8.5, righeManovre.length * 3.8 + 4), Math.max(8.5, availH));
+
+    doc.setFillColor(254, 243, 199);
+    doc.setDrawColor(245, 158, 11);
     doc.setLineWidth(0.35);
-    const boxManovreH = Math.min(13, Math.max(8, boxFirmaY - y - 18));
     doc.roundedRect(margin, y, contentWidth, boxManovreH, 1.5, 1.5, 'FD');
 
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(7.2);
-    doc.setTextColor(146, 64, 14); // amber-800
-    const righeManovre = doc.splitTextToSize(manovreTesto, contentWidth - 8);
-    doc.text(righeManovre.slice(0, 2), margin + 4, y + 4.2);
-
+    doc.setTextColor(146, 64, 14);
+    doc.text(righeManovre, margin + 4, y + 4.2);
     y += boxManovreH + 2.5;
   }
 
   // --- TRASCRIZIONE TESTUALE COMPLETA DELLA SCHEDA (SOLO SE C'È SPAZIO PRIMA DELLE FIRME) ---
-  if (data.testoCompleto && (boxFirmaY - y) >= 14) {
-    const testoFiltrato = rimuoviNoteCriticheMeteoWaze(data.testoCompleto);
+  if (data.testoCompleto && safeBottomP1 - (y + boxFirmaH + 4) >= 14) {
+    const testoFiltrato = sanitizeWinAnsi(rimuoviNoteCriticheMeteoWaze(data.testoCompleto));
     if (testoFiltrato) {
       doc.setFont('helvetica', 'bold');
-      doc.setFontSize(7.5);
+      doc.setFontSize(7.3);
       doc.setTextColor(15, 23, 42);
       doc.text('SCHEDA INTEGRALE TRASMESSA DA CENTRALE OPERATIVA:', margin, y + 1.5);
       y += 3.0;
 
+      const availH = safeBottomP1 - boxFirmaH - 4 - y;
+      const boxHeight = Math.min(14, Math.max(8, availH));
       doc.setFillColor(241, 245, 249);
       doc.setDrawColor(203, 213, 225);
-      const boxHeight = Math.min(14, Math.max(8, boxFirmaY - y - 2));
       doc.roundedRect(margin, y, contentWidth, boxHeight, 1.5, 1.5, 'FD');
 
       doc.setFont('courier', 'normal');
-      doc.setFontSize(6.2);
+      doc.setFontSize(6.0);
       doc.setTextColor(51, 65, 85);
       const splitText = doc.splitTextToSize(testoFiltrato, contentWidth - 6);
-      const maxRighe = boxHeight > 10 ? 3 : 2;
+      const maxRighe = Math.max(1, Math.floor((boxHeight - 2) / 3.2));
       doc.text(splitText.slice(0, maxRighe), margin + 3, y + 3.5);
-
-      y += boxHeight + 2;
+      y += boxHeight + 2.5;
     }
   }
 
-  // --- FIRME IN CALCE (PAGINA 1) - AD ALTO CONTRASTO E VISIBILITÀ GARANTITA ---
+  // Se i box superiori hanno spinto y oltre il limite sicuro, vai su nuova pagina prima delle firme
+  let boxFirmaY = Math.max(y + 1, 227);
+  if (boxFirmaY + boxFirmaH > safeBottomP1) {
+    drawFoglioFooter('Gestionale Centrale Operativa Radio & Emergenza Territoriale');
+    doc.addPage();
+    drawFoglioHeaderPage1('FOGLIO DI VIAGGIO', 'FIRME & ATTESTAZIONI');
+    boxFirmaY = 44;
+  }
+
+  // --- FIRME IN CALCE ---
   const colFirmaW = (contentWidth - 6) / 2;
-  const boxFirmaH = 37;
 
   // Box 1: Firma Capo Turno / Autista Mezzo
   doc.setFillColor(255, 255, 255);
-  doc.setDrawColor(51, 65, 85); // Bordo solido scuro
+  doc.setDrawColor(51, 65, 85);
   doc.setLineWidth(0.35);
   doc.roundedRect(margin, boxFirmaY, colFirmaW, boxFirmaH, 1.5, 1.5, 'FD');
 
-  // Testata Box Firma 1
   doc.setFillColor(30, 41, 59);
   doc.roundedRect(margin, boxFirmaY, colFirmaW, 7, 1.5, 1.5, 'F');
   doc.rect(margin, boxFirmaY + 4, colFirmaW, 3, 'F');
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(7.6);
+  doc.setFontSize(7.4);
   doc.setTextColor(255, 255, 255);
   doc.text('FIRMA CAPO TURNO / AUTISTA MEZZO', margin + 3, boxFirmaY + 4.8, { maxWidth: colFirmaW - 6 });
 
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(7.2);
+  doc.setFontSize(7.0);
   doc.setTextColor(15, 23, 42);
-  const capoNome = data.volontarioNome
-    ? `${data.volontarioNome} (${data.qualificaTurno || 'Autista'})`
-    : 'Capo Turno di Servizio';
-  doc.text(sanitizePdfText(`Nominativo: ${capoNome}`), margin + 3, boxFirmaY + 11.5, { maxWidth: colFirmaW - 6 });
+  doc.text(sanitizeWinAnsi(`Nominativo: ${capoTurno}`), margin + 3, boxFirmaY + 11.5, { maxWidth: colFirmaW - 6 });
 
   if (data.firmaVolontario) {
     try {
@@ -738,9 +906,9 @@ export function generaDocumentoPDF(data: ReportDataPDF): jsPDF {
       doc.roundedRect(margin + 3, boxFirmaY + boxFirmaH - 6.5, colFirmaW - 6, 4.5, 0.8, 0.8, 'F');
       doc.setTextColor(255, 255, 255);
       doc.setFont('helvetica', 'bold');
-      doc.setFontSize(5.6);
+      doc.setFontSize(5.5);
       doc.text(
-        '✓ SOTTOSCRITTO DIGITALMENTE A BORDO MEZZO',
+        '[OK] SOTTOSCRITTO DIGITALMENTE A BORDO MEZZO',
         margin + 3 + (colFirmaW - 6) / 2,
         boxFirmaY + boxFirmaH - 3.4,
         { align: 'center', maxWidth: colFirmaW - 10 }
@@ -760,7 +928,6 @@ export function generaDocumentoPDF(data: ReportDataPDF): jsPDF {
       doc.text('Sottoscrizione e attestazione svolgimento servizio', margin + 3, boxFirmaY + 32, { maxWidth: colFirmaW - 6 });
     }
   } else {
-    // Linea di firma evidente con crocetta 'X'
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(9);
     doc.setTextColor(71, 85, 105);
@@ -769,7 +936,6 @@ export function generaDocumentoPDF(data: ReportDataPDF): jsPDF {
     doc.setLineDashPattern([2, 1], 0);
     doc.line(margin + 8, boxFirmaY + 25, margin + colFirmaW - 4, boxFirmaY + 25);
     doc.setLineDashPattern([], 0);
-
     doc.setFont('helvetica', 'italic');
     doc.setFontSize(6);
     doc.setTextColor(100, 116, 139);
@@ -782,17 +948,16 @@ export function generaDocumentoPDF(data: ReportDataPDF): jsPDF {
   doc.setLineWidth(0.35);
   doc.roundedRect(margin + colFirmaW + 6, boxFirmaY, colFirmaW, boxFirmaH, 1.5, 1.5, 'FD');
 
-  // Testata Box Firma 2
   doc.setFillColor(30, 41, 59);
   doc.roundedRect(margin + colFirmaW + 6, boxFirmaY, colFirmaW, 7, 1.5, 1.5, 'F');
   doc.rect(margin + colFirmaW + 6, boxFirmaY + 4, colFirmaW, 3, 'F');
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(7.6);
+  doc.setFontSize(7.4);
   doc.setTextColor(255, 255, 255);
   doc.text('FIRMA OPERATORE CENTRALE OPERATIVA', margin + colFirmaW + 9, boxFirmaY + 4.8, { maxWidth: colFirmaW - 6 });
 
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(7.2);
+  doc.setFontSize(7.0);
   doc.setTextColor(15, 23, 42);
   doc.text('Centrale Operativa Radio - Emergenza Territoriale', margin + colFirmaW + 9, boxFirmaY + 11.5, { maxWidth: colFirmaW - 6 });
 
@@ -803,10 +968,10 @@ export function generaDocumentoPDF(data: ReportDataPDF): jsPDF {
       doc.roundedRect(margin + colFirmaW + 9, boxFirmaY + boxFirmaH - 6.5, colFirmaW - 6, 4.5, 0.8, 0.8, 'F');
       doc.setTextColor(255, 255, 255);
       doc.setFont('helvetica', 'bold');
-      doc.setFontSize(5.6);
+      doc.setFontSize(5.5);
       doc.text(
-        '✓ VISTO E FIRMA TELEMATICA CENTRALE REGISTRATA',
-        margin + colFirmaW + 6 + (colFirmaW / 2),
+        '[OK] VISTO E FIRMA TELEMATICA CENTRALE REGISTRATA',
+        margin + colFirmaW + 6 + colFirmaW / 2,
         boxFirmaY + boxFirmaH - 3.4,
         { align: 'center', maxWidth: colFirmaW - 10 }
       );
@@ -825,7 +990,6 @@ export function generaDocumentoPDF(data: ReportDataPDF): jsPDF {
       doc.text('Visto e registrazione telematica della Centrale', margin + colFirmaW + 9, boxFirmaY + 32, { maxWidth: colFirmaW - 6 });
     }
   } else {
-    // Linea di firma evidente con crocetta 'X'
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(9);
     doc.setTextColor(71, 85, 105);
@@ -841,67 +1005,7 @@ export function generaDocumentoPDF(data: ReportDataPDF): jsPDF {
     doc.text('Visto e registrazione telematica della Centrale', margin + colFirmaW + 9, boxFirmaY + 32, { maxWidth: colFirmaW - 6 });
   }
 
-  // --- PIÈ DI PAGINA (TUTTI I TESTI CENTRATI ORIZZONTALMENTE) ---
-  const footerH = 28;
-  const footerY = 269;
-
-  // Fondo scuro del footer
-  doc.setFillColor(15, 23, 42); // slate-900
-  doc.rect(0, footerY, pageWidth, footerH, 'F');
-
-  // Filetto dorato superiore del footer
-  doc.setFillColor(217, 119, 6); // amber-600
-  doc.rect(0, footerY, pageWidth, 1.2, 'F');
-
-  const centerX = pageWidth / 2;
-
-  // 1. Titolo del Gestionale (Centrato)
-  const cInfo = getDatiCartaIntestata();
-  const socialStr = formattaSocialCartaIntestata(cInfo);
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(7.2);
-  doc.setTextColor(251, 191, 36); // amber-400
-  doc.text(
-    `${(cInfo.denominazione || 'CROCE ORO MASSA CARRARA ODV').toUpperCase()} - Gestionale Centrale Operativa Radio & Emergenza Territoriale`,
-    centerX,
-    footerY + 6.5,
-    { align: 'center' }
-  );
-
-  // 2. Data generazione e Codice identificativo (Centrato)
-  doc.setFont('helvetica', 'normal');
-  doc.setFontSize(6.8);
-  doc.setTextColor(203, 213, 225); // slate-300
-  const dataDoc = formattaDataEOraCompleta(data.data, data.testoCompleto);
-  doc.text(
-    `Documento generato digitalmente il ${dataDoc} | Codice Identificativo: ${data.codice}`,
-    centerX,
-    footerY + 11.5,
-    { align: 'center' }
-  );
-
-  // 3. Sedi Ufficiali, Contatti ed eventuali Social (Centrato)
-  doc.setFont('helvetica', 'normal');
-  doc.setFontSize(socialStr ? 5.0 : 5.5);
-  doc.setTextColor(254, 240, 138); // amber-200
-  doc.text(
-    `Sede Legale: ${cInfo.sedeLegale} • Sede Massa: ${cInfo.sedeMassa} • Sede Carrara: ${cInfo.sedeCarrara} • Sede Pietrasanta: ${cInfo.sedePietrasanta} | Tel: ${cInfo.centraleTel}` +
-      (socialStr ? ` | ${socialStr}` : ''),
-    centerX,
-    footerY + 16.5,
-    { align: 'center', maxWidth: pageWidth - 16 }
-  );
-
-  // 4. Centrale Operativa Radio & Emergenza Territoriale (Centrato)
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(7);
-  doc.setTextColor(148, 163, 184); // slate-400
-  doc.text(
-    `CF: ${cInfo.codiceFiscale} • ${cInfo.sitoWeb} • Email: ${cInfo.email} • Pec: ${cInfo.pec}`,
-    centerX,
-    footerY + 21.5,
-    { align: 'center', maxWidth: pageWidth - 16 }
-  );
+  drawFoglioFooter('Gestionale Centrale Operativa Radio & Emergenza Territoriale');
 
   // --- PAGINA 2: ALLEGATO CONSEGNA ANIMALE, DONAZIONE & FIRME DIGITALI ACQUISITE ---
   // Generata ESCLUSIVAMENTE per i servizi e soccorsi veterinari.
@@ -924,13 +1028,17 @@ export function generaDocumentoPDF(data: ReportDataPDF): jsPDF {
 
     doc.setTextColor(251, 191, 36); // amber-400
     doc.setFont('helvetica', 'bold');
-    doc.setFontSize(14.5);
-    doc.text((cInfo.denominazione || 'CROCE ORO MASSA CARRARA ODV').toUpperCase(), headerTextX, 16);
+    doc.setFontSize(13.5);
+    doc.text(sanitizeWinAnsi((cInfoDoc.denominazione || 'CROCE ORO MASSA CARRARA ODV').toUpperCase()), headerTextX, 15.5, {
+      maxWidth: headerMaxW
+    });
 
     doc.setTextColor(241, 245, 249); // slate-100
     doc.setFont('helvetica', 'normal');
-    doc.setFontSize(8.2);
-    doc.text('Associazione Volontari del Soccorso & Protezione Civile - Ente del Terzo Settore', headerTextX, 23);
+    doc.setFontSize(7.8);
+    doc.text('Associazione Volontari del Soccorso & Protezione Civile - Ente del Terzo Settore', headerTextX, 22.5, {
+      maxWidth: headerMaxW
+    });
 
     // Badge ALLEGATO CONSEGNA
     doc.setFillColor(16, 185, 129); // emerald-500
@@ -982,25 +1090,18 @@ export function generaDocumentoPDF(data: ReportDataPDF): jsPDF {
     }
 
     // Colonna destra Box 1
-    const col2X = margin + (contentWidth / 2) + 4;
+    const col2X = margin + contentWidth / 2 + 4;
     doc.setFont('helvetica', 'bold');
     doc.setTextColor(71, 85, 105);
-    doc.text('Rilevazione Microchip:', col2X, y2 + 13.5);
+    doc.text('Codice Microchip / Tatuaggio:', col2X, y2 + 13.5);
     doc.setFont('helvetica', 'bold');
-    doc.setTextColor(effChip.includes('NO') ? 220 : 30, effChip.includes('NO') ? 38 : 58, effChip.includes('NO') ? 38 : 138);
-    doc.text(effChip, col2X + 38, y2 + 13.5);
-
-    doc.setFont('helvetica', 'bold');
-    doc.setTextColor(71, 85, 105);
-    doc.text('Codice Missione:', col2X, y2 + 20);
-    doc.setFont('helvetica', 'bold');
-    doc.setTextColor(180, 83, 9);
-    doc.text(data.codice, col2X + 38, y2 + 20);
+    doc.setTextColor(30, 58, 138);
+    doc.text(sanitizeWinAnsi(effChip), col2X, y2 + 19.5, { maxWidth: contentWidth / 2 - 8 });
 
     y2 += boxAnimaleH + 3.5;
 
-    // BOX 2: DATI DEL PROPRIETARIO / INTESTATARIO MICROCHIP
-    const boxPropH = 38;
+    // BOX 2: DATI ANAGRAFICI DEL PROPRIETARIO / CUSTODE
+    const boxPropH = 31;
     doc.setFillColor(248, 250, 252);
     doc.setDrawColor(203, 213, 225);
     doc.roundedRect(margin, y2, contentWidth, boxPropH, 1.5, 1.5, 'FD');
@@ -1008,58 +1109,49 @@ export function generaDocumentoPDF(data: ReportDataPDF): jsPDF {
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(8.8);
     doc.setTextColor(30, 41, 59);
-    doc.text("2. DATI DEL PROPRIETARIO / INTESTATARIO DEL MICROCHIP", margin + 4, y2 + 5.5);
-
-    const regMicrochipPdf = destData?.proprietario?.regioneTipo === 'TOSCANA'
-      ? 'TOSCANA'
-      : (destData?.proprietario?.regioneAltro || destData?.proprietario?.regione || destData?.animale?.anagrafeAltraRegione || destData?.animale?.anagrafeRegione || '');
-    if (regMicrochipPdf) {
-      doc.setFont('helvetica', 'bold');
-      doc.setFontSize(7.5);
-      doc.setTextColor(180, 83, 9);
-      doc.text(`Regione Microchip: ${regMicrochipPdf.toUpperCase()}`, margin + contentWidth - 4, y2 + 5.5, { align: 'right' });
-    }
-
+    doc.text('2. DATI ANAGRAFICI DEL PROPRIETARIO / CUSTODE DELL\'ANIMALE', margin + 4, y2 + 5.5);
     doc.line(margin + 4, y2 + 7.5, margin + contentWidth - 4, y2 + 7.5);
 
-    const nomeCompleto = `${destData?.proprietario?.nome || ''} ${destData?.proprietario?.cognome || ''}`.trim() || 'Non specificato';
+    const leftBox2MaxW = col2X - (margin + 25) - 3;
+    const nomeCompleto = sanitizeWinAnsi(`${destData?.proprietario?.nome || ''} ${destData?.proprietario?.cognome || ''}`.trim() || 'Non specificato');
     doc.setFontSize(8);
     doc.setFont('helvetica', 'bold');
     doc.setTextColor(71, 85, 105);
     doc.text('Nominativo:', margin + 4, y2 + 13.5);
     doc.setFont('helvetica', 'bold');
     doc.setTextColor(15, 23, 42);
-    doc.text(nomeCompleto, margin + 25, y2 + 13.5);
+    doc.text(nomeCompleto, margin + 25, y2 + 13.5, { maxWidth: leftBox2MaxW });
 
     doc.setFont('helvetica', 'bold');
     doc.setTextColor(71, 85, 105);
     doc.text('Codice Fiscale:', margin + 4, y2 + 19.5);
     doc.setFont('helvetica', 'normal');
     doc.setTextColor(15, 23, 42);
-    doc.text(destData?.proprietario?.codiceFiscale || 'Non specificato', margin + 25, y2 + 19.5);
+    doc.text(sanitizeWinAnsi(destData?.proprietario?.codiceFiscale || 'Non specificato'), margin + 25, y2 + 19.5, { maxWidth: leftBox2MaxW });
 
     doc.setFont('helvetica', 'bold');
     doc.setTextColor(71, 85, 105);
     doc.text('Residenza:', margin + 4, y2 + 25.5);
     doc.setFont('helvetica', 'normal');
     doc.setTextColor(15, 23, 42);
-    const residenzaCompleta = `${destData?.proprietario?.indirizzo || '-'}, ${destData?.proprietario?.comune || '-'} (${destData?.proprietario?.provincia || '-'}) CAP ${destData?.proprietario?.cap || '-'}`;
-    doc.text(residenzaCompleta, margin + 25, y2 + 25.5, { maxWidth: (contentWidth / 2) - 27 });
+    const residenzaCompleta = sanitizeWinAnsi(`${destData?.proprietario?.indirizzo || '-'}, ${destData?.proprietario?.comune || '-'} (${destData?.proprietario?.provincia || '-'}) CAP ${destData?.proprietario?.cap || '-'}`);
+    doc.text(residenzaCompleta, margin + 25, y2 + 25.5, { maxWidth: leftBox2MaxW });
 
     // Colonna destra Box 2
+    const rightBox2MaxW = margin + contentWidth - (col2X + 33) - 3;
     doc.setFont('helvetica', 'bold');
     doc.setTextColor(71, 85, 105);
     doc.text('Recapito Telefonico:', col2X, y2 + 13.5);
     doc.setFont('helvetica', 'bold');
     doc.setTextColor(30, 58, 138);
-    doc.text(destData?.proprietario?.telefono || 'N/D', col2X + 33, y2 + 13.5);
+    doc.text(sanitizeWinAnsi(destData?.proprietario?.telefono || 'N/D'), col2X + 33, y2 + 13.5, { maxWidth: rightBox2MaxW });
 
     doc.setFont('helvetica', 'bold');
     doc.setTextColor(71, 85, 105);
     doc.text('Data di Nascita:', col2X, y2 + 19.5);
     doc.setFont('helvetica', 'normal');
     doc.setTextColor(15, 23, 42);
-    doc.text(destData?.proprietario?.dataNascita || '-', col2X + 33, y2 + 19.5);
+    doc.text(sanitizeWinAnsi(destData?.proprietario?.dataNascita || '-'), col2X + 33, y2 + 19.5, { maxWidth: rightBox2MaxW });
 
     doc.setFont('helvetica', 'bold');
     doc.setTextColor(71, 85, 105);
@@ -1069,7 +1161,7 @@ export function generaDocumentoPDF(data: ReportDataPDF): jsPDF {
     const emailTesto = destData?.proprietario?.nonHaEmail || destData?.proprietario?.email === 'Non presente'
       ? 'Dichiara di non avere email'
       : (destData?.proprietario?.email || 'N/D');
-    doc.text(sanitizePdfText(emailTesto), col2X + 33, y2 + 25.5, { maxWidth: (contentWidth / 2) - 36 });
+    doc.text(sanitizeWinAnsi(emailTesto), col2X + 33, y2 + 25.5, { maxWidth: rightBox2MaxW });
 
     y2 += boxPropH + 3.5;
 
@@ -1156,17 +1248,16 @@ export function generaDocumentoPDF(data: ReportDataPDF): jsPDF {
         doc.setFont('helvetica', 'bold');
         doc.setFontSize(6.2);
         doc.text(
-          '✓ SOTTOSCRITTO DIGITALMENTE A BORDO MEZZO',
+          '[OK] SOTTOSCRITTO DIGITALMENTE A BORDO MEZZO',
           firmaPropX + (cardFirmaW / 2),
           firmaBoxY + cardFirmaH - 4.8,
           { align: 'center', maxWidth: cardFirmaW - 10 }
         );
-      } catch (err) {
+      } catch {
         doc.setTextColor(148, 163, 184);
         doc.text('(Firma acquisita digitalmente)', firmaPropX + (cardFirmaW / 2), firmaBoxY + 28, { align: 'center', maxWidth: cardFirmaW - 6 });
       }
     } else {
-      // Box firma vuoto con linea evidente e crocetta
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(9);
       doc.setTextColor(71, 85, 105);
@@ -1175,13 +1266,12 @@ export function generaDocumentoPDF(data: ReportDataPDF): jsPDF {
       doc.setLineDashPattern([2, 1], 0);
       doc.line(firmaPropX + 9, firmaBoxY + 36, firmaPropX + cardFirmaW - 5, firmaBoxY + 36);
       doc.setLineDashPattern([], 0);
-
       doc.setFont('helvetica', 'italic');
       doc.setFontSize(6.5);
       doc.setTextColor(100, 116, 139);
       doc.text('SPAZIO RISERVATO ALLA FIRMA AUTOGRAFA', firmaPropX + (cardFirmaW / 2), firmaBoxY + 43, { align: 'center', maxWidth: cardFirmaW - 8 });
       doc.setFontSize(5.8);
-      doc.text('Attestazione di presa in carico e regolarità del trasporto', firmaPropX + 3, firmaBoxY + cardFirmaH - 4, { maxWidth: cardFirmaW - 6 });
+      doc.text('Attestazione di presa in carico e regolarita del trasporto', firmaPropX + 3, firmaBoxY + cardFirmaH - 4, { maxWidth: cardFirmaW - 6 });
     }
 
     // 4b. Riquadro Firma Medico Veterinario / Clinica (Partenza o Ricevente)
@@ -1197,7 +1287,6 @@ export function generaDocumentoPDF(data: ReportDataPDF): jsPDF {
       (!data.isStrutturaVeterinaria && destData?.strutturaVeterinaria?.tipoRuolo !== 'destinazione' && data.indirizzoIntervento?.toLowerCase().includes('clinic'))
     );
 
-    // Testata Riquadro Firma Veterinario
     doc.setFillColor(30, 41, 59);
     doc.roundedRect(firmaVetX, firmaBoxY, cardFirmaW, 6.5, 1.5, 1.5, 'F');
     doc.rect(firmaVetX, firmaBoxY + 3.5, cardFirmaW, 3, 'F');
@@ -1206,8 +1295,8 @@ export function generaDocumentoPDF(data: ReportDataPDF): jsPDF {
     doc.setTextColor(255, 255, 255);
     doc.text(
       isVetPartenza
-        ? "FIRMA MEDICO VETERINARIO / CLINICA DI PARTENZA"
-        : "FIRMA MEDICO VETERINARIO / CLINICA RICEVENTE",
+        ? 'FIRMA MEDICO VETERINARIO / CLINICA DI PARTENZA'
+        : 'FIRMA MEDICO VETERINARIO / CLINICA RICEVENTE',
       firmaVetX + 3,
       firmaBoxY + 4.8,
       { maxWidth: cardFirmaW - 6 }
@@ -1220,7 +1309,7 @@ export function generaDocumentoPDF(data: ReportDataPDF): jsPDF {
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(7.2);
     doc.setTextColor(15, 23, 42);
-    doc.text(sanitizePdfText(`Presso: ${vetStruttura}${vetDott}`), firmaVetX + 3, firmaBoxY + 11.5, { maxWidth: cardFirmaW - 6 });
+    doc.text(sanitizeWinAnsi(`Presso: ${vetStruttura}${vetDott}`), firmaVetX + 3, firmaBoxY + 11.5, { maxWidth: cardFirmaW - 6 });
 
     if (destData?.strutturaVeterinaria?.firmaVeterinario) {
       try {
@@ -1229,21 +1318,20 @@ export function generaDocumentoPDF(data: ReportDataPDF): jsPDF {
         doc.roundedRect(firmaVetX + 3, firmaBoxY + cardFirmaH - 9, cardFirmaW - 6, 6, 1, 1, 'F');
         doc.setTextColor(255, 255, 255);
         doc.setFont('helvetica', 'bold');
-        doc.setFontSize(6.2);
+        doc.setFontSize(6.0);
         doc.text(
           isVetPartenza
-            ? '✓ PRESA IN CARICO SANITARIA CONVALIDATA'
-            : '✓ PRESA IN CONSEGNA SANITARIA CONVALIDATA',
+            ? '[OK] PRESA IN CARICO SANITARIA CONVALIDATA'
+            : '[OK] PRESA IN CONSEGNA SANITARIA CONVALIDATA',
           firmaVetX + (cardFirmaW / 2),
           firmaBoxY + cardFirmaH - 4.8,
           { align: 'center', maxWidth: cardFirmaW - 10 }
         );
-      } catch (err) {
+      } catch {
         doc.setTextColor(148, 163, 184);
         doc.text('(Firma acquisita digitalmente)', firmaVetX + (cardFirmaW / 2), firmaBoxY + 28, { align: 'center', maxWidth: cardFirmaW - 6 });
       }
     } else {
-      // Box firma vuoto con linea evidente e crocetta
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(9);
       doc.setTextColor(71, 85, 105);
@@ -1252,13 +1340,12 @@ export function generaDocumentoPDF(data: ReportDataPDF): jsPDF {
       doc.setLineDashPattern([2, 1], 0);
       doc.line(firmaVetX + 9, firmaBoxY + 36, firmaVetX + cardFirmaW - 5, firmaBoxY + 36);
       doc.setLineDashPattern([], 0);
-
       doc.setFont('helvetica', 'italic');
       doc.setFontSize(6.5);
       doc.setTextColor(100, 116, 139);
       doc.text('SPAZIO RISERVATO AL MEDICO VETERINARIO', firmaVetX + (cardFirmaW / 2), firmaBoxY + 43, { align: 'center', maxWidth: cardFirmaW - 8 });
       doc.setFontSize(5.8);
-      doc.text('Attestazione di presa in consegna sanitaria dell\'animale', firmaVetX + 3, firmaBoxY + cardFirmaH - 4, { maxWidth: cardFirmaW - 6 });
+      doc.text("Attestazione di presa in consegna sanitaria dell'animale", firmaVetX + 3, firmaBoxY + cardFirmaH - 4, { maxWidth: cardFirmaW - 6 });
     }
 
     y2 += boxFirmeH + 3.5;
@@ -1282,7 +1369,7 @@ export function generaDocumentoPDF(data: ReportDataPDF): jsPDF {
     doc.setFont('helvetica', 'normal');
     doc.setTextColor(15, 23, 42);
     const txtGpsPosto = coordSulPosto
-      ? sanitizePdfText(`Lat ${coordSulPosto.lat.toFixed(5)}, Lng ${coordSulPosto.lng.toFixed(5)} [Ore ${tempi.sulPosto || '-'}]`)
+      ? sanitizeWinAnsi(`Lat ${coordSulPosto.lat.toFixed(5)}, Lng ${coordSulPosto.lng.toFixed(5)} [Ore ${tempi.sulPosto || '-'}]`)
       : 'Coordinate non trasmesse';
     doc.text(txtGpsPosto, margin + 35, y2 + 11.5);
 
@@ -1292,52 +1379,11 @@ export function generaDocumentoPDF(data: ReportDataPDF): jsPDF {
     doc.setFont('helvetica', 'normal');
     doc.setTextColor(15, 23, 42);
     const txtGpsDest = coordDest
-      ? sanitizePdfText(`Lat ${coordDest.lat.toFixed(5)}, Lng ${coordDest.lng.toFixed(5)} [Ore ${tempi.arrivoDestinazione || '-'}]`)
+      ? sanitizeWinAnsi(`Lat ${coordDest.lat.toFixed(5)}, Lng ${coordDest.lng.toFixed(5)} [Ore ${tempi.arrivoDestinazione || '-'}]`)
       : 'Coordinate non trasmesse';
     doc.text(txtGpsDest, margin + 40, y2 + 15.5);
 
-    // Piè di pagina Pagina 2
-    doc.setFillColor(15, 23, 42);
-    doc.rect(0, footerY, pageWidth, footerH, 'F');
-    doc.setFillColor(217, 119, 6);
-    doc.rect(0, footerY, pageWidth, 1.2, 'F');
-
-    const socialStrP2 = formattaSocialCartaIntestata(cInfo);
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(7.2);
-    doc.setTextColor(251, 191, 36);
-    doc.text(
-      `${(cInfo.denominazione || 'CROCE ORO MASSA CARRARA ODV').toUpperCase()} - Allegato Tecnico Consegna, Ricevuta & Firme Digitali (Pagina 2 di 2)`,
-      centerX,
-      footerY + 6.5,
-      { align: 'center' }
-    );
-
-    doc.setFont('helvetica', 'normal');
-    doc.setFontSize(6.8);
-    doc.setTextColor(203, 213, 225);
-    doc.text(
-      `Attestazione certificata digitalmente a bordo mezzo ${data.mezzo} per la missione ${data.codice}`,
-      centerX,
-      footerY + 11.5,
-      { align: 'center' }
-    );
-
-    doc.setFont('helvetica', 'normal');
-    doc.setFontSize(socialStrP2 ? 5.0 : 5.5);
-    doc.setTextColor(254, 240, 138);
-    doc.text(
-      `Sede Legale: ${cInfo.sedeLegale} • Sede Massa: ${cInfo.sedeMassa} • Sede Carrara: ${cInfo.sedeCarrara} • Sede Pietrasanta: ${cInfo.sedePietrasanta} | Tel: ${cInfo.centraleTel}` +
-        (socialStrP2 ? ` | ${socialStrP2}` : ''),
-      centerX,
-      footerY + 16.5,
-      { align: 'center', maxWidth: pageWidth - 16 }
-    );
-
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(7);
-    doc.setTextColor(148, 163, 184);
-    doc.text(`CF: ${cInfo.codiceFiscale} • ${cInfo.sitoWeb} • Email: ${cInfo.email} • Pec: ${cInfo.pec}`, centerX, footerY + 21.5, { align: 'center', maxWidth: pageWidth - 16 });
+    drawFoglioFooter('Allegato Tecnico Consegna, Ricevuta & Firme Digitali');
   }
 
   return doc;
@@ -1581,30 +1627,30 @@ export function generaVerbaleAnimaleNonProprietaPDF(data: ReportDataPDF): jsPDF 
   doc.text('Codice Verbale:', margin + 4, y + 12);
   doc.setFont('helvetica', 'bold');
   doc.setTextColor(180, 83, 9);
-  doc.text(data.codice || 'N/D', margin + 30, y + 12);
+  doc.text(sanitizePdfText(data.codice || 'N/D'), margin + 30, y + 12, { maxWidth: (contentWidth / 2) - 32 });
 
   doc.setFont('helvetica', 'bold');
   doc.setTextColor(71, 85, 105);
   doc.text('Mezzo Bordo:', margin + 4, y + 18);
   doc.setFont('helvetica', 'bold');
   doc.setTextColor(15, 23, 42);
-  doc.text(data.mezzo || 'N/D', margin + 30, y + 18);
+  doc.text(sanitizePdfText(data.mezzo || 'N/D'), margin + 30, y + 18, { maxWidth: (contentWidth / 2) - 32 });
 
   const col2 = margin + (contentWidth / 2) + 4;
   doc.setFont('helvetica', 'bold');
   doc.setTextColor(71, 85, 105);
-  doc.text('Data & Ora Intervento:', col2, y + 12);
+  doc.text('Data & Ora:', col2, y + 12);
   doc.setFont('helvetica', 'normal');
   doc.setTextColor(15, 23, 42);
-  doc.text(formattaDataEOraCompleta(data.data, data.testoCompleto), col2 + 35, y + 12);
+  doc.text(sanitizePdfText(formattaDataEOraCompleta(data.data, data.testoCompleto)), col2 + 35, y + 12, { maxWidth: (contentWidth / 2) - 41 });
 
   doc.setFont('helvetica', 'bold');
   doc.setTextColor(71, 85, 105);
-  doc.text('Capo Turno di Servizio:', col2, y + 18);
+  doc.text('Capo Turno:', col2, y + 18);
   doc.setFont('helvetica', 'normal');
   doc.setTextColor(15, 23, 42);
   const capoNome = data.volontarioNome ? `${data.volontarioNome} (${data.qualificaTurno || 'Autista'})` : 'Capo Turno';
-  doc.text(capoNome, col2 + 35, y + 18);
+  doc.text(sanitizePdfText(capoNome), col2 + 35, y + 18, { maxWidth: (contentWidth / 2) - 41 });
 
   y += 27;
 
@@ -1630,7 +1676,7 @@ export function generaVerbaleAnimaleNonProprietaPDF(data: ReportDataPDF): jsPDF 
   doc.text('Specie Animale:', margin + 4, y + 12);
   doc.setFont('helvetica', 'bold');
   doc.setTextColor(15, 23, 42);
-  doc.text(`${effTipo}${effAltro}`, margin + 30, y + 12);
+  doc.text(sanitizePdfText(`${effTipo}${effAltro}`), margin + 30, y + 12, { maxWidth: (contentWidth / 2) - 34 });
 
   doc.setFont('helvetica', 'bold');
   doc.setTextColor(71, 85, 105);
@@ -1647,7 +1693,7 @@ export function generaVerbaleAnimaleNonProprietaPDF(data: ReportDataPDF): jsPDF 
   doc.setFont('helvetica', 'normal');
   doc.setTextColor(15, 23, 42);
   const dett = (data as any).specifiche || destData?.animale?.tipoAltro || 'Recupero e soccorso sul territorio';
-  doc.text(dett, margin + 30, y + 27.5, { maxWidth: (contentWidth / 2) - 34 });
+  doc.text(sanitizePdfText(dett), margin + 30, y + 27.5, { maxWidth: (contentWidth / 2) - 34 });
 
   // Colonna destra Box 2: MICROCHIP IN EVIDENZA (senza caratteri emoji per prevenire mojibake)
   doc.setFontSize(7.8);
@@ -1657,10 +1703,10 @@ export function generaVerbaleAnimaleNonProprietaPDF(data: ReportDataPDF): jsPDF 
   doc.setFont('helvetica', 'bold');
   if (effChip.includes('NO')) {
     doc.setTextColor(220, 38, 38);
-    doc.text('NO MICROCHIP (Lettore Negativo)', col2 + 35, y + 12);
+    doc.text('NO MICROCHIP (Lettore Negativo)', col2 + 35, y + 12, { maxWidth: (contentWidth / 2) - 41 });
   } else {
     doc.setTextColor(30, 58, 138);
-    doc.text(sanitizePdfText(effChip), col2 + 35, y + 12);
+    doc.text(sanitizePdfText(effChip), col2 + 35, y + 12, { maxWidth: (contentWidth / 2) - 41 });
   }
 
   doc.setFont('helvetica', 'bold');
@@ -1668,16 +1714,16 @@ export function generaVerbaleAnimaleNonProprietaPDF(data: ReportDataPDF): jsPDF 
   doc.text('Orario Rilevazione:', col2, y + 18.5);
   doc.setFont('helvetica', 'normal');
   doc.setTextColor(15, 23, 42);
-  doc.text(`Arrivo sul posto ore ${data.tempi?.sulPosto || '-'}`, col2 + 35, y + 18.5);
+  doc.text(sanitizePdfText(`Arrivo sul posto ore ${data.tempi?.sulPosto || '-'}`), col2 + 35, y + 18.5, { maxWidth: (contentWidth / 2) - 41 });
 
   doc.setFont('helvetica', 'bold');
   doc.setTextColor(71, 85, 105);
   const manovreVerbale = (data.manovreEffettuatePatologie || data.datiDestinazione?.manovreEffettuatePatologie || '').trim();
-  doc.text(manovreVerbale ? 'Manovre / Patologie:' : 'Note Sanitarie Bordo:', col2, y + 27.5);
+  doc.text(manovreVerbale ? 'Manovre / Patologie:' : 'Note Sanitarie:', col2, y + 27.5);
   doc.setFont('helvetica', manovreVerbale ? 'bold' : 'normal');
   doc.setTextColor(15, 23, 42);
   const noteSanitarieBordo = manovreVerbale || 'Animale preso in carico in sicurezza con parametri vitali stabili';
-  doc.text(sanitizePdfText(noteSanitarieBordo), col2 + 35, y + 27.5, { maxWidth: (contentWidth / 2) - 38 });
+  doc.text(sanitizePdfText(noteSanitarieBordo), col2 + 35, y + 27.5, { maxWidth: (contentWidth / 2) - 41 });
 
   y += box2H + 3;
 
@@ -1699,29 +1745,29 @@ export function generaVerbaleAnimaleNonProprietaPDF(data: ReportDataPDF): jsPDF 
   doc.text('Luogo Ritrovamento:', margin + 4, y + 12.5);
   doc.setFont('helvetica', 'normal');
   doc.setTextColor(15, 23, 42);
-  doc.text(indEvento, margin + 35, y + 12.5, { maxWidth: (contentWidth / 2) - 38 });
+  doc.text(sanitizePdfText(indEvento), margin + 35, y + 12.5, { maxWidth: (contentWidth / 2) - 38 });
 
   doc.setFont('helvetica', 'bold');
   doc.setTextColor(71, 85, 105);
-  doc.text('Coordinate GPS Cert.:', margin + 4, y + 19);
+  doc.text('Coordinate GPS Cert.:', margin + 4, y + 21);
   doc.setFont('helvetica', 'normal');
   doc.setTextColor(16, 185, 129);
   const gpsTxt = data.coordinateSulPosto ? `Lat ${data.coordinateSulPosto.lat.toFixed(5)}, Lng ${data.coordinateSulPosto.lng.toFixed(5)}` : 'Registrate da centrale';
-  doc.text(gpsTxt, margin + 35, y + 19);
+  doc.text(sanitizePdfText(gpsTxt), margin + 35, y + 21, { maxWidth: (contentWidth / 2) - 38 });
 
   doc.setFont('helvetica', 'bold');
   doc.setTextColor(71, 85, 105);
   doc.text('Segnalante / Chiamante:', col2, y + 12.5);
   doc.setFont('helvetica', 'bold');
   doc.setTextColor(15, 23, 42);
-  doc.text(data.chiamante || 'Non specificato', col2 + 37, y + 12.5);
+  doc.text(sanitizePdfText(data.chiamante || 'Non specificato'), col2 + 37, y + 12.5, { maxWidth: (contentWidth / 2) - 43 });
 
   doc.setFont('helvetica', 'bold');
   doc.setTextColor(71, 85, 105);
-  doc.text('Telefono Segnalante:', col2, y + 19);
+  doc.text('Telefono Segnalante:', col2, y + 21);
   doc.setFont('helvetica', 'bold');
   doc.setTextColor(30, 58, 138);
-  doc.text(data.telefono || 'N/D', col2 + 37, y + 19);
+  doc.text(sanitizePdfText(data.telefono || 'N/D'), col2 + 37, y + 21, { maxWidth: (contentWidth / 2) - 43 });
 
   y += 29;
 
@@ -1742,7 +1788,7 @@ export function generaVerbaleAnimaleNonProprietaPDF(data: ReportDataPDF): jsPDF 
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(7.2);
     doc.setTextColor(180, 83, 9);
-    doc.text(`Regione: ${regChip4.toUpperCase()}`, margin + contentWidth - 4, y + 5, { align: 'right' });
+    doc.text(sanitizePdfText(`Regione: ${regChip4.toUpperCase()}`), margin + contentWidth - 4, y + 5, { align: 'right' });
   }
 
   doc.line(margin + 4, y + 6.8, margin + contentWidth - 4, y + 6.8);
@@ -1752,32 +1798,32 @@ export function generaVerbaleAnimaleNonProprietaPDF(data: ReportDataPDF): jsPDF 
   doc.setFontSize(7.8);
   doc.setFont('helvetica', 'bold');
   doc.setTextColor(71, 85, 105);
-  doc.text('Intestatario / Proprietario:', margin + 4, y + 12.5);
+  doc.text('Intestatario:', margin + 4, y + 12.5);
   doc.setFont('helvetica', 'bold');
   doc.setTextColor(15, 23, 42);
-  doc.text(propNome, margin + 40, y + 12.5);
+  doc.text(sanitizePdfText(propNome), margin + 35, y + 12.5, { maxWidth: (contentWidth / 2) - 38 });
 
   doc.setFont('helvetica', 'bold');
   doc.setTextColor(71, 85, 105);
-  doc.text('Codice Fiscale & Nascita:', margin + 4, y + 19);
+  doc.text('C.F. & Nascita:', margin + 4, y + 21);
   doc.setFont('helvetica', 'normal');
   doc.setTextColor(15, 23, 42);
-  doc.text(`${prop?.codiceFiscale || '-'} | Nato il: ${prop?.dataNascita || '-'}`, margin + 40, y + 19);
+  doc.text(sanitizePdfText(`${prop?.codiceFiscale || '-'} | Nato il: ${prop?.dataNascita || '-'}`), margin + 35, y + 21, { maxWidth: (contentWidth / 2) - 38 });
 
   doc.setFont('helvetica', 'bold');
   doc.setTextColor(71, 85, 105);
-  doc.text('Residenza Anagrafica:', col2, y + 12.5);
+  doc.text('Residenza:', col2, y + 12.5);
   doc.setFont('helvetica', 'normal');
   doc.setTextColor(15, 23, 42);
   const resStr = `${prop?.indirizzo || '-'}, ${prop?.comune || '-'} (${prop?.provincia || '-'})`;
-  doc.text(resStr, col2 + 35, y + 12.5, { maxWidth: (contentWidth / 2) - 40 });
+  doc.text(sanitizePdfText(resStr), col2 + 35, y + 12.5, { maxWidth: (contentWidth / 2) - 41 });
 
   doc.setFont('helvetica', 'bold');
   doc.setTextColor(71, 85, 105);
-  doc.text('Recapito Telefonico:', col2, y + 19);
+  doc.text('Telefono:', col2, y + 21);
   doc.setFont('helvetica', 'normal');
   doc.setTextColor(15, 23, 42);
-  doc.text(prop?.telefono || '-', col2 + 35, y + 19);
+  doc.text(sanitizePdfText(prop?.telefono || '-'), col2 + 35, y + 21, { maxWidth: (contentWidth / 2) - 41 });
 
   y += 29;
 
@@ -1860,7 +1906,7 @@ export function generaVerbaleAnimaleNonProprietaPDF(data: ReportDataPDF): jsPDF 
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(5.3);
       doc.text(
-        '✓ SOTTOSCRITTO DIGITALMENTE A BORDO MEZZO',
+        '[FIRMA OK] SOTTOSCRITTO DIGITALMENTE A BORDO MEZZO',
         margin + 3 + (colW - 6) / 2,
         y + hCardFirma - 1.8,
         { align: 'center', maxWidth: colW - 8 }
@@ -1957,8 +2003,8 @@ export function generaVerbaleAnimaleNonProprietaPDF(data: ReportDataPDF): jsPDF 
       doc.setFontSize(5.3);
       doc.text(
         isVetPartenzaBox
-          ? '✓ PRESA IN CARICO SANITARIA CONVALIDATA'
-          : '✓ PRESA IN CONSEGNA SANITARIA CONVALIDATA',
+          ? '[OK] PRESA IN CARICO SANITARIA CONVALIDATA'
+          : '[OK] PRESA IN CONSEGNA SANITARIA CONVALIDATA',
         margin + 3 + (colW - 6) / 2,
         y + hCardFirma - 1.8,
         { align: 'center', maxWidth: colW - 8 }
@@ -2007,7 +2053,7 @@ export function generaVerbaleAnimaleNonProprietaPDF(data: ReportDataPDF): jsPDF 
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(5.3);
       doc.text(
-        '✓ VISTO E FIRMA TELEMATICA CENTRALE REGISTRATA',
+        '[OK] VISTO E FIRMA TELEMATICA CENTRALE REGISTRATA',
         margin + colW + 6 + (colW / 2),
         y + hCardFirma - 1.8,
         { align: 'center', maxWidth: colW - 8 }
@@ -2076,8 +2122,10 @@ export function generaVerbaleAnimaleNonProprietaPDF(data: ReportDataPDF): jsPDF 
   doc.setFontSize(socialStrVerb ? 5.0 : 5.5);
   doc.setTextColor(254, 240, 138);
   doc.text(
-    `Sede Legale: ${cInfo.sedeLegale} • Sede Massa: ${cInfo.sedeMassa} • Sede Carrara: ${cInfo.sedeCarrara} • Sede Pietrasanta: ${cInfo.sedePietrasanta} | Tel: ${cInfo.centraleTel}` +
-      (socialStrVerb ? ` | ${socialStrVerb}` : ''),
+    sanitizePdfText(
+      `Sede Legale: ${cInfo.sedeLegale} | Sede Massa: ${cInfo.sedeMassa} | Sede Carrara: ${cInfo.sedeCarrara} | Sede Pietrasanta: ${cInfo.sedePietrasanta} | Tel: ${cInfo.centraleTel}` +
+        (socialStrVerb ? ` | ${socialStrVerb}` : '')
+    ),
     centerX,
     footerY + 16.5,
     { align: 'center', maxWidth: pageWidth - 16 }
@@ -2086,7 +2134,7 @@ export function generaVerbaleAnimaleNonProprietaPDF(data: ReportDataPDF): jsPDF 
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(7);
   doc.setTextColor(148, 163, 184);
-  doc.text(`CF: ${cInfo.codiceFiscale} • ${cInfo.sitoWeb} • Email: ${cInfo.email} • Pec: ${cInfo.pec}`, centerX, footerY + 21.5, { align: 'center', maxWidth: pageWidth - 16 });
+  doc.text(sanitizePdfText(`CF: ${cInfo.codiceFiscale} | ${cInfo.sitoWeb} | Email: ${cInfo.email} | Pec: ${cInfo.pec}`), centerX, footerY + 22.5, { align: 'center', maxWidth: pageWidth - 16 });
 
   return doc;
 }
@@ -2302,7 +2350,7 @@ export function generaDocumentoIdentitaPDF(data: ReportDataPDF): jsPDF {
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(7.5);
   doc.setTextColor(255, 255, 255);
-  doc.text('🪪 FRONTE (Davanti del Documento)', fronteX + 4, currentY + 5.5);
+  doc.text('FRONTE (Davanti del Documento)', fronteX + 4, currentY + 5.5);
 
   if (fotoDoc.fronte) {
     try {
@@ -2348,7 +2396,7 @@ export function generaDocumentoIdentitaPDF(data: ReportDataPDF): jsPDF {
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(7.5);
   doc.setTextColor(255, 255, 255);
-  doc.text('🪪 RETRO (Dietro del Documento)', retroX + 4, currentY + 5.5);
+  doc.text('RETRO (Dietro del Documento)', retroX + 4, currentY + 5.5);
 
   if (fotoDoc.retro) {
     try {
@@ -2689,13 +2737,13 @@ export function generaRegistroCartaceoPDF(servizi: ReportDataPDF[], infoFiltro?:
     if (haDonazione) {
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(7.5);
-      doc.setTextColor(107, 33, 168); // purple-800
-      doc.text(`★ ${donazioneStr}`, colX[6] + 2, textY, { maxWidth: colWidths[6] - 4 });
+      doc.setTextColor(107, 33, 168);
+      doc.text(sanitizeWinAnsi(`* ${donazioneStr}`), colX[6] + 2, textY, { maxWidth: colWidths[6] - 4 });
     } else {
       doc.setFont('helvetica', 'normal');
       doc.setFontSize(6.5);
       doc.setTextColor(148, 163, 184);
-      doc.text('— Nessuna', colX[6] + 2, textY);
+      doc.text('- Nessuna', colX[6] + 2, textY);
     }
 
     currentY += rowHeight;

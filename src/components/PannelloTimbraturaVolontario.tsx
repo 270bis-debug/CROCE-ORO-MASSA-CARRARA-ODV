@@ -472,6 +472,12 @@ export const PannelloTimbraturaVolontario: React.FC<PannelloTimbraturaVolontario
       targetLezioneId = parts[1] || undefined;
     }
 
+    const effectiveCorsoId = targetCorsoId || attivitaRilevata.corsoId;
+    const effectiveLezioneId = targetLezioneId || attivitaRilevata.lezioneId;
+    const isSimultaneous = attivitaRilevata.tipo === 'entrambi' || Boolean(effectiveCorsoId && attivitaRilevata.turnoId);
+    const hasTurno = Boolean(attivitaRilevata.turnoId || (!isPuntoCorso && attivitaRilevata.tipo === 'turno') || isSimultaneous);
+    const hasCorso = Boolean(isPuntoCorso || effectiveCorsoId || attivitaRilevata.tipo === 'corso' || isSimultaneous);
+
     if (!timbraturaAttiva) {
       // Verifica "Cosa stai facendo?" prima di registrare la timbratura di entrata
       const attivitaEffettiva = (attivitaRilevata.trovata ? attivitaRilevata.titolo : attivitaManuale).trim();
@@ -480,7 +486,7 @@ export const PannelloTimbraturaVolontario: React.FC<PannelloTimbraturaVolontario
         return;
       }
 
-      if (!isPuntoCorso && attivitaRilevata.tipo === 'turno') {
+      if (hasTurno && !isSimultaneous && !isPuntoCorso) {
         const esitoFinestra = verificaFinestraTimbraturaTurno({
           tipo: 'entrata',
           volontarioId,
@@ -497,6 +503,10 @@ export const PannelloTimbraturaVolontario: React.FC<PannelloTimbraturaVolontario
       // -------------------------------------------------------------
       // 1. TIMBRATURA INGRESSO (con secondi HH:MM:SS)
       // -------------------------------------------------------------
+      const tipoTimb: 'turno' | 'corso' | 'manuale' = attivitaRilevata.trovata
+        ? (hasTurno ? 'turno' : 'corso')
+        : 'manuale';
+
       const nuovaTimb: TimbraturaVolontario = {
         id: `timb-${Date.now()}`,
         volontarioId,
@@ -510,12 +520,14 @@ export const PannelloTimbraturaVolontario: React.FC<PannelloTimbraturaVolontario
         sede: nomeLuogo,
         coordinateIngresso: { lat: posizioneGps.lat, lng: posizioneGps.lng },
         modificataDaAdmin: false,
-        corsoId: targetCorsoId,
-        lezioneId: targetLezioneId,
-        turnoId: !isPuntoCorso && attivitaRilevata.tipo === 'turno' ? attivitaRilevata.turnoId : undefined,
+        corsoId: effectiveCorsoId,
+        lezioneId: effectiveLezioneId,
+        turnoId: attivitaRilevata.turnoId,
         attivitaSvolta: attivitaEffettiva,
-        tipoAttivita: attivitaRilevata.trovata ? (attivitaRilevata.tipo || 'turno') : 'manuale',
-        note: isPuntoCorso
+        tipoAttivita: tipoTimb,
+        note: isSimultaneous
+          ? `Timbratura SIMULTANEA INGRESSO TURNO + CORSO FORMATIVO validata via GPS alle ${orarioCorrente} a ${analisiDistanza.distanzaMetri}m da ${nomeLuogo} (Raggio: ${raggioApplicato}m)`
+          : hasCorso && !hasTurno
           ? `Timbratura INGRESSO LEZIONE CORSO FORMATIVO validata via GPS alle ${orarioCorrente} a ${analisiDistanza.distanzaMetri}m da ${nomeLuogo} (Raggio autorizzato: ${raggioApplicato}m - GPS: ${posizioneGps.lat.toFixed(5)}, ${posizioneGps.lng.toFixed(5)})`
           : `Timbratura INGRESSO validata via GPS alle ${orarioCorrente} a ${analisiDistanza.distanzaMetri}m da ${nomeLuogo} (Raggio autorizzato: ${raggioApplicato}m - GPS: ${posizioneGps.lat.toFixed(5)}, ${posizioneGps.lng.toFixed(5)})`
       };
@@ -526,28 +538,33 @@ export const PannelloTimbraturaVolontario: React.FC<PannelloTimbraturaVolontario
         setAttivitaManuale('');
       }
 
-      // Notifica e aggiornamento registro presenze del corso oppure sincronizza Inizio Turno
-      if (isPuntoCorso && targetCorsoId && onTimbraPresenzaGPSCorso) {
+      // Notifica e aggiornamento registro presenze del corso E/O sincronizza Inizio Turno
+      if (hasCorso && effectiveCorsoId && onTimbraPresenzaGPSCorso) {
         onTimbraPresenzaGPSCorso(
-          targetCorsoId,
+          effectiveCorsoId,
           { id: volontarioId, nome: volontarioNome, qualifica },
           'entrata',
           posizioneGps,
           analisiDistanza.distanzaMetri,
-          targetLezioneId
+          effectiveLezioneId
         );
-      } else if (!isPuntoCorso && onTimbraturaServizioRegistrata) {
+      }
+      if ((hasTurno || !hasCorso) && onTimbraturaServizioRegistrata) {
         onTimbraturaServizioRegistrata('entrata', nuovaTimb);
       }
 
-      const msgConferma = isPuntoCorso
+      const msgConferma = isSimultaneous
+        ? `✅ Timbratura SIMULTANEA INGRESSO registrata per TURNO e CORSO alle ore ${orarioCorrente} presso ${nomeLuogo}! Attività: ${attivitaEffettiva}.`
+        : hasCorso
         ? `✅ Timbratura di INGRESSO CORSO registrata alle ore ${orarioCorrente} del ${dataCorrente} presso ${nomeLuogo}! Attività: ${attivitaEffettiva}.`
         : `✅ Timbratura di INGRESSO registrata alle ore ${orarioCorrente} del ${dataCorrente} presso ${nomeLuogo}! Attività: ${attivitaEffettiva}.`;
       setAvvisoSuccesso(msgConferma);
 
       if (onNotifica) {
         onNotifica(
-          isPuntoCorso
+          isSimultaneous
+            ? `🕒🎓 TIMBRATURA SIMULTANEA (TURNO + CORSO): ${volontarioNome} ha timbrato ingresso alle ${orarioCorrente} presso ${nomeLuogo} • ${attivitaEffettiva}`
+            : hasCorso
             ? `🎓 INIZIO LEZIONE CORSO: ${volontarioNome} ha timbrato l'ingresso alle ${orarioCorrente} presso ${nomeLuogo} (${attivitaEffettiva})`
             : `🕒 TIMBRATURA INGRESSO & INIZIO TURNO: ${volontarioNome} ha timbrato alle ${orarioCorrente} presso ${nomeLuogo} • Attività: ${attivitaEffettiva}`,
           'centrale'
@@ -563,11 +580,13 @@ export const PannelloTimbraturaVolontario: React.FC<PannelloTimbraturaVolontario
       const sedeEntrata = timbraturaAttiva.sede || nomeLuogo;
       const sedeDifferente = sedeEntrata.trim().toLowerCase() !== nomeLuogo.trim().toLowerCase();
 
-      const timbCorsoId = timbraturaAttiva.corsoId || targetCorsoId;
-      const timbLezioneId = timbraturaAttiva.lezioneId || targetLezioneId;
+      const timbCorsoId = timbraturaAttiva.corsoId || effectiveCorsoId;
+      const timbLezioneId = timbraturaAttiva.lezioneId || effectiveLezioneId;
+      const timbTurnoId = timbraturaAttiva.turnoId || attivitaRilevata.turnoId;
       const isCorsoAttivo = Boolean(timbCorsoId || isPuntoCorso || timbraturaAttiva.sede?.includes('Corso'));
+      const isTurnoAttivo = Boolean(timbTurnoId || !isCorsoAttivo || isSimultaneous);
 
-      if (!isCorsoAttivo) {
+      if (isTurnoAttivo && !isCorsoAttivo) {
         const esitoFinestraUscita = verificaFinestraTimbraturaTurno({
           tipo: 'uscita',
           volontarioId,
@@ -592,7 +611,9 @@ export const PannelloTimbraturaVolontario: React.FC<PannelloTimbraturaVolontario
         coordinateUscita: { lat: posizioneGps.lat, lng: posizioneGps.lng },
         oreTotali: oreCalc,
         oreEMinuti: durataStr,
-        note: isCorsoAttivo
+        note: isCorsoAttivo && isTurnoAttivo
+          ? `${timbraturaAttiva.note || ''} • USCITA SIMULTANEA TURNO + CORSO via GPS alle ${orarioCorrente} a ${analisiDistanza.distanzaMetri}m da ${nomeLuogo} [Durata: ${durataStr}]`
+          : isCorsoAttivo
           ? `${timbraturaAttiva.note || ''} • USCITA LEZIONE timbrata via GPS alle ${orarioCorrente} a ${analisiDistanza.distanzaMetri}m da ${nomeLuogo} [Presenza convalidata: ${durataStr}]`
           : `${timbraturaAttiva.note || ''} • USCITA timbrata via GPS alle ${orarioCorrente} a ${analisiDistanza.distanzaMetri}m da ${nomeLuogo}${sedeDifferente ? ` (Sede uscita diversa da entrata: ${sedeEntrata})` : ''} (Raggio ammesso: ${raggioApplicato}m) [Durata: ${durataStr}]`
       };
@@ -600,7 +621,7 @@ export const PannelloTimbraturaVolontario: React.FC<PannelloTimbraturaVolontario
       const aggiornate = timbrature.map((t) => (t.id === timbraturaAttiva.id ? timbChiusa : t));
       onSalvaTimbrature(aggiornate);
 
-      // Notifica e aggiornamento registro presenze corso con ore, minuti e secondi precisi oppure sincronizza Fine Turno
+      // Notifica e aggiornamento registro presenze corso E/O Fine Turno simultaneamente
       if (isCorsoAttivo && timbCorsoId && onTimbraPresenzaGPSCorso) {
         onTimbraPresenzaGPSCorso(
           timbCorsoId,
@@ -612,23 +633,27 @@ export const PannelloTimbraturaVolontario: React.FC<PannelloTimbraturaVolontario
         );
       }
 
+      if (isTurnoAttivo && onTimbraturaServizioRegistrata) {
+        onTimbraturaServizioRegistrata('uscita', timbChiusa);
+      }
+
       const infoSedeDiff = sedeDifferente ? ` (Entrata: ${sedeEntrata} ➔ Uscita: ${nomeLuogo})` : '';
-      const msgConferma = isCorsoAttivo
+      const msgConferma = isCorsoAttivo && isTurnoAttivo
+        ? `🏁🎓 Timbratura di USCITA SIMULTANEA TURNO + CORSO registrata alle ore ${orarioCorrente} presso ${nomeLuogo}! Durata: ${durataStr} (${oreCalc}h).`
+        : isCorsoAttivo
         ? `🏁 Timbratura di USCITA CORSO registrata alle ore ${orarioCorrente} presso ${nomeLuogo}! Presenza alla lezione convalidata: ${durataStr} (${oreCalc}h) di frequenza effettiva.`
         : `🏁 Timbratura di USCITA & FINE TURNO registrata alle ore ${orarioCorrente} presso ${nomeLuogo}${infoSedeDiff}! Servizio completato: ${durataStr} (${oreCalc} ore).`;
       setAvvisoSuccesso(msgConferma);
 
       if (onNotifica) {
         onNotifica(
-          isCorsoAttivo
+          isCorsoAttivo && isTurnoAttivo
+            ? `🏁🎓 FINE TURNO + FINE LEZIONE CORSO: ${volontarioNome} ha concluso alle ${orarioCorrente} presso ${nomeLuogo} (${durataStr})`
+            : isCorsoAttivo
             ? `🎓 FINE LEZIONE CORSO: ${volontarioNome} ha concluso la lezione alle ${orarioCorrente} presso ${nomeLuogo} (${durataStr})`
             : `🏁 TIMBRATURA USCITA & FINE TURNO: ${volontarioNome} ha terminato il servizio alle ${orarioCorrente} presso ${nomeLuogo}${infoSedeDiff} (${durataStr})`,
           'centrale'
         );
-      }
-
-      if (!isCorsoAttivo && onTimbraturaServizioRegistrata) {
-        onTimbraturaServizioRegistrata('uscita', timbChiusa);
       }
     }
   };
@@ -907,7 +932,11 @@ export const PannelloTimbraturaVolontario: React.FC<PannelloTimbraturaVolontario
               </span>
             ) : attivitaRilevata.trovata ? (
               <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 font-bold">
-                {attivitaRilevata.tipo === 'corso' ? '🎓 Compilato da Corso/Formazione' : '📅 Compilato da Turno in App'}
+                {attivitaRilevata.tipo === 'entrambi'
+                  ? '📅🎓 Timbratura Simultanea: Turno + Corso/Formazione'
+                  : attivitaRilevata.tipo === 'corso'
+                  ? '🎓 Compilato da Corso/Formazione'
+                  : '📅 Compilato da Turno in App'}
               </span>
             ) : (
               <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40 font-bold flex items-center gap-1">

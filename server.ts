@@ -399,6 +399,20 @@ export interface ServerState {
   codiciEliminati?: string[];
   magazzinoParti?: any[];
   magazzinoMezzi?: any[];
+  magazzinoVestiario?: any[];
+  attrezzatureOperative?: any[];
+  movimentiMagazzino?: any[];
+  corsiFormazione?: any[];
+  noteDiDebito?: any[];
+  tessereAssociative?: any[];
+  costiServizio?: any[];
+  catalogoMansioni?: any[];
+  categorieMansioni?: any[];
+  mansioniConfigUpdatedAt?: number;
+  nomiDatabase?: Record<string, string>;
+  nomiDatabaseUpdatedAt?: number;
+  mezziFlotta?: any[];
+  mezziFlottaUpdatedAt?: number;
   indirizziCollezionati?: any[];
   contatti?: any[];
   radioPtt?: RadioPttState;
@@ -707,6 +721,20 @@ function ensureCodiciEliminati(codici?: any[]): string[] {
   return arr.length > 300 ? ['CO-VET-ROSSO-2026-001', ...arr.slice(-299)] : arr;
 }
 
+const LEGACY_MOCK_CORSI_IDS_SERVER = new Set([
+  'corso-psv-01',
+  'corso-aut-01',
+  'corso-blsd-01',
+  'corso-pc0-01',
+  'corso-pcbase-01',
+  'corso-form-psv-01'
+]);
+
+function filterLegacyCorsiServer(list: any): any[] {
+  if (!Array.isArray(list)) return [];
+  return list.filter((c: any) => c && !LEGACY_MOCK_CORSI_IDS_SERVER.has(String(c.id || '')));
+}
+
 function filterDemoMagazzinoParti(list: any[]): any[] {
   if (!Array.isArray(list)) return [];
   return list.filter((item: any) => item && !DEMO_PARTI_IDS.has(String(item.id || '')));
@@ -846,6 +874,20 @@ function loadPersistedState(): ServerState {
           codiciEliminati: ensureCodiciEliminati(parsed.codiciEliminati),
           magazzinoParti: filterDemoMagazzinoParti(parsed.magazzinoParti),
           magazzinoMezzi: filterDemoMagazzinoMezzi(parsed.magazzinoMezzi),
+          magazzinoVestiario: Array.isArray(parsed.magazzinoVestiario) ? parsed.magazzinoVestiario : undefined,
+          attrezzatureOperative: Array.isArray(parsed.attrezzatureOperative) ? parsed.attrezzatureOperative : undefined,
+          movimentiMagazzino: Array.isArray(parsed.movimentiMagazzino) ? parsed.movimentiMagazzino : undefined,
+          corsiFormazione: filterLegacyCorsiServer(parsed.corsiFormazione),
+          noteDiDebito: Array.isArray(parsed.noteDiDebito) ? parsed.noteDiDebito : undefined,
+          tessereAssociative: Array.isArray(parsed.tessereAssociative) ? parsed.tessereAssociative : undefined,
+          costiServizio: Array.isArray(parsed.costiServizio) ? parsed.costiServizio : undefined,
+          catalogoMansioni: Array.isArray(parsed.catalogoMansioni) ? parsed.catalogoMansioni : undefined,
+          categorieMansioni: Array.isArray(parsed.categorieMansioni) ? parsed.categorieMansioni : undefined,
+          mansioniConfigUpdatedAt: typeof parsed.mansioniConfigUpdatedAt === 'number' ? parsed.mansioniConfigUpdatedAt : undefined,
+          nomiDatabase: parsed.nomiDatabase && typeof parsed.nomiDatabase === 'object' ? parsed.nomiDatabase : undefined,
+          nomiDatabaseUpdatedAt: typeof parsed.nomiDatabaseUpdatedAt === 'number' ? parsed.nomiDatabaseUpdatedAt : undefined,
+          mezziFlotta: Array.isArray(parsed.mezziFlotta) ? parsed.mezziFlotta : undefined,
+          mezziFlottaUpdatedAt: typeof parsed.mezziFlottaUpdatedAt === 'number' ? parsed.mezziFlottaUpdatedAt : undefined,
           indirizziCollezionati: Array.isArray(parsed.indirizziCollezionati) ? parsed.indirizziCollezionati : [],
           contatti: Array.isArray(parsed.contatti) ? parsed.contatti : undefined,
           radioPtt: {
@@ -968,6 +1010,7 @@ function loadPersistedState(): ServerState {
     codiciEliminati: ['CO-VET-ROSSO-2026-001'],
     magazzinoParti: [],
     magazzinoMezzi: [],
+    corsiFormazione: [],
     indirizziCollezionati: [],
     radioPtt: {
       enabled: false,
@@ -2231,21 +2274,67 @@ async function startServer() {
             const urg = missionPayload.urgenza || 'VERDE';
             const mezzo = missionPayload.mezzoAssegnato || 'T4606';
 
-            // Precompila al volontario i km iniziali del servizio con i km finali del servizio precedente effettuato con lo stesso mezzo
+            // Precompila al volontario i km iniziali del servizio con i km finali del servizio precedente (più recente) effettuato con lo stesso mezzo,
+            // oppure con i km iniziali inseriti dall'amministratore nel Database Mezzi alla prima uscita
             let kmInizialiPrecompilati = '';
-            const targetMezzo = (mezzo || '').trim().toLowerCase();
+            const extractCanonical = (raw?: string) =>
+              String(raw || '').split(/\s*[-–(]/)[0].trim().toLowerCase();
+            const targetMezzo = extractCanonical(mezzo);
+            const parseServiceTime = (s: any): number => {
+              if (typeof s?.timestamp === 'number' && s.timestamp > 0) return s.timestamp;
+              const str = String(s?.data || '').trim();
+              const itMatch = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:.*?\b(\d{1,2})[:.](\d{2}))?/);
+              if (itMatch) {
+                return new Date(
+                  Number(itMatch[3]),
+                  Number(itMatch[2]) - 1,
+                  Number(itMatch[1]),
+                  Number(itMatch[4] || 0),
+                  Number(itMatch[5] || 0)
+                ).getTime();
+              }
+              const isoMatch = str.match(/^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{1,2}):(\d{2}))?/);
+              if (isoMatch) {
+                return new Date(
+                  Number(isoMatch[1]),
+                  Number(isoMatch[2]) - 1,
+                  Number(isoMatch[3]),
+                  Number(isoMatch[4] || 0),
+                  Number(isoMatch[5] || 0)
+                ).getTime();
+              }
+              return 0;
+            };
+            const matchMezzo = (candidate?: string) => {
+              const c = extractCanonical(candidate);
+              if (!c || !targetMezzo) return false;
+              return c === targetMezzo || c.includes(targetMezzo) || targetMezzo.includes(c);
+            };
             if (targetMezzo && Array.isArray(state.serviziArchivio)) {
-              const prevServizio = state.serviziArchivio.find(s => {
-                if (!s.mezzo || !s.kmFine || s.kmFine <= 0) return false;
-                const m = s.mezzo.trim().toLowerCase();
-                return m === targetMezzo || m.includes(targetMezzo) || targetMezzo.includes(m);
-              });
-              if (prevServizio && prevServizio.kmFine > 0) {
-                kmInizialiPrecompilati = String(prevServizio.kmFine);
+              const matchingServices = state.serviziArchivio
+                .map((s: any, idx: number) => ({ s, idx, ts: parseServiceTime(s) }))
+                .filter(({ s }: any) => s && s.kmFine && Number(s.kmFine) > 0 && matchMezzo(s.mezzo))
+                .sort((a: any, b: any) => (b.ts - a.ts) || (a.idx - b.idx));
+              if (matchingServices.length > 0 && Number(matchingServices[0].s.kmFine) > 0) {
+                kmInizialiPrecompilati = String(matchingServices[0].s.kmFine);
+              }
+            }
+            if (!kmInizialiPrecompilati && targetMezzo && Array.isArray((state as any).mezziFlotta)) {
+              const mezzoDb = (state as any).mezziFlotta.find((m: any) => matchMezzo(m?.sigla));
+              if (
+                mezzoDb &&
+                typeof mezzoDb.chilometraggioAttuale === 'number' &&
+                Number.isFinite(mezzoDb.chilometraggioAttuale) &&
+                mezzoDb.chilometraggioAttuale >= 0
+              ) {
+                kmInizialiPrecompilati = String(mezzoDb.chilometraggioAttuale);
               }
             }
 
-            const kmInizioEffettivo = missionPayload.kmInizio || kmInizialiPrecompilati;
+            const kmInizioEffettivo =
+              missionPayload.kmInizio !== undefined && String(missionPayload.kmInizio).trim() !== ''
+                ? String(missionPayload.kmInizio).trim()
+                : kmInizialiPrecompilati;
 
             const isAutonomo = Boolean(missionPayload.autonomoVolontario);
 
@@ -4490,6 +4579,147 @@ async function startServer() {
                 type: 'CONTATTI_UPDATED',
                 contatti: state.contatti
               });
+            }
+            break;
+          }
+
+          case 'UPDATE_CORSI': {
+            const list = filterLegacyCorsiServer(Array.isArray(data?.corsiFormazione) ? data.corsiFormazione : []);
+            state.corsiFormazione = list;
+            persistState();
+            broadcast({
+              type: 'CORSI_UPDATED',
+              corsiFormazione: state.corsiFormazione
+            });
+            break;
+          }
+
+          case 'UPDATE_NOTE_DEBITO': {
+            if (Array.isArray(data?.noteDiDebito)) {
+              state.noteDiDebito = data.noteDiDebito;
+              persistState();
+              broadcast({
+                type: 'NOTE_DEBITO_UPDATED',
+                noteDiDebito: state.noteDiDebito
+              });
+            }
+            break;
+          }
+
+          case 'UPDATE_TESSERE': {
+            if (Array.isArray(data?.tessereAssociative)) {
+              state.tessereAssociative = data.tessereAssociative;
+              persistState();
+              broadcast({
+                type: 'TESSERE_UPDATED',
+                tessereAssociative: state.tessereAssociative
+              });
+            }
+            break;
+          }
+
+          case 'UPDATE_COSTI_SERVIZIO': {
+            if (Array.isArray(data?.costiServizio)) {
+              state.costiServizio = data.costiServizio;
+              persistState();
+              broadcast({
+                type: 'COSTI_SERVIZIO_UPDATED',
+                costiServizio: state.costiServizio
+              });
+            }
+            break;
+          }
+
+          case 'UPDATE_MAGAZZINO_VESTIARIO': {
+            if (Array.isArray(data?.magazzinoVestiario)) {
+              state.magazzinoVestiario = data.magazzinoVestiario;
+              persistState();
+              broadcast({
+                type: 'MAGAZZINO_VESTIARIO_UPDATED',
+                magazzinoVestiario: state.magazzinoVestiario
+              });
+            }
+            break;
+          }
+
+          case 'UPDATE_ATTREZZATURE_MAGAZZINO': {
+            if (Array.isArray(data?.attrezzature)) {
+              state.attrezzatureOperative = data.attrezzature;
+              persistState();
+              broadcast({
+                type: 'ATTREZZATURE_MAGAZZINO_UPDATED',
+                attrezzature: state.attrezzatureOperative
+              });
+            }
+            break;
+          }
+
+          case 'UPDATE_MOVIMENTI_MAGAZZINO': {
+            if (Array.isArray(data?.movimenti)) {
+              state.movimentiMagazzino = data.movimenti;
+              persistState();
+              broadcast({
+                type: 'MOVIMENTI_MAGAZZINO_UPDATED',
+                movimenti: state.movimentiMagazzino
+              });
+            }
+            break;
+          }
+
+          case 'UPDATE_MANSIONI_CONFIG': {
+            const incomingTs = typeof data?.updatedAt === 'number' && Number.isFinite(data.updatedAt) ? data.updatedAt : Date.now();
+            const currTs = typeof state.mansioniConfigUpdatedAt === 'number' ? state.mansioniConfigUpdatedAt : 0;
+            if (currTs === 0 || incomingTs >= currTs) {
+              if (Array.isArray(data?.catalogoMansioni)) {
+                state.catalogoMansioni = data.catalogoMansioni;
+              }
+              if (Array.isArray(data?.categorieMansioni)) {
+                state.categorieMansioni = data.categorieMansioni;
+              }
+              state.mansioniConfigUpdatedAt = incomingTs;
+              persistState();
+              broadcast({
+                type: 'MANSIONI_CONFIG_UPDATED',
+                catalogoMansioni: state.catalogoMansioni,
+                categorieMansioni: state.categorieMansioni,
+                updatedAt: state.mansioniConfigUpdatedAt
+              });
+            }
+            break;
+          }
+
+          case 'UPDATE_NOMI_DATABASE': {
+            if (data?.nomiDatabase && typeof data.nomiDatabase === 'object' && !Array.isArray(data.nomiDatabase)) {
+              const incomingTs = typeof data?.updatedAt === 'number' && Number.isFinite(data.updatedAt) ? data.updatedAt : Date.now();
+              const currTs = typeof state.nomiDatabaseUpdatedAt === 'number' ? state.nomiDatabaseUpdatedAt : 0;
+              if (currTs === 0 || incomingTs >= currTs) {
+                state.nomiDatabase = data.nomiDatabase;
+                state.nomiDatabaseUpdatedAt = incomingTs;
+                persistState();
+                broadcast({
+                  type: 'NOMI_DATABASE_UPDATED',
+                  nomiDatabase: state.nomiDatabase,
+                  updatedAt: state.nomiDatabaseUpdatedAt
+                });
+              }
+            }
+            break;
+          }
+
+          case 'UPDATE_MEZZI_FLOTTA': {
+            if (Array.isArray(data?.mezziFlotta)) {
+              const incomingTs = typeof data?.updatedAt === 'number' && Number.isFinite(data.updatedAt) ? data.updatedAt : Date.now();
+              const currTs = typeof state.mezziFlottaUpdatedAt === 'number' ? state.mezziFlottaUpdatedAt : 0;
+              if (currTs === 0 || incomingTs >= currTs) {
+                state.mezziFlotta = data.mezziFlotta;
+                state.mezziFlottaUpdatedAt = incomingTs;
+                persistState();
+                broadcast({
+                  type: 'MEZZI_FLOTTA_UPDATED',
+                  mezziFlotta: state.mezziFlotta,
+                  updatedAt: state.mezziFlottaUpdatedAt
+                });
+              }
             }
             break;
           }
@@ -8723,6 +8953,139 @@ async function startServer() {
     } catch (err: any) {
       console.error('[WhatsApp API] Errore interno:', err);
       return res.status(500).json({ success: false, error: err?.message || 'Errore di connessione a Meta Graph API' });
+    }
+  });
+
+  // ENDPOINT: Notifica immediata (Email + Radio) a Presidente e Tesoriere per forzatura / modifica cauzione divisa o rimborso
+  app.post('/api/notifica-forzatura-cauzione', async (req, res) => {
+    try {
+      const {
+        operatoreNome = 'Operatore',
+        volontarioNome = 'Volontario',
+        volontarioMatricola = '',
+        tipoOperazione = 'Modifica / Esenzione Cauzione Vestiario',
+        dettagli = '',
+        dataOra = formatDateTimeItaly()
+      } = req.body || {};
+
+      const MITTENTE_UFFICIALE = 'CROCE ORO MASSA CARRARA OdV - Sistemi Automatizzati';
+      const EMAIL_MITTENTE_UFFICIALE = 'sistemiautomatizzati@croceoro.org';
+
+      const emailDirettivo = (state.volontari || [])
+        .filter((v: any) => {
+          const carica = String(v?.caricaConsiglioDirettivo || '').toLowerCase();
+          return (carica.includes('presidente') || carica.includes('tesoriere')) && typeof v?.email === 'string' && v.email.includes('@');
+        })
+        .map((v: any) => String(v.email).trim().toLowerCase());
+
+      const destinatari = Array.from(new Set([
+        'presidenza@croceoro.org',
+        'tesoreria@croceoro.org',
+        ...emailDirettivo
+      ]));
+
+      const smtpHost = process.env.SMTP_HOST || 'mail.tophost.it';
+      const smtpPass = process.env.SMTP_PASS || 'Applicazione26!';
+      const smtpPort = Number(process.env.SMTP_PORT) || 587;
+      const isSecure = smtpPort === 465;
+
+      const candidateUsers = Array.from(new Set([
+        'croceoro.org10175',
+        'croceoro.org',
+        'sistemiautomatizzati@croceoro.org',
+        process.env.SMTP_USER
+      ].filter(Boolean) as string[]));
+
+      let transporter: any = null;
+      for (const candidate of candidateUsers) {
+        try {
+          const t = nodemailer.createTransport({
+            host: smtpHost,
+            port: smtpPort,
+            secure: isSecure,
+            auth: { user: candidate, pass: smtpPass },
+            tls: { rejectUnauthorized: false }
+          });
+          await t.verify();
+          transporter = t;
+          break;
+        } catch {}
+      }
+
+      const oggetto = `[ALERT CAUZIONE VESTIARIO] ${tipoOperazione} — ${volontarioNome}`;
+      const testoEmail =
+        `Spett.le Presidenza e Tesoreria Croce Oro Massa Carrara OdV,\n\n` +
+        `È stata eseguita una forzatura / variazione sugli importi di cauzione o rimborso DPI:\n\n` +
+        `• Operatore: ${operatoreNome}\n` +
+        `• Account Volontario: ${volontarioNome}${volontarioMatricola ? ` (${volontarioMatricola})` : ''}\n` +
+        `• Operazione: ${tipoOperazione}\n` +
+        `• Dettaglio Variazione:\n${dettagli || 'Nessun dettaglio aggiuntivo'}\n\n` +
+        `• Data e Ora: ${dataOra}\n\n` +
+        `Croce Oro Massa Carrara OdV - Sistemi Automatizzati`;
+
+      const htmlEmail = `
+        <div style="font-family: Arial, sans-serif; color: #1e293b; max-width: 650px; margin: 0 auto; border: 1px solid #e2e8f0; border-radius: 12px; overflow: hidden; background-color: #ffffff;">
+          <div style="background-color: #1d1a60; color: #fbbf24; padding: 20px; text-align: center;">
+            <h1 style="margin: 0; font-size: 18px; font-weight: 800; color: #fbbf24;">CROCE ORO MASSA CARRARA OdV</h1>
+            <p style="margin: 4px 0 0; font-size: 12px; color: #e2e8f0;">Segnalazione Tesoreria & Presidenza &bull; Gestione Cauzioni DPI</p>
+          </div>
+          <div style="padding: 22px; font-size: 13px;">
+            <div style="display: inline-block; background-color: #fef3c7; border: 1px solid #f59e0b; border-radius: 6px; padding: 4px 10px; font-size: 12px; font-weight: bold; color: #92400e; margin-bottom: 12px;">
+              ⚠️ FORZATURA / MODIFICA IMPORTO CAUZIONE VESTIARIO
+            </div>
+            <p style="margin: 6px 0;"><strong>Operatore che ha forzato la modifica:</strong> ${operatoreNome}</p>
+            <p style="margin: 6px 0;"><strong>Volontario interessato:</strong> ${volontarioNome}${volontarioMatricola ? ` (${volontarioMatricola})` : ''}</p>
+            <p style="margin: 6px 0;"><strong>Operazione:</strong> ${tipoOperazione}</p>
+            <p style="margin: 6px 0;"><strong>Data e Ora:</strong> ${dataOra}</p>
+            <div style="margin-top: 12px; padding: 10px; background-color: #f8fafc; border-left: 4px solid #f59e0b; border-radius: 6px; font-family: monospace; font-size: 12px; white-space: pre-wrap;">${dettagli || 'Variazione importo registrata.'}</div>
+          </div>
+        </div>
+      `;
+
+      let speditoViaSmtp = false;
+      if (transporter) {
+        try {
+          await transporter.sendMail({
+            from: { name: MITTENTE_UFFICIALE, address: EMAIL_MITTENTE_UFFICIALE },
+            sender: EMAIL_MITTENTE_UFFICIALE,
+            replyTo: EMAIL_MITTENTE_UFFICIALE,
+            to: destinatari,
+            subject: oggetto,
+            text: testoEmail,
+            html: htmlEmail
+          });
+          speditoViaSmtp = true;
+        } catch (mailErr) {
+          console.error('[Notifica Forzatura Cauzione] Errore SMTP:', mailErr);
+        }
+      }
+
+      const notifRadio: RadioNotification = {
+        id: generateUniqueNotifId(),
+        orario: formatTimeItaly(),
+        testo: `⚠️ FORZATURA CAUZIONE VESTIARIO (Presidente & Tesoriere): ${operatoreNome} ha modificato gli importi precaricati per ${volontarioNome}. ${dettagli}`,
+        tipo: 'allarme'
+      };
+      state.notifiche.push(notifRadio);
+      if (state.notifiche.length > 50) state.notifiche.shift();
+      persistState();
+      broadcast({
+        type: 'NOTIFICATION_BROADCAST',
+        notification: notifRadio
+      });
+      broadcast({
+        type: 'FORZATURA_CAUZIONE_ALERT',
+        operatoreNome,
+        volontarioNome,
+        tipoOperazione,
+        dettagli,
+        dataOra,
+        notification: notifRadio
+      });
+
+      return res.json({ success: true, speditoViaSmtp, destinatari });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err?.message || 'Errore invio notifica cauzione' });
     }
   });
 

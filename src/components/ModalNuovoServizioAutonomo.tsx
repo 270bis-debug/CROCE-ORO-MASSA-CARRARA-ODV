@@ -23,6 +23,7 @@ export interface DatiNuovoServizioAutonomo {
   mezzo: string;
   urgenza: 'ROSSO' | 'GIALLO' | 'VERDE' | 'BIANCO';
   note: string;
+  kmInizio?: string;
 }
 
 interface ModalNuovoServizioAutonomoProps {
@@ -32,6 +33,7 @@ interface ModalNuovoServizioAutonomoProps {
   volontarioId?: string;
   mezzoPredefinito?: string;
   flottaMezzi: string[];
+  getKmInizialiSuggeriti?: (mezzo: string) => number | null;
   onConferma: (dati: DatiNuovoServizioAutonomo) => void;
 }
 
@@ -50,6 +52,7 @@ export const ModalNuovoServizioAutonomo: React.FC<ModalNuovoServizioAutonomoProp
   volontarioNome = 'Volontario',
   mezzoPredefinito,
   flottaMezzi,
+  getKmInizialiSuggeriti,
   onConferma
 }) => {
   const [ambito, setAmbito] = useState<'SERVIZIO D\'ISTITUTO' | 'PROTEZIONE CIVILE'>('SERVIZIO D\'ISTITUTO');
@@ -57,6 +60,8 @@ export const ModalNuovoServizioAutonomo: React.FC<ModalNuovoServizioAutonomoProp
   const [tipologiaCustom, setTipologiaCustom] = useState<string>('');
   const [luogo, setLuogo] = useState<string>('Territorio Comunale Massa-Carrara');
   const [mezzo, setMezzo] = useState<string>(mezzoPredefinito || flottaMezzi[0] || 'T4606');
+  const [kmInizio, setKmInizio] = useState<string>('');
+  const [kmInizioModificato, setKmInizioModificato] = useState<boolean>(false);
   const [urgenza, setUrgenza] = useState<'VERDE' | 'BIANCO' | 'GIALLO'>('VERDE');
   const [note, setNote] = useState<string>('');
 
@@ -65,6 +70,17 @@ export const ModalNuovoServizioAutonomo: React.FC<ModalNuovoServizioAutonomoProp
       setMezzo(mezzoPredefinito);
     }
   }, [mezzoPredefinito]);
+
+  useEffect(() => {
+    if (!isOpen) {
+      setKmInizioModificato(false);
+      return;
+    }
+    if (!kmInizioModificato) {
+      const suggeriti = getKmInizialiSuggeriti?.(mezzo);
+      setKmInizio(suggeriti !== null && suggeriti !== undefined ? String(suggeriti) : '');
+    }
+  }, [isOpen, mezzo, kmInizioModificato, getKmInizialiSuggeriti]);
 
   // Al cambio di ambito, preimposta la prima tipologia
   useEffect(() => {
@@ -89,7 +105,8 @@ export const ModalNuovoServizioAutonomo: React.FC<ModalNuovoServizioAutonomoProp
       luogo: luogoFinale,
       mezzo: mezzo || mezzoPredefinito || 'T4606',
       urgenza,
-      note: note.trim()
+      note: note.trim(),
+      kmInizio: kmInizio.trim() || undefined
     });
     onClose();
   };
@@ -248,15 +265,18 @@ export const ModalNuovoServizioAutonomo: React.FC<ModalNuovoServizioAutonomoProp
               </div>
             </div>
 
-            {/* MEZZO UTILIZZATO & URGENZA */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            {/* MEZZO UTILIZZATO, KM INIZIALI & URGENZA */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <div>
                 <label className="block text-slate-300 font-bold uppercase text-[11px] mb-1">
                   Mezzo Operativo
                 </label>
                 <select
                   value={mezzo}
-                  onChange={(e) => setMezzo(e.target.value)}
+                  onChange={(e) => {
+                    setMezzo(e.target.value);
+                    setKmInizioModificato(false);
+                  }}
                   className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white font-mono font-bold text-xs cursor-pointer"
                 >
                   {[...flottaMezzi].sort((a, b) => a.localeCompare(b, 'it', { numeric: true, sensitivity: 'base' })).map((m) => (
@@ -265,6 +285,24 @@ export const ModalNuovoServizioAutonomo: React.FC<ModalNuovoServizioAutonomoProp
                     </option>
                   ))}
                 </select>
+              </div>
+
+              <div>
+                <label className="block text-slate-300 font-bold uppercase text-[11px] mb-1">
+                  KM Partenza (Auto / Modif.)
+                </label>
+                <input
+                  type="number"
+                  min={0}
+                  step="1"
+                  value={kmInizio}
+                  onChange={(e) => {
+                    setKmInizio(e.target.value);
+                    setKmInizioModificato(true);
+                  }}
+                  placeholder="Auto da mezzo..."
+                  className="w-full p-2.5 rounded-xl bg-slate-950 border border-emerald-500/40 text-emerald-300 font-mono font-bold text-xs focus:ring-1 focus:ring-emerald-400 focus:outline-none"
+                />
               </div>
 
               <div>

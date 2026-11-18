@@ -33,6 +33,7 @@ import { ContattoEsterno, TipoContattoEsterno, IndirizzoCollezionato } from '../
 import { inviaNotificaModificaAdmin } from '../../utils/notificaModificaAdmin';
 import { MappaIndirizzoCollezionato } from './MappaIndirizzoCollezionato';
 import { formatISODateItaly } from '../../utils/italianTime';
+import { useTitoloDatabase } from '../../hooks/useNomiDatabase';
 
 interface SezioneContattiProps {
   contatti: ContattoEsterno[];
@@ -62,6 +63,7 @@ export const SezioneContatti: React.FC<SezioneContattiProps> = ({
   onNotificaRadio
 }) => {
   // Filtro tipologia (include sottosezione Indirizzi Collezionati)
+  const titoloDbContatti = useTitoloDatabase('contatti', 'Contatti Fornitori / Clienti / Ecc.');
   const [filtroTipo, setFiltroTipo] = useState<'tutti' | TipoContattoEsterno | 'indirizzi_collezionati'>('tutti');
   const [ricerca, setRicerca] = useState('');
 
@@ -113,7 +115,7 @@ export const SezioneContatti: React.FC<SezioneContattiProps> = ({
             <ShieldAlert className="w-8 h-8 text-red-400" />
           </div>
           <h2 className="text-xl font-black text-white uppercase tracking-wider">
-            Accesso Riservato • Contatti Fornitori / Clienti / Ecc.
+            Accesso Riservato • {titoloDbContatti}
           </h2>
           <p className="text-sm text-red-200 max-w-lg mx-auto leading-relaxed">
             A questa macrocategoria possono accedere <strong>solo ed esclusivamente gli utenti con autorizzazione concessa dall'Amministratore</strong> dell'associazione.
@@ -603,7 +605,7 @@ export const SezioneContatti: React.FC<SezioneContattiProps> = ({
               </span>
             </div>
             <h2 className="text-lg sm:text-2xl font-black text-white uppercase tracking-wider mt-0.5">
-              Contatti Fornitori / Clienti / Ecc.
+              {titoloDbContatti}
             </h2>
             <p className="text-xs text-slate-300 leading-snug">
               Anagrafiche complete fornitori DPI e ricambi, officine manutenzioni, debitori note di debito, donatori da interventi e indirizzi collezionati con mappa GPS.

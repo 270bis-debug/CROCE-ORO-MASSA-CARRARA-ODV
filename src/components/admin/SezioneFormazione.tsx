@@ -38,6 +38,7 @@ import {
   Mail,
   Send
 } from 'lucide-react';
+import { useTitoloDatabase } from '../../hooks/useNomiDatabase';
 import {
   CorsoFormazione,
   PartecipanteCorso,
@@ -148,8 +149,8 @@ export const SezioneFormazione: React.FC<SezioneFormazioneProps> = ({
   const [modaleCorsoAperta, setModaleCorsoAperta] = useState(false);
   const [corsoInModifica, setCorsoInModifica] = useState<CorsoFormazione | null>(null);
   const [formCodice, setFormCodice] = useState(`CORSO-${getCurrentYearItaly()}-${String(corsi.length + 1).padStart(2, '0')}`);
-  const [formTitolo, setFormTitolo] = useState('TUTELA, SOCCORSO E BENESSERE ANIMALE');
-  const [formSottotitolo, setFormSottotitolo] = useState('“Dal Soccorso alla tutela degli animali”');
+  const [formTitolo, setFormTitolo] = useState('');
+  const [formSottotitolo, setFormSottotitolo] = useState('');
   const [formTipologia, setFormTipologia] = useState<TipologiaCorso>('Seminario PSV');
   const [formDescrizione, setFormDescrizione] = useState('');
   const [formDocente, setFormDocente] = useState('');
@@ -479,8 +480,8 @@ export const SezioneFormazione: React.FC<SezioneFormazioneProps> = ({
     if (corsoPerIscrizioni.mansionePrerequisito && corsoPerIscrizioni.mansionePrerequisito.trim()) {
       const haPrerequisito = volontarioHaMansione(vol, corsoPerIscrizioni.mansionePrerequisito);
       if (!haPrerequisito) {
-        alert(
-          `⚠️ ACCESSO NEGATO AL CORSO\n\nPer accedere a "${corsoPerIscrizioni.titolo}" è richiesta la mansione obbligatoria:\n"${corsoPerIscrizioni.mansionePrerequisito}"\n\nIl volontario ${vol.nome} ${vol.cognome} non possiede questa mansione (né per via diretta né gerarchica).`
+        mostraAvviso(
+          `Accesso negato: per "${corsoPerIscrizioni.titolo}" è richiesta la mansione "${corsoPerIscrizioni.mansionePrerequisito}". ${vol.nome} ${vol.cognome} non la possiede.`
         );
         return;
       }
@@ -488,7 +489,7 @@ export const SezioneFormazione: React.FC<SezioneFormazioneProps> = ({
 
     // Verifica se già iscritto
     if (corsoPerIscrizioni.iscritti.some((i) => i.volontarioId === vol.id)) {
-      alert('Il volontario risulta già iscritto a questo corso.');
+      mostraAvviso('Il volontario risulta già iscritto a questo corso.');
       return;
     }
 
@@ -758,7 +759,7 @@ export const SezioneFormazione: React.FC<SezioneFormazioneProps> = ({
                 Macro Categoria 5
               </span>
               <h2 className="text-xl font-black text-white uppercase tracking-wide">
-                Database Formazione, Corsi & Brevetti
+                {useTitoloDatabase('formazione', 'Database Formazione, Corsi & Brevetti')}
               </h2>
             </div>
             <p className="text-xs text-slate-300 mt-0.5">

@@ -1,21 +1,16 @@
 import { jsPDF } from 'jspdf';
 import { Volontario } from '../components/DatabaseVolontariModal';
-import { calcolaStatoScadenzaPatente } from '../data/vestiarioDocumenti';
+import { calcolaCauzioneTotale, calcolaStatoScadenzaPatente } from '../data/vestiarioDocumenti';
 
 import {
   disegnaHeaderIstituzionale,
-  disegnaFooterIstituzionale
+  disegnaFooterIstituzionale,
+  sanitizeWinAnsi
 } from './pdfInstitutionalLayout';
 import { formatDateItaly, formatISODateItaly } from './italianTime';
 
-/**
- * Pulisce e sanitizza stringhe per la stampa jsPDF
- */
 function pulisciTesto(str?: string): string {
-  if (!str) return '';
-  return str
-    .replace(/[^\x20-\x7E\xA0-\xFF]/g, ' ')
-    .trim();
+  return sanitizeWinAnsi(str);
 }
 
 /**
@@ -168,17 +163,17 @@ export function generaSchedaVestiarioPDF(volontario: Volontario): jsPDF {
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(7.2);
   doc.setTextColor(29, 26, 96);
-  doc.text('• DOCUMENTO D\'IDENTITÀ', colDoc1, currentY + 10.5);
+  doc.text('- DOCUMENTO D\'IDENTITA', colDoc1, currentY + 10.5);
 
   doc.setFont('helvetica', 'normal');
   doc.setTextColor(51, 65, 85);
   if (docId?.numero) {
-    doc.text(`Tipo: ${pulisciTesto(docId.tipo || 'Carta d\'Identità')} | N° ${pulisciTesto(docId.numero)}`, colDoc1 + 3, currentY + 15.5);
+    doc.text(`Tipo: ${pulisciTesto(docId.tipo || 'Carta d\'Identita')} | N. ${pulisciTesto(docId.numero)}`, colDoc1 + 3, currentY + 15.5, { maxWidth: docColW - 6 });
     doc.text(`Data Scadenza: ${pulisciTesto(docId.dataScadenza || 'N/D')}`, colDoc1 + 3, currentY + 20.5);
   } else {
     doc.setFont('helvetica', 'italic');
     doc.setTextColor(148, 163, 184);
-    doc.text('Nessun documento d\'identità inserito a sistema', colDoc1 + 3, currentY + 15.5);
+    doc.text('Nessun documento d\'identita inserito a sistema', colDoc1 + 3, currentY + 15.5);
   }
 
   // Colonna 2: Patente di Guida
@@ -187,22 +182,22 @@ export function generaSchedaVestiarioPDF(volontario: Volontario): jsPDF {
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(7.2);
   doc.setTextColor(29, 26, 96);
-  doc.text('• PATENTE DI GUIDA', colDoc2, currentY + 10.5);
+  doc.text('- PATENTE DI GUIDA', colDoc2, currentY + 10.5);
 
   doc.setFont('helvetica', 'normal');
   doc.setTextColor(51, 65, 85);
   if (pat?.inPossesso && pat?.numero) {
-    doc.text(`Cat: ${pulisciTesto(pat.categoria || 'B')} | N° ${pulisciTesto(pat.numero)}`, colDoc2 + 3, currentY + 15.5);
+    doc.text(`Cat: ${pulisciTesto(pat.categoria || 'B')} | N. ${pulisciTesto(pat.numero)}`, colDoc2 + 3, currentY + 15.5, { maxWidth: docColW - 6 });
     doc.text(`Scadenza: ${pulisciTesto(pat.dataScadenza || 'N/D')}`, colDoc2 + 3, currentY + 20.5);
 
     // Alert Scadenza nel PDF se scade entro 7 giorni o già scaduta
     if (statoPatente && (statoPatente.inScadenza7Giorni || statoPatente.scaduta)) {
-      doc.setFillColor(239, 68, 68); // rosso
+      doc.setFillColor(239, 68, 68);
       doc.roundedRect(colDoc2 + 45, currentY + 17, 40, 4.5, 1, 1, 'F');
       doc.setFont('helvetica', 'bold');
-      doc.setFontSize(5.8);
+      doc.setFontSize(5.6);
       doc.setTextColor(255, 255, 255);
-      doc.text(`⚠️ ${statoPatente.label.toUpperCase()}`, colDoc2 + 65, currentY + 20.2, { align: 'center' });
+      doc.text(sanitizeWinAnsi(`! ${statoPatente.label.toUpperCase()}`), colDoc2 + 65, currentY + 20.2, { align: 'center', maxWidth: 38 });
     }
   } else {
     doc.setFont('helvetica', 'italic');
@@ -244,7 +239,7 @@ export function generaSchedaVestiarioPDF(volontario: Volontario): jsPDF {
     doc.setFontSize(6.5);
     doc.setTextColor(133, 77, 14); // amber-900
     const dataUltima = vestiario?.dataUltimoAggiornamento ? ` (${vestiario.dataUltimoAggiornamento})` : '';
-    doc.text(`★ NOTA EVIDENZIAZIONE: I capi evidenziati in GIALLO rappresentano la consegna effettuata in questo aggiornamento${dataUltima}.`, margin + 3, currentY + 3.8);
+    doc.text(sanitizeWinAnsi(`* NOTA EVIDENZIAZIONE: I capi evidenziati in GIALLO rappresentano la consegna effettuata in questo aggiornamento${dataUltima}.`), margin + 3, currentY + 3.8, { maxWidth: contentWidth - 6 });
     currentY += 5.5;
   }
 
@@ -298,9 +293,22 @@ export function generaSchedaVestiarioPDF(volontario: Volontario): jsPDF {
     { id: 3, consegnato: false }
   ];
 
+  const formatTagCauzione = (
+    capo: { consegnato?: boolean; cauzioneApplicata?: number; esenteCauzione?: boolean } | undefined,
+    defaultCauzione: number
+  ): string => {
+    if (capo?.esenteCauzione) return ' (Esente cauzione)';
+    const val =
+      typeof capo?.cauzioneApplicata === 'number' && !Number.isNaN(capo.cauzioneApplicata)
+        ? Math.max(0, capo.cauzioneApplicata)
+        : defaultCauzione;
+    if (val <= 0) return '';
+    return ` (Cauzione EUR ${val.toFixed(2)} ${capo?.consegnato ? 'versata' : 'prevista'})`;
+  };
+
   tshirts.forEach((p, idx) => {
     righeVestiario.push({
-      nome: `T-shirt Istituzionale Croce Oro (Pezzo #${idx + 1} di 3)`,
+      nome: `T-shirt Istituzionale Croce Oro (Pezzo #${idx + 1} di 3)${formatTagCauzione(p, 0)}`,
       consegnato: !!p.consegnato,
       taglia: p.taglia || '—',
       qta: p.consegnato ? '1 pz' : '0',
@@ -311,7 +319,7 @@ export function generaSchedaVestiarioPDF(volontario: Volontario): jsPDF {
 
   // Felpa
   righeVestiario.push({
-    nome: 'Felpa con Zip & Loghi Istituzionali Croce Oro',
+    nome: `Felpa con Zip & Loghi Istituzionali Croce Oro${formatTagCauzione(vestiario?.felpa, 0)}`,
     consegnato: !!vestiario?.felpa?.consegnato,
     taglia: vestiario?.felpa?.taglia || '—',
     qta: vestiario?.felpa?.consegnato ? '1 pz' : '0',
@@ -321,7 +329,7 @@ export function generaSchedaVestiarioPDF(volontario: Volontario): jsPDF {
 
   // Pile
   righeVestiario.push({
-    nome: 'Pile Tecnico Alta Visibilità / Termico',
+    nome: `Pile Tecnico Alta Visibilità / Termico${formatTagCauzione(vestiario?.pile, 0)}`,
     consegnato: !!vestiario?.pile?.consegnato,
     taglia: vestiario?.pile?.taglia || '—',
     qta: vestiario?.pile?.consegnato ? '1 pz' : '0',
@@ -329,10 +337,10 @@ export function generaSchedaVestiarioPDF(volontario: Volontario): jsPDF {
     isUltimaConsegna: !!vestiario?.pile?.isUltimaConsegna
   });
 
-  // Pantaloni (Cauzione € 30,00)
+  // Pantaloni (Cauzione default € 30,00 o personalizzata / esente)
   const pantConsegnato = !!vestiario?.pantaloni?.consegnato;
   righeVestiario.push({
-    nome: `Pantaloni Operativi Alta Visibilità (Cauzione € 30,00 ${pantConsegnato ? 'versata' : 'da versare'})`,
+    nome: `Pantaloni Operativi Alta Visibilità${formatTagCauzione(vestiario?.pantaloni, 30)}`,
     consegnato: pantConsegnato,
     taglia: vestiario?.pantaloni?.taglia || '—',
     qta: pantConsegnato ? '1 pz' : '0',
@@ -340,10 +348,10 @@ export function generaSchedaVestiarioPDF(volontario: Volontario): jsPDF {
     isUltimaConsegna: !!vestiario?.pantaloni?.isUltimaConsegna
   });
 
-  // Giubbetto (Cauzione € 45,00)
+  // Giubbetto (Cauzione default € 45,00 o personalizzata / esente)
   const giubConsegnato = !!vestiario?.giubbetto?.consegnato;
   righeVestiario.push({
-    nome: `Giubbetto Mezza Stagione Operativo (Cauzione € 45,00 ${giubConsegnato ? 'versata' : 'da versare'})`,
+    nome: `Giubbetto Mezza Stagione Operativo${formatTagCauzione(vestiario?.giubbetto, 45)}`,
     consegnato: giubConsegnato,
     taglia: vestiario?.giubbetto?.taglia || '—',
     qta: giubConsegnato ? '1 pz' : '0',
@@ -353,7 +361,7 @@ export function generaSchedaVestiarioPDF(volontario: Volontario): jsPDF {
 
   // Giubbotto Invernale
   righeVestiario.push({
-    nome: 'Giubbotto Invernale Imbottito Alta Visibilità D.P.I.',
+    nome: `Giubbotto Invernale Imbottito Alta Visibilità D.P.I.${formatTagCauzione(vestiario?.giubbottoInvernale, 0)}`,
     consegnato: !!vestiario?.giubbottoInvernale?.consegnato,
     taglia: vestiario?.giubbottoInvernale?.taglia || '—',
     qta: vestiario?.giubbottoInvernale?.consegnato ? '1 pz' : '0',
@@ -411,7 +419,7 @@ export function generaSchedaVestiarioPDF(volontario: Volontario): jsPDF {
       doc.text(pulisciTesto(riga.taglia), colX[1] + 3, textY);
     } else {
       doc.setTextColor(148, 163, 184);
-      doc.text('—', colX[1] + 3, textY);
+      doc.text('-', colX[1] + 3, textY);
     }
 
     // 3. Quantità
@@ -435,18 +443,18 @@ export function generaSchedaVestiarioPDF(volontario: Volontario): jsPDF {
     if (isEvidenziata) {
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(6.4);
-      doc.setTextColor(161, 98, 7); // amber-700
-      doc.text('★ ULTIMA CONSEGNA', colX[4] + 3, textY, { maxWidth: colW[4] - 5 });
+      doc.setTextColor(161, 98, 7);
+      doc.text('* ULTIMA CONSEGNA', colX[4] + 3, textY, { maxWidth: colW[4] - 5 });
     } else if (riga.consegnato) {
       doc.setFont('helvetica', 'normal');
       doc.setFontSize(6.4);
-      doc.setTextColor(22, 101, 52); // green-800
-      doc.text('✓ Consegnato / In Dotazione', colX[4] + 3, textY, { maxWidth: colW[4] - 5 });
+      doc.setTextColor(22, 101, 52);
+      doc.text('[OK] Consegnato / In Dotazione', colX[4] + 3, textY, { maxWidth: colW[4] - 5 });
     } else {
       doc.setFont('helvetica', 'normal');
       doc.setFontSize(6.4);
       doc.setTextColor(148, 163, 184);
-      doc.text('— Da consegnare', colX[4] + 3, textY);
+      doc.text('- Da consegnare', colX[4] + 3, textY);
     }
 
     currentY += rowHeight;
@@ -455,29 +463,36 @@ export function generaSchedaVestiarioPDF(volontario: Volontario): jsPDF {
   currentY += 2.5;
 
   // 4. BOX REGIME CAUZIONALE DIVISA & IBAN ACCREDITO RIMBORSO
-  const cauzioneP = vestiario?.pantaloni?.consegnato ? 30.0 : 0;
-  const cauzioneG = vestiario?.giubbetto?.consegnato ? 45.0 : 0;
-  const totCauzioneVersata = cauzioneP + cauzioneG;
-  const ibanRimborso = vestiario?.ibanRestituzioneCauzione?.trim();
+  const riepilogoCauzione = calcolaCauzioneTotale(vestiario);
+  const pantCauzEff = vestiario?.pantaloni?.esenteCauzione ? 0 : (vestiario?.pantaloni?.cauzioneApplicata ?? 30);
+  const giubCauzEff = vestiario?.giubbetto?.esenteCauzione ? 0 : (vestiario?.giubbetto?.cauzioneApplicata ?? 45);
+  const cauzioneP = riepilogoCauzione.cauzionePantaloni;
+  const cauzioneG = riepilogoCauzione.cauzioneGiubbetto;
+  const totCauzioneVersata = riepilogoCauzione.totale;
+  const ibanRimborso = sanitizeWinAnsi(vestiario?.ibanRestituzioneCauzione?.trim());
 
   const boxCauzioneH = 15.5;
-  doc.setFillColor(254, 249, 195); // giallo-amber soft (#fef9c3)
-  doc.setDrawColor(217, 119, 6); // amber-600
+  doc.setFillColor(254, 249, 195);
+  doc.setDrawColor(217, 119, 6);
   doc.setLineWidth(0.35);
   doc.roundedRect(margin, currentY, contentWidth, boxCauzioneH, 1.5, 1.5, 'FD');
 
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(6.8);
-  doc.setTextColor(146, 64, 14); // amber-800
+  doc.setTextColor(146, 64, 14);
   doc.text('REGIME CAUZIONALE DIVISA & DPI:', margin + 3, currentY + 4.2);
 
   doc.setFont('helvetica', 'normal');
-  doc.setFontSize(6.2);
+  doc.setFontSize(6.0);
   doc.setTextColor(15, 23, 42);
+  const altreStr = riepilogoCauzione.altreCauzioni > 0 ? ` - Altri capi: EUR ${riepilogoCauzione.altreCauzioni.toFixed(2)}` : '';
   doc.text(
-    `Pantaloni: cauzione € 30,00 (${cauzioneP > 0 ? 'VERSATA ✓' : 'Non ancora versata'}) • Giubbetto: cauzione € 45,00 (${cauzioneG > 0 ? 'VERSATA ✓' : 'Non ancora versata'})`,
+    sanitizeWinAnsi(
+      `Pantaloni: EUR ${pantCauzEff.toFixed(2)} (${cauzioneP > 0 ? 'VERSATA' : (vestiario?.pantaloni?.esenteCauzione ? 'ESENTE' : 'Non versata')}) - Giubbetto: EUR ${giubCauzEff.toFixed(2)} (${cauzioneG > 0 ? 'VERSATA' : (vestiario?.giubbetto?.esenteCauzione ? 'ESENTE' : 'Non versata')})${altreStr}`
+    ),
     margin + 48,
-    currentY + 4.2
+    currentY + 4.2,
+    { maxWidth: contentWidth - 52 }
   );
 
   doc.setFont('helvetica', 'bold');
@@ -604,7 +619,7 @@ export function generaSchedaVestiarioPDF(volontario: Volontario): jsPDF {
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(5.0);
       doc.text(
-        '✓ FIRMA ACQUISITA DIGITALMENTE',
+        '[OK] FIRMA ACQUISITA DIGITALMENTE',
         box2X + 3 + (colFirmaW - 6) / 2,
         boxFirmaY + boxFirmaH - 2.4,
         { align: 'center', maxWidth: colFirmaW - 10 }

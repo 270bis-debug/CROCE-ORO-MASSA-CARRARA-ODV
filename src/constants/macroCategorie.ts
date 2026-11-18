@@ -103,3 +103,106 @@ export const LISTA_MACRO_CATEGORIE: InfoMacroCategoria[] = [
 ];
 
 export const TUTTE_LE_MACRO_CATEGORIE: MacroCategoriaId[] = LISTA_MACRO_CATEGORIE.map((c) => c.id);
+
+export const NOMI_DATABASE_STORAGE_KEY = 'CROCE_ORO_NOMI_DATABASE_CUSTOM';
+export const NOMI_DATABASE_UPDATED_AT_KEY = 'CROCE_ORO_NOMI_DATABASE_UPDATED_AT';
+
+export function getNomiDatabaseUpdatedAt(): number {
+  if (typeof window === 'undefined') return 0;
+  try {
+    const raw = localStorage.getItem(NOMI_DATABASE_UPDATED_AT_KEY);
+    const num = raw ? Number(raw) : 0;
+    return Number.isFinite(num) && num > 0 ? num : 0;
+  } catch {
+    return 0;
+  }
+}
+
+export function touchNomiDatabaseUpdatedAt(ts?: number): number {
+  const val = typeof ts === 'number' && Number.isFinite(ts) && ts > 0 ? ts : Date.now();
+  if (typeof window !== 'undefined') {
+    try {
+      localStorage.setItem(NOMI_DATABASE_UPDATED_AT_KEY, String(val));
+    } catch {}
+  }
+  return val;
+}
+
+export function getNomiDatabaseCustom(): Record<string, string> {
+  if (typeof window === 'undefined') return {};
+  try {
+    const raw = localStorage.getItem(NOMI_DATABASE_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      const clean: Record<string, string> = {};
+      Object.entries(parsed).forEach(([k, v]) => {
+        if (typeof v === 'string' && v.trim()) {
+          clean[k] = v.trim();
+        }
+      });
+      return clean;
+    }
+  } catch {}
+  return {};
+}
+
+export function salvaNomiDatabaseCustom(
+  nomiMap: Record<string, string>,
+  dispatch = true,
+  updatedAt?: number
+): Record<string, string> {
+  const clean: Record<string, string> = {};
+  Object.entries(nomiMap || {}).forEach(([k, v]) => {
+    if (typeof v === 'string' && v.trim()) {
+      clean[k] = v.trim();
+    }
+  });
+  if (typeof window !== 'undefined') {
+    try {
+      localStorage.setItem(NOMI_DATABASE_STORAGE_KEY, JSON.stringify(clean));
+      touchNomiDatabaseUpdatedAt(updatedAt);
+      if (dispatch) {
+        window.dispatchEvent(new CustomEvent('croceoro_nomi_db_updated'));
+      }
+    } catch {}
+  }
+  return clean;
+}
+
+export function applicaNomiDatabaseDaSync(
+  nomiMap?: Record<string, string> | null,
+  updatedAt?: number
+): boolean {
+  if (typeof window === 'undefined') return false;
+  if (!nomiMap || typeof nomiMap !== 'object' || Array.isArray(nomiMap)) return false;
+  const incomingTs = typeof updatedAt === 'number' && Number.isFinite(updatedAt) ? updatedAt : 0;
+  const localTs = getNomiDatabaseUpdatedAt();
+  if (incomingTs > 0 && localTs > incomingTs) {
+    return false;
+  }
+  salvaNomiDatabaseCustom(nomiMap, true, incomingTs > 0 ? incomingTs : undefined);
+  return true;
+}
+
+export function getTitoloDatabase(
+  id: string,
+  defaultTitle: string,
+  customMap?: Record<string, string>
+): string {
+  const source = customMap ?? getNomiDatabaseCustom();
+  const custom = source?.[id];
+  return custom && custom.trim() ? custom.trim() : defaultTitle;
+}
+
+if (typeof window !== 'undefined') {
+  try {
+    window.addEventListener('storage', (e: StorageEvent) => {
+      if (!e.key || e.key === NOMI_DATABASE_STORAGE_KEY) {
+        window.dispatchEvent(new CustomEvent('croceoro_nomi_db_updated'));
+      }
+    });
+  } catch {}
+}
+
+

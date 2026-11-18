@@ -6,13 +6,25 @@
 
 import { Volontario } from '../components/DatabaseVolontariModal';
 
-export type CategoriaMansione =
-  | 'Emergenza 118'
-  | 'Ordinario & Sociale'
-  | 'Protezione Civile'
-  | 'Centrale & TLC'
-  | 'Gestionale & Logistica'
-  | 'Altro';
+export type CategoriaMansione = string;
+
+export interface CategoriaMansioneItem {
+  id: string;
+  nome: string;
+  badgeEmoji?: string;
+  parentCategoriaId?: string;
+}
+
+export const CATEGORIE_MANSIONI_DEFAULT: CategoriaMansioneItem[] = [
+  { id: 'cat-emergenza-118', nome: 'Emergenza 118', badgeEmoji: '🚑' },
+  { id: 'cat-centrale-tlc', nome: 'Centrale & TLC', badgeEmoji: '📻' },
+  { id: 'cat-ordinario-sociale', nome: 'Ordinario & Sociale', badgeEmoji: '🚐' },
+  { id: 'cat-protezione-civile', nome: 'Protezione Civile', badgeEmoji: '🛡️' },
+  { id: 'cat-gestionale-logistica', nome: 'Gestionale & Logistica', badgeEmoji: '👑' },
+  { id: 'cat-altro', nome: 'Altro', badgeEmoji: '⭐' }
+];
+
+export const CATEGORIE_STORAGE_KEY = 'CROCE_ORO_MANSIONI_CATEGORIE';
 
 export interface MansioneOperativa {
   id: string;
@@ -25,7 +37,8 @@ export interface MansioneOperativa {
   badgeEmoji?: string;
   creataDaAdmin?: boolean;
   dataCreazione?: string;
-  // Gerarchia mansioni: mansioni sottostanti che questa mansione include automaticamente
+  // Gerarchia mansioni: mansione genitore e mansioni sottostanti incluse automaticamente
+  parentMansioneId?: string;
   mansioniIncluse?: string[];
 }
 
@@ -190,6 +203,241 @@ export const MANSIONI_DEFAULT: MansioneOperativa[] = [
 ];
 
 const STORAGE_KEY = 'CROCE_ORO_MANSIONI_CATALOGO';
+export const MANSIONI_UPDATED_AT_KEY = 'CROCE_ORO_MANSIONI_UPDATED_AT';
+
+export function getMansioniConfigUpdatedAt(): number {
+  if (typeof window === 'undefined') return 0;
+  try {
+    const raw = localStorage.getItem(MANSIONI_UPDATED_AT_KEY);
+    const num = raw ? Number(raw) : 0;
+    return Number.isFinite(num) && num > 0 ? num : 0;
+  } catch {
+    return 0;
+  }
+}
+
+export function touchMansioniConfigUpdatedAt(ts?: number): number {
+  const val = typeof ts === 'number' && Number.isFinite(ts) && ts > 0 ? ts : Date.now();
+  if (typeof window !== 'undefined') {
+    try {
+      localStorage.setItem(MANSIONI_UPDATED_AT_KEY, String(val));
+    } catch {}
+  }
+  return val;
+}
+
+function emettiAggiornamentoMansioniLocal(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.dispatchEvent(new CustomEvent('croceoro_mansioni_updated'));
+  } catch {}
+}
+
+if (typeof window !== 'undefined') {
+  try {
+    window.addEventListener('storage', (e: StorageEvent) => {
+      if (!e.key || e.key === STORAGE_KEY || e.key === CATEGORIE_STORAGE_KEY) {
+        emettiAggiornamentoMansioniLocal();
+      }
+    });
+  } catch {}
+}
+
+export function getDescendantCategoriaIds(
+  rootId: string,
+  categorie?: CategoriaMansioneItem[]
+): Set<string> {
+  const list = categorie || getCategorieMansioni();
+  const descendants = new Set<string>();
+  const stack = [rootId];
+  while (stack.length > 0) {
+    const curr = stack.pop()!;
+    list.forEach((c) => {
+      if (c.parentCategoriaId === curr && c.id !== rootId && !descendants.has(c.id)) {
+        descendants.add(c.id);
+        stack.push(c.id);
+      }
+    });
+  }
+  return descendants;
+}
+
+export function getDescendantMansioneIds(
+  rootId: string,
+  catalogo?: MansioneOperativa[]
+): Set<string> {
+  const list = catalogo || getMansioniCatalogo();
+  const descendants = new Set<string>();
+  const stack = [rootId];
+  while (stack.length > 0) {
+    const curr = stack.pop()!;
+    list.forEach((m) => {
+      if (m.parentMansioneId === curr && m.id !== rootId && !descendants.has(m.id)) {
+        descendants.add(m.id);
+        stack.push(m.id);
+      }
+    });
+  }
+  return descendants;
+}
+
+/**
+ * Carica l'elenco completo delle categorie mansioni (predefinite + personalizzate)
+ */
+export function getCategorieMansioni(): CategoriaMansioneItem[] {
+  if (typeof window === 'undefined') return CATEGORIE_MANSIONI_DEFAULT;
+  try {
+    const raw = localStorage.getItem(CATEGORIE_STORAGE_KEY);
+    if (!raw) {
+      localStorage.setItem(CATEGORIE_STORAGE_KEY, JSON.stringify(CATEGORIE_MANSIONI_DEFAULT));
+      return CATEGORIE_MANSIONI_DEFAULT;
+    }
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed) && parsed.length > 0) {
+      return parsed;
+    }
+    return CATEGORIE_MANSIONI_DEFAULT;
+  } catch {
+    return CATEGORIE_MANSIONI_DEFAULT;
+  }
+}
+
+export function salvaCategorieMansioni(categorie: CategoriaMansioneItem[], dispatch = true, updatedAt?: number): void {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.setItem(CATEGORIE_STORAGE_KEY, JSON.stringify(categorie));
+    touchMansioniConfigUpdatedAt(updatedAt);
+    if (dispatch) emettiAggiornamentoMansioniLocal();
+  } catch (err) {
+    console.error('Errore nel salvataggio categorie mansioni:', err);
+  }
+}
+
+export function creaCategoriaMansione(dati: {
+  nome: string;
+  badgeEmoji?: string;
+  parentCategoriaId?: string;
+}): CategoriaMansioneItem[] {
+  const cleanNome = (dati.nome || '').trim();
+  if (!cleanNome) return getCategorieMansioni();
+  const attuali = getCategorieMansioni();
+  if (attuali.some((c) => c.nome.toLowerCase() === cleanNome.toLowerCase())) {
+    return attuali;
+  }
+  const nuova: CategoriaMansioneItem = {
+    id: `cat-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    nome: cleanNome,
+    badgeEmoji: (dati.badgeEmoji || '').trim() || '📁',
+    parentCategoriaId: dati.parentCategoriaId || undefined
+  };
+  const aggiornate = [...attuali, nuova];
+  salvaCategorieMansioni(aggiornate);
+  return aggiornate;
+}
+
+export function modificaCategoriaMansione(
+  id: string,
+  modifiche: { nome?: string; badgeEmoji?: string; parentCategoriaId?: string | null }
+): { categorie: CategoriaMansioneItem[]; catalogo: MansioneOperativa[]; vecchioNome?: string; nuovoNome?: string } {
+  const attuali = getCategorieMansioni();
+  const target = attuali.find((c) => c.id === id);
+  if (!target) {
+    return { categorie: attuali, catalogo: getMansioniCatalogo() };
+  }
+  const vecchioNome = target.nome;
+  const nuovoNome = modifiche.nome !== undefined ? modifiche.nome.trim() || target.nome : target.nome;
+  const descendants = getDescendantCategoriaIds(id, attuali);
+  const candidateParent =
+    modifiche.parentCategoriaId === null || modifiche.parentCategoriaId === ''
+      ? undefined
+      : modifiche.parentCategoriaId !== undefined
+      ? (modifiche.parentCategoriaId === id || descendants.has(modifiche.parentCategoriaId)
+          ? undefined
+          : modifiche.parentCategoriaId)
+      : target.parentCategoriaId;
+
+  const aggiornate = attuali.map((c) =>
+    c.id === id
+      ? {
+          ...c,
+          nome: nuovoNome,
+          badgeEmoji: modifiche.badgeEmoji !== undefined ? (modifiche.badgeEmoji.trim() || c.badgeEmoji || '📁') : c.badgeEmoji,
+          parentCategoriaId: candidateParent
+        }
+      : c
+  );
+  salvaCategorieMansioni(aggiornate, false);
+
+  let catalogo = getMansioniCatalogo();
+  if (vecchioNome !== nuovoNome) {
+    catalogo = catalogo.map((m) =>
+      m.categoria === vecchioNome ? { ...m, categoria: nuovoNome } : m
+    );
+    salvaMansioniCatalogo(catalogo, false);
+  }
+  emettiAggiornamentoMansioniLocal();
+  return { categorie: aggiornate, catalogo, vecchioNome, nuovoNome };
+}
+
+export function eliminaCategoriaMansione(id: string): {
+  categorie: CategoriaMansioneItem[];
+  catalogo: MansioneOperativa[];
+} {
+  const attuali = getCategorieMansioni();
+  const target = attuali.find((c) => c.id === id);
+  const rimaste = attuali
+    .filter((c) => c.id !== id)
+    .map((c) => (c.parentCategoriaId === id ? { ...c, parentCategoriaId: undefined } : c));
+  const fallbackList = rimaste.length > 0 ? rimaste : [{ id: 'cat-altro', nome: 'Altro', badgeEmoji: '⭐' }];
+  salvaCategorieMansioni(fallbackList, false);
+
+  let catalogo = getMansioniCatalogo();
+  if (target) {
+    const fallbackCatName = fallbackList[0].nome;
+    catalogo = catalogo.map((m) =>
+      m.categoria === target.nome ? { ...m, categoria: fallbackCatName } : m
+    );
+    salvaMansioniCatalogo(catalogo, false);
+  }
+  emettiAggiornamentoMansioniLocal();
+  return { categorie: fallbackList, catalogo };
+}
+
+export function ripristinaCategorieMansioniDefault(): CategoriaMansioneItem[] {
+  salvaCategorieMansioni(CATEGORIE_MANSIONI_DEFAULT);
+  return [...CATEGORIE_MANSIONI_DEFAULT];
+}
+
+export function applicaMansioniConfigDaSync(
+  catalogo?: MansioneOperativa[] | null,
+  categorie?: CategoriaMansioneItem[] | null,
+  updatedAt?: number
+): boolean {
+  if (typeof window === 'undefined') return false;
+  const incomingTs = typeof updatedAt === 'number' && Number.isFinite(updatedAt) ? updatedAt : 0;
+  const localTs = getMansioniConfigUpdatedAt();
+  if (incomingTs > 0 && localTs > incomingTs) {
+    return false;
+  }
+  let changed = false;
+  if (Array.isArray(categorie) && categorie.length > 0) {
+    try {
+      localStorage.setItem(CATEGORIE_STORAGE_KEY, JSON.stringify(categorie));
+      changed = true;
+    } catch {}
+  }
+  if (Array.isArray(catalogo) && catalogo.length > 0) {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(catalogo));
+      changed = true;
+    } catch {}
+  }
+  if (changed) {
+    touchMansioniConfigUpdatedAt(incomingTs > 0 ? incomingTs : undefined);
+    emettiAggiornamentoMansioniLocal();
+  }
+  return changed;
+}
 
 /**
  * Carica il catalogo completo di mansioni (predefinite + create dall'utente)
@@ -222,10 +470,12 @@ export function getMansioniCatalogo(): MansioneOperativa[] {
 /**
  * Salva l'elenco aggiornato delle mansioni nel catalogo persistente
  */
-export function salvaMansioniCatalogo(mansioni: MansioneOperativa[]): void {
+export function salvaMansioniCatalogo(mansioni: MansioneOperativa[], dispatch = true, updatedAt?: number): void {
   if (typeof window === 'undefined') return;
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(mansioni));
+    touchMansioniConfigUpdatedAt(updatedAt);
+    if (dispatch) emettiAggiornamentoMansioniLocal();
   } catch (err) {
     console.error('Errore nel salvataggio del catalogo mansioni:', err);
   }
@@ -242,6 +492,7 @@ export function creaNuovaMansione(dati: {
   coloreTesto?: string;
   coloreBorder?: string;
   badgeEmoji?: string;
+  parentMansioneId?: string;
   mansioniIncluse?: string[];
 }): MansioneOperativa {
   const catalogo = getMansioniCatalogo();
@@ -256,6 +507,7 @@ export function creaNuovaMansione(dati: {
     coloreTesto: dati.coloreTesto || 'text-blue-300',
     coloreBorder: dati.coloreBorder || 'border-blue-500/60',
     badgeEmoji: dati.badgeEmoji || '⭐',
+    parentMansioneId: dati.parentMansioneId || undefined,
     mansioniIncluse: Array.isArray(dati.mansioniIncluse) ? dati.mansioniIncluse : ['Volontario'],
     creataDaAdmin: true,
     dataCreazione: new Date().toISOString()
@@ -271,7 +523,9 @@ export function creaNuovaMansione(dati: {
  */
 export function eliminaMansioneCatalogo(id: string): MansioneOperativa[] {
   const catalogo = getMansioniCatalogo();
-  const aggiornato = catalogo.filter((m) => m.id !== id);
+  const aggiornato = catalogo
+    .filter((m) => m.id !== id)
+    .map((m) => (m.parentMansioneId === id ? { ...m, parentMansioneId: undefined } : m));
   salvaMansioniCatalogo(aggiornato);
   return aggiornato;
 }
@@ -279,9 +533,34 @@ export function eliminaMansioneCatalogo(id: string): MansioneOperativa[] {
 /**
  * Modifica una mansione esistente nel catalogo
  */
-export function modificaMansioneCatalogo(id: string, modifiche: Partial<MansioneOperativa>): MansioneOperativa[] {
+export function modificaMansioneCatalogo(
+  id: string,
+  modifiche: Partial<Omit<MansioneOperativa, 'parentMansioneId'>> & { parentMansioneId?: string | null }
+): MansioneOperativa[] {
   const catalogo = getMansioniCatalogo();
-  const aggiornato = catalogo.map((m) => (m.id === id ? { ...m, ...modifiche } : m));
+  const targetOrig = catalogo.find((m) => m.id === id);
+  const vecchioNome = targetOrig?.nome;
+  const nuovoNome = modifiche.nome !== undefined ? modifiche.nome.trim() : vecchioNome;
+  const descendants = getDescendantMansioneIds(id, catalogo);
+  const aggiornato = catalogo.map((m) => {
+    if (m.id === id) {
+      const requestedParent = modifiche.parentMansioneId;
+      const nextParent =
+        requestedParent === '' || requestedParent === null
+          ? undefined
+          : requestedParent !== undefined
+          ? (requestedParent === id || descendants.has(requestedParent) ? undefined : requestedParent)
+          : m.parentMansioneId;
+      return { ...m, ...modifiche, parentMansioneId: nextParent };
+    }
+    if (vecchioNome && nuovoNome && vecchioNome !== nuovoNome && Array.isArray(m.mansioniIncluse) && m.mansioniIncluse.includes(vecchioNome)) {
+      return {
+        ...m,
+        mansioniIncluse: m.mansioniIncluse.map((inc) => (inc === vecchioNome ? nuovoNome : inc))
+      };
+    }
+    return m;
+  });
   salvaMansioniCatalogo(aggiornato);
   return aggiornato;
 }
@@ -553,10 +832,22 @@ export function getMansioniEffettiveVolontario(
       (m) => m.nome.toLowerCase() === normCorrente.toLowerCase() || m.id === normCorrente
     );
 
-    if (trovata && Array.isArray(trovata.mansioniIncluse)) {
-      trovata.mansioniIncluse.forEach((figlia) => {
-        if (figlia && !setEffettive.has(figlia.trim())) {
-          daEsaminare.push(figlia.trim());
+    if (trovata) {
+      if (Array.isArray(trovata.mansioniIncluse)) {
+        trovata.mansioniIncluse.forEach((figlia) => {
+          if (figlia && !setEffettive.has(figlia.trim())) {
+            daEsaminare.push(figlia.trim());
+          }
+        });
+      }
+      // Ereditarietà tramite genitorialità esplicita (parentMansioneId)
+      catalogoEffettivo.forEach((candidateChild) => {
+        if (
+          candidateChild.parentMansioneId === trovata.id &&
+          candidateChild.id !== trovata.id &&
+          !setEffettive.has(candidateChild.nome.trim())
+        ) {
+          daEsaminare.push(candidateChild.nome.trim());
         }
       });
     }

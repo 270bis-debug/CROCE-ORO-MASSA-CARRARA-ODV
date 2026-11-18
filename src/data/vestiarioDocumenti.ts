@@ -21,14 +21,30 @@ export const CAUZIONE_GIUBBETTO = 45.0; // € 45,00 per il giubbetto
 export function calcolaCauzioneTotale(vestiario?: DotazioneVestiario): {
   cauzionePantaloni: number;
   cauzioneGiubbetto: number;
+  altreCauzioni: number;
   totale: number;
 } {
-  const cauzionePantaloni = vestiario?.pantaloni?.consegnato ? CAUZIONE_PANTALONI : 0;
-  const cauzioneGiubbetto = vestiario?.giubbetto?.consegnato ? CAUZIONE_GIUBBETTO : 0;
+  const cauzioneCapo = (capo: CapoVestiario | PezzoTShirt | undefined, defaultCauzione: number): number => {
+    if (!capo?.consegnato || capo.esenteCauzione) return 0;
+    if (typeof capo.cauzioneApplicata === 'number' && !Number.isNaN(capo.cauzioneApplicata)) {
+      return Math.max(0, capo.cauzioneApplicata);
+    }
+    return defaultCauzione;
+  };
+
+  const cauzionePantaloni = cauzioneCapo(vestiario?.pantaloni, CAUZIONE_PANTALONI);
+  const cauzioneGiubbetto = cauzioneCapo(vestiario?.giubbetto, CAUZIONE_GIUBBETTO);
+  const altreCauzioni =
+    (vestiario?.tshirt || []).reduce((sum, t) => sum + cauzioneCapo(t, 0), 0) +
+    cauzioneCapo(vestiario?.felpa, 0) +
+    cauzioneCapo(vestiario?.pile, 0) +
+    cauzioneCapo(vestiario?.giubbottoInvernale, 0);
+
   return {
     cauzionePantaloni,
     cauzioneGiubbetto,
-    totale: cauzionePantaloni + cauzioneGiubbetto
+    altreCauzioni,
+    totale: cauzionePantaloni + cauzioneGiubbetto + altreCauzioni
   };
 }
 
@@ -38,6 +54,9 @@ export interface PezzoTShirt {
   taglia?: TagliaVestiario;
   dataConsegna?: string; // YYYY-MM-DD
   isUltimaConsegna?: boolean; // Contrassegnato all'ultimo salvataggio per evidenziazione stampa
+  cauzioneApplicata?: number;
+  esenteCauzione?: boolean;
+  articoloMagazzinoId?: string;
 }
 
 export interface CapoVestiario {
@@ -45,6 +64,9 @@ export interface CapoVestiario {
   taglia?: TagliaVestiario;
   dataConsegna?: string; // YYYY-MM-DD
   isUltimaConsegna?: boolean; // Contrassegnato all'ultimo salvataggio per evidenziazione stampa
+  cauzioneApplicata?: number;
+  esenteCauzione?: boolean;
+  articoloMagazzinoId?: string;
 }
 
 export interface DocumentoFirmatoArchiviato {
@@ -52,6 +74,18 @@ export interface DocumentoFirmatoArchiviato {
   nomeFile: string;
   dataUpload: string; // YYYY-MM-DD o stringa leggibile
   dimensione?: string; // es. '1.2 MB'
+}
+
+export interface RiconsegnaVestiarioStoricoItem {
+  id: string;
+  dataRestituzione: string;
+  capiRestituiti: string[];
+  importoRimborsoCalcolato: number;
+  importoRimborsoFinale: number;
+  forzatoManualmente?: boolean;
+  ibanBonifico?: string;
+  operatore?: string;
+  annotazioni?: string;
 }
 
 export interface DotazioneVestiario {
@@ -64,6 +98,7 @@ export interface DotazioneVestiario {
   dataUltimoAggiornamento?: string;
   ibanRestituzioneCauzione?: string; // IBAN per bonifico rimborso cauzione DPI
   documentoFirmato?: DocumentoFirmatoArchiviato; // Upload della Scheda Vestiario & DPI stampata e firmata
+  storicoRiconsegne?: RiconsegnaVestiarioStoricoItem[];
 }
 
 export interface DocumentoIdentitaVolontario {

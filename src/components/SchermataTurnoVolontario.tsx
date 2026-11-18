@@ -800,6 +800,22 @@ export const SchermataTurnoVolontario: React.FC<SchermataTurnoVolontarioProps> =
                 <span className="font-black text-amber-800">{missioneAttiva.mezzoAssegnato}</span>
               </div>
             )}
+            {(missioneAttiva.dataArrivoRichiestaServizio || missioneAttiva.oraArrivoRichiestaServizio) && (
+              <div className="flex items-center gap-1 flex-wrap text-[10.5px]">
+                <span className="font-bold text-[#1d1a60]">📥 Arrivo Richiesta:</span>
+                <span className="font-mono font-bold text-slate-900">
+                  {missioneAttiva.dataArrivoRichiestaServizio || '-'} {missioneAttiva.oraArrivoRichiestaServizio || ''}
+                </span>
+              </div>
+            )}
+            {(missioneAttiva.dataInizioServizioSpecifico || missioneAttiva.oraInizioServizioSpecifico) && (
+              <div className="flex items-center gap-1 flex-wrap text-[10.5px]">
+                <span className="font-bold text-indigo-800">🗓️ Inizio Servizio Specifico:</span>
+                <span className="font-mono font-bold text-indigo-950">
+                  {missioneAttiva.dataInizioServizioSpecifico || '-'} {missioneAttiva.oraInizioServizioSpecifico || ''}
+                </span>
+              </div>
+            )}
           </div>
 
           <div className="p-2 rounded-xl bg-amber-500/25 border border-amber-400 text-[11px] text-amber-950 font-bold flex items-center gap-1.5">

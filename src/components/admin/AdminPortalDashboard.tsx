@@ -28,7 +28,7 @@ import { CroceOroLogo } from '../CroceOroLogo';
 import { MezzoFlotta, InterventoManutenzione } from '../../types/adminTypes';
 import { calcolaManutenzioniInScadenza } from '../../utils/avvisiManutenzioneMezzi';
 import { MonitoraggioFlotta } from './MonitoraggioFlotta';
-import { LISTA_MACRO_CATEGORIE } from '../../constants/macroCategorie';
+import { LISTA_MACRO_CATEGORIE, getNomiDatabaseCustom, getTitoloDatabase } from '../../constants/macroCategorie';
 
 export type AdminSectionId =
   | 'dashboard'
@@ -87,6 +87,17 @@ export const AdminPortalDashboard: React.FC<AdminPortalDashboardProps> = ({
   serviziArchivio = []
 }) => {
   const [vistaAttiva, setVistaAttiva] = useState<'macro' | 'monitoraggio_flotta'>('macro');
+  const [nomiDatabaseCustom, setNomiDatabaseCustom] = useState<Record<string, string>>(() => getNomiDatabaseCustom());
+
+  React.useEffect(() => {
+    const refresh = () => setNomiDatabaseCustom(getNomiDatabaseCustom());
+    window.addEventListener('croceoro_nomi_db_updated', refresh);
+    window.addEventListener('storage', refresh);
+    return () => {
+      window.removeEventListener('croceoro_nomi_db_updated', refresh);
+      window.removeEventListener('storage', refresh);
+    };
+  }, []);
 
   // Calcolo automatico avvisi manutenzione programmata e scadenze flotta entro 30 giorni
   const avvisiManutenzione = React.useMemo(() => {
@@ -302,18 +313,22 @@ export const AdminPortalDashboard: React.FC<AdminPortalDashboardProps> = ({
     }
   ];
 
-  // Allinea e numera automaticamente le macro categorie in base a LISTA_MACRO_CATEGORIE
+  // Allinea e numera automaticamente le macro categorie in base a LISTA_MACRO_CATEGORIE + eventuali nomi personalizzati
   const sezioniAttive = React.useMemo(() => {
     const byId = new Map(sezioni.map(s => [s.id, s]));
     return LISTA_MACRO_CATEGORIE.map((cat, idx) => {
       const card = byId.get(cat.id as AdminSectionId);
       if (card) {
-        return { ...card, numero: String(idx + 1) };
+        return {
+          ...card,
+          titolo: getTitoloDatabase(cat.id, card.titolo, nomiDatabaseCustom),
+          numero: String(idx + 1)
+        };
       }
       return {
         id: cat.id as AdminSectionId,
         numero: String(idx + 1),
-        titolo: cat.titolo,
+        titolo: getTitoloDatabase(cat.id, cat.titolo, nomiDatabaseCustom),
         sottotitolo: cat.sottotitolo,
         icona: Shield,
         coloreBg: 'bg-slate-500/15',
@@ -326,7 +341,7 @@ export const AdminPortalDashboard: React.FC<AdminPortalDashboardProps> = ({
         statistiche: 'Attiva'
       };
     });
-  }, [sezioni]);
+  }, [sezioni, nomiDatabaseCustom]);
 
   // Filtra le sezioni disponibili in base ai permessi delegati
   const sezioniVisibili = React.useMemo(() => {

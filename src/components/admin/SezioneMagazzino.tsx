@@ -22,9 +22,10 @@ import {
   Tag,
   Truck
 } from 'lucide-react';
-import { ArticoloVestiarioMagazzino, AttrezzaturaOperativa, MovimentoMagazzino, ContattoEsterno } from '../../types/adminTypes';
+import { ArticoloVestiarioMagazzino, AttrezzaturaOperativa, MovimentoMagazzino, ContattoEsterno, ChiaveVestiarioAccount } from '../../types/adminTypes';
 import { TAGLIE_DISPONIBILI } from '../../data/vestiarioDocumenti';
 import { inviaNotificaModificaAdmin } from '../../utils/notificaModificaAdmin';
+import { useTitoloDatabase } from '../../hooks/useNomiDatabase';
 
 interface SezioneMagazzinoProps {
   vestiarioMagazzino: ArticoloVestiarioMagazzino[];
@@ -70,6 +71,9 @@ export const SezioneMagazzino: React.FC<SezioneMagazzinoProps> = ({
   const [formVestPrezzo, setFormVestPrezzo] = useState(75);
   const [formVestFornitore, setFormVestFornitore] = useState('Siggi Group SpA');
   const [formVestScaffale, setFormVestScaffale] = useState('Armadio A1');
+  const [formVestCauzione, setFormVestCauzione] = useState<number>(0);
+  const [formVestChiaveAccount, setFormVestChiaveAccount] = useState<ChiaveVestiarioAccount | ''>('');
+  const [articoloDaEliminare, setArticoloDaEliminare] = useState<ArticoloVestiarioMagazzino | null>(null);
 
   // Modale Nuova / Modifica Attrezzatura
   const [modaleAttrAperta, setModaleAttrAperta] = useState(false);
@@ -115,7 +119,9 @@ export const SezioneMagazzino: React.FC<SezioneMagazzinoProps> = ({
             scortaMinima: Number(formVestMinima),
             prezzoUnitarioFornitore: Number(formVestPrezzo),
             fornitore: formVestFornitore.trim(),
-            ubicazioneScaffale: formVestScaffale.trim()
+            ubicazioneScaffale: formVestScaffale.trim(),
+            cauzione: Math.max(0, Number(formVestCauzione) || 0),
+            chiaveVestiarioAccount: formVestChiaveAccount || undefined
           };
         }
         return v;
@@ -125,7 +131,7 @@ export const SezioneMagazzino: React.FC<SezioneMagazzinoProps> = ({
         inviaNotificaModificaAdmin(
           'magazzino',
           'Modifica articolo vestiario magazzino',
-          `Modificato articolo "${formVestNome}" (giacenza: ${formVestGiacenza}, scaffale: ${formVestScaffale})`,
+          `Modificato articolo "${formVestNome}" (giacenza: ${formVestGiacenza}, cauzione: €${Number(formVestCauzione || 0).toFixed(2)}, scaffale: ${formVestScaffale})`,
           operatoreCorrente
         );
       }
@@ -141,14 +147,16 @@ export const SezioneMagazzino: React.FC<SezioneMagazzinoProps> = ({
         scortaMinima: Number(formVestMinima),
         prezzoUnitarioFornitore: Number(formVestPrezzo),
         fornitore: formVestFornitore.trim(),
-        ubicazioneScaffale: formVestScaffale.trim()
+        ubicazioneScaffale: formVestScaffale.trim(),
+        cauzione: Math.max(0, Number(formVestCauzione) || 0),
+        chiaveVestiarioAccount: formVestChiaveAccount || undefined
       };
       onAggiornaVestiario([...vestiarioMagazzino, nuovo]);
       if (!isAdmin) {
         inviaNotificaModificaAdmin(
           'magazzino',
           'Nuovo articolo vestiario inserito',
-          `Inserito articolo "${nuovo.nome}" (taglia: ${nuovo.taglia}, giacenza: ${nuovo.giacenzaAttuale}, codice: ${nuovo.codiceArticolo})`,
+          `Inserito articolo "${nuovo.nome}" (taglia: ${nuovo.taglia}, giacenza: ${nuovo.giacenzaAttuale}, cauzione: €${Number(nuovo.cauzione || 0).toFixed(2)}, codice: ${nuovo.codiceArticolo})`,
           operatoreCorrente
         );
       }
@@ -156,6 +164,26 @@ export const SezioneMagazzino: React.FC<SezioneMagazzinoProps> = ({
     }
     setModaleVestAperta(false);
     setVestInModifica(null);
+  };
+
+  const handleConfermaEliminaVestiario = () => {
+    if (!articoloDaEliminare) return;
+    const aggiornati = vestiarioMagazzino.filter((item) => item.id !== articoloDaEliminare.id);
+    onAggiornaVestiario(aggiornati);
+    onNotificaRadio?.(
+      `🗑️ MAGAZZINO VESTIARIO: Eliminato articolo "${articoloDaEliminare.nome}" (${articoloDaEliminare.codiceArticolo}) da ${operatoreCorrente}`,
+      'sistema'
+    );
+    if (!isAdmin) {
+      inviaNotificaModificaAdmin(
+        'magazzino',
+        'Eliminazione articolo vestiario magazzino',
+        `Eliminato articolo "${articoloDaEliminare.nome}" (codice: ${articoloDaEliminare.codiceArticolo}, taglia: ${articoloDaEliminare.taglia})`,
+        operatoreCorrente
+      );
+    }
+    mostraAvviso(`Articolo "${articoloDaEliminare.nome}" eliminato dal magazzino vestiario.`);
+    setArticoloDaEliminare(null);
   };
 
   // Salva Attrezzatura
@@ -302,7 +330,7 @@ export const SezioneMagazzino: React.FC<SezioneMagazzinoProps> = ({
                 Macro Categoria 6
               </span>
               <h2 className="text-xl font-black text-white uppercase tracking-wide">
-                Database Magazzino Vestiario & Attrezzature
+                {useTitoloDatabase('magazzino', 'Database Magazzino Vestiario & Attrezzature')}
               </h2>
             </div>
             <p className="text-xs text-slate-300 mt-0.5">
@@ -436,6 +464,7 @@ export const SezioneMagazzino: React.FC<SezioneMagazzinoProps> = ({
                 <option value="Giacche & Giubbotti">Giacche & Giubbotti</option>
                 <option value="Pantaloni Soccorso">Pantaloni Soccorso</option>
                 <option value="Polo & T-Shirt">Polo & T-Shirt</option>
+                <option value="Felpe & Pile">Felpe & Pile</option>
                 <option value="Calzature Antinfortunistiche">Calzature Antinfortunistiche</option>
                 <option value="DPI & Caschi">DPI & Caschi</option>
               </select>
@@ -465,6 +494,8 @@ export const SezioneMagazzino: React.FC<SezioneMagazzinoProps> = ({
                   setFormVestPrezzo(75);
                   setFormVestFornitore('Siggi Group SpA');
                   setFormVestScaffale('Armadio A1');
+                  setFormVestCauzione(0);
+                  setFormVestChiaveAccount('');
                   setModaleVestAperta(true);
                 }}
                 className="px-3.5 py-2 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white font-bold text-xs uppercase flex items-center gap-1.5 shadow-md active:scale-95 cursor-pointer"
@@ -486,6 +517,7 @@ export const SezioneMagazzino: React.FC<SezioneMagazzinoProps> = ({
                     <th className="py-3 px-4">Taglia</th>
                     <th className="py-3 px-4 font-mono">Giacenza Attuale</th>
                     <th className="py-3 px-4 font-mono">Scorta Minima</th>
+                    <th className="py-3 px-4 font-mono">Cauzione</th>
                     <th className="py-3 px-4">Ubicazione Scaffale</th>
                     <th className="py-3 px-4 text-right">Azioni</th>
                   </tr>
@@ -498,6 +530,11 @@ export const SezioneMagazzino: React.FC<SezioneMagazzinoProps> = ({
                         <td className="py-3 px-4">
                           <span className="font-mono font-bold text-cyan-400 text-[11px] block">{v.codiceArticolo}</span>
                           <span className="font-bold text-white text-sm">{v.nome}</span>
+                          {v.chiaveVestiarioAccount && (
+                            <span className="ml-2 px-1.5 py-0.5 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/40 text-[9px] font-bold">
+                              🔗 Collegato: {v.chiaveVestiarioAccount}
+                            </span>
+                          )}
                           {v.fornitore && <div className="text-[10px] text-slate-500">Fornitore: {v.fornitore}</div>}
                         </td>
                         <td className="py-3 px-4 text-slate-300">
@@ -516,30 +553,51 @@ export const SezioneMagazzino: React.FC<SezioneMagazzinoProps> = ({
                         <td className="py-3 px-4 font-mono text-slate-400">
                           {v.scortaMinima} Pz
                         </td>
+                        <td className="py-3 px-4 font-mono">
+                          {(v.cauzione ?? 0) > 0 ? (
+                            <span className="px-2 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/40 font-bold">
+                              € {Number(v.cauzione).toFixed(2).replace('.', ',')}
+                            </span>
+                          ) : (
+                            <span className="text-slate-500 text-[11px]">Nessuna</span>
+                          )}
+                        </td>
                         <td className="py-3 px-4 text-slate-300">
                           {v.ubicazioneScaffale}
                         </td>
                         <td className="py-3 px-4 text-right">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setVestInModifica(v);
-                              setFormVestCodice(v.codiceArticolo);
-                              setFormVestNome(v.nome);
-                              setFormVestCategoria(v.categoria);
-                              setFormVestTaglia(v.taglia);
-                              setFormVestGiacenza(v.giacenzaAttuale);
-                              setFormVestMinima(v.scortaMinima);
-                              setFormVestPrezzo(v.prezzoUnitarioFornitore || 75);
-                              setFormVestFornitore(v.fornitore || '');
-                              setFormVestScaffale(v.ubicazioneScaffale);
-                              setModaleVestAperta(true);
-                            }}
-                            className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 cursor-pointer"
-                            title="Modifica Articolo"
-                          >
-                            <Edit2 className="w-3.5 h-3.5" />
-                          </button>
+                          <div className="inline-flex items-center gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setVestInModifica(v);
+                                setFormVestCodice(v.codiceArticolo);
+                                setFormVestNome(v.nome);
+                                setFormVestCategoria(v.categoria);
+                                setFormVestTaglia(v.taglia);
+                                setFormVestGiacenza(v.giacenzaAttuale);
+                                setFormVestMinima(v.scortaMinima);
+                                setFormVestPrezzo(v.prezzoUnitarioFornitore || 75);
+                                setFormVestFornitore(v.fornitore || '');
+                                setFormVestScaffale(v.ubicazioneScaffale);
+                                setFormVestCauzione(Number(v.cauzione ?? 0));
+                                setFormVestChiaveAccount(v.chiaveVestiarioAccount || '');
+                                setModaleVestAperta(true);
+                              }}
+                              className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 cursor-pointer"
+                              title="Modifica Articolo"
+                            >
+                              <Edit2 className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setArticoloDaEliminare(v)}
+                              className="p-1.5 rounded-lg bg-red-950/60 hover:bg-red-900/80 text-red-400 border border-red-500/40 cursor-pointer"
+                              title="Elimina Articolo dal Magazzino"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     );
@@ -848,6 +906,37 @@ export const SezioneMagazzino: React.FC<SezioneMagazzinoProps> = ({
                 </div>
               </div>
 
+              <div className="grid grid-cols-2 gap-3 p-3 rounded-2xl bg-amber-500/10 border border-amber-500/30">
+                <div>
+                  <label className="block text-amber-300 font-bold mb-1">Cauzione Prevista (€)</label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.5"
+                    value={formVestCauzione}
+                    onChange={(e) => setFormVestCauzione(Number(e.target.value))}
+                    className="w-full p-2.5 rounded-xl bg-slate-950 border border-amber-500/40 text-amber-300 font-mono font-bold"
+                    placeholder="es. 30 oppure 45"
+                  />
+                </div>
+                <div>
+                  <label className="block text-indigo-300 font-bold mb-1">Collegamento Capo Account</label>
+                  <select
+                    value={formVestChiaveAccount}
+                    onChange={(e) => setFormVestChiaveAccount((e.target.value || '') as ChiaveVestiarioAccount | '')}
+                    className="w-full p-2.5 rounded-xl bg-slate-950 border border-indigo-500/40 text-indigo-200 font-bold"
+                  >
+                    <option value="">Nessun collegamento diretto</option>
+                    <option value="tshirt">T-Shirt Istituzionale</option>
+                    <option value="felpa">Felpa con Zip</option>
+                    <option value="pile">Pile Tecnico</option>
+                    <option value="pantaloni">Pantaloni Operativi</option>
+                    <option value="giubbetto">Giubbetto Mezza Stagione</option>
+                    <option value="giubbottoInvernale">Giubbotto Invernale</option>
+                  </select>
+                </div>
+              </div>
+
               <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-800">
                 <button
                   type="button"
@@ -1119,6 +1208,42 @@ export const SezioneMagazzino: React.FC<SezioneMagazzinoProps> = ({
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODALE CONFERMA ELIMINAZIONE ARTICOLO VESTIARIO */}
+      {articoloDaEliminare && (
+        <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in">
+          <div className="bg-slate-900 border-2 border-red-500/80 rounded-3xl max-w-sm w-full p-5 shadow-2xl text-slate-200 space-y-4">
+            <div className="flex items-center gap-3 text-red-400">
+              <div className="w-11 h-11 rounded-2xl bg-red-500/20 border border-red-500/40 flex items-center justify-center shrink-0">
+                <Trash2 className="w-5 h-5 text-red-400" />
+              </div>
+              <div>
+                <h4 className="font-black text-sm text-white uppercase">Elimina Articolo Magazzino</h4>
+                <p className="text-[11px] text-slate-400">Azione irreversibile su tutti i dispositivi</p>
+              </div>
+            </div>
+            <p className="text-xs text-slate-300 leading-relaxed">
+              Sei sicuro di voler eliminare definitivamente <strong className="text-white">{articoloDaEliminare.nome}</strong> (Cod. <span className="font-mono text-cyan-300">{articoloDaEliminare.codiceArticolo}</span>, Taglia {articoloDaEliminare.taglia})?
+            </p>
+            <div className="flex items-center gap-2 pt-2">
+              <button
+                type="button"
+                onClick={handleConfermaEliminaVestiario}
+                className="flex-1 py-2.5 px-3 rounded-xl bg-red-600 hover:bg-red-500 text-white font-black text-xs uppercase cursor-pointer"
+              >
+                Elimina Definitivamente
+              </button>
+              <button
+                type="button"
+                onClick={() => setArticoloDaEliminare(null)}
+                className="py-2.5 px-4 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold cursor-pointer"
+              >
+                Annulla
+              </button>
+            </div>
           </div>
         </div>
       )}

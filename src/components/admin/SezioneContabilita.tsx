@@ -28,15 +28,25 @@ import {
   Building2,
   BookOpen,
   FileSpreadsheet,
-  BarChart3
+  BarChart3,
+  Tag,
+  Edit3,
+  Link2,
+  Percent,
+  SlidersHorizontal
 } from 'lucide-react';
+import { useTitoloDatabase } from '../../hooks/useNomiDatabase';
 import {
   TesseraAssociativa,
   NotaDiDebito,
   ContattoEsterno,
   InterventoManutenzione,
-  SedeAssociativaCompleta
+  SedeAssociativaCompleta,
+  TariffaCostoServizio,
+  VoceNotaDiDebito,
+  ProprietarioImmobileData
 } from '../../types/adminTypes';
+import { TARIFFE_COSTI_SERVIZIO_INIZIALI } from '../../data/adminMockData';
 import { DICITURA_ESENZIONE_BOLLO } from '../../data/tesseramento';
 import { Volontario } from '../DatabaseVolontariModal';
 import { inviaNotificaModificaAdmin } from '../../utils/notificaModificaAdmin';
@@ -63,6 +73,8 @@ interface SezioneContabilitaProps {
   onAggiornaTessere: (tessere: TesseraAssociativa[]) => void;
   noteDiDebito: NotaDiDebito[];
   onAggiornaNoteDiDebito: (note: NotaDiDebito[]) => void;
+  costiServizio?: TariffaCostoServizio[];
+  onAggiornaCostiServizio?: (tariffe: TariffaCostoServizio[]) => void;
   operatoreCorrente?: string;
   isAdmin?: boolean;
   onNotificaRadio?: (testo: string, tipo?: 'centrale' | 'mezzo' | 'sistema' | 'allarme') => void;
@@ -80,6 +92,8 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
   onAggiornaTessere,
   noteDiDebito,
   onAggiornaNoteDiDebito,
+  costiServizio: costiServizioProp,
+  onAggiornaCostiServizio,
   operatoreCorrente = 'Amministratore',
   isAdmin = true,
   onNotificaRadio,
@@ -90,7 +104,7 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
   rifornimenti: rifornimentiProp,
   sedi = []
 }) => {
-  const [sottoTab, setSottoTab] = useState<'donazioni' | 'tesseramento' | 'noteDebito' | 'commercialista'>('donazioni');
+  const [sottoTab, setSottoTab] = useState<'donazioni' | 'tesseramento' | 'noteDebito' | 'commercialista' | 'costiServizio'>('donazioni');
   const [annoProspetto, setAnnoProspetto] = useState<number>(() => getCurrentYearItaly());
   const [meseDettaglioSelezionato, setMeseDettaglioSelezionato] = useState<RigaProspettoMensile | null>(null);
 
@@ -137,7 +151,7 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
   const [tesseraDaAnnullare, setTesseraDaAnnullare] = useState<TesseraAssociativa | null>(null);
   const [motivoAnnullamentoTessera, setMotivoAnnullamentoTessera] = useState('Dimissioni volontarie del socio');
 
-  // Modale Nuova Nota di Debito
+  // Modale Nuova Nota di Debito (con servizio collegato, voci editabili e scontistiche)
   const [modaleNuovaNotaAperta, setModaleNuovaNotaAperta] = useState(false);
   const [formNotaDebitore, setFormNotaDebitore] = useState('Azienda USL Toscana Nord Ovest');
   const [formNotaPiva, setFormNotaPiva] = useState('02198590503');
@@ -149,6 +163,51 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
   );
   const [formNotaMetodo, setFormNotaMetodo] = useState<string>(defaultMetodoNota);
   const [formNotaRiferimento, setFormNotaRiferimento] = useState('');
+  const [formServizioCollegatoId, setFormServizioCollegatoId] = useState<string>('');
+  const [formKmPercorsiServizio, setFormKmPercorsiServizio] = useState<number>(0);
+  const [formOreImpiegoServizio, setFormOreImpiegoServizio] = useState<number>(0);
+  const [formProprietarioImmobile, setFormProprietarioImmobile] = useState<ProprietarioImmobileData>({
+    nomeCognome: '',
+    codiceFiscale: '',
+    indirizzoResidenza: ''
+  });
+  const [mostraSezioneProprietario, setMostraSezioneProprietario] = useState(false);
+  const [formVociDettaglio, setFormVociDettaglio] = useState<VoceNotaDiDebito[]>([]);
+  const [formScontoTipo, setFormScontoTipo] = useState<'nessuno' | 'percentuale' | 'fisso'>('nessuno');
+  const [formScontoValore, setFormScontoValore] = useState<number>(0);
+  const [formScontoDescrizione, setFormScontoDescrizione] = useState<string>('');
+
+  // Stato Costi di Servizio (Sotto-sezione 5)
+  const [costiServizioLocali, setCostiServizioLocali] = useState<TariffaCostoServizio[]>(() => {
+    try {
+      const saved = localStorage.getItem('croceoro_costi_servizio_v1');
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return TARIFFE_COSTI_SERVIZIO_INIZIALI;
+  });
+  const tariffeCostiServizio: TariffaCostoServizio[] = React.useMemo(() => {
+    if (costiServizioProp && costiServizioProp.length > 0) return costiServizioProp;
+    return costiServizioLocali;
+  }, [costiServizioProp, costiServizioLocali]);
+
+  const salvaTariffeCostiServizio = (nuove: TariffaCostoServizio[]) => {
+    setCostiServizioLocali(nuove);
+    try {
+      localStorage.setItem('croceoro_costi_servizio_v1', JSON.stringify(nuove));
+    } catch {}
+    onAggiornaCostiServizio?.(nuove);
+  };
+
+  const [filtroCategoriaTariffa, setFiltroCategoriaTariffa] = useState<'tutti' | NonNullable<TariffaCostoServizio['categoria']>>('tutti');
+  const [editingTariffaId, setEditingTariffaId] = useState<string | null>(null);
+  const [formTariffaCategoria, setFormTariffaCategoria] = useState<NonNullable<TariffaCostoServizio['categoria']>>('mezzo_km');
+  const [formTariffaSigla, setFormTariffaSigla] = useState('');
+  const [formTariffaDescrizioneSigla, setFormTariffaDescrizioneSigla] = useState('');
+  const [formTariffaNome, setFormTariffaNome] = useState('');
+  const [formTariffaImporto, setFormTariffaImporto] = useState('0');
+  const [formTariffaUnita, setFormTariffaUnita] = useState('km');
+  const [formTariffaNote, setFormTariffaNote] = useState('');
+  const [confermaEliminaTariffaId, setConfermaEliminaTariffaId] = useState<string | null>(null);
 
   // Modale Anteprima Documento per Stampa (Tessera o Nota di Debito)
   const [documentoPerStampa, setDocumentoPerStampa] = useState<{ tipo: 'tessera' | 'nota'; data: any } | null>(null);
@@ -426,8 +485,204 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
   };
 
   // =========================================================================
-  // 3. GESTIONE NOTE DI DEBITO
+  // 3. GESTIONE NOTE DI DEBITO + CALCOLI SERVIZIO & SCONTISTICHE
   // =========================================================================
+  const calcolaOreServizio = (servizio: any): number => {
+    const startStr = (servizio?.tempi?.partenza || servizio?.oraInizioServizioSpecifico || '').trim();
+    const endStr = (servizio?.tempi?.rientro || servizio?.tempi?.fineMissione || '').trim();
+    const parseMins = (t: string): number | null => {
+      const m = /^(\d{1,2}):(\d{2})/.exec(t);
+      if (!m) return null;
+      return parseInt(m[1], 10) * 60 + parseInt(m[2], 10);
+    };
+    const sMin = parseMins(startStr);
+    const eMin = parseMins(endStr);
+    if (sMin !== null && eMin !== null) {
+      let diff = eMin - sMin;
+      if (diff < 0) diff += 24 * 60;
+      return Math.round((diff / 60) * 100) / 100;
+    }
+    return 1;
+  };
+
+  const calcoliNotaCorrente = React.useMemo(() => {
+    const round2 = (v: number) => Math.round((Number(v) || 0) * 100) / 100;
+    const hasVoci = formVociDettaglio.length > 0;
+    const imponibileLordo = hasVoci
+      ? round2(formVociDettaglio.reduce((acc, v) => acc + (Number(v.totaleRiga) || 0), 0))
+      : round2(Number(formNotaImporto) || 0);
+    const scontoVal = Math.max(0, Number(formScontoValore) || 0);
+    let scontoCalcolato = 0;
+    if (formScontoTipo === 'percentuale') {
+      scontoCalcolato = round2((imponibileLordo * Math.min(100, scontoVal)) / 100);
+    } else if (formScontoTipo === 'fisso') {
+      scontoCalcolato = round2(Math.min(imponibileLordo, scontoVal));
+    }
+    const totaleNetto = Math.max(0, round2(imponibileLordo - scontoCalcolato));
+    return {
+      hasVoci,
+      imponibileLordo,
+      scontoCalcolato,
+      totaleNetto
+    };
+  }, [formVociDettaglio, formNotaImporto, formScontoTipo, formScontoValore]);
+
+  const handleSelezionaServizioPerNota = (servizioId: string) => {
+    setFormServizioCollegatoId(servizioId);
+    if (!servizioId) {
+      setFormKmPercorsiServizio(0);
+      setFormOreImpiegoServizio(0);
+      return;
+    }
+    const srv = serviziArchivio.find((s) => (s.id || s.codice) === servizioId);
+    if (!srv) return;
+
+    const kmSrv = srv.kmTotali != null
+      ? Number(srv.kmTotali)
+      : (srv.kmFine != null && srv.kmInizio != null ? Math.max(0, Number(srv.kmFine) - Number(srv.kmInizio)) : 0);
+    const oreSrv = calcolaOreServizio(srv);
+
+    setFormNotaRiferimento(srv.codice || servizioId);
+    setFormKmPercorsiServizio(isNaN(kmSrv) ? 0 : kmSrv);
+    setFormOreImpiegoServizio(isNaN(oreSrv) ? 0 : oreSrv);
+
+    const descServ = [
+      srv.tipoServizio || 'Servizio Operativo',
+      srv.codice ? `Rif. ${srv.codice}` : '',
+      srv.data ? `del ${srv.data}` : '',
+      srv.mezzo ? `Mezzo ${srv.mezzo}` : '',
+      srv.indirizzoIntervento ? `(${srv.indirizzoIntervento})` : ''
+    ].filter(Boolean).join(' ');
+    setFormNotaCausale(descServ);
+
+    if (srv.proprietarioImmobile && (srv.proprietarioImmobile.nomeCognome || srv.proprietarioImmobile.codiceFiscale || srv.proprietarioImmobile.indirizzoResidenza)) {
+      setFormProprietarioImmobile({
+        nomeCognome: srv.proprietarioImmobile.nomeCognome || '',
+        codiceFiscale: srv.proprietarioImmobile.codiceFiscale || '',
+        indirizzoResidenza: srv.proprietarioImmobile.indirizzoResidenza || ''
+      });
+      setMostraSezioneProprietario(true);
+      if (srv.proprietarioImmobile.nomeCognome) setFormNotaDebitore(srv.proprietarioImmobile.nomeCognome);
+      if (srv.proprietarioImmobile.codiceFiscale) setFormNotaPiva(srv.proprietarioImmobile.codiceFiscale);
+      if (srv.proprietarioImmobile.indirizzoResidenza) setFormNotaIndirizzo(srv.proprietarioImmobile.indirizzoResidenza);
+    }
+  };
+
+  const handleAggiungiTariffaANota = (t: TariffaCostoServizio) => {
+    const cat = t.categoria || t.tipoVoce;
+    const qta = cat === 'mezzo_km'
+      ? (formKmPercorsiServizio > 0 ? formKmPercorsiServizio : 1)
+      : cat === 'operatore'
+      ? (formOreImpiegoServizio > 0 ? formOreImpiegoServizio : 1)
+      : 1;
+    const round2 = (v: number) => Math.round(v * 100) / 100;
+    const tot = round2(qta * t.importoUnitario);
+    const nuovaVoce: VoceNotaDiDebito = {
+      id: `voce-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      siglaBreve: t.siglaBreve,
+      descrizioneSigla: t.descrizioneSigla,
+      descrizioneVoce: t.nomeVoce,
+      descrizione: t.nomeVoce,
+      quantita: qta,
+      unitaMisura: t.unitaMisura,
+      prezzoUnitario: t.importoUnitario,
+      subtotale: tot,
+      totaleRiga: tot,
+      editabile: true,
+      modificabile: true,
+      tariffaId: t.id
+    };
+    setFormVociDettaglio((prev) => [...prev, nuovaVoce]);
+  };
+
+  const handleAggiungiVoceEditabileNota = () => {
+    const nuovaVoce: VoceNotaDiDebito = {
+      id: `voce-edit-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      siglaBreve: 'EXTRA',
+      descrizioneSigla: 'Voce personalizzata editabile',
+      descrizioneVoce: 'Descrizione prestazione o rimborso spese',
+      descrizione: 'Descrizione prestazione o rimborso spese',
+      quantita: 1,
+      unitaMisura: 'servizio',
+      prezzoUnitario: 0,
+      subtotale: 0,
+      totaleRiga: 0,
+      editabile: true,
+      modificabile: true,
+      completamenteEditabile: true
+    };
+    setFormVociDettaglio((prev) => [...prev, nuovaVoce]);
+  };
+
+  const handleAggiornaVoceNota = (id: string, patch: Partial<VoceNotaDiDebito>) => {
+    setFormVociDettaglio((prev) =>
+      prev.map((v) => {
+        if (v.id !== id) return v;
+        const merged = { ...v, ...patch };
+        if (patch.descrizioneVoce !== undefined) merged.descrizione = patch.descrizioneVoce;
+        const qta = Number(merged.quantita) || 0;
+        const pu = Number(merged.prezzoUnitario) || 0;
+        const tot = Math.round(qta * pu * 100) / 100;
+        merged.totaleRiga = tot;
+        merged.subtotale = tot;
+        return merged;
+      })
+    );
+  };
+
+  const handleSalvaTariffaCosto = (e: React.FormEvent) => {
+    e.preventDefault();
+    const imp = parseFloat((formTariffaImporto || '0').replace(',', '.'));
+    if (!formTariffaSigla.trim() || !formTariffaDescrizioneSigla.trim() || !formTariffaNome.trim() || isNaN(imp) || imp < 0) {
+      mostraAvviso('Compila sigla breve, descrizione sigla, nome voce ed un importo valido (>= 0).');
+      return;
+    }
+
+    if (editingTariffaId) {
+      const aggiornate = tariffeCostiServizio.map((t) =>
+        t.id === editingTariffaId
+          ? {
+              ...t,
+              tipoVoce: formTariffaCategoria,
+              categoria: formTariffaCategoria,
+              siglaBreve: formTariffaSigla.trim().toUpperCase(),
+              descrizioneSigla: formTariffaDescrizioneSigla.trim(),
+              nomeVoce: formTariffaNome.trim(),
+              importoUnitario: Math.round(imp * 100) / 100,
+              unitaMisura: formTariffaUnita.trim() || 'cad',
+              note: formTariffaNote.trim() || undefined
+            }
+          : t
+      );
+      salvaTariffeCostiServizio(aggiornate);
+      mostraAvviso(`Voce tariffaria ${formTariffaSigla.trim().toUpperCase()} aggiornata.`);
+    } else {
+      const nuova: TariffaCostoServizio = {
+        id: `tar-${Date.now()}`,
+        tipoVoce: formTariffaCategoria,
+        categoria: formTariffaCategoria,
+        siglaBreve: formTariffaSigla.trim().toUpperCase(),
+        descrizioneSigla: formTariffaDescrizioneSigla.trim(),
+        nomeVoce: formTariffaNome.trim(),
+        importoUnitario: Math.round(imp * 100) / 100,
+        unitaMisura: formTariffaUnita.trim() || 'cad',
+        attivo: true,
+        attiva: true,
+        note: formTariffaNote.trim() || undefined
+      };
+      salvaTariffeCostiServizio([...tariffeCostiServizio, nuova]);
+      mostraAvviso(`Nuova voce tariffaria ${nuova.siglaBreve} aggiunta in Costi di Servizio.`);
+    }
+
+    setEditingTariffaId(null);
+    setFormTariffaSigla('');
+    setFormTariffaDescrizioneSigla('');
+    setFormTariffaNome('');
+    setFormTariffaImporto('0');
+    setFormTariffaUnita('km');
+    setFormTariffaNote('');
+  };
+
   const handleEmettiNotaDiDebito = (e: React.FormEvent) => {
     e.preventDefault();
     const isPoste = formNotaMetodo.includes('Poste') || formNotaMetodo.includes('00001007035676') || formNotaMetodo.includes('C/C Postale');
@@ -436,6 +691,12 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
     const contoAccredito = isPoste ? 'Poste Italiane' : isCredit ? 'Credit Agricole' : 'Altro';
     const ibanAccredito = isPoste ? ibanPoste : isCredit ? ibanCreditAgricole : undefined;
     const ccPostaleAccredito = isPoste ? ccPostale : undefined;
+
+    const haPropImmobile = Boolean(
+      formProprietarioImmobile.nomeCognome.trim() ||
+      formProprietarioImmobile.codiceFiscale.trim() ||
+      formProprietarioImmobile.indirizzoResidenza.trim()
+    );
 
     const nuovaNota: NotaDiDebito = {
       id: `nd-${Date.now()}`,
@@ -446,7 +707,23 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
       indirizzoDebitore: formNotaIndirizzo.trim(),
       causale: formNotaCausale.trim(),
       codiceServizioRiferimento: formNotaRiferimento.trim() || undefined,
-      importoTotale: Number(formNotaImporto),
+      servizioCollegatoId: formServizioCollegatoId || undefined,
+      kmPercorsiServizio: formServizioCollegatoId || formKmPercorsiServizio > 0 ? Number(formKmPercorsiServizio) : undefined,
+      oreImpiegoServizio: formServizioCollegatoId || formOreImpiegoServizio > 0 ? Number(formOreImpiegoServizio) : undefined,
+      proprietarioImmobile: haPropImmobile
+        ? {
+            nomeCognome: formProprietarioImmobile.nomeCognome.trim(),
+            codiceFiscale: formProprietarioImmobile.codiceFiscale.trim().toUpperCase(),
+            indirizzoResidenza: formProprietarioImmobile.indirizzoResidenza.trim()
+          }
+        : undefined,
+      vociDettaglio: formVociDettaglio.length > 0 ? formVociDettaglio : undefined,
+      imponibileLordo: calcoliNotaCorrente.imponibileLordo,
+      scontoTipo: formScontoTipo !== 'nessuno' ? formScontoTipo : undefined,
+      scontoValore: formScontoTipo !== 'nessuno' ? Number(formScontoValore) || 0 : undefined,
+      scontoDescrizione: formScontoTipo !== 'nessuno' ? (formScontoDescrizione.trim() || 'Scontistica applicata') : undefined,
+      scontoImportoCalcolato: calcoliNotaCorrente.scontoCalcolato > 0 ? calcoliNotaCorrente.scontoCalcolato : undefined,
+      importoTotale: calcoliNotaCorrente.totaleNetto,
       scadenzaPagamento: formNotaScadenza,
       metodoPagamento: formNotaMetodo,
       contoAccredito,
@@ -604,7 +881,8 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
         mostraAvviso(`Errore nella stampa della nota di debito: ${err?.message || 'Errore'}`);
       }
     } else {
-      window.print();
+      const nomeFile = scaricaProspettoCommercialistaCSV(prospettoCommercialista);
+      mostraAvviso(`Prospetto esportato: ${nomeFile}`);
     }
   };
 
@@ -718,7 +996,7 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
                 Macro Categoria 4
               </span>
               <h2 className="text-xl font-black text-white uppercase tracking-wide">
-                Database Contabilità, Tesseramento & Note di Debito
+                {useTitoloDatabase('contabilita', 'Database Contabilità, Tesseramento & Note di Debito')}
               </h2>
             </div>
             <p className="text-xs text-slate-300 mt-0.5">
@@ -780,7 +1058,7 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
         <button
           type="button"
           onClick={() => setSottoTab('commercialista')}
-          className={`px-4 py-2.5 rounded-xl text-xs font-black uppercase flex items-center gap-2 transition-all cursor-pointer ${
+          className={`px-4 py-2.5 rounded-xl text-xs font-black uppercase flex items-center gap-2 transition-all cursor-pointer shrink-0 ${
             sottoTab === 'commercialista'
               ? 'bg-purple-600 text-white shadow-lg shadow-purple-600/30 border border-purple-400 font-black'
               : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
@@ -788,6 +1066,19 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
         >
           <FileSpreadsheet className="w-4 h-4 text-emerald-400" />
           <span>4. Prospetto Mensile Commercialista</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setSottoTab('costiServizio')}
+          className={`px-4 py-2.5 rounded-xl text-xs font-black uppercase flex items-center gap-2 transition-all cursor-pointer shrink-0 ${
+            sottoTab === 'costiServizio'
+              ? 'bg-purple-600 text-white shadow-lg shadow-purple-600/30 border border-purple-400 font-black'
+              : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
+          }`}
+        >
+          <Tag className="w-4 h-4 text-amber-400" />
+          <span>5. Costi di Servizio ({tariffeCostiServizio.length})</span>
         </button>
       </div>
 
@@ -1189,6 +1480,15 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
                 setFormNotaScadenza(addDaysISODate(formatISODateItaly(), 30));
                 setFormNotaMetodo(defaultMetodoNota);
                 setFormNotaRiferimento('');
+                setFormServizioCollegatoId('');
+                setFormKmPercorsiServizio(0);
+                setFormOreImpiegoServizio(0);
+                setFormProprietarioImmobile({ nomeCognome: '', codiceFiscale: '', indirizzoResidenza: '' });
+                setMostraSezioneProprietario(false);
+                setFormVociDettaglio([]);
+                setFormScontoTipo('nessuno');
+                setFormScontoValore(0);
+                setFormScontoDescrizione('');
                 setModaleNuovaNotaAperta(true);
               }}
               className="px-3.5 py-2 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs uppercase flex items-center gap-1.5 shadow-md active:scale-95 cursor-pointer"
@@ -1457,18 +1757,19 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
                 <span>Esporta CSV (Excel)</span>
               </button>
 
-              {/* Tasto Stampa Documento Ufficiale */}
+              {/* Tasto Stampa / Esporta Prospetto Commercialista */}
               <button
                 type="button"
                 onClick={() => {
-                  window.print();
-                  mostraAvviso('Aperta finestra di stampa per il prospetto del commercialista.');
+                  const nomeFile = scaricaProspettoCommercialistaCSV(prospettoCommercialista);
+                  onNotificaRadio?.(`📊 PROSPETTO COMMERCIALISTA ESPORTATO: Salvato ${nomeFile} per l'anno ${annoProspetto}`, 'sistema');
+                  mostraAvviso(`Prospetto contabile ${annoProspetto} scaricato (${nomeFile}) pronto per stampa o importazione.`);
                 }}
                 className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white border border-slate-700 font-black text-xs uppercase flex items-center gap-1.5 transition-colors cursor-pointer"
-                title="Stampa o salva in PDF il prospetto per il commercialista"
+                title="Esporta il prospetto contabile mensile per il commercialista"
               >
                 <Printer className="w-4 h-4 text-purple-400" />
-                <span>Stampa / PDF</span>
+                <span>Stampa / Esporta</span>
               </button>
             </div>
           </div>
@@ -1805,6 +2106,315 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
               >
                 Chiudi
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ===================================================================== */}
+      {/* 5. SOTTO-TAB: COSTI DI SERVIZIO (TARIFFARIO, SIGLE & DESCRIZIONI)      */}
+      {/* ===================================================================== */}
+      {sottoTab === 'costiServizio' && (
+        <div className="space-y-4">
+          <div className="bg-slate-900 p-4 sm:p-5 rounded-2xl border border-slate-800 flex flex-col md:flex-row items-start md:items-center justify-between gap-4 shadow-xl">
+            <div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-[10px] font-black uppercase px-2.5 py-0.5 rounded-full bg-amber-500 text-slate-950">
+                  Tariffario Ufficiale Servizi
+                </span>
+                <span className="text-xs font-mono text-purple-300 font-bold">
+                  Sigla Breve + Descrizione Affiancate
+                </span>
+              </div>
+              <h3 className="text-base font-black text-white uppercase tracking-wide flex items-center gap-2 mt-1">
+                <Tag className="w-5 h-5 text-amber-400" />
+                <span>Costi di Servizio (Mezzo/KM, Uscita Mezzo, Operatori & Voci Editabili)</span>
+              </h3>
+              <p className="text-xs text-slate-400 mt-0.5 max-w-3xl">
+                Configura i parametri tariffari e le sigle brevi con relativa descrizione. Le voci saranno richiamabili automaticamente in fase di emissione Nota di Debito.
+              </p>
+            </div>
+            <div className="flex items-center gap-2 flex-wrap">
+              {(['tutti', 'mezzo_km', 'uscita_mezzo', 'operatore', 'editabile'] as const).map((cat) => (
+                <button
+                  key={cat}
+                  type="button"
+                  onClick={() => setFiltroCategoriaTariffa(cat)}
+                  className={`px-2.5 py-1.5 rounded-xl text-[11px] font-bold uppercase cursor-pointer border transition-all ${
+                    filtroCategoriaTariffa === cat
+                      ? 'bg-purple-600 text-white border-purple-400'
+                      : 'bg-slate-950 text-slate-400 border-slate-800 hover:text-white'
+                  }`}
+                >
+                  {cat === 'tutti'
+                    ? 'Tutte'
+                    : cat === 'mezzo_km'
+                    ? 'Mezzo al KM'
+                    : cat === 'uscita_mezzo'
+                    ? 'Uscita Mezzo'
+                    : cat === 'operatore'
+                    ? 'Operatori'
+                    : 'Voci Editabili'}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Form Aggiunta / Modifica Voce Tariffaria */}
+          <form onSubmit={handleSalvaTariffaCosto} className="bg-slate-950 p-4 rounded-2xl border border-purple-500/40 space-y-3 shadow-lg">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+              <span className="text-xs font-black text-white uppercase flex items-center gap-1.5">
+                <SlidersHorizontal className="w-4 h-4 text-purple-400" />
+                <span>{editingTariffaId ? 'Modifica Voce Tariffaria Selezionata' : 'Aggiungi Nuova Voce / Tariffa di Servizio'}</span>
+              </span>
+              {editingTariffaId && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditingTariffaId(null);
+                    setFormTariffaSigla('');
+                    setFormTariffaDescrizioneSigla('');
+                    setFormTariffaNome('');
+                    setFormTariffaImporto('0');
+                    setFormTariffaUnita('km');
+                    setFormTariffaNote('');
+                  }}
+                  className="text-[11px] text-slate-400 hover:text-white underline cursor-pointer"
+                >
+                  Annulla modifica
+                </button>
+              )}
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-12 gap-3 text-xs">
+              <div className="md:col-span-3">
+                <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">Categoria Costo *</label>
+                <select
+                  value={formTariffaCategoria}
+                  onChange={(e) => {
+                    const c = e.target.value as NonNullable<TariffaCostoServizio['categoria']>;
+                    setFormTariffaCategoria(c);
+                    if (!editingTariffaId) {
+                      setFormTariffaUnita(c === 'mezzo_km' ? 'km' : c === 'operatore' ? 'ora' : c === 'uscita_mezzo' ? 'uscita' : 'servizio');
+                    }
+                  }}
+                  className="w-full p-2.5 rounded-xl bg-slate-900 border border-slate-700 text-white focus:border-purple-500 focus:outline-none"
+                >
+                  <option value="mezzo_km">Costo Mezzo al KM</option>
+                  <option value="uscita_mezzo">Costo Uscita Mezzo</option>
+                  <option value="operatore">Costo Operatori / Equipaggio</option>
+                  <option value="editabile">Voce Editabile / Personalizzata</option>
+                </select>
+              </div>
+
+              {/* Campi affiancati: Sigla breve + Descrizione della sigla */}
+              <div className="md:col-span-2">
+                <label className="block text-[10px] font-bold text-amber-300 uppercase mb-1">Sigla Breve *</label>
+                <input
+                  type="text"
+                  required
+                  maxLength={16}
+                  placeholder="es. KM-AMB"
+                  value={formTariffaSigla}
+                  onChange={(e) => setFormTariffaSigla(e.target.value.toUpperCase())}
+                  className="w-full p-2.5 rounded-xl bg-slate-900 border border-amber-500/50 text-amber-300 font-mono font-black uppercase focus:border-amber-400 focus:outline-none"
+                />
+              </div>
+
+              <div className="md:col-span-4">
+                <label className="block text-[10px] font-bold text-amber-300 uppercase mb-1">Descrizione della Sigla *</label>
+                <input
+                  type="text"
+                  required
+                  placeholder="es. Tariffa chilometrica percorrenza ambulanza"
+                  value={formTariffaDescrizioneSigla}
+                  onChange={(e) => setFormTariffaDescrizioneSigla(e.target.value)}
+                  className="w-full p-2.5 rounded-xl bg-slate-900 border border-amber-500/50 text-white focus:border-amber-400 focus:outline-none"
+                />
+              </div>
+
+              <div className="md:col-span-3">
+                <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">Nome Voce in Tabella *</label>
+                <input
+                  type="text"
+                  required
+                  placeholder="es. Costo Mezzo al KM"
+                  value={formTariffaNome}
+                  onChange={(e) => setFormTariffaNome(e.target.value)}
+                  className="w-full p-2.5 rounded-xl bg-slate-900 border border-slate-700 text-white focus:border-purple-500 focus:outline-none"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-12 gap-3 text-xs items-end">
+              <div className="md:col-span-2">
+                <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">Importo Unitario (€) *</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  required
+                  value={formTariffaImporto}
+                  onChange={(e) => setFormTariffaImporto(e.target.value)}
+                  className="w-full p-2.5 rounded-xl bg-slate-900 border border-slate-700 text-emerald-400 font-mono font-bold focus:border-purple-500 focus:outline-none"
+                />
+              </div>
+              <div className="md:col-span-2">
+                <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">Unità Misura *</label>
+                <input
+                  type="text"
+                  required
+                  placeholder="km / ora / uscita"
+                  value={formTariffaUnita}
+                  onChange={(e) => setFormTariffaUnita(e.target.value)}
+                  className="w-full p-2.5 rounded-xl bg-slate-900 border border-slate-700 text-white font-mono focus:border-purple-500 focus:outline-none"
+                />
+              </div>
+              <div className="md:col-span-5">
+                <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">Note Applicative (opzionale)</label>
+                <input
+                  type="text"
+                  placeholder="Eventuali annotazioni contrattuali"
+                  value={formTariffaNote}
+                  onChange={(e) => setFormTariffaNote(e.target.value)}
+                  className="w-full p-2.5 rounded-xl bg-slate-900 border border-slate-700 text-white focus:border-purple-500 focus:outline-none"
+                />
+              </div>
+              <div className="md:col-span-3 flex justify-end">
+                <button
+                  type="submit"
+                  className="w-full py-2.5 px-4 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-black uppercase text-xs flex items-center justify-center gap-1.5 shadow-md active:scale-95 cursor-pointer"
+                >
+                  <Save className="w-4 h-4" />
+                  <span>{editingTariffaId ? 'Aggiorna Voce' : 'Salva Voce Costo'}</span>
+                </button>
+              </div>
+            </div>
+          </form>
+
+          {/* Tabella Costi di Servizio */}
+          <div className="bg-slate-950 rounded-2xl border border-slate-800 overflow-hidden shadow-xl">
+            <div className="overflow-x-auto">
+              <table className="w-full text-left border-collapse text-xs">
+                <thead>
+                  <tr className="bg-slate-900/90 text-slate-400 uppercase text-[10px] font-black border-b border-slate-800">
+                    <th className="py-3 px-4">Categoria</th>
+                    <th className="py-3 px-4">Sigla Breve &rarr; Descrizione della Sigla</th>
+                    <th className="py-3 px-4">Nome Voce</th>
+                    <th className="py-3 px-4 font-mono">Importo / Unità</th>
+                    <th className="py-3 px-4">Stato</th>
+                    <th className="py-3 px-4 text-right">Azioni</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800/60">
+                  {tariffeCostiServizio
+                    .filter((t) => filtroCategoriaTariffa === 'tutti' || (t.categoria || t.tipoVoce) === filtroCategoriaTariffa)
+                    .map((t) => {
+                      const catEff = t.categoria || t.tipoVoce || 'editabile';
+                      const isAct = t.attiva ?? t.attivo ?? true;
+                      return (
+                      <tr key={t.id} className="hover:bg-slate-900/50 transition-colors">
+                        <td className="py-3 px-4">
+                          <span className="px-2 py-0.5 rounded-md bg-slate-900 border border-slate-700 text-[10px] font-bold uppercase text-purple-300">
+                            {catEff === 'mezzo_km'
+                              ? 'Mezzo/KM'
+                              : catEff === 'uscita_mezzo'
+                              ? 'Uscita Mezzo'
+                              : catEff === 'operatore'
+                              ? 'Operatore'
+                              : 'Editabile'}
+                          </span>
+                        </td>
+                        <td className="py-3 px-4">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="font-mono font-black text-amber-300 bg-amber-950/60 border border-amber-500/40 px-2 py-0.5 rounded">
+                              {t.siglaBreve}
+                            </span>
+                            <span className="text-slate-200 font-medium">{t.descrizioneSigla}</span>
+                          </div>
+                        </td>
+                        <td className="py-3 px-4">
+                          <div className="font-bold text-white">{t.nomeVoce}</div>
+                          {t.note && <div className="text-[10px] text-slate-400 italic">{t.note}</div>}
+                        </td>
+                        <td className="py-3 px-4 font-mono font-black text-emerald-400">
+                          € {t.importoUnitario.toFixed(2)} <span className="text-slate-400 text-[10px]">/ {t.unitaMisura}</span>
+                        </td>
+                        <td className="py-3 px-4">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              salvaTariffeCostiServizio(
+                                tariffeCostiServizio.map((x) => (x.id === t.id ? { ...x, attiva: !isAct, attivo: !isAct } : x))
+                              )
+                            }
+                            className={`px-2 py-0.5 rounded-full text-[10px] font-black uppercase cursor-pointer border ${
+                              isAct
+                                ? 'bg-emerald-950 text-emerald-300 border-emerald-700/50'
+                                : 'bg-slate-900 text-slate-500 border-slate-700'
+                            }`}
+                          >
+                            {isAct ? 'Attiva' : 'Disattivata'}
+                          </button>
+                        </td>
+                        <td className="py-3 px-4 text-right">
+                          <div className="flex items-center justify-end gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setEditingTariffaId(t.id);
+                                setFormTariffaCategoria(catEff);
+                                setFormTariffaSigla(t.siglaBreve);
+                                setFormTariffaDescrizioneSigla(t.descrizioneSigla);
+                                setFormTariffaNome(t.nomeVoce);
+                                setFormTariffaImporto(String(t.importoUnitario));
+                                setFormTariffaUnita(t.unitaMisura);
+                                setFormTariffaNote(t.note || '');
+                              }}
+                              className="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-[11px] flex items-center gap-1 cursor-pointer"
+                            >
+                              <Edit3 className="w-3 h-3" />
+                              <span>Modifica</span>
+                            </button>
+
+                            {confermaEliminaTariffaId === t.id ? (
+                              <div className="flex items-center gap-1">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    salvaTariffeCostiServizio(tariffeCostiServizio.filter((x) => x.id !== t.id));
+                                    setConfermaEliminaTariffaId(null);
+                                    mostraAvviso(`Voce ${t.siglaBreve} rimossa.`);
+                                  }}
+                                  className="px-2 py-1 rounded-lg bg-red-600 hover:bg-red-500 text-white font-bold text-[10px] cursor-pointer"
+                                >
+                                  Conferma
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setConfermaEliminaTariffaId(null)}
+                                  className="px-2 py-1 rounded-lg bg-slate-800 text-slate-300 font-bold text-[10px] cursor-pointer"
+                                >
+                                  No
+                                </button>
+                              </div>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => setConfermaEliminaTariffaId(t.id)}
+                                className="p-1.5 rounded-lg bg-red-950/70 hover:bg-red-900 text-red-400 hover:text-white border border-red-800/60 cursor-pointer"
+                                title="Elimina voce tariffaria"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
             </div>
           </div>
         </div>
@@ -2236,6 +2846,106 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
             {/* Form con corpo scrollabile su PC e Mobile */}
             <form onSubmit={handleEmettiNotaDiDebito} className="flex flex-col flex-1 min-h-0 mt-3">
               <div className="flex-1 overflow-y-auto pr-1 sm:pr-2 space-y-3.5 text-xs py-1 overscroll-contain">
+                {/* COLLEGAMENTO A SERVIZIO SVOLTO IN ARCHIVIO */}
+                <div className="bg-slate-950/90 border border-purple-500/40 rounded-2xl p-3 space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <label className="text-[11px] font-black uppercase text-purple-300 flex items-center gap-1.5">
+                      <Link2 className="w-3.5 h-3.5 text-purple-400" />
+                      <span>Collega Servizio Svolto (Recupera KM, Ore & Proprietario)</span>
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => setMostraSezioneProprietario((v) => !v)}
+                      className="text-[10px] font-bold text-amber-300 hover:text-amber-200 underline cursor-pointer"
+                    >
+                      {mostraSezioneProprietario ? 'Nascondi Proprietario Immobile' : '+ Dati Proprietario Immobile'}
+                    </button>
+                  </div>
+
+                  <select
+                    value={formServizioCollegatoId}
+                    onChange={(e) => handleSelezionaServizioPerNota(e.target.value)}
+                    className="w-full p-2 rounded-xl bg-slate-900 border border-slate-700 text-white text-xs cursor-pointer focus:border-purple-500 focus:outline-none"
+                  >
+                    <option value="">-- Nessun servizio collegato (Compilazione manuale) --</option>
+                    {(serviziArchivio || []).map((s) => {
+                      const sid = s.id || s.codice;
+                      const km = s.kmTotali != null ? Number(s.kmTotali) : (s.kmFine != null && s.kmInizio != null ? Math.max(0, Number(s.kmFine) - Number(s.kmInizio)) : 0);
+                      return (
+                        <option key={sid} value={sid}>
+                          [{s.codice || sid}] {s.data || ''} - {s.tipoServizio || 'Servizio'} ({s.mezzo || 'N/D'}) • {km} km
+                        </option>
+                      );
+                    })}
+                  </select>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">Codice Servizio</label>
+                      <input
+                        type="text"
+                        value={formNotaRiferimento}
+                        onChange={(e) => setFormNotaRiferimento(e.target.value)}
+                        placeholder="es. SRV-2026-01"
+                        className="w-full p-2 rounded-xl bg-slate-900 border border-slate-700 text-amber-300 font-mono"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">KM Percorsi (Modificabili)</label>
+                      <input
+                        type="number"
+                        step="0.1"
+                        min="0"
+                        value={formKmPercorsiServizio}
+                        onChange={(e) => setFormKmPercorsiServizio(Math.max(0, Number(e.target.value) || 0))}
+                        className="w-full p-2 rounded-xl bg-slate-900 border border-slate-700 text-emerald-300 font-mono font-bold"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">Ore Impiego (Modificabili)</label>
+                      <input
+                        type="number"
+                        step="0.25"
+                        min="0"
+                        value={formOreImpiegoServizio}
+                        onChange={(e) => setFormOreImpiegoServizio(Math.max(0, Number(e.target.value) || 0))}
+                        className="w-full p-2 rounded-xl bg-slate-900 border border-slate-700 text-cyan-300 font-mono font-bold"
+                      />
+                    </div>
+                  </div>
+
+                  {mostraSezioneProprietario && (
+                    <div className="p-2.5 rounded-xl bg-amber-950/30 border border-amber-500/40 space-y-2">
+                      <div className="text-[10px] font-black uppercase text-amber-300">
+                        Dati Proprietario Immobile (Atto Esecutivo)
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        <input
+                          type="text"
+                          placeholder="Nome e Cognome Proprietario"
+                          value={formProprietarioImmobile.nomeCognome}
+                          onChange={(e) => setFormProprietarioImmobile((p) => ({ ...p, nomeCognome: e.target.value }))}
+                          className="w-full p-2 rounded-lg bg-slate-900 border border-slate-700 text-white"
+                        />
+                        <input
+                          type="text"
+                          placeholder="Codice Fiscale Proprietario"
+                          value={formProprietarioImmobile.codiceFiscale}
+                          onChange={(e) => setFormProprietarioImmobile((p) => ({ ...p, codiceFiscale: e.target.value.toUpperCase() }))}
+                          className="w-full p-2 rounded-lg bg-slate-900 border border-slate-700 text-white font-mono uppercase"
+                        />
+                      </div>
+                      <input
+                        type="text"
+                        placeholder="Indirizzo di Residenza Proprietario"
+                        value={formProprietarioImmobile.indirizzoResidenza}
+                        onChange={(e) => setFormProprietarioImmobile((p) => ({ ...p, indirizzoResidenza: e.target.value }))}
+                        className="w-full p-2 rounded-lg bg-slate-900 border border-slate-700 text-white"
+                      />
+                    </div>
+                  )}
+                </div>
+
                 <div>
                   <div className="flex items-center justify-between mb-1">
                     <label className="text-slate-400 font-bold">Debitore / Ente Intestatario *</label>
@@ -2296,20 +3006,28 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
                     />
                   </div>
                   <div>
-                    <label className="block text-slate-400 font-bold mb-1">Importo Totale (€) *</label>
-                    <input
-                      type="number"
-                      step="0.01"
-                      required
-                      value={formNotaImporto}
-                      onChange={(e) => setFormNotaImporto(Number(e.target.value))}
-                      className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-700 text-purple-400 font-mono font-bold focus:outline-none focus:border-purple-500"
-                    />
+                    <label className="block text-slate-400 font-bold mb-1">
+                      {calcoliNotaCorrente.hasVoci ? 'Totale Calcolato Netto (€)' : 'Importo Base (€) *'}
+                    </label>
+                    {calcoliNotaCorrente.hasVoci ? (
+                      <div className="w-full p-2.5 rounded-xl bg-slate-950 border border-emerald-500/50 text-emerald-400 font-mono font-black">
+                        € {calcoliNotaCorrente.totaleNetto.toFixed(2)}
+                      </div>
+                    ) : (
+                      <input
+                        type="number"
+                        step="0.01"
+                        required
+                        value={formNotaImporto}
+                        onChange={(e) => setFormNotaImporto(Number(e.target.value))}
+                        className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-700 text-purple-400 font-mono font-bold focus:outline-none focus:border-purple-500"
+                      />
+                    )}
                   </div>
                 </div>
 
                 <div>
-                  <label className="block text-slate-400 font-bold mb-1">Indirizzo Sede Debitore *</label>
+                  <label className="block text-slate-400 font-bold mb-1">Indirizzo Sede / Residenza Debitore *</label>
                   <input
                     type="text"
                     required
@@ -2330,6 +3048,154 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
                     className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white focus:outline-none focus:border-purple-500"
                     placeholder="es. Convenzione Trasporto Sanitario Ordinario Dialisi"
                   />
+                </div>
+
+                {/* VOCI TARIFFARIE & VOCI COMPLETAMENTE EDITABILI */}
+                <div className="bg-slate-950 border border-slate-800 rounded-2xl p-3 space-y-2.5">
+                  <div className="flex items-center justify-between flex-wrap gap-2">
+                    <span className="text-[11px] font-black uppercase text-amber-300 flex items-center gap-1.5">
+                      <Tag className="w-3.5 h-3.5" />
+                      <span>Voci Nota di Debito (Da Costi di Servizio o Editabili)</span>
+                    </span>
+                    <button
+                      type="button"
+                      onClick={handleAggiungiVoceEditabileNota}
+                      className="px-2.5 py-1 rounded-lg bg-amber-600 hover:bg-amber-500 text-white font-black text-[10px] uppercase cursor-pointer"
+                    >
+                      + Voce Completamente Editabile
+                    </button>
+                  </div>
+
+                  {/* Pulsanti Rapidi da Tariffario Costi di Servizio */}
+                  <div className="flex flex-wrap gap-1.5">
+                    {tariffeCostiServizio.filter((t) => (t.attiva ?? t.attivo ?? true)).map((t) => (
+                      <button
+                        key={t.id}
+                        type="button"
+                        onClick={() => handleAggiungiTariffaANota(t)}
+                        className="px-2 py-1 rounded-lg bg-slate-900 hover:bg-purple-950 border border-slate-700 hover:border-purple-500 text-[10px] text-slate-200 cursor-pointer flex items-center gap-1"
+                        title={t.descrizioneSigla}
+                      >
+                        <span className="font-mono font-black text-amber-300">{t.siglaBreve}</span>
+                        <span>{t.nomeVoce}</span>
+                        <span className="text-emerald-400 font-mono">€{t.importoUnitario.toFixed(2)}/{t.unitaMisura}</span>
+                      </button>
+                    ))}
+                  </div>
+
+                  {formVociDettaglio.length > 0 && (
+                    <div className="space-y-2 pt-1">
+                      {formVociDettaglio.map((v) => (
+                        <div key={v.id} className="p-2 rounded-xl bg-slate-900 border border-slate-800 space-y-1.5">
+                          <div className="grid grid-cols-12 gap-1.5 items-center">
+                            <input
+                              type="text"
+                              value={v.siglaBreve || ''}
+                              onChange={(e) => handleAggiornaVoceNota(v.id, { siglaBreve: e.target.value.toUpperCase() })}
+                              placeholder="Sigla"
+                              className="col-span-3 p-1.5 rounded-lg bg-slate-950 border border-amber-500/40 text-amber-300 font-mono font-bold text-[11px] uppercase"
+                            />
+                            <input
+                              type="text"
+                              value={v.descrizioneSigla || ''}
+                              onChange={(e) => handleAggiornaVoceNota(v.id, { descrizioneSigla: e.target.value })}
+                              placeholder="Descrizione sigla"
+                              className="col-span-8 p-1.5 rounded-lg bg-slate-950 border border-slate-700 text-slate-300 text-[11px]"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => setFormVociDettaglio((prev) => prev.filter((x) => x.id !== v.id))}
+                              className="col-span-1 p-1.5 rounded-lg bg-red-950 text-red-400 hover:text-white flex items-center justify-center cursor-pointer"
+                              title="Rimuovi riga"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                          <div className="grid grid-cols-12 gap-1.5 items-center">
+                            <input
+                              type="text"
+                              value={v.descrizioneVoce || v.descrizione || ''}
+                              onChange={(e) => handleAggiornaVoceNota(v.id, { descrizioneVoce: e.target.value })}
+                              placeholder="Descrizione voce prestazione"
+                              className="col-span-5 p-1.5 rounded-lg bg-slate-950 border border-slate-700 text-white text-[11px]"
+                            />
+                            <input
+                              type="number"
+                              step="0.1"
+                              min="0"
+                              value={v.quantita}
+                              onChange={(e) => handleAggiornaVoceNota(v.id, { quantita: Number(e.target.value) || 0 })}
+                              className="col-span-2 p-1.5 rounded-lg bg-slate-950 border border-slate-700 text-cyan-300 font-mono text-[11px]"
+                              title="Quantità"
+                            />
+                            <input
+                              type="text"
+                              value={v.unitaMisura || ''}
+                              onChange={(e) => handleAggiornaVoceNota(v.id, { unitaMisura: e.target.value })}
+                              className="col-span-2 p-1.5 rounded-lg bg-slate-950 border border-slate-700 text-slate-300 font-mono text-[11px]"
+                              placeholder="u.m."
+                            />
+                            <input
+                              type="number"
+                              step="0.01"
+                              min="0"
+                              value={v.prezzoUnitario}
+                              onChange={(e) => handleAggiornaVoceNota(v.id, { prezzoUnitario: Number(e.target.value) || 0 })}
+                              className="col-span-3 p-1.5 rounded-lg bg-slate-950 border border-slate-700 text-emerald-400 font-mono font-bold text-[11px]"
+                              title="Prezzo Unitario €"
+                            />
+                          </div>
+                          <div className="text-right text-[10px] font-mono text-emerald-400 font-bold">
+                            Totale Riga: € {Number(v.totaleRiga ?? v.subtotale ?? 0).toFixed(2)}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* SCONTISTICHE */}
+                  <div className="pt-2 border-t border-slate-800 space-y-2">
+                    <div className="text-[10px] font-black uppercase text-pink-300 flex items-center gap-1">
+                      <Percent className="w-3 h-3" />
+                      <span>Scontistiche & Convenzioni Applicabili</span>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                      <select
+                        value={formScontoTipo}
+                        onChange={(e) => setFormScontoTipo(e.target.value as any)}
+                        className="p-2 rounded-xl bg-slate-900 border border-slate-700 text-white"
+                      >
+                        <option value="nessuno">Nessuno sconto</option>
+                        <option value="percentuale">Sconto Percentuale (%)</option>
+                        <option value="fisso">Sconto Importo Fisso (€)</option>
+                      </select>
+                      {formScontoTipo !== 'nessuno' && (
+                        <>
+                          <input
+                            type="number"
+                            step="0.01"
+                            min="0"
+                            value={formScontoValore}
+                            onChange={(e) => setFormScontoValore(Math.max(0, Number(e.target.value) || 0))}
+                            placeholder={formScontoTipo === 'percentuale' ? '% Sconto' : '€ Sconto'}
+                            className="p-2 rounded-xl bg-slate-900 border border-pink-500/50 text-pink-300 font-mono font-bold"
+                          />
+                          <input
+                            type="text"
+                            value={formScontoDescrizione}
+                            onChange={(e) => setFormScontoDescrizione(e.target.value)}
+                            placeholder="Motivazione sconto"
+                            className="p-2 rounded-xl bg-slate-900 border border-slate-700 text-white"
+                          />
+                        </>
+                      )}
+                    </div>
+                    <div className="flex items-center justify-between text-[11px] font-mono bg-slate-900/90 px-3 py-2 rounded-xl border border-slate-800">
+                      <span className="text-slate-400">Lordo: € {calcoliNotaCorrente.imponibileLordo.toFixed(2)}</span>
+                      <span className="text-pink-400">Sconto: -€ {calcoliNotaCorrente.scontoCalcolato.toFixed(2)}</span>
+                      <span className="text-emerald-400 font-black">Netto Nota: € {calcoliNotaCorrente.totaleNetto.toFixed(2)}</span>
+                    </div>
+                  </div>
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -2714,19 +3580,75 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
 
               {documentoPerStampa.tipo === 'nota' && (
                 <div className="space-y-3 text-xs">
-                  <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200 space-y-2">
+                  <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200 space-y-2.5">
                     <div className="flex justify-between font-mono font-bold">
                       <span>Documento: {documentoPerStampa.data.numeroProgressivo}</span>
                       <span>Data: {documentoPerStampa.data.dataEmissione}</span>
                     </div>
                     <div>Spett.le: <strong>{documentoPerStampa.data.debitoreIntestatario}</strong></div>
-                    <div>P.IVA / CF: <strong className="font-mono">{documentoPerStampa.data.partitaIvaCodiceFiscale}</strong></div>
-                    <div>Indirizzo: {documentoPerStampa.data.indirizzoDebitore}</div>
+                    {documentoPerStampa.data.partitaIvaCodiceFiscale && (
+                      <div>P.IVA / CF: <strong className="font-mono">{documentoPerStampa.data.partitaIvaCodiceFiscale}</strong></div>
+                    )}
+                    {documentoPerStampa.data.indirizzoDebitore && (
+                      <div>Indirizzo: {documentoPerStampa.data.indirizzoDebitore}</div>
+                    )}
+                    {documentoPerStampa.data.proprietarioImmobile && (
+                      <div className="p-2.5 rounded-xl bg-amber-50 border border-amber-200 text-amber-950 space-y-0.5">
+                        <div className="font-bold text-[11px] uppercase">Dati Proprietario Immobile (Atto Esecutivo)</div>
+                        <div>Nome e Cognome: <strong>{documentoPerStampa.data.proprietarioImmobile.nomeCognome}</strong></div>
+                        {documentoPerStampa.data.proprietarioImmobile.codiceFiscale && (
+                          <div>Codice Fiscale: <strong className="font-mono">{documentoPerStampa.data.proprietarioImmobile.codiceFiscale}</strong></div>
+                        )}
+                        {documentoPerStampa.data.proprietarioImmobile.indirizzoResidenza && (
+                          <div>Residenza: {documentoPerStampa.data.proprietarioImmobile.indirizzoResidenza}</div>
+                        )}
+                      </div>
+                    )}
+                    {documentoPerStampa.data.codiceServizioRiferimento && (
+                      <div className="p-2 rounded-xl bg-indigo-50 border border-indigo-200 text-indigo-950 font-mono text-[11px] flex flex-wrap gap-3">
+                        <span>Servizio Collegato: <strong>{documentoPerStampa.data.codiceServizioRiferimento}</strong></span>
+                        {documentoPerStampa.data.kmPercorsiServizio !== undefined && (
+                          <span>KM: <strong>{documentoPerStampa.data.kmPercorsiServizio}</strong></span>
+                        )}
+                        {documentoPerStampa.data.oreImpiegoServizio !== undefined && (
+                          <span>Ore Impiego: <strong>{documentoPerStampa.data.oreImpiegoServizio}</strong></span>
+                        )}
+                      </div>
+                    )}
                     <div className="pt-2 border-t border-slate-200">
                       <span className="font-bold">Causale prestazione:</span>
                       <p className="mt-0.5">{documentoPerStampa.data.causale}</p>
                     </div>
-                    <div className="text-base font-black text-purple-900 pt-2 flex justify-between">
+                    {Array.isArray(documentoPerStampa.data.vociDettaglio) && documentoPerStampa.data.vociDettaglio.length > 0 && (
+                      <div className="pt-2 border-t border-slate-200 space-y-1">
+                        <span className="font-bold block text-[11px] uppercase text-slate-600">Dettaglio Voci Addebitate:</span>
+                        <div className="space-y-1">
+                          {documentoPerStampa.data.vociDettaglio.map((voce: VoceNotaDiDebito) => (
+                            <div key={voce.id} className="flex items-center justify-between gap-2 text-[11px] bg-white px-2.5 py-1.5 rounded-lg border border-slate-200">
+                              <div className="min-w-0">
+                                {(voce.siglaBreve || voce.sigla) && (
+                                  <span className="font-mono font-bold text-indigo-700 mr-1.5">[{voce.siglaBreve || voce.sigla}]</span>
+                                )}
+                                <span className="font-semibold text-slate-800">{voce.descrizioneVoce || voce.descrizione}</span>
+                                <span className="text-slate-500 ml-1 font-mono">
+                                  ({voce.quantita} {voce.unitaMisura || voce.unita || 'pz'} × € {Number(voce.prezzoUnitario || 0).toFixed(2)})
+                                </span>
+                              </div>
+                              <span className="font-mono font-bold text-slate-900 shrink-0">
+                                € {Number(voce.totaleRiga ?? voce.subtotale ?? 0).toFixed(2)}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {Number(documentoPerStampa.data.scontoImportoCalcolato || 0) > 0 && (
+                      <div className="flex items-center justify-between text-emerald-700 font-bold text-[11px] pt-1">
+                        <span>Scontistica applicata {documentoPerStampa.data.scontoDescrizione ? `(${documentoPerStampa.data.scontoDescrizione})` : ''}:</span>
+                        <span className="font-mono">- € {Number(documentoPerStampa.data.scontoImportoCalcolato).toFixed(2)}</span>
+                      </div>
+                    )}
+                    <div className="text-base font-black text-purple-900 pt-2 flex justify-between border-t border-slate-200">
                       <span>Totale da Liquidare:</span>
                       <span>€ {documentoPerStampa.data.importoTotale.toFixed(2)}</span>
                     </div>

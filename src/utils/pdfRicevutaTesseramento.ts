@@ -7,13 +7,13 @@ import {
 } from '../data/tesseramento';
 import {
   disegnaHeaderIstituzionale,
-  disegnaFooterIstituzionale
+  disegnaFooterIstituzionale,
+  sanitizeWinAnsi
 } from './pdfInstitutionalLayout';
 import { formatISODateItaly, getCurrentYearItaly } from './italianTime';
 
 function pulisciTesto(str?: string): string {
-  if (!str) return '';
-  return str.replace(/[^\x20-\x7E\xA0-\xFF]/g, ' ').trim();
+  return sanitizeWinAnsi(str);
 }
 
 /**
@@ -209,12 +209,12 @@ export function generaRicevutaTesseramentoPDF(
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(8);
   if (volontario.caricaConsiglioDirettivo && volontario.caricaConsiglioDirettivo !== 'Nessuna') {
-    doc.setTextColor(180, 83, 9); // amber-700
-    doc.text(`★ ${pulisciTesto(volontario.caricaConsiglioDirettivo)}`, col2X + 35, currentY + 25);
+    doc.setTextColor(180, 83, 9);
+    doc.text(`* ${pulisciTesto(volontario.caricaConsiglioDirettivo)}`, col2X + 35, currentY + 25, { maxWidth: contentWidth / 2 - 38 });
   } else {
     doc.setFont('helvetica', 'normal');
     doc.setTextColor(100, 116, 139);
-    doc.text('Nessuna carica direttiva (Socio Ordinario)', col2X + 35, currentY + 25);
+    doc.text('Nessuna carica direttiva (Socio Ordinario)', col2X + 35, currentY + 25, { maxWidth: contentWidth / 2 - 38 });
   }
 
   // Data Prima Iscrizione
@@ -233,13 +233,13 @@ export function generaRicevutaTesseramentoPDF(
   doc.setTextColor(29, 26, 96);
   doc.text('Timbro Cartaceo:', col2X, currentY + 37);
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(7.5);
+  doc.setFontSize(7.2);
   if (tess?.timbroCartaceoEseguito) {
-    doc.setTextColor(22, 101, 52); // green-800
-    doc.text('✓ APPOSTO SULLA TESSERA CARTACEA', col2X + 35, currentY + 37);
+    doc.setTextColor(22, 101, 52);
+    doc.text('[OK] APPOSTO SU TESSERA', col2X + 35, currentY + 37, { maxWidth: contentWidth / 2 - 38 });
   } else {
     doc.setTextColor(180, 83, 9);
-    doc.text('Da apporre su tessera cartacea', col2X + 35, currentY + 37);
+    doc.text('Da apporre su tessera cartacea', col2X + 35, currentY + 37, { maxWidth: contentWidth / 2 - 38 });
   }
 
   currentY += boxSocioH + 4;
@@ -310,11 +310,11 @@ export function generaRicevutaTesseramentoPDF(
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(6.2);
     doc.setTextColor(133, 77, 14);
-    doc.text('★ REGOLA ISCRIZIONE FINE ANNO:', margin + 107, importoBoxY + 6.5);
+    doc.text('* REGOLA ISCRIZIONE FINE ANNO:', margin + 107, importoBoxY + 6.5);
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(5.8);
-    doc.text(`Iscrizione effettuata a fine ${anno - 1} (Ott/Nov/Dic):`, margin + 107, importoBoxY + 10);
-    doc.text(`la quota ${anno} è già compresa. Solo timbro su tessera!`, margin + 107, importoBoxY + 13.5);
+    doc.text(`Iscrizione a fine ${anno - 1} (Ott/Nov/Dic):`, margin + 107, importoBoxY + 10, { maxWidth: contentWidth - 122 });
+    doc.text(`quota ${anno} gia compresa. Solo timbro!`, margin + 107, importoBoxY + 13.5, { maxWidth: contentWidth - 122 });
   }
 
   currentY += boxQuotaH + 4;
@@ -468,7 +468,7 @@ function disegnaFirmaAutomaticaTesoriere(
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(5.2);
   doc.setTextColor(255, 255, 255);
-  doc.text('✓ FIRMA DIGITALE AUTOMATICA CERTIFICATA', x + 2.5, y + 3.4);
+  doc.text('[OK] FIRMA DIGITALE AUTOMATICA CERTIFICATA', x + 2.5, y + 3.4);
 
   // Scrittura corsiva del nome
   doc.setFont('times', 'bolditalic');

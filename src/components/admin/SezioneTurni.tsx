@@ -43,6 +43,7 @@ import { MEZZI_FLOTTA_INIZIALI } from '../../data/adminMockData';
 import { MezzoFuoriServizio } from '../../data/suggerimentiMezzi';
 import { Volontario } from '../DatabaseVolontariModal';
 import { TabelloneTurniSettimanale } from '../TabelloneTurniSettimanale';
+import { useTitoloDatabase } from '../../hooks/useNomiDatabase';
 import { inviaNotificaModificaAdmin } from '../../utils/notificaModificaAdmin';
 import {
   isGiornoFestivo,
@@ -1021,7 +1022,7 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
                 Macro Categoria 8
               </span>
               <h2 className="text-xl font-black text-white uppercase tracking-wide">
-                Gestione Calendario Turni di Tutte le Sedi Operative
+                {useTitoloDatabase('turni', 'Gestione Calendario Turni di Tutte le Sedi Operative')}
               </h2>
             </div>
             <p className="text-xs text-slate-300 mt-0.5">

@@ -45,6 +45,15 @@ import {
   isProtectedAiStudioHost,
   saveConfiguredPublicUrlLocal,
 } from '../utils/publicUrl';
+import { LEGACY_MOCK_CORSI_IDS } from '../data/adminMockData';
+import { applicaMansioniConfigDaSync, getMansioniConfigUpdatedAt } from '../utils/mansioniVolontari';
+import { applicaNomiDatabaseDaSync, getNomiDatabaseUpdatedAt } from '../constants/macroCategorie';
+
+const stripLegacyCorsi = (list: any): any[] => {
+  if (!Array.isArray(list)) return [];
+  const legacySet = new Set<string>(LEGACY_MOCK_CORSI_IDS);
+  return list.filter((c: any) => c && !legacySet.has(String(c.id || '')));
+};
 
 type MessageHandler = (data: any) => void;
 
@@ -166,6 +175,8 @@ class RealtimeService {
   private shiftSignupsUnsub: (() => void) | null = null;
   private shiftSignupsReconciling: Set<string> = new Set();
   private pendingShiftSignupsQueue: ShiftSignupRecord[] = [];
+  private lastGpsSentAt: number = 0;
+  private lastGpsSentCoords: { lat: number; lng: number } | null = null;
 
   // Cache unificata dello stato cloud tra tutti gli shard / server
   private cloudState: Record<string, any> = {};
@@ -472,6 +483,7 @@ class RealtimeService {
     const prevMission = this.cloudState.activeMission || null;
     const prevLettura = Boolean(this.cloudState.letturaConfermata);
     const prevRinging = this.cloudState.ringing || null;
+    const prevShift = this.cloudState.activeShift || null;
     const prevPttEnabled = Boolean(this.cloudState.radioPtt?.enabled ?? this.cloudState.radioPttEnabled);
 
     if (shardId === 'volontari') {
@@ -525,6 +537,15 @@ class RealtimeService {
       if (Array.isArray(payload.magazzinoMezzi)) {
         this.emit('MAGAZZINO_MEZZI_UPDATED', { magazzinoMezzi: payload.magazzinoMezzi });
       }
+      if (Array.isArray(payload.magazzinoVestiario)) {
+        this.emit('MAGAZZINO_VESTIARIO_UPDATED', { magazzinoVestiario: payload.magazzinoVestiario });
+      }
+      if (Array.isArray(payload.attrezzatureOperative)) {
+        this.emit('ATTREZZATURE_MAGAZZINO_UPDATED', { attrezzature: payload.attrezzatureOperative });
+      }
+      if (Array.isArray(payload.movimentiMagazzino)) {
+        this.emit('MOVIMENTI_MAGAZZINO_UPDATED', { movimenti: payload.movimentiMagazzino });
+      }
     }
     if (shardId === 'indirizzi') {
       if (Array.isArray(payload.indirizziCollezionati)) {
@@ -577,6 +598,41 @@ class RealtimeService {
       if (payload.datiCartaIntestata && typeof payload.datiCartaIntestata === 'object') {
         this.emit('CARTA_INTESTATA_UPDATED', { dati: payload.datiCartaIntestata });
       }
+      if (Array.isArray(payload.costiServizio)) {
+        this.emit('COSTI_SERVIZIO_UPDATED', { costiServizio: payload.costiServizio });
+      }
+      if (Array.isArray(payload.mezziFlotta) && payload.mezziFlotta.length > 0) {
+        const ordinati = [...payload.mezziFlotta].sort((a: any, b: any) =>
+          String(a?.sigla || '').localeCompare(String(b?.sigla || ''), 'it', { numeric: true, sensitivity: 'base' })
+        );
+        this.cloudState.mezziFlotta = ordinati;
+        try {
+          localStorage.setItem('CROCE_ORO_MEZZI_FLOTTA', JSON.stringify(ordinati));
+        } catch {}
+        this.emit('MEZZI_FLOTTA_UPDATED', {
+          mezziFlotta: ordinati,
+          updatedAt: payload.mezziFlottaUpdatedAt,
+        });
+      }
+      if (Array.isArray(payload.catalogoMansioni) || Array.isArray(payload.categorieMansioni)) {
+        applicaMansioniConfigDaSync(
+          payload.catalogoMansioni,
+          payload.categorieMansioni,
+          payload.mansioniConfigUpdatedAt
+        );
+        this.emit('MANSIONI_CONFIG_UPDATED', {
+          catalogoMansioni: payload.catalogoMansioni,
+          categorieMansioni: payload.categorieMansioni,
+          updatedAt: payload.mansioniConfigUpdatedAt,
+        });
+      }
+      if (payload.nomiDatabase && typeof payload.nomiDatabase === 'object' && !Array.isArray(payload.nomiDatabase)) {
+        applicaNomiDatabaseDaSync(payload.nomiDatabase, payload.nomiDatabaseUpdatedAt);
+        this.emit('NOMI_DATABASE_UPDATED', {
+          nomiDatabase: payload.nomiDatabase,
+          updatedAt: payload.nomiDatabaseUpdatedAt,
+        });
+      }
       if (typeof payload.publicAppUrl === 'string' && payload.publicAppUrl.trim() && !isProtectedAiStudioHost(payload.publicAppUrl)) {
         const saved = saveConfiguredPublicUrlLocal(payload.publicAppUrl);
         this.cloudState.publicAppUrl = saved;
@@ -598,6 +654,17 @@ class RealtimeService {
           codiciEliminati: payload.codiciEliminati || [],
         });
       }
+      if (Array.isArray(payload.corsiFormazione)) {
+        const corsiPuliti = stripLegacyCorsi(payload.corsiFormazione);
+        this.cloudState.corsiFormazione = corsiPuliti;
+        this.emit('CORSI_UPDATED', { corsiFormazione: corsiPuliti });
+      }
+      if (Array.isArray(payload.noteDiDebito)) {
+        this.emit('NOTE_DEBITO_UPDATED', { noteDiDebito: payload.noteDiDebito });
+      }
+      if (Array.isArray(payload.tessereAssociative)) {
+        this.emit('TESSERE_UPDATED', { tessereAssociative: payload.tessereAssociative });
+      }
     }
     if (shardId === 'mission') {
       if (isRemoteLiveDelta) {
@@ -612,9 +679,12 @@ class RealtimeService {
         if (payload.letturaConfermata === true && !prevLettura) {
           this.emit('MISSION_READ_CONFIRMED', { codice: payload.activeMission?.codice });
         }
+        const rTs = Number(payload.ringing?.timestamp || 0);
+        const isRingingFresh = !(rTs > 0 && Date.now() - rTs > 25000);
         if (
           payload.ringing?.active &&
-          (!prevRinging?.active || payload.ringing.timestamp !== prevRinging.timestamp)
+          isRingingFresh &&
+          (!prevRinging?.active || rTs !== Number(prevRinging?.timestamp || 0))
         ) {
           this.emit('RING_TRIGGERED', { ringing: payload.ringing });
         } else if (payload.ringing && !payload.ringing.active && prevRinging?.active) {
@@ -622,7 +692,19 @@ class RealtimeService {
         }
       }
       if (payload.activeShift) {
-        this.emit('SHIFT_UPDATED', { shift: payload.activeShift });
+        const shiftChanged =
+          !prevShift ||
+          Boolean(payload.activeShift?.attivo) !== Boolean(prevShift?.attivo) ||
+          String(payload.activeShift?.volontarioId || '') !== String(prevShift?.volontarioId || '') ||
+          String(payload.activeShift?.orarioInizio || '') !== String(prevShift?.orarioInizio || '') ||
+          String(payload.activeShift?.mezzoScelto || '') !== String(prevShift?.mezzoScelto || '') ||
+          String(payload.activeShift?.qualificaTurno || '') !== String(prevShift?.qualificaTurno || '');
+        if (shiftChanged) {
+          this.emit('SHIFT_UPDATED', {
+            shift: payload.activeShift,
+            isInitialSync: !isRemoteLiveDelta,
+          });
+        }
       }
       if (payload.gpsPosition) {
         this.emit('GPS_UPDATED', { position: payload.gpsPosition });
@@ -747,6 +829,9 @@ class RealtimeService {
         return {
           serviziArchivio: Array.isArray(this.cloudState.serviziArchivio) ? this.cloudState.serviziArchivio : [],
           codiciEliminati: Array.isArray(this.cloudState.codiciEliminati) ? this.cloudState.codiciEliminati : [],
+          corsiFormazione: stripLegacyCorsi(this.cloudState.corsiFormazione),
+          noteDiDebito: Array.isArray(this.cloudState.noteDiDebito) ? this.cloudState.noteDiDebito : [],
+          tessereAssociative: Array.isArray(this.cloudState.tessereAssociative) ? this.cloudState.tessereAssociative : [],
         };
       case 'turni':
         return {
@@ -761,6 +846,9 @@ class RealtimeService {
         return {
           magazzinoParti: Array.isArray(this.cloudState.magazzinoParti) ? this.cloudState.magazzinoParti : [],
           magazzinoMezzi: Array.isArray(this.cloudState.magazzinoMezzi) ? this.cloudState.magazzinoMezzi : [],
+          magazzinoVestiario: Array.isArray(this.cloudState.magazzinoVestiario) ? this.cloudState.magazzinoVestiario : [],
+          attrezzatureOperative: Array.isArray(this.cloudState.attrezzatureOperative) ? this.cloudState.attrezzatureOperative : [],
+          movimentiMagazzino: Array.isArray(this.cloudState.movimentiMagazzino) ? this.cloudState.movimentiMagazzino : [],
         };
       case 'timbrature': {
         const sediCurr = Array.isArray(this.cloudState.sedi)
@@ -789,6 +877,14 @@ class RealtimeService {
           datiCartaIntestata: this.cloudState.datiCartaIntestata || null,
           radioGroups: Array.isArray(this.cloudState.radioGroups) ? this.cloudState.radioGroups : [],
           publicAppUrl: this.cloudState.publicAppUrl || getConfiguredPublicUrl() || '',
+          costiServizio: Array.isArray(this.cloudState.costiServizio) ? this.cloudState.costiServizio : undefined,
+          mezziFlotta: Array.isArray(this.cloudState.mezziFlotta) ? this.cloudState.mezziFlotta : undefined,
+          mezziFlottaUpdatedAt: this.cloudState.mezziFlottaUpdatedAt || undefined,
+          catalogoMansioni: Array.isArray(this.cloudState.catalogoMansioni) ? this.cloudState.catalogoMansioni : undefined,
+          categorieMansioni: Array.isArray(this.cloudState.categorieMansioni) ? this.cloudState.categorieMansioni : undefined,
+          mansioniConfigUpdatedAt: this.cloudState.mansioniConfigUpdatedAt || undefined,
+          nomiDatabase: this.cloudState.nomiDatabase && typeof this.cloudState.nomiDatabase === 'object' ? this.cloudState.nomiDatabase : undefined,
+          nomiDatabaseUpdatedAt: this.cloudState.nomiDatabaseUpdatedAt || undefined,
         };
     }
   }
@@ -932,10 +1028,17 @@ class RealtimeService {
       },
       {
         id: 'servizi',
-        hasData: Array.isArray(snapshot.serviziArchivio) && snapshot.serviziArchivio.length > 0,
+        hasData:
+          (Array.isArray(snapshot.serviziArchivio) && snapshot.serviziArchivio.length > 0) ||
+          (Array.isArray(snapshot.corsiFormazione) && stripLegacyCorsi(snapshot.corsiFormazione).length > 0) ||
+          (Array.isArray(snapshot.noteDiDebito) && snapshot.noteDiDebito.length > 0) ||
+          (Array.isArray(snapshot.tessereAssociative) && snapshot.tessereAssociative.length > 0),
         patch: {
           serviziArchivio: snapshot.serviziArchivio || [],
           codiciEliminati: snapshot.codiciEliminati || [],
+          corsiFormazione: stripLegacyCorsi(snapshot.corsiFormazione),
+          noteDiDebito: snapshot.noteDiDebito || [],
+          tessereAssociative: snapshot.tessereAssociative || [],
         },
       },
       {
@@ -957,10 +1060,16 @@ class RealtimeService {
         id: 'magazzino',
         hasData:
           (Array.isArray(snapshot.magazzinoParti) && snapshot.magazzinoParti.length > 0) ||
-          (Array.isArray(snapshot.magazzinoMezzi) && snapshot.magazzinoMezzi.length > 0),
+          (Array.isArray(snapshot.magazzinoMezzi) && snapshot.magazzinoMezzi.length > 0) ||
+          (Array.isArray(snapshot.magazzinoVestiario) && snapshot.magazzinoVestiario.length > 0) ||
+          (Array.isArray(snapshot.attrezzatureOperative) && snapshot.attrezzatureOperative.length > 0) ||
+          (Array.isArray(snapshot.movimentiMagazzino) && snapshot.movimentiMagazzino.length > 0),
         patch: {
           magazzinoParti: snapshot.magazzinoParti || [],
           magazzinoMezzi: snapshot.magazzinoMezzi || [],
+          magazzinoVestiario: snapshot.magazzinoVestiario || [],
+          attrezzatureOperative: snapshot.attrezzatureOperative || [],
+          movimentiMagazzino: snapshot.movimentiMagazzino || [],
         },
       },
       {
@@ -995,9 +1104,24 @@ class RealtimeService {
       },
       {
         id: 'config',
-        hasData: (Array.isArray(snapshot.sedi) && snapshot.sedi.length > 0) || Boolean(getConfiguredPublicUrl()),
+        hasData:
+          (Array.isArray(snapshot.sedi) && snapshot.sedi.length > 0) ||
+          (Array.isArray(snapshot.costiServizio) && snapshot.costiServizio.length > 0) ||
+          (Array.isArray(snapshot.mezziFlotta) && snapshot.mezziFlotta.length > 0) ||
+          (Array.isArray(snapshot.catalogoMansioni) && snapshot.catalogoMansioni.length > 0) ||
+          (Array.isArray(snapshot.categorieMansioni) && snapshot.categorieMansioni.length > 0) ||
+          Boolean(snapshot.nomiDatabase && Object.keys(snapshot.nomiDatabase).length > 0) ||
+          Boolean(getConfiguredPublicUrl()),
         patch: {
           sedi: snapshot.sedi || [],
+          costiServizio: snapshot.costiServizio,
+          mezziFlotta: snapshot.mezziFlotta,
+          mezziFlottaUpdatedAt: Date.now(),
+          catalogoMansioni: snapshot.catalogoMansioni,
+          categorieMansioni: snapshot.categorieMansioni,
+          mansioniConfigUpdatedAt: getMansioniConfigUpdatedAt() || Date.now(),
+          nomiDatabase: snapshot.nomiDatabase,
+          nomiDatabaseUpdatedAt: getNomiDatabaseUpdatedAt() || Date.now(),
           publicAppUrl: this.cloudState.publicAppUrl || getConfiguredPublicUrl() || '',
         },
       },
@@ -1061,6 +1185,9 @@ class RealtimeService {
         patch: {
           serviziArchivio: snapshot.serviziArchivio || this.cloudState.serviziArchivio || [],
           codiciEliminati: snapshot.codiciEliminati || this.cloudState.codiciEliminati || [],
+          corsiFormazione: stripLegacyCorsi(snapshot.corsiFormazione ?? this.cloudState.corsiFormazione ?? []),
+          noteDiDebito: snapshot.noteDiDebito ?? this.cloudState.noteDiDebito ?? [],
+          tessereAssociative: snapshot.tessereAssociative ?? this.cloudState.tessereAssociative ?? [],
         },
       },
       { id: 'turni', patch: { turni: normalizzaTurniSedi(snapshot.turni || this.cloudState.turni || []) } },
@@ -1076,6 +1203,9 @@ class RealtimeService {
         patch: {
           magazzinoParti: snapshot.magazzinoParti || this.cloudState.magazzinoParti || [],
           magazzinoMezzi: snapshot.magazzinoMezzi || this.cloudState.magazzinoMezzi || [],
+          magazzinoVestiario: snapshot.magazzinoVestiario || this.cloudState.magazzinoVestiario || [],
+          attrezzatureOperative: snapshot.attrezzatureOperative || this.cloudState.attrezzatureOperative || [],
+          movimentiMagazzino: snapshot.movimentiMagazzino || this.cloudState.movimentiMagazzino || [],
         },
       },
       {
@@ -1106,6 +1236,14 @@ class RealtimeService {
         id: 'config',
         patch: {
           sedi: normalizzaListaSediAssociative(snapshot.sedi || this.cloudState.sedi || []),
+          costiServizio: snapshot.costiServizio ?? this.cloudState.costiServizio,
+          mezziFlotta: snapshot.mezziFlotta ?? this.cloudState.mezziFlotta,
+          mezziFlottaUpdatedAt: Date.now(),
+          catalogoMansioni: snapshot.catalogoMansioni ?? this.cloudState.catalogoMansioni,
+          categorieMansioni: snapshot.categorieMansioni ?? this.cloudState.categorieMansioni,
+          mansioniConfigUpdatedAt: getMansioniConfigUpdatedAt() || Date.now(),
+          nomiDatabase: snapshot.nomiDatabase ?? this.cloudState.nomiDatabase,
+          nomiDatabaseUpdatedAt: getNomiDatabaseUpdatedAt() || Date.now(),
           publicAppUrl: this.cloudState.publicAppUrl || getConfiguredPublicUrl() || '',
         },
       },
@@ -1239,6 +1377,19 @@ class RealtimeService {
               this.emit('VOLONTARI_UPDATED', { ...payload, volontari: mergedVols, volontariEliminatiIds: deletedIds });
               return;
             }
+            if (payload.type === 'MANSIONI_CONFIG_UPDATED') {
+              this.cloudState.catalogoMansioni = payload.catalogoMansioni ?? this.cloudState.catalogoMansioni;
+              this.cloudState.categorieMansioni = payload.categorieMansioni ?? this.cloudState.categorieMansioni;
+              if (payload.updatedAt) this.cloudState.mansioniConfigUpdatedAt = payload.updatedAt;
+              applicaMansioniConfigDaSync(payload.catalogoMansioni, payload.categorieMansioni, payload.updatedAt);
+            } else if (payload.type === 'NOMI_DATABASE_UPDATED' && payload.nomiDatabase) {
+              this.cloudState.nomiDatabase = payload.nomiDatabase;
+              if (payload.updatedAt) this.cloudState.nomiDatabaseUpdatedAt = payload.updatedAt;
+              applicaNomiDatabaseDaSync(payload.nomiDatabase, payload.updatedAt);
+            } else if (payload.type === 'MEZZI_FLOTTA_UPDATED' && Array.isArray(payload.mezziFlotta)) {
+              this.cloudState.mezziFlotta = payload.mezziFlotta;
+              if (payload.updatedAt) this.cloudState.mezziFlottaUpdatedAt = payload.updatedAt;
+            }
             this.emit(payload.type, payload);
           }
         } catch (err) {
@@ -1289,6 +1440,28 @@ class RealtimeService {
 
     this.cloudState.volontariEliminatiIds = deletedIds;
     this.cloudState.volontari = mergedVols;
+    if (Array.isArray(this.cloudState.corsiFormazione)) {
+      this.cloudState.corsiFormazione = stripLegacyCorsi(this.cloudState.corsiFormazione);
+    }
+    if (Array.isArray(this.cloudState.mezziFlotta) && this.cloudState.mezziFlotta.length > 0) {
+      const ordinati = [...this.cloudState.mezziFlotta].sort((a: any, b: any) =>
+        String(a?.sigla || '').localeCompare(String(b?.sigla || ''), 'it', { numeric: true, sensitivity: 'base' })
+      );
+      this.cloudState.mezziFlotta = ordinati;
+      try {
+        localStorage.setItem('CROCE_ORO_MEZZI_FLOTTA', JSON.stringify(ordinati));
+      } catch {}
+    }
+    if (Array.isArray(this.cloudState.catalogoMansioni) || Array.isArray(this.cloudState.categorieMansioni)) {
+      applicaMansioniConfigDaSync(
+        this.cloudState.catalogoMansioni,
+        this.cloudState.categorieMansioni,
+        this.cloudState.mansioniConfigUpdatedAt
+      );
+    }
+    if (this.cloudState.nomiDatabase && typeof this.cloudState.nomiDatabase === 'object' && !Array.isArray(this.cloudState.nomiDatabase)) {
+      applicaNomiDatabaseDaSync(this.cloudState.nomiDatabase, this.cloudState.nomiDatabaseUpdatedAt);
+    }
 
     // Ponte bidirezionale: se Express ha nuovi account non ancora presenti su Firestore, sincronizza verso Firestore
     if (this.firebaseSession.isAuthorized && this.shardLoadedFromCloud['volontari']) {
@@ -1320,6 +1493,7 @@ class RealtimeService {
       ...this.cloudState,
       volontari: mergedVols,
       volontariEliminatiIds: deletedIds,
+      corsiFormazione: stripLegacyCorsi(this.cloudState.corsiFormazione ?? incomingState.corsiFormazione),
     };
   }
 
@@ -1981,6 +2155,64 @@ class RealtimeService {
       case 'UPDATE_CONTATTI':
         if (Array.isArray(data?.contatti)) {
           this.scheduleShardWrite('indirizzi', { contatti: data.contatti });
+        }
+        break;
+      case 'UPDATE_CORSI':
+        if (Array.isArray(data?.corsiFormazione)) {
+          this.scheduleShardWrite('servizi', { corsiFormazione: stripLegacyCorsi(data.corsiFormazione) });
+        }
+        break;
+      case 'UPDATE_NOTE_DEBITO':
+        if (Array.isArray(data?.noteDiDebito)) {
+          this.scheduleShardWrite('servizi', { noteDiDebito: data.noteDiDebito });
+        }
+        break;
+      case 'UPDATE_TESSERE':
+        if (Array.isArray(data?.tessereAssociative)) {
+          this.scheduleShardWrite('servizi', { tessereAssociative: data.tessereAssociative });
+        }
+        break;
+      case 'UPDATE_COSTI_SERVIZIO':
+        if (Array.isArray(data?.costiServizio)) {
+          this.scheduleShardWrite('config', { costiServizio: data.costiServizio });
+        }
+        break;
+      case 'UPDATE_MAGAZZINO_VESTIARIO':
+        if (Array.isArray(data?.magazzinoVestiario)) {
+          this.scheduleShardWrite('magazzino', { magazzinoVestiario: data.magazzinoVestiario });
+        }
+        break;
+      case 'UPDATE_ATTREZZATURE_MAGAZZINO':
+        if (Array.isArray(data?.attrezzature)) {
+          this.scheduleShardWrite('magazzino', { attrezzatureOperative: data.attrezzature });
+        }
+        break;
+      case 'UPDATE_MOVIMENTI_MAGAZZINO':
+        if (Array.isArray(data?.movimenti)) {
+          this.scheduleShardWrite('magazzino', { movimentiMagazzino: data.movimenti });
+        }
+        break;
+      case 'UPDATE_MANSIONI_CONFIG':
+        this.scheduleShardWrite('config', {
+          ...(Array.isArray(data?.catalogoMansioni) ? { catalogoMansioni: data.catalogoMansioni } : {}),
+          ...(Array.isArray(data?.categorieMansioni) ? { categorieMansioni: data.categorieMansioni } : {}),
+          mansioniConfigUpdatedAt: data?.updatedAt || Date.now(),
+        });
+        break;
+      case 'UPDATE_NOMI_DATABASE':
+        if (data?.nomiDatabase && typeof data.nomiDatabase === 'object') {
+          this.scheduleShardWrite('config', {
+            nomiDatabase: data.nomiDatabase,
+            nomiDatabaseUpdatedAt: data?.updatedAt || Date.now(),
+          });
+        }
+        break;
+      case 'UPDATE_MEZZI_FLOTTA':
+        if (Array.isArray(data?.mezziFlotta)) {
+          this.scheduleShardWrite('config', {
+            mezziFlotta: data.mezziFlotta,
+            mezziFlottaUpdatedAt: data?.updatedAt || Date.now(),
+          });
         }
         break;
     }
@@ -2723,7 +2955,22 @@ class RealtimeService {
     });
   }
 
-  public updateGps(position: any) {
+  public updateGps(position: any, forceImmediate: boolean = false) {
+    const lat = Number(position?.lat);
+    const lng = Number(position?.lng);
+    const now = Date.now();
+    if (!forceImmediate && Number.isFinite(lat) && Number.isFinite(lng) && this.lastGpsSentCoords) {
+      const moved =
+        Math.abs(lat - this.lastGpsSentCoords.lat) > 0.00015 ||
+        Math.abs(lng - this.lastGpsSentCoords.lng) > 0.00015;
+      if (!moved && now - this.lastGpsSentAt < 30000) {
+        return false;
+      }
+    }
+    if (Number.isFinite(lat) && Number.isFinite(lng)) {
+      this.lastGpsSentCoords = { lat, lng };
+      this.lastGpsSentAt = now;
+    }
     return this.send('UPDATE_GPS', position);
   }
 
@@ -3164,6 +3411,49 @@ class RealtimeService {
         }).catch(() => {});
       } catch {}
     }
+  }
+
+  public syncCorsi(corsiFormazione: any[]) {
+    const clean = stripLegacyCorsi(corsiFormazione);
+    this.send('UPDATE_CORSI', { corsiFormazione: clean });
+  }
+
+  public syncNoteDiDebito(noteDiDebito: any[]) {
+    this.send('UPDATE_NOTE_DEBITO', { noteDiDebito });
+  }
+
+  public syncTessere(tessereAssociative: any[]) {
+    this.send('UPDATE_TESSERE', { tessereAssociative });
+  }
+
+  public syncCostiServizio(costiServizio: any[]) {
+    this.send('UPDATE_COSTI_SERVIZIO', { costiServizio });
+  }
+
+  public syncMagazzinoVestiario(magazzinoVestiario: any[]) {
+    this.send('UPDATE_MAGAZZINO_VESTIARIO', { magazzinoVestiario });
+  }
+
+  public syncAttrezzatureMagazzino(attrezzature: any[]) {
+    this.send('UPDATE_ATTREZZATURE_MAGAZZINO', { attrezzature });
+  }
+
+  public syncMovimentiMagazzino(movimenti: any[]) {
+    this.send('UPDATE_MOVIMENTI_MAGAZZINO', { movimenti });
+  }
+
+  public syncMansioniConfig(catalogoMansioni: any[], categorieMansioni: any[]) {
+    const updatedAt = getMansioniConfigUpdatedAt() || Date.now();
+    this.send('UPDATE_MANSIONI_CONFIG', { catalogoMansioni, categorieMansioni, updatedAt });
+  }
+
+  public syncNomiDatabase(nomiDatabase: Record<string, string>) {
+    const updatedAt = getNomiDatabaseUpdatedAt() || Date.now();
+    this.send('UPDATE_NOMI_DATABASE', { nomiDatabase, updatedAt });
+  }
+
+  public syncMezziFlotta(mezziFlotta: any[]) {
+    this.send('UPDATE_MEZZI_FLOTTA', { mezziFlotta, updatedAt: Date.now() });
   }
 }
 

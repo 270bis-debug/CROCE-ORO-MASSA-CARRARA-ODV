@@ -39,6 +39,7 @@ import { CONTI_CORRENTI_CROCE_ORO_DEFAULT } from '../../data/adminMockData';
 import { GeolocalizzazioneMappaSede } from './GeolocalizzazioneMappaSede';
 import { inviaNotificaModificaAdmin } from '../../utils/notificaModificaAdmin';
 import { realtime } from '../../services/realtime';
+import { useTitoloDatabase } from '../../hooks/useNomiDatabase';
 import {
   DatiCartaIntestata,
   getDatiCartaIntestata,
@@ -638,7 +639,7 @@ export const SezioneSedi: React.FC<SezioneSediProps> = ({
                 Macro Categoria 7
               </span>
               <h2 className="text-xl font-black text-white uppercase tracking-wide">
-                Database Anagrafiche Sedi Associative
+                {useTitoloDatabase('sedi', 'Database Anagrafiche Sedi Associative')}
               </h2>
             </div>
             <p className="text-xs text-slate-300 mt-0.5">

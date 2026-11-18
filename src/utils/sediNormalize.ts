@@ -423,8 +423,17 @@ export function normalizzaCorsiFormazione(
     };
   };
 
-  return corsi.map((c) => {
-    if (!c) return c;
+  const LEGACY_MOCK_IDS = new Set([
+    'corso-psv-01',
+    'corso-aut-01',
+    'corso-blsd-01',
+    'corso-pc0-01',
+    'corso-pcbase-01',
+    'corso-form-psv-01'
+  ]);
+  return corsi
+    .filter((c) => Boolean(c && c.id && !LEGACY_MOCK_IDS.has(c.id)))
+    .map((c) => {
     const main = healSedePayload(c.sedeSvolgimentoSedeId, c.sedeCorso, c.indirizzoCompleto, c.coordinate);
     const lezioniAgg = Array.isArray(c.lezioni)
       ? c.lezioni.map((l) => {

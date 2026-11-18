@@ -20,7 +20,7 @@ import {
 } from 'lucide-react';
 import { CroceOroLogo } from '../CroceOroLogo';
 import { AdminSectionId } from './AdminPortalDashboard';
-import { LISTA_MACRO_CATEGORIE } from '../../constants/macroCategorie';
+import { LISTA_MACRO_CATEGORIE, getNomiDatabaseCustom, getTitoloDatabase } from '../../constants/macroCategorie';
 
 interface AdminTopNavbarProps {
   currentSection: AdminSectionId;
@@ -61,15 +61,27 @@ export const AdminTopNavbar: React.FC<AdminTopNavbarProps> = ({
     contatti: { label: 'Contatti', icona: BookUser }
   };
 
+  const [nomiDatabaseCustom, setNomiDatabaseCustom] = React.useState<Record<string, string>>(() => getNomiDatabaseCustom());
+
+  React.useEffect(() => {
+    const refresh = () => setNomiDatabaseCustom(getNomiDatabaseCustom());
+    window.addEventListener('croceoro_nomi_db_updated', refresh);
+    window.addEventListener('storage', refresh);
+    return () => {
+      window.removeEventListener('croceoro_nomi_db_updated', refresh);
+      window.removeEventListener('storage', refresh);
+    };
+  }, []);
+
   const tabs: { id: AdminSectionId; numero: string; label: string; icona: any }[] = React.useMemo(
     () =>
       LISTA_MACRO_CATEGORIE.map((cat, idx) => ({
         id: cat.id as AdminSectionId,
         numero: String(idx + 1),
-        label: tabMetaMap[cat.id]?.label || cat.titolo,
+        label: getTitoloDatabase(cat.id, tabMetaMap[cat.id]?.label || cat.titolo, nomiDatabaseCustom),
         icona: tabMetaMap[cat.id]?.icona || Grid
       })),
-    []
+    [nomiDatabaseCustom]
   );
 
   const tabsVisibili = React.useMemo(() => {

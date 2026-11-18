@@ -149,7 +149,12 @@ import { ModalDestinazioneFirme, DatiDestinazione } from './components/ModalDest
 import { ModalRilevazioneMicrochipObiettivo } from './components/ModalRilevazioneMicrochipObiettivo';
 import { LISTA_ANIMALI_DIFFUSI, TipoAnimaleDiffuso, DatiProprietarioCentrale, FotoDocumentoIdentita } from './data/animali';
 import { AdminPortalDashboard, AdminSectionId } from './components/admin/AdminPortalDashboard';
-import { TUTTE_LE_MACRO_CATEGORIE } from './constants/macroCategorie';
+import { TUTTE_LE_MACRO_CATEGORIE, getNomiDatabaseCustom, salvaNomiDatabaseCustom, applicaNomiDatabaseDaSync } from './constants/macroCategorie';
+import {
+  getMansioniCatalogo,
+  getCategorieMansioni,
+  applicaMansioniConfigDaSync,
+} from './utils/mansioniVolontari';
 import { AdminTopNavbar } from './components/admin/AdminTopNavbar';
 import { SezioneVolontari } from './components/admin/SezioneVolontari';
 import { SezioneMezzi } from './components/admin/SezioneMezzi';
@@ -187,6 +192,7 @@ import {
   ArticoloMagazzinoMezzi,
   TesseraAssociativa,
   NotaDiDebito,
+  TariffaCostoServizio,
   CorsoFormazione,
   ArticoloVestiarioMagazzino,
   AttrezzaturaOperativa,
@@ -200,7 +206,8 @@ import {
   NotificaRicevutaAccount,
   CategoriaNotificaAccount,
   VoceGiornaleBordo,
-  PresaVisioneConsegna
+  PresaVisioneConsegna,
+  ProprietarioImmobileData
 } from './types/adminTypes';
 import { CONTATTI_INIZIALI } from './data/contattiMockData';
 import {
@@ -210,7 +217,9 @@ import {
   MAGAZZINO_MEZZI_INIZIALE,
   TESSERE_INIZIALI,
   NOTE_DI_DEBITO_INIZIALI,
+  TARIFFE_COSTI_SERVIZIO_INIZIALI,
   CORSI_FORMAZIONE_INIZIALI,
+  LEGACY_MOCK_CORSI_IDS,
   MAGAZZINO_VESTIARIO_INIZIALE,
   ATTREZZATURE_INIZIALI,
   MOVIMENTI_MAGAZZINO_INIZIALI,
@@ -463,6 +472,10 @@ interface MissionData {
   codice: string;
   urgenza: 'ROSSO' | 'GIALLO' | 'VERDE' | 'BIANCO';
   orarioChiamata: string;
+  dataInizioServizioSpecifico?: string;
+  oraInizioServizioSpecifico?: string;
+  dataArrivoRichiestaServizio?: string;
+  oraArrivoRichiestaServizio?: string;
   chiamante: string;
   telefono: string;
   enteIstituzionale?: EnteIstituzionaleChiamante | string;
@@ -482,6 +495,8 @@ interface MissionData {
   sintesi: string;
   noteCritiche: string;
   mezzoAssegnato: string;
+  kmInizio?: string;
+  proprietarioImmobile?: ProprietarioImmobileData;
   coordinateSulPosto?: {
     lat: number;
     lng: number;
@@ -550,12 +565,17 @@ interface PdfArchiveItem {
   anno: number;
   mezzo: string;
   data: string;
+  dataInizioServizioSpecifico?: string;
+  oraInizioServizioSpecifico?: string;
+  dataArrivoRichiestaServizio?: string;
+  oraArrivoRichiestaServizio?: string;
   kmInizio: number;
   kmFine: number;
   kmTotali: number;
   inAttesaKm: boolean;
   tempi: OperativeTimes;
   testoCompleto: string;
+  proprietarioImmobile?: ProprietarioImmobileData;
   indirizzoIntervento?: string;
   destinazione?: string;
   chiamante?: string;
@@ -1216,6 +1236,7 @@ export default function App() {
     try {
       localStorage.setItem('CROCE_ORO_MEZZI_FLOTTA', JSON.stringify(ordinati));
     } catch {}
+    realtime.syncMezziFlotta(ordinati);
   };
 
   // 3. Manutenzioni Mezzi
@@ -1377,6 +1398,7 @@ export default function App() {
     try {
       localStorage.setItem('CROCE_ORO_TESSERE', JSON.stringify(nuove));
     } catch {}
+    realtime.syncTessere(nuove);
   };
 
   // 6. Note di Debito
@@ -1392,14 +1414,40 @@ export default function App() {
     try {
       localStorage.setItem('CROCE_ORO_NOTE_DEBITO', JSON.stringify(nuove));
     } catch {}
+    realtime.syncNoteDiDebito(nuove);
   };
 
-  // 7. Corsi di Formazione
+  // 6b. Costi di Servizio & Sigle Operative
+  const [costiServizio, setCostiServizio] = useState<TariffaCostoServizio[]>(() => {
+    try {
+      const saved = localStorage.getItem('CROCE_ORO_COSTI_SERVIZIO');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch {}
+    return TARIFFE_COSTI_SERVIZIO_INIZIALI;
+  });
+  const handleAggiornaCostiServizio = (nuovi: TariffaCostoServizio[]) => {
+    setCostiServizio(nuovi);
+    try {
+      localStorage.setItem('CROCE_ORO_COSTI_SERVIZIO', JSON.stringify(nuovi));
+    } catch {}
+    realtime.syncCostiServizio(nuovi);
+  };
+
+  // 7. Corsi di Formazione (epura eventuali corsi demo/precaricati legacy)
+  const rimuoviCorsiLegacy = (lista: CorsoFormazione[] | any): CorsoFormazione[] => {
+    if (!Array.isArray(lista)) return [];
+    const legacySet = new Set(LEGACY_MOCK_CORSI_IDS);
+    return lista.filter((c) => c && !legacySet.has(String(c.id || '').trim()));
+  };
   const [corsiFormazione, setCorsiFormazione] = useState<CorsoFormazione[]>(() => {
     try {
       const saved = localStorage.getItem('CROCE_ORO_CORSI');
       if (saved) {
-        const healed = normalizzaCorsiFormazione(JSON.parse(saved), SEDI_ASSOCIATIVE_INIZIALI);
+        const epurati = rimuoviCorsiLegacy(JSON.parse(saved));
+        const healed = normalizzaCorsiFormazione(epurati, SEDI_ASSOCIATIVE_INIZIALI);
         try {
           localStorage.setItem('CROCE_ORO_CORSI', JSON.stringify(healed));
         } catch {}
@@ -1409,11 +1457,12 @@ export default function App() {
     return normalizzaCorsiFormazione(CORSI_FORMAZIONE_INIZIALI, SEDI_ASSOCIATIVE_INIZIALI);
   });
   const handleAggiornaCorsi = (nuovi: CorsoFormazione[]) => {
-    const norm = normalizzaCorsiFormazione(nuovi, sediAssociativeRef.current);
+    const norm = normalizzaCorsiFormazione(rimuoviCorsiLegacy(nuovi), sediAssociativeRef.current);
     setCorsiFormazione(norm);
     try {
       localStorage.setItem('CROCE_ORO_CORSI', JSON.stringify(norm));
     } catch {}
+    realtime.syncCorsi(norm);
   };
 
   // 8. Magazzino Vestiario & DPI
@@ -1429,6 +1478,7 @@ export default function App() {
     try {
       localStorage.setItem('CROCE_ORO_MAG_VESTIARIO', JSON.stringify(nuovo));
     } catch {}
+    realtime.syncMagazzinoVestiario(nuovo);
   };
 
   // 9. Attrezzature Operative
@@ -1444,6 +1494,7 @@ export default function App() {
     try {
       localStorage.setItem('CROCE_ORO_ATTREZZATURE', JSON.stringify(nuove));
     } catch {}
+    realtime.syncAttrezzatureMagazzino(nuove);
   };
 
   // 10. Movimenti Magazzino
@@ -1459,6 +1510,7 @@ export default function App() {
     try {
       localStorage.setItem('CROCE_ORO_MOVIMENTI_MAG', JSON.stringify(nuovi));
     } catch {}
+    realtime.syncMovimentiMagazzino(nuovi);
   };
 
   // 11. Sedi Associative
@@ -2512,6 +2564,12 @@ export default function App() {
     sessioneTurnoRef.current = sessioneTurno;
   }, [sessioneTurno]);
 
+  const lastAnnouncedShiftKeyRef = useRef<string>(
+    sessioneTurno?.attivo
+      ? `1::${sessioneTurno.volontarioId || ''}::${sessioneTurno.volontarioNome || ''}::${sessioneTurno.orarioInizio || ''}::${sessioneTurno.mezzoScelto || ''}`
+      : ''
+  );
+
   const utenteCentraleRef = useRef(utenteCentrale);
   useEffect(() => {
     utenteCentraleRef.current = utenteCentrale;
@@ -2533,6 +2591,54 @@ export default function App() {
     } catch {}
     return [];
   });
+  const notificheRicevuteAccountRef = useRef<NotificaRicevutaAccount[]>(notificheRicevuteAccount);
+  useEffect(() => {
+    notificheRicevuteAccountRef.current = notificheRicevuteAccount;
+  }, [notificheRicevuteAccount]);
+
+  const processedNotifKeysRef = useRef<Set<string>>((() => {
+    try {
+      const raw = localStorage.getItem('CROCE_ORO_PROCESSED_NOTIF_KEYS');
+      if (raw) {
+        const arr = JSON.parse(raw);
+        if (Array.isArray(arr)) return new Set(arr.map(String));
+      }
+    } catch {}
+    return new Set<string>();
+  })());
+  const segnaNotifKeyProcessata = (key?: string) => {
+    if (!key) return;
+    processedNotifKeysRef.current.add(key);
+    try {
+      const arr = Array.from(processedNotifKeysRef.current).slice(-250);
+      localStorage.setItem('CROCE_ORO_PROCESSED_NOTIF_KEYS', JSON.stringify(arr));
+    } catch {}
+  };
+
+  const seenRadioMsgIdsRef = useRef<Set<string>>((() => {
+    try {
+      const raw = localStorage.getItem('CROCE_ORO_SEEN_RADIO_IDS');
+      if (raw) {
+        const arr = JSON.parse(raw);
+        if (Array.isArray(arr)) return new Set(arr.map(String));
+      }
+    } catch {}
+    return new Set<string>();
+  })());
+  const segnaRadioMsgIdVisto = (id?: string) => {
+    if (!id) return;
+    seenRadioMsgIdsRef.current.add(id);
+    try {
+      const arr = Array.from(seenRadioMsgIdsRef.current).slice(-200);
+      localStorage.setItem('CROCE_ORO_SEEN_RADIO_IDS', JSON.stringify(arr));
+    } catch {}
+  };
+
+  const extractMissionCodeFromText = (text?: string): string | undefined => {
+    if (!text) return undefined;
+    const match = String(text).match(/CO-[A-Z0-9-]+-\d{4}-\d+/);
+    return match ? match[0] : undefined;
+  };
 
   const conteggioNotificheNonLette = useMemo(() => {
     return notificheRicevuteAccount.filter((n) => !n.letta).length;
@@ -2588,25 +2694,52 @@ export default function App() {
       idRiferimento?: string;
     };
     ignoraSuono?: boolean;
+    dedupKey?: string;
   }) => {
+    const nowMs = Date.now();
+    const dedupKey = nuova.dedupKey || `${nuova.categoria}::${nuova.titolo}::${nuova.messaggio}`;
+    if (nuova.dedupKey && processedNotifKeysRef.current.has(dedupKey)) {
+      return;
+    }
+    const duplicataEsistente = notificheRicevuteAccountRef.current.some(
+      (n) =>
+        (n.dedupKey && n.dedupKey === dedupKey) ||
+        (n.letta && n.titolo === nuova.titolo && n.messaggio === nuova.messaggio) ||
+        (!n.letta && n.titolo === nuova.titolo && n.messaggio === nuova.messaggio && nowMs - (n.timestamp || 0) < 120000)
+    );
+    if (duplicataEsistente) {
+      if (nuova.dedupKey) segnaNotifKeyProcessata(dedupKey);
+      return;
+    }
+    if (nuova.dedupKey) {
+      segnaNotifKeyProcessata(dedupKey);
+    }
+
     const now = new Date();
     const dataOraStr = formatDateTimeItaly(now, false);
 
     const item: NotificaRicevutaAccount = {
-      id: `notif-acc-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      id: `notif-acc-${nowMs}-${Math.random().toString(36).substring(2, 6)}`,
       categoria: nuova.categoria,
       titolo: nuova.titolo,
       messaggio: nuova.messaggio,
       dataOra: dataOraStr,
-      timestamp: Date.now(),
+      timestamp: nowMs,
       letta: false, // nuova notifica non ancora letta
       priorita: nuova.priorita,
-      linkAzione: nuova.linkAzione
+      linkAzione: nuova.linkAzione,
+      dedupKey
     };
 
+    const nextList = [item, ...notificheRicevuteAccountRef.current];
+    notificheRicevuteAccountRef.current = nextList;
     setNotificheRicevuteAccount((prev) => {
+      if (prev.some((n) => n.dedupKey === dedupKey && (n.letta || nowMs - (n.timestamp || 0) < 120000))) {
+        return prev;
+      }
       // Non cancellare mai le notifiche precedenti: inserisci la nuova in cima
       const updated = [item, ...prev];
+      notificheRicevuteAccountRef.current = updated;
       try {
         localStorage.setItem('CROCE_ORO_NOTIFICHE_RICEVUTE_ARCHIVIO', JSON.stringify(updated));
       } catch {}
@@ -2638,23 +2771,65 @@ export default function App() {
   };
 
   const handleSegnaNotificaComeLetta = (notificaId: string) => {
+    const target = notificheRicevuteAccountRef.current.find((n) => n.id === notificaId);
+    if (target) {
+      const cod =
+        target.linkAzione?.idRiferimento ||
+        extractMissionCodeFromText(target.titolo) ||
+        extractMissionCodeFromText(target.messaggio);
+      if (cod) {
+        segnaMissioneSilenziata(cod);
+      }
+      if (target.dedupKey) {
+        segnaNotifKeyProcessata(target.dedupKey);
+      }
+    }
+    const wasUnreadAlert = Boolean(
+      target && !target.letta && (target.categoria === 'servizio' || target.categoria === 'radio')
+    );
+    const updatedSync = notificheRicevuteAccountRef.current.map((n) =>
+      n.id === notificaId ? { ...n, letta: true } : n
+    );
+    notificheRicevuteAccountRef.current = updatedSync;
+    const unreadAfterCount = updatedSync.filter(
+      (n) => !n.letta && (n.categoria === 'servizio' || n.categoria === 'radio')
+    ).length;
+
     setNotificheRicevuteAccount((prev) => {
       const updated = prev.map((n) => (n.id === notificaId ? { ...n, letta: true } : n));
+      notificheRicevuteAccountRef.current = updated;
       try {
         localStorage.setItem('CROCE_ORO_NOTIFICHE_RICEVUTE_ARCHIVIO', JSON.stringify(updated));
       } catch {}
       return updated;
     });
+    if (popupNotificaAttiva?.id === notificaId) {
+      setPopupNotificaAttiva(null);
+    }
+    if (wasUnreadAlert || unreadAfterCount === 0 || isPhoneRingingRef.current || soundEngine.getIsRinging() || soundEngine.getIsBeeperActive()) {
+      arrestaSuoneria(true);
+    }
   };
 
   const handleSegnaTutteNotificheComeLette = () => {
+    notificheRicevuteAccountRef.current.forEach((n) => {
+      const cod =
+        n.linkAzione?.idRiferimento ||
+        extractMissionCodeFromText(n.titolo) ||
+        extractMissionCodeFromText(n.messaggio);
+      if (cod) segnaMissioneSilenziata(cod);
+      if (n.dedupKey) segnaNotifKeyProcessata(n.dedupKey);
+    });
     setNotificheRicevuteAccount((prev) => {
       const updated = prev.map((n) => ({ ...n, letta: true }));
+      notificheRicevuteAccountRef.current = updated;
       try {
         localStorage.setItem('CROCE_ORO_NOTIFICHE_RICEVUTE_ARCHIVIO', JSON.stringify(updated));
       } catch {}
       return updated;
     });
+    setPopupNotificaAttiva(null);
+    arrestaSuoneria(true);
   };
 
   const handleAzioneNotifica = (param?: {
@@ -2745,24 +2920,66 @@ export default function App() {
   const [archivioPDF, setArchivioPDF] = useState<PdfArchiveItem[]>([]);
   const [pdfSelezionato, setPdfSelezionato] = useState<PdfArchiveItem | null>(null);
 
-  // Recupera i KM finali dell'ultimo servizio svolto con lo stesso mezzo per precompilare i KM iniziali del nuovo servizio
+  // Recupera i KM finali dell'ultimo servizio svolto con lo stesso mezzo (ordine cronologico più recente); se il mezzo non ha servizi precedenti usa i KM iniziali caricati dall'amministratore nel Database Mezzi
   const getUltimiKmMezzo = useCallback((nomeMezzo?: string): number | null => {
     if (!nomeMezzo || !nomeMezzo.trim()) return null;
-    const target = nomeMezzo.trim().toLowerCase();
-    const prev = archivioPDF.find(item => {
-      if (!item.mezzo || !item.kmFine || item.kmFine <= 0) return false;
-      const m = item.mezzo.trim().toLowerCase();
-      return m === target || m.includes(target) || target.includes(m);
-    });
-    return prev ? prev.kmFine : null;
-  }, [archivioPDF]);
+    const extractCanonical = (raw?: string) =>
+      String(raw || '').split(/\s*[-–(]/)[0].trim().toLowerCase();
+    const target = extractCanonical(nomeMezzo);
+    if (!target) return null;
+
+    const matchMezzo = (candidate?: string) => {
+      const c = extractCanonical(candidate);
+      if (!c) return false;
+      return c === target || c.includes(target) || target.includes(c);
+    };
+
+    const parseServiceTime = (s: PdfArchiveItem): number => {
+      const str = String(s?.data || '').trim();
+      const itMatch = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:.*?\b(\d{1,2})[:.](\d{2}))?/);
+      if (itMatch) {
+        return new Date(
+          Number(itMatch[3]),
+          Number(itMatch[2]) - 1,
+          Number(itMatch[1]),
+          Number(itMatch[4] || 0),
+          Number(itMatch[5] || 0)
+        ).getTime();
+      }
+      const isoMatch = str.match(/^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{1,2}):(\d{2}))?/);
+      if (isoMatch) {
+        return new Date(
+          Number(isoMatch[1]),
+          Number(isoMatch[2]) - 1,
+          Number(isoMatch[3]),
+          Number(isoMatch[4] || 0),
+          Number(isoMatch[5] || 0)
+        ).getTime();
+      }
+      return 0;
+    };
+
+    const prevList = archivioPDF
+      .map((item, idx) => ({ item, idx, ts: parseServiceTime(item) }))
+      .filter(({ item }) => Boolean(item.mezzo && item.kmFine && item.kmFine > 0 && matchMezzo(item.mezzo)))
+      .sort((a, b) => (b.ts - a.ts) || (a.idx - b.idx));
+    if (prevList.length > 0 && prevList[0].item.kmFine > 0) {
+      return prevList[0].item.kmFine;
+    }
+
+    const mezzoDb = mezziFlotta.find((m) => matchMezzo(m.sigla));
+    return mezzoDb && typeof mezzoDb.chilometraggioAttuale === 'number' && mezzoDb.chilometraggioAttuale >= 0
+      ? mezzoDb.chilometraggioAttuale
+      : null;
+  }, [archivioPDF, mezziFlotta]);
 
 
 
   const missioneVisualizzata = isMissioneVisibileSuQuestoTerminale ? missioneBase : null;
   const isSchedaBloccata = schedaCompletataBloccata || Boolean(countdown30Minuti);
   const tempiVisualizzati = (tempi && Object.keys(tempi).length > 0) ? tempi : (countdown30Minuti?.tempi || {});
-  const kmInizioVisualizzato = kmInizio || countdown30Minuti?.kmInizio || (missioneVisualizzata?.mezzoAssegnato ? String(getUltimiKmMezzo(missioneVisualizzata.mezzoAssegnato) || '') : '');
+  const autoKmVisualizzati = missioneVisualizzata?.mezzoAssegnato ? getUltimiKmMezzo(missioneVisualizzata.mezzoAssegnato) : null;
+  const kmInizioVisualizzato = kmInizio || countdown30Minuti?.kmInizio || (autoKmVisualizzati !== null ? String(autoKmVisualizzati) : '');
   const kmFineVisualizzato = kmFine || countdown30Minuti?.kmFine || '';
   const datiDestVisualizzati = datiDestinazione || countdown30Minuti?.datiDestinazione || null;
 
@@ -2770,7 +2987,7 @@ export default function App() {
   useEffect(() => {
     if (missione?.mezzoAssegnato && !kmInizio && !schedaCompletataBloccata && !countdown30Minuti) {
       const prevKm = getUltimiKmMezzo(missione.mezzoAssegnato);
-      if (prevKm && prevKm > 0) {
+      if (prevKm !== null && prevKm >= 0) {
         setKmInizio(String(prevKm));
       }
     }
@@ -2858,8 +3075,53 @@ export default function App() {
   }, [isPhoneRinging]);
   const [ringingSource, setRingingSource] = useState<string>('Centrale');
   const ringingSourceRef = useRef<string>('Centrale');
-  const lastSilencedRingingTimestampRef = useRef<number>(0);
-  const lastSilencedSourceRef = useRef<string>('');
+  const lastSilencedRingingTimestampRef = useRef<number>((() => {
+    try {
+      const v = Number(localStorage.getItem('CROCE_ORO_LAST_SILENCED_RING_TS') || '0');
+      return Number.isFinite(v) ? v : 0;
+    } catch {
+      return 0;
+    }
+  })());
+  const lastSilencedSourceRef = useRef<string>((() => {
+    try {
+      return localStorage.getItem('CROCE_ORO_LAST_SILENCED_RING_SOURCE') || '';
+    } catch {
+      return '';
+    }
+  })());
+  const lastServerRingTsRef = useRef<number>(0);
+  const lastRingStartedAtRef = useRef<number>(0);
+  const silencedMissionCodesRef = useRef<Set<string>>((() => {
+    try {
+      const raw = localStorage.getItem('CROCE_ORO_SILENCED_MISSION_CODES');
+      if (raw) {
+        const arr = JSON.parse(raw);
+        if (Array.isArray(arr)) return new Set(arr.map(String));
+      }
+    } catch {}
+    return new Set<string>();
+  })());
+  const segnaMissioneSilenziata = (codice?: string) => {
+    if (!codice) return;
+    silencedMissionCodesRef.current.add(codice);
+    try {
+      const arr = Array.from(silencedMissionCodesRef.current).slice(-40);
+      localStorage.setItem('CROCE_ORO_SILENCED_MISSION_CODES', JSON.stringify(arr));
+    } catch {}
+  };
+  const isMissioneSilenziosaONotificaLetta = (codice?: string): boolean => {
+    if (!codice) return false;
+    if (silencedMissionCodesRef.current.has(codice)) return true;
+    return notificheRicevuteAccountRef.current.some(
+      (n) =>
+        n.letta &&
+        n.categoria === 'servizio' &&
+        (n.linkAzione?.idRiferimento === codice ||
+          (n.titolo && n.titolo.includes(codice)) ||
+          (n.messaggio && n.messaggio.includes(codice)))
+    );
+  };
   const [tipoSuoneria, setTipoSuoneria] = useState<'telefono' | 'sirena' | 'chiamata'>('telefono');
   const audioContextRef = useRef<AudioContext | null>(null);
   const ringIntervalRef = useRef<any>(null);
@@ -3516,7 +3778,16 @@ export default function App() {
   ]);
 
   const [formAmbito, setFormAmbito] = useState<'SERVIZIO VETERINARIO' | 'PROTEZIONE CIVILE' | 'SERVIZIO D\'ISTITUTO'>('SERVIZIO VETERINARIO');
-  const [formSottoAmbitoVet, setFormSottoAmbitoVet] = useState<'SOCCORSO VETERINARIO' | 'RECUPERO ANIMALE' | 'TRASPORTO ANIMALE'>('SOCCORSO VETERINARIO');
+  const [formSottoAmbitoVet, setFormSottoAmbitoVet] = useState<'SOCCORSO VETERINARIO' | 'RECUPERO ANIMALE' | 'TRASPORTO ANIMALE' | 'ASSISTENZA ATTO ESECUTIVO'>('SOCCORSO VETERINARIO');
+  const [formDataInizioServizioSpecifico, setFormDataInizioServizioSpecifico] = useState<string>(() => formatISODateItaly());
+  const [formOraInizioServizioSpecifico, setFormOraInizioServizioSpecifico] = useState<string>('');
+  const [formDataArrivoRichiestaServizio, setFormDataArrivoRichiestaServizio] = useState<string>(() => formatISODateItaly());
+  const [formOraArrivoRichiestaServizio, setFormOraArrivoRichiestaServizio] = useState<string>(() => formatTimeItaly(undefined, false));
+  const [formPropImmobileNomeCognome, setFormPropImmobileNomeCognome] = useState<string>('');
+  const [formPropImmobileCF, setFormPropImmobileCF] = useState<string>('');
+  const [formPropImmobileIndirizzo, setFormPropImmobileIndirizzo] = useState<string>('');
+  const [formKmInizioMezzo, setFormKmInizioMezzo] = useState<string>('');
+  const [formKmInizioMezzoModificato, setFormKmInizioMezzoModificato] = useState<boolean>(false);
   const [formTipologiaServizio, setFormTipologiaServizio] = useState<string>(TIPOLOGIE_PROTEZIONE_CIVILE[0]);
   const [formNumeroSegreteriaSoupRt, setFormNumeroSegreteriaSoupRt] = useState<string>('');
   const [formAllertaMeteo, setFormAllertaMeteo] = useState<'Rossa' | 'Arancione' | 'Giallo' | 'Verde' | 'Nessuna'>('Nessuna');
@@ -4626,14 +4897,16 @@ export default function App() {
         };
         setPosizioneVolontario(nuovaPos);
         setStatoPermessi(p => ({ ...p, gps: 'granted' }));
-        realtime.updateGps(nuovaPos);
+        if (ruoloRef.current === 'volontario' || sessioneTurnoRef.current?.attivo) {
+          realtime.updateGps(nuovaPos);
+        }
       },
       () => {
         // Fallback silenzioso
       },
       {
         enableHighAccuracy: true,
-        maximumAge: 0,
+        maximumAge: 10000,
         timeout: 4000
       }
     );
@@ -4656,7 +4929,7 @@ export default function App() {
         orario: formatTimeItaly()
       };
       notificaDatoAllaCentrale(`📍 Aggiornamento GPS Bordo: coordinate [${nuovaPos.lat.toFixed(4)}, ${nuovaPos.lng.toFixed(4)}]`, 'generico');
-      realtime.updateGps(nuovaPos);
+      realtime.updateGps(nuovaPos, true);
       return nuovaPos;
     });
   };
@@ -5209,6 +5482,12 @@ export default function App() {
         microchip: isVet ? (item.microchip || destInfo?.animale?.microchip || missione?.microchip) : undefined,
         noMicrochip: isVet ? (item.noMicrochip !== undefined ? item.noMicrochip : (destInfo?.animale?.noMicrochip ?? missione?.noMicrochip)) : undefined,
         datiProprietarioCentrale: isVet ? (item.datiProprietarioCentrale || missione?.datiProprietarioCentrale) : undefined,
+        proprietarioImmobile: item.proprietarioImmobile || (item.codice === missione?.codice ? missione?.proprietarioImmobile : undefined),
+        sottoAmbitoVet: item.sottoAmbitoVet,
+        dataInizioServizioSpecifico: item.dataInizioServizioSpecifico,
+        oraInizioServizioSpecifico: item.oraInizioServizioSpecifico,
+        dataArrivoRichiestaServizio: item.dataArrivoRichiestaServizio,
+        oraArrivoRichiestaServizio: item.oraArrivoRichiestaServizio,
         noteCritiche: item.noteCritiche,
         volontarioNome: item.volontarioNome,
         qualificaTurno: item.qualificaTurno,
@@ -5463,6 +5742,12 @@ export default function App() {
         telefono: item.telefono,
         urgenza: item.urgenza,
         ambito: item.ambito,
+        sottoAmbitoVet: item.sottoAmbitoVet,
+        dataInizioServizioSpecifico: item.dataInizioServizioSpecifico,
+        oraInizioServizioSpecifico: item.oraInizioServizioSpecifico,
+        dataArrivoRichiestaServizio: item.dataArrivoRichiestaServizio,
+        oraArrivoRichiestaServizio: item.oraArrivoRichiestaServizio,
+        proprietarioImmobile: item.proprietarioImmobile,
         noteCritiche: item.noteCritiche,
         volontarioNome: item.volontarioNome,
         qualificaTurno: item.qualificaTurno,
@@ -5586,6 +5871,12 @@ export default function App() {
     let docPDF = `CROCE ORO MASSA CARRARA - FOGLIO DI VIAGGIO DIGITALE\n`;
     docPDF += `ID MISSIONE: ${missione.codice}\n`;
     docPDF += `DATA: ${formatDateItaly()}\n`;
+    if (missione.dataArrivoRichiestaServizio || missione.oraArrivoRichiestaServizio) {
+      docPDF += `ARRIVO RICHIESTA DI SERVIZIO: ${missione.dataArrivoRichiestaServizio || ''} ${missione.oraArrivoRichiestaServizio || ''}\n`;
+    }
+    if (missione.dataInizioServizioSpecifico || missione.oraInizioServizioSpecifico) {
+      docPDF += `INIZIO SERVIZIO SPECIFICO: ${missione.dataInizioServizioSpecifico || ''} ${missione.oraInizioServizioSpecifico || ''}\n`;
+    }
     docPDF += `URGENZA: ${missione.urgenza}\n`;
     docPDF += `AMBITO: ${missione.ambito}\n`;
     docPDF += `MEZZO UTILIZZATO: ${missione.mezzoAssegnato}\n`;
@@ -5677,6 +5968,10 @@ export default function App() {
       anno: currentYear,
       mezzo: missione.mezzoAssegnato,
       data: dataEOraCompleta,
+      dataInizioServizioSpecifico: missione.dataInizioServizioSpecifico,
+      oraInizioServizioSpecifico: missione.oraInizioServizioSpecifico,
+      dataArrivoRichiestaServizio: missione.dataArrivoRichiestaServizio,
+      oraArrivoRichiestaServizio: missione.oraArrivoRichiestaServizio,
       kmInizio: kmMancanti ? 0 : ini,
       kmFine: kmMancanti ? 0 : fin,
       kmTotali: kmMancanti ? 0 : tot,
@@ -5703,6 +5998,7 @@ export default function App() {
       microchip: isVetMission ? (missione.microchip || destInfo?.animale?.microchip) : undefined,
       noMicrochip: isVetMission ? (missione.noMicrochip !== undefined ? missione.noMicrochip : destInfo?.animale?.noMicrochip) : undefined,
       datiProprietarioCentrale: isVetMission ? missione.datiProprietarioCentrale : undefined,
+      proprietarioImmobile: isVetMission ? missione.proprietarioImmobile : undefined,
       datiDestinazione: isVetMission ? destInfo : (destInfo ? { ...destInfo, animale: undefined, proprietario: undefined, strutturaVeterinaria: undefined } : undefined),
       manovreEffettuatePatologie: manovreEff || undefined,
       sottoAmbitoVet: isVetMission ? missione.sottoAmbitoVet : undefined,
@@ -5748,7 +6044,14 @@ export default function App() {
   // Apertura modale inserimento KM mancanti da parte della Centrale
   const apriModaleInserisciKmCentrale = (item: PdfArchiveItem) => {
     setServizioKmSelezionato(item);
-    setCentraleKmInizio(item.kmInizio > 0 ? String(item.kmInizio) : '');
+    const kmAuto = (!item.kmInizio || item.kmInizio <= 0) ? getUltimiKmMezzo(item.mezzo) : null;
+    setCentraleKmInizio(
+      item.kmInizio > 0
+        ? String(item.kmInizio)
+        : kmAuto !== null
+          ? String(kmAuto)
+          : ''
+    );
     setCentraleKmFine(item.kmFine > 0 ? String(item.kmFine) : '');
     setErroreCentraleKm(null);
     setModalCentraleKmAperta(true);
@@ -6411,6 +6714,13 @@ export default function App() {
   // Il mezzo effettivo assegnato al servizio: manuale se l'amministratore lo cambia, altrimenti calcolato dall'algoritmo
   const mezzoEffettivo = mezzoManuale || mezzoConsigliatoDati.sigla;
 
+  // Auto-precompila i KM di partenza del mezzo selezionato nel modulo Centrale (ultimo kmFine o km iniziale admin)
+  useEffect(() => {
+    if (formKmInizioMezzoModificato) return;
+    const kmAuto = getUltimiKmMezzo(mezzoEffettivo);
+    setFormKmInizioMezzo(kmAuto !== null ? String(kmAuto) : '');
+  }, [mezzoEffettivo, formKmInizioMezzoModificato, getUltimiKmMezzo]);
+
   // Stato e monitoraggio Allerte Meteo Istituzionali (CFR Toscana www.cfr.toscana.it) e Segnalazioni Traffico WAZE (www.waze.com)
   const [meteoWazeLive, setMeteoWazeLive] = useState<{
     meteoLivello: string;
@@ -6504,6 +6814,14 @@ export default function App() {
     setFormDestinazione('');
     setFormAmbito('SERVIZIO VETERINARIO');
     setFormSottoAmbitoVet('SOCCORSO VETERINARIO');
+    setFormDataInizioServizioSpecifico(formatISODateItaly());
+    setFormOraInizioServizioSpecifico('');
+    setFormDataArrivoRichiestaServizio(formatISODateItaly());
+    setFormOraArrivoRichiestaServizio(formatTimeItaly(undefined, false));
+    setFormPropImmobileNomeCognome('');
+    setFormPropImmobileCF('');
+    setFormPropImmobileIndirizzo('');
+    setFormKmInizioMezzoModificato(false);
     setFormTipologiaServizio(TIPOLOGIE_PROTEZIONE_CIVILE[0]);
     setFormSpecifiche('');
     setFormSpecificheNonVet('');
@@ -6618,6 +6936,30 @@ export default function App() {
     tipo: 'telefono' | 'sirena' | 'chiamata' = 'telefono',
     broadcastWS: boolean = true
   ) => {
+    // Evita attivazioni ridondanti della stessa sorgente, di missioni già lette/silenziate o di squilli remoti già silenziati
+    const now = Date.now();
+    const codSorgente = extractMissionCodeFromText(sorgente);
+    if (!broadcastWS && codSorgente && isMissioneSilenziosaONotificaLetta(codSorgente)) {
+      return;
+    }
+    if (
+      isPhoneRingingRef.current &&
+      ringingSourceRef.current === sorgente &&
+      now - lastRingStartedAtRef.current < 5000
+    ) {
+      return;
+    }
+    if (
+      !broadcastWS &&
+      lastSilencedSourceRef.current &&
+      sorgente === lastSilencedSourceRef.current &&
+      lastServerRingTsRef.current <= lastSilencedRingingTimestampRef.current
+    ) {
+      return;
+    }
+
+    lastRingStartedAtRef.current = now;
+
     // Inoltra tramite WebSocket agli altri dispositivi connessi
     if (broadcastWS) {
       realtime.triggerRing(sorgente, tipo);
@@ -6640,8 +6982,6 @@ export default function App() {
         (navigator as any).wakeLock?.request('screen').catch(() => {});
       } catch {}
     }
-
-    aggiungiNotifica(`🔔 SQUILLO ATTIVATO AL MASSIMO VOLUME: ${sorgente} ha allertato il telefono (${tipo.toUpperCase()}).`, 'allarme');
 
     // Vibrazione mobile intensiva ad impulsi continui di emergenza
     if ('vibrate' in navigator) {
@@ -6674,9 +7014,26 @@ export default function App() {
   };
 
   const arrestaSuoneria = (broadcastWS?: boolean | React.MouseEvent) => {
-    const now = Date.now();
-    lastSilencedRingingTimestampRef.current = now;
-    lastSilencedSourceRef.current = ringingSourceRef.current || '';
+    const silencedTs = Math.max(Date.now(), lastServerRingTsRef.current || 0);
+    lastSilencedRingingTimestampRef.current = silencedTs;
+    const sourceToSilence = ringingSourceRef.current || '';
+    if (sourceToSilence) {
+      lastSilencedSourceRef.current = sourceToSilence;
+    }
+    try {
+      localStorage.setItem('CROCE_ORO_LAST_SILENCED_RING_TS', String(silencedTs));
+      if (lastSilencedSourceRef.current) {
+        localStorage.setItem('CROCE_ORO_LAST_SILENCED_RING_SOURCE', lastSilencedSourceRef.current);
+      }
+    } catch {}
+    const codSorgente = extractMissionCodeFromText(sourceToSilence);
+    if (codSorgente) {
+      segnaMissioneSilenziata(codSorgente);
+    }
+    if (missioneRef.current?.codice) {
+      segnaMissioneSilenziata(missioneRef.current.codice);
+    }
+    ringingSourceRef.current = '';
 
     // Se non espressamente disattivato (false esplicito booleano), inoltra lo STOP a tutti i terminali
     // (quando chiamato da pulsante onClick={arrestaSuoneria}, broadcastWS è un MouseEvent, quindi broadcastWS !== false è true!)
@@ -6706,7 +7063,6 @@ export default function App() {
         // Ignora
       }
     }
-    aggiungiNotifica(`🔕 SUONERIA SILENZIATA dall'operatore.`, 'sistema');
   };
 
   // Silenzia e archivia allerta notifica annullamento su display volontario
@@ -6874,6 +7230,9 @@ export default function App() {
       audioDurationSec?: number;
       audioMimeType?: string;
       mittenteNome?: string;
+      registraInCentro?: boolean;
+      dedupKey?: string;
+      ignoraSuono?: boolean;
     }
   ) => {
     const timeStr = formatTimeItaly();
@@ -6896,13 +7255,19 @@ export default function App() {
       prev.some(n => n.id === nuovaNotifica.id) ? prev : [...prev, nuovaNotifica]
     );
 
-    const isRadio = tipo === 'centrale' || tipo === 'mezzo';
-    riceviERegistraNotifica({
-      categoria: isRadio ? 'radio' : 'sistema',
-      titolo: isRadio ? (tipo === 'centrale' ? '📻 Comunicazione Centrale' : '📻 Comunicazione Bordo Mezzo') : 'Notifica Operativa',
-      messaggio: cleanTesto,
-      linkAzione: isRadio ? { tipo: 'radio' } : undefined
-    });
+    // Registra nel Centro Notifiche Permanente (e riproduce suono) SOLO per eventi esplicitamente marcati come notifiche di centro,
+    // evitando suoni ridondanti e notifiche non lette su normali feedback locali/UI
+    if (extra?.registraInCentro) {
+      const isRadio = tipo === 'centrale' || tipo === 'mezzo';
+      riceviERegistraNotifica({
+        categoria: isRadio ? 'radio' : 'sistema',
+        titolo: isRadio ? (tipo === 'centrale' ? '📻 Comunicazione Centrale' : '📻 Comunicazione Bordo Mezzo') : 'Notifica Operativa',
+        messaggio: cleanTesto,
+        linkAzione: isRadio ? { tipo: 'radio' } : undefined,
+        dedupKey: extra.dedupKey,
+        ignoraSuono: extra.ignoraSuono
+      });
+    }
   };
 
   const inviaMessaggioRadio = (
@@ -7905,10 +8270,25 @@ export default function App() {
             .filter(Boolean)
         : undefined;
 
+      const proprietarioImmobilePayload: ProprietarioImmobileData | undefined =
+        isVet &&
+        formSottoAmbitoVet === 'ASSISTENZA ATTO ESECUTIVO' &&
+        (formPropImmobileNomeCognome.trim() || formPropImmobileCF.trim() || formPropImmobileIndirizzo.trim())
+          ? {
+              nomeCognome: formPropImmobileNomeCognome.trim(),
+              codiceFiscale: formPropImmobileCF.trim().toUpperCase(),
+              indirizzoResidenza: formPropImmobileIndirizzo.trim()
+            }
+          : undefined;
+
       const nuovaMissione: MissionData = {
         codice: codiceGen,
         urgenza: formUrgenza,
         orarioChiamata,
+        dataInizioServizioSpecifico: formDataInizioServizioSpecifico.trim() || undefined,
+        oraInizioServizioSpecifico: formOraInizioServizioSpecifico.trim() || undefined,
+        dataArrivoRichiestaServizio: formDataArrivoRichiestaServizio.trim() || undefined,
+        oraArrivoRichiestaServizio: formOraArrivoRichiestaServizio.trim() || undefined,
         chiamante: chiamanteEffettivo,
         telefono: telefonoEffettivo,
         enteIstituzionale: formEnteIstituzionale || undefined,
@@ -7925,6 +8305,7 @@ export default function App() {
         tipoAnimaleAltro: isVet && formTipoAnimale === 'Altro' ? formTipoAnimaleAltro?.trim() : undefined,
         nonDiProprieta: isNonProp,
         datiProprietarioCentrale: datiProprietarioCentralePayload,
+        proprietarioImmobile: proprietarioImmobilePayload,
         specifiche: isVet
           ? (formSpecifiche || '-')
           : (formSpecificheNonVet?.trim() ? `${formTipologiaServizio} - ${formSpecificheNonVet.trim()}` : formTipologiaServizio),
@@ -7939,10 +8320,10 @@ export default function App() {
         volontarioAssegnatoEsclusivoNome: undefined
       };
 
-      // Precompila al volontario i km iniziali del servizio con i km finali del servizio precedente effettuato con lo stesso mezzo
+      // Precompila al volontario i km iniziali del servizio (modificabili in form o da ultimo kmFine / km iniziale admin del mezzo)
       const prevKmFine = getUltimiKmMezzo(mezzoEffettivo);
-      const kmPrecomp = prevKmFine ? String(prevKmFine) : '';
-      (nuovaMissione as any).kmInizio = kmPrecomp;
+      const kmPrecomp = formKmInizioMezzo.trim() || (prevKmFine !== null ? String(prevKmFine) : '');
+      nuovaMissione.kmInizio = kmPrecomp;
 
       setMissione(nuovaMissione);
       salvaIndirizzoInCollezione(nuovaMissione.indirizzo, 'partenza');
@@ -7986,6 +8367,14 @@ export default function App() {
       setFormUrgenza('VERDE');
       setFormAmbito('SERVIZIO VETERINARIO');
       setFormSottoAmbitoVet('SOCCORSO VETERINARIO');
+      setFormDataInizioServizioSpecifico(formatISODateItaly());
+      setFormOraInizioServizioSpecifico('');
+      setFormDataArrivoRichiestaServizio(formatISODateItaly());
+      setFormOraArrivoRichiestaServizio(formatTimeItaly(undefined, false));
+      setFormPropImmobileNomeCognome('');
+      setFormPropImmobileCF('');
+      setFormPropImmobileIndirizzo('');
+      setFormKmInizioMezzoModificato(false);
       setFormTipologiaServizio(TIPOLOGIE_PROTEZIONE_CIVILE[0]);
       setFormNumeroSegreteriaSoupRt('');
       setFormAllertaMeteo('Nessuna');
@@ -8062,6 +8451,21 @@ export default function App() {
       sintesi: formSintesi,
       noteCritiche: formNoteCritiche,
       mezzo: mezzoEffettivo || 'T4606',
+      kmInizio: formKmInizioMezzo.trim() || undefined,
+      dataInizioServizioSpecifico: formDataInizioServizioSpecifico || undefined,
+      oraInizioServizioSpecifico: formOraInizioServizioSpecifico || undefined,
+      dataArrivoRichiestaServizio: formDataArrivoRichiestaServizio || undefined,
+      oraArrivoRichiestaServizio: formOraArrivoRichiestaServizio || undefined,
+      proprietarioImmobile:
+        isVet &&
+        formSottoAmbitoVet === 'ASSISTENZA ATTO ESECUTIVO' &&
+        (formPropImmobileNomeCognome.trim() || formPropImmobileCF.trim() || formPropImmobileIndirizzo.trim())
+          ? {
+              nomeCognome: formPropImmobileNomeCognome.trim(),
+              codiceFiscale: formPropImmobileCF.trim().toUpperCase(),
+              indirizzoResidenza: formPropImmobileIndirizzo.trim()
+            }
+          : undefined,
       datiProprietarioCentrale: datiProp,
       resetFormCentrale: true
     });
@@ -8091,6 +8495,12 @@ export default function App() {
     docPDF += `==================================================\n`;
     docPDF += `CODICE: ${payload.codice}\n`;
     docPDF += `DATA/ORA: ${payload.data}\n`;
+    if (payload.dataArrivoRichiestaServizio || payload.oraArrivoRichiestaServizio) {
+      docPDF += `ARRIVO RICHIESTA DI SERVIZIO: ${payload.dataArrivoRichiestaServizio || ''} ${payload.oraArrivoRichiestaServizio || ''}\n`;
+    }
+    if (payload.dataInizioServizioSpecifico || payload.oraInizioServizioSpecifico) {
+      docPDF += `INIZIO SERVIZIO SPECIFICO: ${payload.dataInizioServizioSpecifico || ''} ${payload.oraInizioServizioSpecifico || ''}\n`;
+    }
     docPDF += `URGENZA: ${payload.urgenza}\n`;
     docPDF += `MEZZO: ${payload.mezzo}\n`;
     docPDF += `AMBITO: ${payload.ambito}\n`;
@@ -8147,6 +8557,10 @@ export default function App() {
       anno: payload.anno,
       mezzo: payload.mezzo,
       data: payload.data,
+      dataInizioServizioSpecifico: payload.dataInizioServizioSpecifico,
+      oraInizioServizioSpecifico: payload.oraInizioServizioSpecifico,
+      dataArrivoRichiestaServizio: payload.dataArrivoRichiestaServizio,
+      oraArrivoRichiestaServizio: payload.oraArrivoRichiestaServizio,
       kmInizio: payload.kmInizio,
       kmFine: payload.kmFine,
       kmTotali: payload.kmTotali,
@@ -8174,6 +8588,7 @@ export default function App() {
       microchip: payload.microchip,
       noMicrochip: payload.noMicrochip,
       datiProprietarioCentrale: payload.datiProprietarioCentrale,
+      proprietarioImmobile: payload.proprietarioImmobile,
       sottoAmbitoVet: isVetMission ? payload.sottoAmbitoVet : undefined,
       tipologiaServizio: payload.tipologiaServizio,
       numeroSegreteriaSoupRt: isPcArchive ? payload.numeroSegreteriaSoupRt : undefined,
@@ -8210,6 +8625,14 @@ export default function App() {
       setFormUrgenza('VERDE');
       setFormAmbito('SERVIZIO VETERINARIO');
       setFormSottoAmbitoVet('SOCCORSO VETERINARIO');
+      setFormDataInizioServizioSpecifico(formatISODateItaly());
+      setFormOraInizioServizioSpecifico('');
+      setFormDataArrivoRichiestaServizio(formatISODateItaly());
+      setFormOraArrivoRichiestaServizio(formatTimeItaly(undefined, false));
+      setFormPropImmobileNomeCognome('');
+      setFormPropImmobileCF('');
+      setFormPropImmobileIndirizzo('');
+      setFormKmInizioMezzoModificato(false);
       setFormTipologiaServizio(TIPOLOGIE_PROTEZIONE_CIVILE[0]);
       setFormNumeroSegreteriaSoupRt('');
       setFormAllertaMeteo('Nessuna');
@@ -8248,7 +8671,7 @@ export default function App() {
 
       const mezzoEffettivo = dati.mezzo || sessioneTurno.mezzoScelto || 'T4606';
       const prevKmFine = getUltimiKmMezzo(mezzoEffettivo);
-      const kmPrecomp = prevKmFine ? String(prevKmFine) : '';
+      const kmPrecomp = dati.kmInizio?.trim() || (prevKmFine !== null ? String(prevKmFine) : '');
 
       const nuovaMissione: MissionData = {
         codice: codiceGen,
@@ -8305,17 +8728,35 @@ export default function App() {
 
   const confermaLettura = () => {
     setLetturaConfermata(true);
+    const cod = missione?.codice;
+    segnaMissioneSilenziata(cod);
+    if (cod) {
+      segnaNotifKeyProcessata(`mission-${cod}`);
+      setNotificheRicevuteAccount((prev) => {
+        const updated = prev.map((n) =>
+          n.categoria === 'servizio' &&
+          (n.linkAzione?.idRiferimento === cod ||
+            n.titolo?.includes(cod) ||
+            n.messaggio?.includes(cod))
+            ? { ...n, letta: true }
+            : n
+        );
+        notificheRicevuteAccountRef.current = updated;
+        try {
+          localStorage.setItem('CROCE_ORO_NOTIFICHE_RICEVUTE_ARCHIVIO', JSON.stringify(updated));
+        } catch {}
+        return updated;
+      });
+    }
     notificaDatoAllaCentrale(
-      `📖 Equipaggio ha confermato presa visione e lettura della scheda ${missione?.codice || ''}`,
+      `📖 Equipaggio ha confermato presa visione e lettura della scheda ${cod || ''}`,
       'lettura'
     );
     // Sincronizza conferma lettura con la Centrale Operativa via WebSocket
-    realtime.confirmMissionRead(missione?.codice);
+    realtime.confirmMissionRead(cod);
 
     // Silenzia eventuale squillo quando l'equipaggio apre la scheda e notifica al server
-    if (isPhoneRinging) {
-      arrestaSuoneria(true);
-    }
+    arrestaSuoneria(true);
   };
 
   const registraTempo = (tipo: keyof OperativeTimes, etichetta: string) => {
@@ -8934,6 +9375,7 @@ KM TOTALI: ${kmTot} KM`;
           }
         }
         if (s.activeShift && s.activeShift.attivo) {
+          lastAnnouncedShiftKeyRef.current = `1::${s.activeShift.volontarioId || ''}::${s.activeShift.volontarioNome || ''}::${s.activeShift.orarioInizio || ''}::${s.activeShift.mezzoScelto || ''}`;
           setSessioneTurno(prev => {
             if (!prev.attivo) return s.activeShift;
             if (prev.volontarioId === s.activeShift.volontarioId) return s.activeShift;
@@ -9030,12 +9472,65 @@ KM TOTALI: ${kmTot} KM`;
             realtime.syncMagazzinoMezzi(magazzinoMezziRef.current);
           }
         }
+        if (Array.isArray(s.magazzinoVestiario)) {
+          setMagazzinoVestiario(s.magazzinoVestiario);
+          try { localStorage.setItem('CROCE_ORO_MAG_VESTIARIO', JSON.stringify(s.magazzinoVestiario)); } catch {}
+        }
+        if (Array.isArray(s.attrezzatureOperative)) {
+          setAttrezzatureOperative(s.attrezzatureOperative);
+          try { localStorage.setItem('CROCE_ORO_ATTREZZATURE', JSON.stringify(s.attrezzatureOperative)); } catch {}
+        }
+        if (Array.isArray(s.movimentiMagazzino)) {
+          setMovimentiMagazzino(s.movimentiMagazzino);
+          try { localStorage.setItem('CROCE_ORO_MOVIMENTI_MAG', JSON.stringify(s.movimentiMagazzino)); } catch {}
+        }
+        if (Array.isArray(s.corsiFormazione)) {
+          const corsiNorm = normalizzaCorsiFormazione(
+            rimuoviCorsiLegacy(s.corsiFormazione),
+            Array.isArray(s.sedi) && s.sedi.length > 0 ? s.sedi : sediAssociativeRef.current
+          );
+          setCorsiFormazione(corsiNorm);
+          try { localStorage.setItem('CROCE_ORO_CORSI', JSON.stringify(corsiNorm)); } catch {}
+        }
+        if (Array.isArray(s.noteDiDebito)) {
+          setNoteDiDebito(s.noteDiDebito);
+          try { localStorage.setItem('CROCE_ORO_NOTE_DEBITO', JSON.stringify(s.noteDiDebito)); } catch {}
+        }
+        if (Array.isArray(s.tessereAssociative)) {
+          setTessereAssociative(s.tessereAssociative);
+          try { localStorage.setItem('CROCE_ORO_TESSERE', JSON.stringify(s.tessereAssociative)); } catch {}
+        }
+        if (Array.isArray(s.costiServizio) && s.costiServizio.length > 0) {
+          setCostiServizio(s.costiServizio);
+          try { localStorage.setItem('CROCE_ORO_COSTI_SERVIZIO', JSON.stringify(s.costiServizio)); } catch {}
+        }
+        if (Array.isArray(s.mezziFlotta) && s.mezziFlotta.length > 0) {
+          const ordinati = [...s.mezziFlotta].sort((a, b) => (a.sigla || '').localeCompare(b.sigla || '', 'it', { numeric: true, sensitivity: 'base' }));
+          setMezziFlotta(ordinati);
+          try { localStorage.setItem('CROCE_ORO_MEZZI_FLOTTA', JSON.stringify(ordinati)); } catch {}
+        }
+        if (Array.isArray(s.catalogoMansioni) || Array.isArray(s.categorieMansioni)) {
+          applicaMansioniConfigDaSync(s.catalogoMansioni, s.categorieMansioni, s.mansioniConfigUpdatedAt);
+        }
+        if (s.nomiDatabase && typeof s.nomiDatabase === 'object' && !Array.isArray(s.nomiDatabase)) {
+          applicaNomiDatabaseDaSync(s.nomiDatabase, s.nomiDatabaseUpdatedAt);
+        }
         if (s.ringing && s.ringing.active) {
-          const rTs = s.ringing.timestamp || 0;
+          const rTs = Number(s.ringing.timestamp || 0);
+          if (rTs > lastServerRingTsRef.current) lastServerRingTsRef.current = rTs;
           const isStale = rTs > 0 && (Date.now() - rTs > 25000);
           const wasAlreadySilenced = rTs > 0 && rTs <= lastSilencedRingingTimestampRef.current;
-          const recentSilence = (Date.now() - lastSilencedRingingTimestampRef.current) < 20000;
-          if (!isStale && !wasAlreadySilenced && !recentSilence) {
+          const codRinging = s.activeMission?.codice || extractMissionCodeFromText(s.ringing.source);
+          const missionAlreadySilenced = Boolean(
+            s.letturaConfermata ||
+            isMissioneSilenziosaONotificaLetta(codRinging)
+          );
+          const sameSourceSilenced = Boolean(
+            lastSilencedSourceRef.current &&
+            s.ringing.source === lastSilencedSourceRef.current &&
+            rTs <= lastSilencedRingingTimestampRef.current
+          );
+          if (!isStale && !wasAlreadySilenced && !sameSourceSilenced && !missionAlreadySilenced) {
             if (ruoloRef.current === 'volontario') {
               faiSuonareTelefono(s.ringing.source, s.ringing.soundType, false);
             }
@@ -9162,6 +9657,49 @@ KM TOTALI: ${kmTot} KM`;
             realtime.syncMagazzinoMezzi(magazzinoMezziRef.current);
           }
         }
+        if (Array.isArray(s.magazzinoVestiario)) {
+          setMagazzinoVestiario(s.magazzinoVestiario);
+          try { localStorage.setItem('CROCE_ORO_MAG_VESTIARIO', JSON.stringify(s.magazzinoVestiario)); } catch {}
+        }
+        if (Array.isArray(s.attrezzatureOperative)) {
+          setAttrezzatureOperative(s.attrezzatureOperative);
+          try { localStorage.setItem('CROCE_ORO_ATTREZZATURE', JSON.stringify(s.attrezzatureOperative)); } catch {}
+        }
+        if (Array.isArray(s.movimentiMagazzino)) {
+          setMovimentiMagazzino(s.movimentiMagazzino);
+          try { localStorage.setItem('CROCE_ORO_MOVIMENTI_MAG', JSON.stringify(s.movimentiMagazzino)); } catch {}
+        }
+        if (Array.isArray(s.corsiFormazione)) {
+          const corsiNorm = normalizzaCorsiFormazione(
+            rimuoviCorsiLegacy(s.corsiFormazione),
+            Array.isArray(s.sedi) && s.sedi.length > 0 ? s.sedi : sediAssociativeRef.current
+          );
+          setCorsiFormazione(corsiNorm);
+          try { localStorage.setItem('CROCE_ORO_CORSI', JSON.stringify(corsiNorm)); } catch {}
+        }
+        if (Array.isArray(s.noteDiDebito)) {
+          setNoteDiDebito(s.noteDiDebito);
+          try { localStorage.setItem('CROCE_ORO_NOTE_DEBITO', JSON.stringify(s.noteDiDebito)); } catch {}
+        }
+        if (Array.isArray(s.tessereAssociative)) {
+          setTessereAssociative(s.tessereAssociative);
+          try { localStorage.setItem('CROCE_ORO_TESSERE', JSON.stringify(s.tessereAssociative)); } catch {}
+        }
+        if (Array.isArray(s.costiServizio) && s.costiServizio.length > 0) {
+          setCostiServizio(s.costiServizio);
+          try { localStorage.setItem('CROCE_ORO_COSTI_SERVIZIO', JSON.stringify(s.costiServizio)); } catch {}
+        }
+        if (Array.isArray(s.mezziFlotta) && s.mezziFlotta.length > 0) {
+          const ordinati = [...s.mezziFlotta].sort((a, b) => (a.sigla || '').localeCompare(b.sigla || '', 'it', { numeric: true, sensitivity: 'base' }));
+          setMezziFlotta(ordinati);
+          try { localStorage.setItem('CROCE_ORO_MEZZI_FLOTTA', JSON.stringify(ordinati)); } catch {}
+        }
+        if (Array.isArray(s.catalogoMansioni) || Array.isArray(s.categorieMansioni)) {
+          applicaMansioniConfigDaSync(s.catalogoMansioni, s.categorieMansioni, s.mansioniConfigUpdatedAt);
+        }
+        if (s.nomiDatabase && typeof s.nomiDatabase === 'object' && !Array.isArray(s.nomiDatabase)) {
+          applicaNomiDatabaseDaSync(s.nomiDatabase, s.nomiDatabaseUpdatedAt);
+        }
         if (s.activeMission) {
           if (isBlockedOrGhostMission(s.activeMission, s.codiciEliminati)) {
             setMissione(null);
@@ -9193,14 +9731,26 @@ KM TOTALI: ${kmTot} KM`;
                 setMissione(s.activeMission);
                 setLetturaConfermata(s.letturaConfermata);
                 setTempi(s.operativeTimes || {});
-                if (s.kmInizio) setKmInizio(s.kmInizio);
-                if (s.kmFine) setKmFine(s.kmFine);
+                if (s.kmInizio !== undefined && s.kmInizio !== '') setKmInizio(String(s.kmInizio));
+                if (s.kmFine !== undefined && s.kmFine !== '') setKmFine(String(s.kmFine));
                 if (s.datiDestinazione) setDatiDestinazione(s.datiDestinazione);
-                if (ruoloRef.current === 'volontario') {
-                  faiSuonareTelefono(`Centrale Operativa (${s.activeMission.codice})`, s.activeMission.urgenza === 'ROSSO' ? 'sirena' : 'telefono', false);
+                const rTs = Number(s.ringing?.timestamp || 0);
+                if (rTs > lastServerRingTsRef.current) lastServerRingTsRef.current = rTs;
+                const isRingingActive = Boolean(s.ringing?.active);
+                const isRingingStale = rTs > 0 && (Date.now() - rTs > 25000);
+                const wasAlreadySilenced = rTs > 0 && rTs <= lastSilencedRingingTimestampRef.current;
+                if (
+                  ruoloRef.current === 'volontario' &&
+                  isRingingActive &&
+                  !isRingingStale &&
+                  !wasAlreadySilenced &&
+                  !s.letturaConfermata &&
+                  !isMissioneSilenziosaONotificaLetta(s.activeMission.codice)
+                ) {
+                  faiSuonareTelefono(s.ringing?.source || `Centrale Operativa (${s.activeMission.codice})`, s.activeMission.urgenza === 'ROSSO' ? 'sirena' : 'telefono', false);
                 }
               } else {
-                // Aggiorna in tempo reale i campi della missione già aperta (es. destinazione, rientro, microchip, Soup_RT, annullamento, firma esclusiva)
+                // Aggiorna in tempo reale i campi della missione già aperta (es. destinazione, rientro, microchip, Soup_RT, annullamento, firma esclusiva, date pre-turno)
                 setMissione(prev => {
                   if (!prev || prev.codice !== s.activeMission.codice) return prev;
                   const changed =
@@ -9221,7 +9771,12 @@ KM TOTALI: ${kmTot} KM`;
                     prev.volontarioAssegnatoEsclusivoId !== s.activeMission.volontarioAssegnatoEsclusivoId ||
                     prev.volontarioAssegnatoEsclusivoNome !== s.activeMission.volontarioAssegnatoEsclusivoNome ||
                     prev.annullata !== s.activeMission.annullata ||
-                    JSON.stringify(prev.datiProprietarioCentrale || null) !== JSON.stringify(s.activeMission.datiProprietarioCentrale || null);
+                    prev.dataInizioServizioSpecifico !== s.activeMission.dataInizioServizioSpecifico ||
+                    prev.oraInizioServizioSpecifico !== s.activeMission.oraInizioServizioSpecifico ||
+                    prev.dataArrivoRichiestaServizio !== s.activeMission.dataArrivoRichiestaServizio ||
+                    prev.oraArrivoRichiestaServizio !== s.activeMission.oraArrivoRichiestaServizio ||
+                    JSON.stringify(prev.datiProprietarioCentrale || null) !== JSON.stringify(s.activeMission.datiProprietarioCentrale || null) ||
+                    JSON.stringify(prev.proprietarioImmobile || null) !== JSON.stringify(s.activeMission.proprietarioImmobile || null);
                   if (!changed) return prev;
                   return {
                     ...prev,
@@ -9229,6 +9784,7 @@ KM TOTALI: ${kmTot} KM`;
                     codiceRientro: s.activeMission.codiceRientro,
                     inAttesaDestinazione: s.activeMission.inAttesaDestinazione,
                     datiProprietarioCentrale: s.activeMission.datiProprietarioCentrale ?? prev.datiProprietarioCentrale,
+                    proprietarioImmobile: s.activeMission.proprietarioImmobile ?? prev.proprietarioImmobile,
                     isStrutturaVeterinaria: s.activeMission.isStrutturaVeterinaria,
                     isStrutturaVeterinariaPartenza: s.activeMission.isStrutturaVeterinariaPartenza,
                     decisioneCentraleNonVet: s.activeMission.decisioneCentraleNonVet,
@@ -9243,6 +9799,10 @@ KM TOTALI: ${kmTot} KM`;
                     volontarioAssegnatoEsclusivoId: s.activeMission.volontarioAssegnatoEsclusivoId,
                     volontarioAssegnatoEsclusivoNome: s.activeMission.volontarioAssegnatoEsclusivoNome,
                     annullata: s.activeMission.annullata,
+                    dataInizioServizioSpecifico: s.activeMission.dataInizioServizioSpecifico ?? prev.dataInizioServizioSpecifico,
+                    oraInizioServizioSpecifico: s.activeMission.oraInizioServizioSpecifico ?? prev.oraInizioServizioSpecifico,
+                    dataArrivoRichiestaServizio: s.activeMission.dataArrivoRichiestaServizio ?? prev.dataArrivoRichiestaServizio,
+                    oraArrivoRichiestaServizio: s.activeMission.oraArrivoRichiestaServizio ?? prev.oraArrivoRichiestaServizio,
                   };
                 });
                 if (typeof s.letturaConfermata === 'boolean' && s.letturaConfermata && !letturaConfermataRef.current) {
@@ -9299,13 +9859,22 @@ KM TOTALI: ${kmTot} KM`;
           }
         }
         if (s.ringing && s.ringing.active && !isPhoneRingingRef.current) {
-          const rTs = s.ringing.timestamp || 0;
+          const rTs = Number(s.ringing.timestamp || 0);
+          if (rTs > lastServerRingTsRef.current) lastServerRingTsRef.current = rTs;
           const isStale = rTs > 0 && (Date.now() - rTs > 25000);
           const wasAlreadySilenced = rTs > 0 && rTs <= lastSilencedRingingTimestampRef.current;
-          const recentSilence = (Date.now() - lastSilencedRingingTimestampRef.current) < 20000;
-          const sameSourceRecentlySilenced = s.ringing.source === lastSilencedSourceRef.current && (Date.now() - lastSilencedRingingTimestampRef.current < 30000);
+          const sameSourceSilenced = Boolean(
+            lastSilencedSourceRef.current &&
+            s.ringing.source === lastSilencedSourceRef.current &&
+            rTs <= lastSilencedRingingTimestampRef.current
+          );
+          const codRinging = extractMissionCodeFromText(s.ringing.source) || s.activeMission?.codice;
+          const missionAlreadySilenced = Boolean(
+            (s.letturaConfermata && s.activeMission?.codice && (s.ringing.source || '').includes(s.activeMission.codice)) ||
+            (codRinging && isMissioneSilenziosaONotificaLetta(codRinging))
+          );
 
-          if (!isStale && !wasAlreadySilenced && !recentSilence && !sameSourceRecentlySilenced) {
+          if (!isStale && !wasAlreadySilenced && !sameSourceSilenced && !missionAlreadySilenced) {
             const srcUpper = (s.ringing.source || '').toUpperCase();
             const perCentrale = srcUpper.includes('EQUIPAGGIO') || srcUpper.includes('VOLONTARIO') || srcUpper.includes('BORDO MEZZO');
             const perVolontario = srcUpper.includes('CENTRALE') || srcUpper.includes('DISPATCH') || srcUpper.includes('DESTINAZIONE') || srcUpper.includes('ANNULLAMENTO');
@@ -9316,7 +9885,7 @@ KM TOTALI: ${kmTot} KM`;
               faiSuonareTelefono(s.ringing.source, s.ringing.soundType, false);
             }
           }
-        } else if (s.ringing && !s.ringing.active && isPhoneRingingRef.current) {
+        } else if (s.ringing && !s.ringing.active && (isPhoneRingingRef.current || soundEngine.getIsRinging())) {
           arrestaSuoneria(false);
         }
       }),
@@ -9351,51 +9920,78 @@ KM TOTALI: ${kmTot} KM`;
       realtime.on('MISSION_DISPATCHED', (payload: any) => {
         if (!payload || !payload.mission) return;
         if (isBlockedOrGhostMission(payload.mission)) return;
+        const codMissione = payload.mission.codice || '';
+        const isAlreadyHandled = Boolean(
+          (missioneRef.current?.codice === codMissione && letturaConfermataRef.current) ||
+          (codMissione && isMissioneSilenziosaONotificaLetta(codMissione))
+        );
+
         setMissione(payload.mission);
-        setSchedaCompletataBloccata(false);
-        setLetturaConfermata(false);
-        setTempi({});
-        setIsBloccatoPrivacy(false);
-        setPrivacyCountdown(null);
-        setCountdown30Minuti(null);
-        try { localStorage.removeItem('CROCE_ORO_COUNTDOWN_30_MIN'); } catch {}
+        if (!isAlreadyHandled) {
+          setSchedaCompletataBloccata(false);
+          setLetturaConfermata(false);
+          setTempi({});
+          setIsBloccatoPrivacy(false);
+          setPrivacyCountdown(null);
+          setCountdown30Minuti(null);
+          try { localStorage.removeItem('CROCE_ORO_COUNTDOWN_30_MIN'); } catch {}
+        }
         // Precompila al volontario i km iniziali del servizio con i km finali del servizio precedente effettuato con lo stesso mezzo
         const mezzoMissione = payload.mission.mezzoAssegnato;
         const prevKmFine = getUltimiKmMezzo(mezzoMissione);
-        const kmIniziali = payload.mission.kmInizio || (prevKmFine ? String(prevKmFine) : '');
+        const kmIniziali =
+          payload.mission.kmInizio !== undefined && String(payload.mission.kmInizio).trim() !== ''
+            ? String(payload.mission.kmInizio)
+            : (prevKmFine !== null ? String(prevKmFine) : '');
 
-        setKmInizio(kmIniziali);
-        setKmFine('');
+        if (!isAlreadyHandled) {
+          setKmInizio(kmIniziali);
+          setKmFine('');
+        }
 
         if (payload.notification) {
-          setNotificheCentrale(prev => [...prev, payload.notification]);
+          setNotificheCentrale(prev =>
+            prev.some(n => n.id === payload.notification.id) ? prev : [...prev, payload.notification]
+          );
         }
+
+        if (isAlreadyHandled) {
+          return;
+        }
+
+        const rTs = Number(payload.ringing?.timestamp || 0);
+        if (rTs > lastServerRingTsRef.current) lastServerRingTsRef.current = rTs;
+        const ringIsStaleOrSilenced = Boolean(
+          (rTs > 0 && Date.now() - rTs > 25000) ||
+          (rTs > 0 && rTs <= lastSilencedRingingTimestampRef.current)
+        );
 
         riceviERegistraNotifica({
           categoria: 'servizio',
-          titolo: `🚨 ALLERTA ${payload.mission.urgenza || 'VERDE'}: Missione ${payload.mission.codice || ''}`,
+          titolo: `🚨 ALLERTA ${payload.mission.urgenza || 'VERDE'}: Missione ${codMissione}`,
           messaggio: `📍 ${payload.mission.indirizzo || 'Massa Carrara'} - Mezzo: ${payload.mission.mezzoAssegnato || 'Mezzo'}. Scheda attiva d'intervento.`,
           priorita: 'Urgente',
-          linkAzione: { tipo: 'servizio', idRiferimento: payload.mission.codice },
+          linkAzione: { tipo: 'servizio', idRiferimento: codMissione },
+          dedupKey: codMissione ? `mission-${codMissione}` : undefined,
           ignoraSuono: true
         });
 
         // Notifica nativa a schermo bloccato con vibrazione d'emergenza
-        mostraNotificaNativa(`🚨 ALLERTA ${payload.mission.urgenza || 'VERDE'}: Missione ${payload.mission.codice || ''}`, {
+        mostraNotificaNativa(`🚨 ALLERTA ${payload.mission.urgenza || 'VERDE'}: Missione ${codMissione}`, {
           body: `📍 ${payload.mission.indirizzo || 'Massa Carrara'} - Mezzo: ${payload.mission.mezzoAssegnato || 'Mezzo'}\nTocca per aprire subito la scheda d'intervento!`,
-          tag: `mission-${payload.mission.codice || Date.now()}`,
+          tag: `mission-${codMissione || Date.now()}`,
           vibrate: [1000, 300, 1000, 300, 1500, 300, 1500],
           requireInteraction: true
         });
 
         // FA SUONARE IL TELEFONO IMMEDIATAMENTE A BORDO MEZZO SOLO PER IL VOLONTARIO!
-        if (ruoloRef.current === 'volontario' || layoutViewRef.current === 'both') {
+        if (!ringIsStaleOrSilenced && (ruoloRef.current === 'volontario' || layoutViewRef.current === 'both')) {
           faiSuonareTelefono(
-            payload.ringing?.source || 'Centrale Operativa',
+            payload.ringing?.source || `Centrale Operativa (${codMissione || 'Servizio'})`,
             payload.ringing?.soundType || (payload.mission.urgenza === 'ROSSO' ? 'sirena' : 'telefono'),
             false
           );
-        } else {
+        } else if (!ringIsStaleOrSilenced) {
           playRadioChime();
         }
       }),
@@ -9407,7 +10003,9 @@ KM TOTALI: ${kmTot} KM`;
           arrestaSuoneria(false);
         }
         if (payload.notification) {
-          setNotificheCentrale(prev => [...prev, payload.notification]);
+          setNotificheCentrale(prev =>
+            prev.some(n => n.id === payload.notification.id) ? prev : [...prev, payload.notification]
+          );
         }
         setUltimoEventoCentrale({
           id: `evt-${Date.now()}`,
@@ -9441,6 +10039,15 @@ KM TOTALI: ${kmTot} KM`;
 
       // 3. Squillo telefono attivato da remoto
       realtime.on('RING_TRIGGERED', (payload: any) => {
+        if (!payload?.ringing?.active) return;
+        const rTs = Number(payload.ringing?.timestamp || 0);
+        if (rTs > lastServerRingTsRef.current) lastServerRingTsRef.current = rTs;
+        const isStale = rTs > 0 && (Date.now() - rTs > 25000);
+        const wasAlreadySilenced = rTs > 0 && rTs <= lastSilencedRingingTimestampRef.current;
+        const codSorg = extractMissionCodeFromText(payload.ringing?.source);
+        if (isStale || wasAlreadySilenced || (codSorg && isMissioneSilenziosaONotificaLetta(codSorg))) {
+          return;
+        }
         mostraNotificaNativa(`🔔 SQUILLO TELEFONO DA ${payload.ringing.source}`, {
           body: `Chiamata / allarme acustico in arrivo da ${payload.ringing.source}!`,
           tag: 'ring-alert',
@@ -9449,7 +10056,9 @@ KM TOTALI: ${kmTot} KM`;
         });
         faiSuonareTelefono(payload.ringing.source, payload.ringing.soundType, false);
         if (payload.notification) {
-          setNotificheCentrale(prev => [...prev, payload.notification]);
+          setNotificheCentrale(prev =>
+            prev.some(n => n.id === payload.notification.id) ? prev : [...prev, payload.notification]
+          );
         }
       }),
 
@@ -9622,11 +10231,17 @@ KM TOTALI: ${kmTot} KM`;
             return;
           }
 
+          const testoNotif = payload.notification.testo || '';
+          const msgKey = String(payload.notification.id || `${payload.notification.orario || ''}::${testoNotif}`);
+          if (seenRadioMsgIdsRef.current.has(msgKey)) {
+            return;
+          }
+          segnaRadioMsgIdVisto(msgKey);
+
           setNotificheCentrale(prev =>
             prev.some(n => n.id === payload.notification.id) ? prev : [...prev, payload.notification]
           );
 
-          const testoNotif = payload.notification.testo || '';
           const mittenteUpper = testoNotif.toUpperCase();
           const inviatoDaMe = (layoutViewRef.current !== 'both') && (
             (ruoloRef.current === 'admin' && mittenteUpper.includes('[CENTRALE')) ||
@@ -9656,12 +10271,13 @@ KM TOTALI: ${kmTot} KM`;
               titolo: titoloNotif,
               messaggio: testoClean,
               linkAzione: { tipo: 'radio' },
+              dedupKey: `radio-${msgKey}`,
               ignoraSuono: true
             });
 
             mostraNotificaNativa(titoloNotif, {
               body: testoClean,
-              tag: `radio-${Date.now()}`,
+              tag: `radio-${msgKey}`,
               vibrate: [100, 60, 140],
               requireInteraction: true
             });
@@ -9973,9 +10589,19 @@ KM TOTALI: ${kmTot} KM`;
           }
         }
 
-        // Se un volontario fa accesso all'app, notifica gli operatori di centrale e l'amministratore attualmente loggati
+        // Se un volontario fa accesso all'app (nuovo turno effettivo, non risincronizzazione iniziale/ripetuta),
+        // notifica una sola volta gli operatori di centrale e l'amministratore attualmente loggati
+        const shiftKey = payload.shift
+          ? `${payload.shift.attivo ? '1' : '0'}::${payload.shift.volontarioId || ''}::${payload.shift.volontarioNome || ''}::${payload.shift.orarioInizio || ''}::${payload.shift.mezzoScelto || ''}`
+          : '';
         if (payload.shift?.attivo && payload.shift?.volontarioNome) {
-          if (ruoloRef.current === 'admin') {
+          const isNewShiftAnnouncement =
+            !payload.isInitialSync &&
+            shiftKey !== '' &&
+            shiftKey !== lastAnnouncedShiftKeyRef.current;
+          lastAnnouncedShiftKeyRef.current = shiftKey;
+
+          if (isNewShiftAnnouncement && ruoloRef.current === 'admin') {
             playRadioChime();
             const descMezzoShift = payload.shift.mezzoScelto ? ` sul mezzo ${payload.shift.mezzoScelto}` : '';
             setUltimoEventoCentrale({
@@ -9995,6 +10621,8 @@ KM TOTALI: ${kmTot} KM`;
               vibrate: [200, 100, 200]
             });
           }
+        } else if (payload.shift && !payload.shift.attivo) {
+          lastAnnouncedShiftKeyRef.current = '';
         }
       }),
 
@@ -10079,7 +10707,12 @@ KM TOTALI: ${kmTot} KM`;
 
         aggiungiNotifica(
           `🔔 DESTINAZIONE AGGIORNATA DALLA CENTRALE: "${payload.destinazione}"${vetTxt}. Tutti i dati e gli orari già inseriti sono stati mantenuti!`,
-          'centrale'
+          'centrale',
+          {
+            registraInCentro: true,
+            dedupKey: `dest-${payload.codice || missioneRef.current?.codice || ''}-${payload.destinazione || ''}`,
+            ignoraSuono: true
+          }
         );
 
         mostraNotificaNativa(`🏥 DESTINAZIONE E CODICE AGGIORNATI!`, {
@@ -10140,7 +10773,12 @@ KM TOTALI: ${kmTot} KM`;
 
         aggiungiNotifica(
           `🔔 OBIETTIVO DI PARTENZA AGGIORNATO DALLA CENTRALE: "${payload.indirizzo}"${vetTxt}. Tutti i dati e gli orari già inseriti sono stati mantenuti!`,
-          'centrale'
+          'centrale',
+          {
+            registraInCentro: true,
+            dedupKey: `obj-${payload.codice || missioneRef.current?.codice || ''}-${payload.indirizzo || ''}`,
+            ignoraSuono: true
+          }
         );
 
         mostraNotificaNativa(`🏥 OBIETTIVO DI PARTENZA AGGIORNATO!`, {
@@ -10175,7 +10813,12 @@ KM TOTALI: ${kmTot} KM`;
           payload.decisione === 'rientro_sede'
             ? '🏢 CENTRALE: Disposto Rientro in Sede! Gli orari di partenza obiettivo e arrivo destinazione non sono richiesti.'
             : '🎯 CENTRALE: Inviato su Nuovo Obiettivo! Non inserire partenza/destinazione né rientro sede; inserisci i KM per completare questo servizio.',
-          'centrale'
+          'centrale',
+          {
+            registraInCentro: true,
+            dedupKey: `decisione-${payload.codice || missioneRef.current?.codice || ''}-${payload.decisione || ''}`,
+            ignoraSuono: true
+          }
         );
       }),
 
@@ -10207,7 +10850,12 @@ KM TOTALI: ${kmTot} KM`;
         playRadioChime();
         aggiungiNotifica(
           `🛡️ CENTRALE: Aggiornati dati Protezione Civile — Soup_RT: ${payload.numeroSegreteriaSoupRt || 'Non indicato'} | Allerta Meteo: ${payload.allertaMeteo || 'Nessuna'}.`,
-          'centrale'
+          'centrale',
+          {
+            registraInCentro: true,
+            dedupKey: `pc-info-${payload.codice || missioneRef.current?.codice || ''}-${payload.numeroSegreteriaSoupRt || ''}-${payload.allertaMeteo || ''}`,
+            ignoraSuono: true
+          }
         );
       }),
 
@@ -10333,7 +10981,12 @@ KM TOTALI: ${kmTot} KM`;
             });
             aggiungiNotifica(
               `👤 Dati intestatario microchip (${nomeCompleto}) ricevuti dalla Centrale e integrati nella scheda di soccorso!`,
-              'centrale'
+              'centrale',
+              {
+                registraInCentro: true,
+                dedupKey: `prop-${payload.codice || missioneRef.current?.codice || ''}-${nomeCompleto}`,
+                ignoraSuono: true
+              }
             );
           } else {
             playRadioChime();
@@ -10378,7 +11031,12 @@ KM TOTALI: ${kmTot} KM`;
             });
             aggiungiNotifica(
               `🪪 Foto documento identità esibito acquisite dal volontario per il servizio ${payload.codice || ''} (Fronte/Retro). PDF disponibile nel database fogli compilati.`,
-              'mezzo'
+              'mezzo',
+              {
+                registraInCentro: true,
+                dedupKey: `doc-photo-${payload.codice || ''}`,
+                ignoraSuono: true
+              }
             );
           }
         }
@@ -10572,11 +11230,18 @@ KM TOTALI: ${kmTot} KM`;
           });
           aggiungiNotifica(
             `🚨 ALLERTA KM MANCANTI: Il volontario ${alertInfo.volontarioNome} non ha inserito i KM per ${alertInfo.codice} entro 30 minuti! CHIAMARE SUBITO AL ${alertInfo.volontarioTelefono} per farsi comunicare questi dati che solo lui conosce. Il PDF rimarrà non generato finché la Centrale non li inserisce (senza limiti di tempo).`,
-            'allarme'
+            'allarme',
+            {
+              registraInCentro: true,
+              dedupKey: `km-expired-${alertInfo.codice}`,
+              ignoraSuono: true
+            }
           );
         }
         if (payload.notification) {
-          setNotificheCentrale(prev => [...prev, payload.notification]);
+          setNotificheCentrale(prev =>
+            prev.some(n => n.id === payload.notification.id) ? prev : [...prev, payload.notification]
+          );
         }
       }),
 
@@ -10602,7 +11267,12 @@ KM TOTALI: ${kmTot} KM`;
 
           aggiungiNotifica(
             `ℹ️ Intervento ${payload.codice || ''} ANNULLATO dalla Centrale prima dell'apertura: scheda rimossa automaticamente dal terminale.`,
-            'sistema'
+            'sistema',
+            {
+              registraInCentro: true,
+              dedupKey: `cancelled-pre-${payload.codice || ''}`,
+              ignoraSuono: true
+            }
           );
           return;
         }
@@ -10624,7 +11294,12 @@ KM TOTALI: ${kmTot} KM`;
 
         aggiungiNotifica(
           `🚨 ALLERTA SIRENA: Intervento ${payload.codice} ANNULLATO dalla Centrale! RIENTRARE SUBITO IN SEDE. Motivo: ${payload.motivo} (Richiesto da: ${payload.richiedente})`,
-          'allarme'
+          'allarme',
+          {
+            registraInCentro: true,
+            dedupKey: `cancelled-active-${payload.codice || ''}`,
+            ignoraSuono: true
+          }
         );
 
         if (ruoloRef.current === 'volontario' || layoutViewRef.current === 'both') {
@@ -10663,7 +11338,9 @@ KM TOTALI: ${kmTot} KM`;
           });
         }
         if (payload && payload.notification) {
-          setNotificheCentrale(prev => [...prev, payload.notification]);
+          setNotificheCentrale(prev =>
+            prev.some(n => n.id === payload.notification.id) ? prev : [...prev, payload.notification]
+          );
         }
       }),
 
@@ -10695,13 +11372,23 @@ KM TOTALI: ${kmTot} KM`;
             vibrate: [600, 200, 600, 200, 1000]
           });
           playRadioChime();
-          aggiungiNotifica(`🔔 ${payload.titolo || 'PROMEMORIA'}: ${payload.testo}`, 'sistema');
+          aggiungiNotifica(`🔔 ${payload.titolo || 'PROMEMORIA'}: ${payload.testo}`, 'sistema', {
+            registraInCentro: true,
+            dedupKey: `promemoria-domani-${payload.turnoId || ''}-${payload.volontarioId || ''}-${payload.dataFormatted || ''}`,
+            ignoraSuono: true
+          });
           setPromemoriaTurnoDomaniAlert(payload);
         } else if (isCentrale) {
-          aggiungiNotifica(`📅 ${payload.testo}`, 'sistema');
+          aggiungiNotifica(`📅 ${payload.testo}`, 'sistema', {
+            registraInCentro: true,
+            dedupKey: `promemoria-domani-ctr-${payload.turnoId || ''}-${payload.volontarioId || ''}-${payload.dataFormatted || ''}`,
+            ignoraSuono: true
+          });
         }
         if (payload.notification) {
-          setNotificheCentrale(prev => [...prev, payload.notification]);
+          setNotificheCentrale(prev =>
+            prev.some(n => n.id === payload.notification.id) ? prev : [...prev, payload.notification]
+          );
         }
       }),
 
@@ -10753,7 +11440,8 @@ KM TOTALI: ${kmTot} KM`;
               categoria: 'commento',
               titolo: `💬 Nuovo commento da ${notif.autoreCommento || 'un volontario'}`,
               messaggio: notif.messaggio || `Nuovo commento sul post "${notif.postTitolo}"`,
-              linkAzione: { tipo: 'bacheca', idRiferimento: notif.postId }
+              linkAzione: { tipo: 'bacheca', idRiferimento: notif.postId },
+              dedupKey: `bacheca-comm-${notif.id || `${notif.postId}-${notif.autoreCommento || ''}-${notif.messaggio || ''}`}`
             });
           }
         } else if (notif.tipo === 'nuovo_post') {
@@ -10762,7 +11450,8 @@ KM TOTALI: ${kmTot} KM`;
             categoria: 'bacheca',
             titolo: '📢 Nuova Comunicazione in Bacheca',
             messaggio: notif.messaggio || `Pubblicato un nuovo avviso: "${notif.postTitolo}"`,
-            linkAzione: { tipo: 'bacheca', idRiferimento: notif.postId }
+            linkAzione: { tipo: 'bacheca', idRiferimento: notif.postId },
+            dedupKey: `bacheca-post-${notif.postId || notif.id || notif.postTitolo || ''}`
           });
         }
       }),
@@ -10777,7 +11466,8 @@ KM TOTALI: ${kmTot} KM`;
             titolo: `📅 Disponibilità Turno: ${notif.volontarioNome || 'Volontario'}`,
             messaggio: `${notif.volontarioNome || 'Un volontario'} ha offerto disponibilità per il turno del ${notif.data || ''} (${notif.fascia || ''}) come ${notif.ruolo || 'mansione'}. In attesa di approvazione.`,
             priorita: 'Importante',
-            linkAzione: { tipo: 'turno', idRiferimento: notif.turnoId }
+            linkAzione: { tipo: 'turno', idRiferimento: notif.turnoId },
+            dedupKey: `disp-turno-${notif.turnoId || ''}-${notif.volontarioNome || ''}-${notif.ruolo || ''}`
           });
         }
       }),
@@ -10802,7 +11492,8 @@ KM TOTALI: ${kmTot} KM`;
             categoria: 'sistema',
             titolo: `🎂 Compleanno Volontario (${payload.dataOggi || 'Oggi'})`,
             messaggio: `Oggi ricorre il compleanno di ${nomiStr}! Email di notifica inviata a Presidenza e agli account con accesso al database Volontari.`,
-            priorita: 'Importante'
+            priorita: 'Importante',
+            dedupKey: `compleanno-${payload.dataOggi || ''}-${nomiStr}`
           });
         }
         if (payload.notification) {
@@ -10853,6 +11544,108 @@ KM TOTALI: ${kmTot} KM`;
           } catch {}
         }
       }),
+      realtime.on('CORSI_UPDATED', (payload: any) => {
+        if (Array.isArray(payload?.corsiFormazione)) {
+          const corsiNorm = normalizzaCorsiFormazione(rimuoviCorsiLegacy(payload.corsiFormazione), sediAssociativeRef.current);
+          setCorsiFormazione(corsiNorm);
+          try {
+            localStorage.setItem('CROCE_ORO_CORSI', JSON.stringify(corsiNorm));
+          } catch {}
+        }
+      }),
+      realtime.on('NOTE_DEBITO_UPDATED', (payload: any) => {
+        if (Array.isArray(payload?.noteDiDebito)) {
+          setNoteDiDebito(payload.noteDiDebito);
+          try {
+            localStorage.setItem('CROCE_ORO_NOTE_DEBITO', JSON.stringify(payload.noteDiDebito));
+          } catch {}
+        }
+      }),
+      realtime.on('TESSERE_UPDATED', (payload: any) => {
+        if (Array.isArray(payload?.tessereAssociative)) {
+          setTessereAssociative(payload.tessereAssociative);
+          try {
+            localStorage.setItem('CROCE_ORO_TESSERE', JSON.stringify(payload.tessereAssociative));
+          } catch {}
+        }
+      }),
+      realtime.on('COSTI_SERVIZIO_UPDATED', (payload: any) => {
+        if (Array.isArray(payload?.costiServizio)) {
+          setCostiServizio(payload.costiServizio);
+          try {
+            localStorage.setItem('CROCE_ORO_COSTI_SERVIZIO', JSON.stringify(payload.costiServizio));
+          } catch {}
+        }
+      }),
+      realtime.on('MAGAZZINO_VESTIARIO_UPDATED', (payload: any) => {
+        if (Array.isArray(payload?.magazzinoVestiario)) {
+          setMagazzinoVestiario(payload.magazzinoVestiario);
+          try {
+            localStorage.setItem('CROCE_ORO_MAG_VESTIARIO', JSON.stringify(payload.magazzinoVestiario));
+          } catch {}
+        }
+      }),
+      realtime.on('ATTREZZATURE_MAGAZZINO_UPDATED', (payload: any) => {
+        if (Array.isArray(payload?.attrezzature)) {
+          setAttrezzatureOperative(payload.attrezzature);
+          try {
+            localStorage.setItem('CROCE_ORO_ATTREZZATURE', JSON.stringify(payload.attrezzature));
+          } catch {}
+        }
+      }),
+      realtime.on('MOVIMENTI_MAGAZZINO_UPDATED', (payload: any) => {
+        if (Array.isArray(payload?.movimenti)) {
+          setMovimentiMagazzino(payload.movimenti);
+          try {
+            localStorage.setItem('CROCE_ORO_MOVIMENTI_MAG', JSON.stringify(payload.movimenti));
+          } catch {}
+        }
+      }),
+      realtime.on('MANSIONI_CONFIG_UPDATED', (payload: any) => {
+        if (payload && (Array.isArray(payload.catalogoMansioni) || Array.isArray(payload.categorieMansioni))) {
+          applicaMansioniConfigDaSync(payload.catalogoMansioni, payload.categorieMansioni, payload.updatedAt);
+        }
+      }),
+      realtime.on('NOMI_DATABASE_UPDATED', (payload: any) => {
+        if (payload?.nomiDatabase && typeof payload.nomiDatabase === 'object' && !Array.isArray(payload.nomiDatabase)) {
+          applicaNomiDatabaseDaSync(payload.nomiDatabase, payload.updatedAt);
+        }
+      }),
+      realtime.on('MEZZI_FLOTTA_UPDATED', (payload: any) => {
+        if (Array.isArray(payload?.mezziFlotta) && payload.mezziFlotta.length > 0) {
+          const ordinati = [...payload.mezziFlotta].sort((a, b) => (a.sigla || '').localeCompare(b.sigla || '', 'it', { numeric: true, sensitivity: 'base' }));
+          setMezziFlotta(ordinati);
+          try {
+            localStorage.setItem('CROCE_ORO_MEZZI_FLOTTA', JSON.stringify(ordinati));
+          } catch {}
+        }
+      }),
+      realtime.on('FORZATURA_CAUZIONE_ALERT', (payload: any) => {
+        if (!payload) return;
+        const currentRole = ruoloRef.current;
+        const currentUtente = utenteCentraleRef.current;
+        const carica = (currentUtente?.caricaConsiglioDirettivo || '').toLowerCase();
+        const isPresOTes =
+          Boolean(currentUtente?.isAdmin || currentUtente?.pin === '4451') ||
+          carica.includes('presidente') ||
+          carica.includes('tesorier');
+        if (currentRole === 'admin' && isPresOTes) {
+          riceviERegistraNotifica({
+            categoria: 'sistema',
+            titolo: payload.titolo || '⚠️ Forzatura Importo Cauzione Vestiario',
+            messaggio:
+              payload.messaggio ||
+              `Modifica forzata importo cauzione su ${payload.volontarioNome || 'volontario'} (da ${payload.operatore || 'Operatore'}).`,
+            priorita: 'Urgente',
+            dedupKey: `forzatura-${payload.id || `${payload.volontarioNome || ''}-${payload.titolo || ''}-${payload.messaggio || ''}`}`
+          });
+        }
+        if (payload.notification) {
+          setNotificheCentrale((prev) =>
+            prev.some((n) => n.id === payload.notification.id) ? prev : [...prev, payload.notification]
+          );
+        }
+      }),
       realtime.on('cloud_shards_ready', () => {
         // Se alcuni shard su Cloud Firestore sono ancora vuoti (primo avvio), inizializzali in sicurezza dai dati locali
         const readLS = <T,>(key: string, fallback: T): T => {
@@ -10872,6 +11665,17 @@ KM TOTALI: ${kmTot} KM`;
           giornaleBordo: readLS('CROCE_ORO_GIORNALE_BORDO', []),
           magazzinoParti: readLS('CROCE_ORO_MAGAZZINO_PARTI_MEZZI', []),
           magazzinoMezzi: readLS('CROCE_ORO_MAGAZZINO_MEZZI', []),
+          magazzinoVestiario: readLS('CROCE_ORO_MAG_VESTIARIO', MAGAZZINO_VESTIARIO_INIZIALE),
+          attrezzatureOperative: readLS('CROCE_ORO_ATTREZZATURE', ATTREZZATURE_INIZIALI),
+          movimentiMagazzino: readLS('CROCE_ORO_MOVIMENTI_MAG', MOVIMENTI_MAGAZZINO_INIZIALI),
+          corsiFormazione: rimuoviCorsiLegacy(readLS('CROCE_ORO_CORSI', CORSI_FORMAZIONE_INIZIALI)),
+          noteDiDebito: readLS('CROCE_ORO_NOTE_DEBITO', NOTE_DI_DEBITO_INIZIALI),
+          tessereAssociative: readLS('CROCE_ORO_TESSERE', TESSERE_INIZIALI),
+          costiServizio: readLS('CROCE_ORO_COSTI_SERVIZIO', TARIFFE_COSTI_SERVIZIO_INIZIALI),
+          mezziFlotta: readLS('CROCE_ORO_MEZZI_FLOTTA', MEZZI_FLOTTA_INIZIALI),
+          catalogoMansioni: getMansioniCatalogo(),
+          categorieMansioni: getCategorieMansioni(),
+          nomiDatabase: getNomiDatabaseCustom(),
           timbrature: readLS('CROCE_ORO_TIMBRATURE', []),
           luoghiTimbratura: normalizzaListaLuoghiTimbratura(readLS('CROCE_ORO_LUOGHI_TIMBRATURA', LUOGHI_TIMBRATURA_DEFAULT), sediLocali),
           indirizziCollezionati: readLS('CROCE_ORO_INDIRIZZI_COLLEZIONATI', []),
@@ -11138,6 +11942,7 @@ KM TOTALI: ${kmTot} KM`;
             item.tipo === 'corso'
               ? { tipo: 'corso', idRiferimento: item.corsoId }
               : { tipo: 'turno', idRiferimento: item.eventId },
+          dedupKey: item.dedupKey,
           ignoraSuono: true
         });
       }
@@ -11262,6 +12067,10 @@ KM TOTALI: ${kmTot} KM`;
           onNotificaRadio={aggiungiNotifica}
           isAdmin={false}
           timbrature={timbratureVolontari}
+          magazzinoVestiario={magazzinoVestiario}
+          onAggiornaMagazzinoVestiario={handleAggiornaMagazzinoVestiario}
+          movimentiMagazzino={movimentiMagazzino}
+          onAggiornaMovimentiMagazzino={handleAggiornaMovimenti}
         />
         <ModalStatoConnessione
           isOpen={modalConnessioneAperta}
@@ -11278,6 +12087,16 @@ KM TOTALI: ${kmTot} KM`;
               giornaleBordo,
               magazzinoParti,
               magazzinoMezzi,
+              magazzinoVestiario,
+              attrezzatureOperative,
+              movimentiMagazzino,
+              corsiFormazione,
+              noteDiDebito,
+              tessereAssociative,
+              costiServizio,
+              catalogoMansioni: getMansioniCatalogo(),
+              categorieMansioni: getCategorieMansioni(),
+              nomiDatabase: getNomiDatabaseCustom(),
               timbrature: timbratureVolontari,
               luoghiTimbratura,
               indirizziCollezionati,
@@ -11831,6 +12650,10 @@ KM TOTALI: ${kmTot} KM`;
             isAdmin={isCentraleAdmin}
             luoghiTimbratura={luoghiTimbratura}
             onAggiornaLuoghiTimbratura={handleAggiornaLuoghiTimbratura}
+            magazzinoVestiario={magazzinoVestiario}
+            onAggiornaMagazzinoVestiario={handleAggiornaMagazzinoVestiario}
+            movimentiMagazzino={movimentiMagazzino}
+            onAggiornaMovimentiMagazzino={handleAggiornaMovimenti}
           />
         )}
 
@@ -11866,6 +12689,8 @@ KM TOTALI: ${kmTot} KM`;
             onAggiornaTessere={handleAggiornaTessere}
             noteDiDebito={noteDiDebito}
             onAggiornaNoteDiDebito={handleAggiornaNoteDiDebito}
+            costiServizio={costiServizio}
+            onAggiornaCostiServizio={handleAggiornaCostiServizio}
             operatoreCorrente={utenteCentrale?.nome ? `${utenteCentrale.nome} ${utenteCentrale.cognome || ''}` : 'Amministratore'}
             isAdmin={isCentraleAdmin}
             onNotificaRadio={aggiungiNotifica}
@@ -12234,7 +13059,8 @@ KM TOTALI: ${kmTot} KM`;
                             inAttesaKm: true
                           };
                           setServizioKmSelezionato(mockServizio);
-                          setKmInizioTemp('');
+                          const kmAuto = getUltimiKmMezzo(countdownKm.mezzo);
+                          setKmInizioTemp(kmAuto !== null ? String(kmAuto) : '');
                           setKmFineTemp('');
                           setErroreKmObbligatori(null);
                           setModalKmObbligatoriAperta(true);
@@ -12697,6 +13523,42 @@ KM TOTALI: ${kmTot} KM`;
                             </a>
                           </div>
                         </div>
+
+                        {(missioneVisualizzata.dataArrivoRichiestaServizio || missioneVisualizzata.dataInizioServizioSpecifico) && (
+                          <div className="grid grid-cols-2 gap-2">
+                            {(missioneVisualizzata.dataArrivoRichiestaServizio || missioneVisualizzata.oraArrivoRichiestaServizio) && (
+                              <div className="bg-cyan-50 p-2 rounded-lg border border-cyan-200">
+                                <span className="text-[9.5px] uppercase font-bold text-cyan-900 block">
+                                  Arrivo Richiesta Servizio
+                                </span>
+                                <span className="font-bold text-cyan-950 text-xs block">
+                                  {missioneVisualizzata.dataArrivoRichiestaServizio || ''} {missioneVisualizzata.oraArrivoRichiestaServizio || ''}
+                                </span>
+                              </div>
+                            )}
+                            {(missioneVisualizzata.dataInizioServizioSpecifico || missioneVisualizzata.oraInizioServizioSpecifico) && (
+                              <div className="bg-amber-50 p-2 rounded-lg border border-amber-200">
+                                <span className="text-[9.5px] uppercase font-bold text-amber-900 block">
+                                  Inizio Servizio Specifico
+                                </span>
+                                <span className="font-bold text-amber-950 text-xs block">
+                                  {missioneVisualizzata.dataInizioServizioSpecifico || ''} {missioneVisualizzata.oraInizioServizioSpecifico || ''}
+                                </span>
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        {missioneVisualizzata.proprietarioImmobile && (
+                          <div className="bg-amber-50 p-2.5 rounded-lg border border-amber-300 text-xs text-amber-950 space-y-0.5">
+                            <span className="text-[10px] font-black uppercase text-amber-800 block">
+                              Proprietario Immobile (Assistenza Atto Esecutivo)
+                            </span>
+                            <div><strong>Nome e Cognome:</strong> {missioneVisualizzata.proprietarioImmobile.nomeCognome || '-'}</div>
+                            <div><strong>Codice Fiscale:</strong> {missioneVisualizzata.proprietarioImmobile.codiceFiscale || '-'}</div>
+                            <div><strong>Indirizzo Residenza:</strong> {missioneVisualizzata.proprietarioImmobile.indirizzoResidenza || '-'}</div>
+                          </div>
+                        )}
 
                         {/* Segnalante */}
                         <div className="bg-slate-50 p-2 rounded-lg border border-slate-200">
@@ -16192,6 +17054,7 @@ KM TOTALI: ${kmTot} KM`;
                         <option value="SOCCORSO VETERINARIO">SOCCORSO VETERINARIO</option>
                         <option value="RECUPERO ANIMALE">RECUPERO ANIMALE</option>
                         <option value="TRASPORTO ANIMALE">TRASPORTO ANIMALE</option>
+                        <option value="ASSISTENZA ATTO ESECUTIVO">ASSISTENZA ATTO ESECUTIVO</option>
                       </select>
                     </div>
                   ) : (
@@ -16213,6 +17076,105 @@ KM TOTALI: ${kmTot} KM`;
                     </div>
                   )}
                 </div>
+
+                {/* Data e Orario Richiesta / Inizio Servizio Specifico (programmabile prima o durante il turno) */}
+                <div className="p-3 rounded-xl bg-slate-950/80 border border-cyan-500/35 space-y-2">
+                  <div className="flex items-center justify-between flex-wrap gap-1">
+                    <span className="font-bold text-cyan-300 text-xs flex items-center gap-1.5">
+                      <Calendar className="w-3.5 h-3.5 text-cyan-400" />
+                      <span>Programmazione Date e Orari di Servizio</span>
+                    </span>
+                    <span className="text-[10px] text-slate-400">
+                      Riportati sul Foglio di Viaggio PDF
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                    <div>
+                      <label className="block text-[10px] font-bold text-cyan-300 uppercase mb-1">Data Arrivo Richiesta</label>
+                      <input
+                        type="date"
+                        value={formDataArrivoRichiestaServizio}
+                        onChange={(e) => setFormDataArrivoRichiestaServizio(e.target.value)}
+                        className="w-full p-2 rounded-xl bg-slate-900 border border-slate-700 text-white text-xs focus:ring-1 focus:ring-cyan-400 focus:outline-none"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-bold text-cyan-300 uppercase mb-1">Ora Arrivo Richiesta</label>
+                      <input
+                        type="time"
+                        value={formOraArrivoRichiestaServizio}
+                        onChange={(e) => setFormOraArrivoRichiestaServizio(e.target.value)}
+                        className="w-full p-2 rounded-xl bg-slate-900 border border-slate-700 text-white font-mono text-xs focus:ring-1 focus:ring-cyan-400 focus:outline-none"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-bold text-amber-300 uppercase mb-1">Data Inizio Servizio Specifico</label>
+                      <input
+                        type="date"
+                        value={formDataInizioServizioSpecifico}
+                        onChange={(e) => setFormDataInizioServizioSpecifico(e.target.value)}
+                        className="w-full p-2 rounded-xl bg-slate-900 border border-slate-700 text-white text-xs focus:ring-1 focus:ring-amber-400 focus:outline-none"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-bold text-amber-300 uppercase mb-1">Ora Inizio Servizio Specifico</label>
+                      <input
+                        type="time"
+                        value={formOraInizioServizioSpecifico}
+                        onChange={(e) => setFormOraInizioServizioSpecifico(e.target.value)}
+                        className="w-full p-2 rounded-xl bg-slate-900 border border-slate-700 text-white font-mono text-xs focus:ring-1 focus:ring-amber-400 focus:outline-none"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Dati Proprietario Immobile per Assistenza Atto Esecutivo */}
+                {formAmbito === 'SERVIZIO VETERINARIO' && formSottoAmbitoVet === 'ASSISTENZA ATTO ESECUTIVO' && (
+                  <div className="bg-amber-950/35 border-2 border-amber-500/60 p-3.5 rounded-2xl space-y-2.5">
+                    <div className="flex items-center justify-between flex-wrap gap-1 border-b border-amber-500/30 pb-1.5">
+                      <span className="font-black text-amber-300 text-xs uppercase flex items-center gap-1.5">
+                        <User className="w-4 h-4 text-amber-400" />
+                        <span>Dati Proprietario dell&apos;Immobile (Assistenza Atto Esecutivo)</span>
+                      </span>
+                      <span className="text-[10px] text-amber-200 font-semibold">
+                        Utilizzati per Nota di Debito e PDF
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-300 uppercase mb-1">Nome e Cognome</label>
+                        <input
+                          type="text"
+                          value={formPropImmobileNomeCognome}
+                          onChange={(e) => setFormPropImmobileNomeCognome(e.target.value)}
+                          placeholder="Es. Mario Rossi"
+                          className="w-full p-2 rounded-xl bg-slate-900 border border-slate-700 text-white text-xs focus:ring-1 focus:ring-amber-400 focus:outline-none"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-300 uppercase mb-1">Codice Fiscale</label>
+                        <input
+                          type="text"
+                          maxLength={16}
+                          value={formPropImmobileCF}
+                          onChange={(e) => setFormPropImmobileCF(e.target.value.toUpperCase())}
+                          placeholder="RSSMRA80A01E625X"
+                          className="w-full p-2 rounded-xl bg-slate-900 border border-slate-700 text-white font-mono uppercase text-xs focus:ring-1 focus:ring-amber-400 focus:outline-none"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-300 uppercase mb-1">Indirizzo di Residenza</label>
+                        <input
+                          type="text"
+                          value={formPropImmobileIndirizzo}
+                          onChange={(e) => setFormPropImmobileIndirizzo(e.target.value)}
+                          placeholder="Es. Via Roma 10, Massa"
+                          className="w-full p-2 rounded-xl bg-slate-900 border border-slate-700 text-white text-xs focus:ring-1 focus:ring-amber-400 focus:outline-none"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                )}
 
                 {/* CAMPI SPECIFICI PROTEZIONE CIVILE (SOLO CENTRALE OPERATIVA - NON MODIFICABILI DAL VOLONTARIO) */}
                 {formAmbito === 'PROTEZIONE CIVILE' && (
@@ -16435,7 +17397,10 @@ KM TOTALI: ${kmTot} KM`;
                       {mezzoManuale !== null && (
                         <button
                           type="button"
-                          onClick={() => setMezzoManuale(null)}
+                          onClick={() => {
+                            setMezzoManuale(null);
+                            setFormKmInizioMezzoModificato(false);
+                          }}
                           className="text-[10px] text-amber-300 hover:text-white bg-amber-500/20 hover:bg-amber-500/30 px-2 py-0.5 rounded border border-amber-500/40 flex items-center gap-1 font-bold transition-all"
                           title="Ripristina il mezzo consigliato dall'algoritmo"
                         >
@@ -16451,7 +17416,10 @@ KM TOTALI: ${kmTot} KM`;
 
                   <select
                     value={mezzoEffettivo.split(' ')[0]}
-                    onChange={(e) => setMezzoManuale(e.target.value)}
+                    onChange={(e) => {
+                      setMezzoManuale(e.target.value);
+                      setFormKmInizioMezzoModificato(false);
+                    }}
                     className="w-full p-2.5 rounded-lg bg-slate-950 border border-amber-500/40 text-amber-300 font-bold text-xs focus:ring-2 focus:ring-amber-500 focus:outline-none tracking-wide"
                   >
                     <optgroup label="🐾 1. Flotta Servizio Veterinario & Emergenza (4 Mezzi)">
@@ -16469,6 +17437,29 @@ KM TOTALI: ${kmTot} KM`;
                       ))}
                     </optgroup>
                   </select>
+
+                  <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-2 items-center bg-slate-950/70 p-2 rounded-lg border border-slate-800">
+                    <div>
+                      <label className="block text-[10px] font-bold text-emerald-300 uppercase mb-0.5">
+                        KM Inizio Mezzo (Auto-precompilati, modificabili)
+                      </label>
+                      <span className="text-[10px] text-slate-400 block">
+                        Ultimo fine servizio del mezzo o KM iniziali inseriti dall&apos;amministratore
+                      </span>
+                    </div>
+                    <input
+                      type="number"
+                      min={0}
+                      step="1"
+                      value={formKmInizioMezzo}
+                      onChange={(e) => {
+                        setFormKmInizioMezzo(e.target.value);
+                        setFormKmInizioMezzoModificato(true);
+                      }}
+                      placeholder="Es. 12450"
+                      className="w-full p-2 rounded-lg bg-slate-900 border border-emerald-500/40 text-emerald-300 font-mono font-bold text-xs focus:ring-1 focus:ring-emerald-400 focus:outline-none"
+                    />
+                  </div>
 
                   {/* Informazione dinamica in tempo reale sull'assegnazione */}
                   <div className="mt-2 text-[11px]">
@@ -16495,7 +17486,10 @@ KM TOTALI: ${kmTot} KM`;
                   <GuidaMezziCentrale
                     mezzoSelezionato={mezzoEffettivo}
                     mezzoConsigliato={mezzoConsigliatoDati.sigla}
-                    onSelezionaMezzo={(sigla) => setMezzoManuale(sigla)}
+                    onSelezionaMezzo={(sigla) => {
+                      setMezzoManuale(sigla);
+                      setFormKmInizioMezzoModificato(false);
+                    }}
                     ambitoCorrente={formAmbito}
                     mezziFuoriServizio={mezziFuoriServizio}
                     onApriGestioneStatoFlotta={() => setModaleGestioneFlottaAperta(true)}
@@ -18547,6 +19541,7 @@ KM TOTALI: ${kmTot} KM`;
           prossimoProgressivo={contatoreMissioni}
           archivioEsistente={archivioPDF}
           flottaMezzi={FLOTTA_COMPLETA}
+          getKmInizialiSuggeriti={getUltimiKmMezzo}
           volontari={volontari}
           knownAddresses={indirizziCollezionati}
           vetStructures={STRUTTURE_VETERINARIE}
@@ -18670,6 +19665,10 @@ KM TOTALI: ${kmTot} KM`;
         onNotificaRadio={aggiungiNotifica}
         isAdmin={isCentraleAdmin}
         timbrature={timbratureVolontari}
+        magazzinoVestiario={magazzinoVestiario}
+        onAggiornaMagazzinoVestiario={handleAggiornaMagazzinoVestiario}
+        movimentiMagazzino={movimentiMagazzino}
+        onAggiornaMovimentiMagazzino={handleAggiornaMovimenti}
       />
 
       {/* MODALE ACCESSO WEB PC DA QUALSIASI BROWSER */}
@@ -18914,6 +19913,16 @@ KM TOTALI: ${kmTot} KM`;
             giornaleBordo,
             magazzinoParti,
             magazzinoMezzi,
+            magazzinoVestiario,
+            attrezzatureOperative,
+            movimentiMagazzino,
+            corsiFormazione,
+            noteDiDebito,
+            tessereAssociative,
+            costiServizio,
+            catalogoMansioni: getMansioniCatalogo(),
+            categorieMansioni: getCategorieMansioni(),
+            nomiDatabase: getNomiDatabaseCustom(),
             timbrature: timbratureVolontari,
             luoghiTimbratura,
             indirizziCollezionati,
@@ -20797,6 +21806,7 @@ KM TOTALI: ${kmTot} KM`;
         volontarioId={sessioneTurno.volontarioId}
         mezzoPredefinito={sessioneTurno.mezzoScelto || 'T4606'}
         flottaMezzi={FLOTTA_COMPLETA}
+        getKmInizialiSuggeriti={getUltimiKmMezzo}
         onConferma={handleAvviaServizioAutonomo}
       />
 

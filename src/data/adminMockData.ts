@@ -14,7 +14,8 @@ import {
   SedeAssociativaCompleta,
   ContoCorrenteSede,
   TurnoSedeOperativa,
-  ComunicazioneBacheca
+  ComunicazioneBacheca,
+  TariffaCostoServizio
 } from '../types/adminTypes';
 import { addDaysISODate, formatISODateItaly } from '../utils/italianTime';
 
@@ -481,370 +482,18 @@ export const NOTE_DI_DEBITO_INIZIALI: NotaDiDebito[] = [
 ];
 
 // ---------------------------------------------------------------------------
-// 4. FORMAZIONE / CORSI
+// 4. FORMAZIONE / CORSI (Nessun corso precaricato a sistema)
 // ---------------------------------------------------------------------------
-export const CORSI_FORMAZIONE_INIZIALI: CorsoFormazione[] = [
-  {
-    id: 'corso-psv-01',
-    codiceCorso: 'PSV-2026-01',
-    titolo: 'TUTELA, SOCCORSO E BENESSERE ANIMALE',
-    sottotitolo: '“Dal Soccorso alla tutela degli animali”',
-    tipologia: 'Seminario PSV',
-    descrizione: 'Seminario formativo teorico-pratico su pronto soccorso veterinario, legislazione sulla tutela animale, avvicinamento in sicurezza e trasporto protetto in ambulanza veterinaria.',
-    docenteFormatore: 'Dott.ssa Valentina Moriconi (Formatore Croce Oro)',
-    enteAccreditato: 'Croce Oro Massa Carrara ODV — Servizio Tutela Animale GEV',
-    sedeCorso: 'Sede Legale & Direzione Generale Massa (Ronchi)',
-    sedeSvolgimentoTipo: 'sezione_salvata',
-    sedeSvolgimentoSedeId: 'sede-massa-ronchi',
-    indirizzoCompleto: 'Via Como, 12 Località Ronchi, 54100 Marina di Massa (MS)',
-    coordinate: { lat: 43.99419, lng: 10.12367 },
-    orarioInizioLezione: '09:00',
-    orarioFineLezione: '13:00',
-    sezioniDestinatarieIds: ['sede-massa-ronchi', 'sede-massa-lejare', 'sede-carrara-fossone', 'sede-pietrasanta', 'sede-lunigiana'],
-    sezioniDestinatarieNomi: ['Tutte le Sezioni dell\'Associazione'],
-    percentualeMinimaPresenza: 80,
-    dataInizio: '2026-11-07',
-    dataFine: '2026-11-21',
-    oreTotali: 12,
-    oreMinimeFrequenza: 10,
-    massimoPartecipanti: 25,
-    stato: 'In Corso',
-    // Programma articolato in più incontri con date, orari e sedi diverse (fino a 20 lezioni)
-    lezioni: [
-      {
-        id: 'lez-psv-01',
-        numero: 1,
-        titolo: 'Modulo 1: Quadro normativo, benessere animale e deontologia delle Guardie GEV',
-        data: '2026-11-07',
-        orarioInizio: '09:00',
-        orarioFine: '13:00',
-        ore: 4,
-        sedeSvolgimentoTipo: 'sezione_salvata',
-        sedeSvolgimentoSedeId: 'sede-massa-ronchi',
-        sedeNome: 'Sede Legale Massa (Ronchi) — Aula Magna',
-        indirizzoCompleto: 'Via Como, 12 Località Ronchi, 54100 Marina di Massa (MS)',
-        coordinate: { lat: 43.99419, lng: 10.12367 },
-        docente: 'Dott.ssa Valentina Moriconi'
-      },
-      {
-        id: 'lez-psv-02',
-        numero: 2,
-        titolo: 'Modulo 2: Tecniche di avvicinamento e primo soccorso su trauma animale',
-        data: '2026-11-14',
-        orarioInizio: '14:30',
-        orarioFine: '18:30',
-        ore: 4,
-        sedeSvolgimentoTipo: 'sezione_salvata',
-        sedeSvolgimentoSedeId: 'sede-carrara-fossone',
-        sedeNome: 'Sezione Territoriale Carrara (Fossone / Monteverde) — Sala Didattica',
-        indirizzoCompleto: 'Strada Comunale di Monteverde, 49 Località Fossone, 54033 Carrara (MS)',
-        coordinate: { lat: 44.066716, lng: 10.049207 },
-        docente: 'Dott. Medico Veterinario Enrico Landi'
-      },
-      {
-        id: 'lez-psv-03',
-        numero: 3,
-        titolo: 'Modulo 3: Addestramento operativo e trasporto in ambulanza veterinaria',
-        data: '2026-11-21',
-        orarioInizio: '09:30',
-        orarioFine: '13:30',
-        ore: 4,
-        sedeSvolgimentoTipo: 'sezione_salvata',
-        sedeSvolgimentoSedeId: 'sede-massa-lejare',
-        sedeNome: 'Sede Operativa H24 & Autoparco Massa (Le Jare)',
-        indirizzoCompleto: 'Via Delle Jare, 9, 54100 Massa (MS)',
-        coordinate: { lat: 44.01700, lng: 10.15121 },
-        docente: 'Istruttore Soccorso Animale GEV'
-      }
-    ],
-    iscritti: [
-      {
-        volontarioId: 'vol-156',
-        volontarioNome: 'Claudio Simonini',
-        qualifica: 'Autista',
-        oreFrequentate: 12,
-        esito: 'Idoneo / Superato',
-        tipoAttestato: 'partecipazione',
-        numeroAttestato: 'GEV-099', // Inizia da 099 per Seminario PSV
-        dataRilascioAttestato: '2026-11-21',
-        timbraturaEntrata: '2026-11-07 08:55 (GPS Confermato Lezione 1 Ronchi)',
-        timbraturaUscita: '2026-11-21 13:32 (GPS Confermato Lezione 3 Le Jare)',
-        timbratureLezioni: [
-          {
-            lezioneId: 'lez-psv-01',
-            lezioneNumero: 1,
-            data: '2026-11-07',
-            sedeLezioneNome: 'Sede Legale Massa (Ronchi)',
-            oreFrequentate: 4,
-            confermata: true,
-            distanzaEntrataMetri: 18
-          },
-          {
-            lezioneId: 'lez-psv-02',
-            lezioneNumero: 2,
-            data: '2026-11-14',
-            sedeLezioneNome: 'Sezione Territoriale Carrara (Fossone / Monteverde)',
-            oreFrequentate: 4,
-            confermata: true,
-            distanzaEntrataMetri: 24
-          },
-          {
-            lezioneId: 'lez-psv-03',
-            lezioneNumero: 3,
-            data: '2026-11-21',
-            sedeLezioneNome: 'Sede Operativa H24 Massa (Le Jare)',
-            oreFrequentate: 4,
-            confermata: true,
-            distanzaEntrataMetri: 12
-          }
-        ]
-      },
-      {
-        volontarioId: 'vol-005',
-        volontarioNome: 'Francesca Esposito',
-        qualifica: 'Soccorritore Base',
-        oreFrequentate: 8,
-        esito: 'In Frequenza',
-        tipoAttestato: 'partecipazione',
-        timbratureLezioni: [
-          {
-            lezioneId: 'lez-psv-01',
-            lezioneNumero: 1,
-            data: '2026-11-07',
-            sedeLezioneNome: 'Sede Legale Massa (Ronchi)',
-            oreFrequentate: 4,
-            confermata: true,
-            distanzaEntrataMetri: 22
-          },
-          {
-            lezioneId: 'lez-psv-02',
-            lezioneNumero: 2,
-            data: '2026-11-14',
-            sedeLezioneNome: 'Sezione Territoriale Carrara (Fossone / Monteverde)',
-            oreFrequentate: 4,
-            confermata: true,
-            distanzaEntrataMetri: 15
-          }
-        ]
-      }
-    ]
-  },
-  {
-    id: 'corso-aut-01',
-    codiceCorso: 'AUT-2026-01',
-    titolo: 'Seminario Autisti — Guida Operativa Mezzi di Soccorso',
-    sottotitolo: 'Tecniche di guida difensiva e sicurezza stradale in emergenza',
-    tipologia: 'Seminario Autisti',
-    descrizione: 'Seminario avanzato per conducenti di ambulanza e pulmini disabili: frenata di emergenza, guida con segnali acustici e visivi accesi, gestione del fondo bagnato.',
-    docenteFormatore: 'Istruttore Roberto Vieri',
-    enteAccreditato: 'Scuola Guida Sicura ACI / Croce Oro OdV',
-    sedeCorso: 'Piazzale Autoparco Massa (Le Jare)',
-    sedeSvolgimentoTipo: 'sezione_salvata',
-    sedeSvolgimentoSedeId: 'sede-massa-lejare',
-    indirizzoCompleto: 'Via Delle Jare, 9, 54100 Massa (MS)',
-    coordinate: { lat: 44.01700, lng: 10.15121 },
-    orarioInizioLezione: '09:00',
-    orarioFineLezione: '17:00',
-    sezioniDestinatarieIds: ['sede-massa-ronchi', 'sede-massa-lejare', 'sede-carrara-fossone'],
-    sezioniDestinatarieNomi: ['Massa (Ronchi)', 'Massa (Le Jare)', 'Carrara (Fossone / Monteverde)'],
-    percentualeMinimaPresenza: 80,
-    dataInizio: '2026-11-22',
-    dataFine: '2026-11-23',
-    oreTotali: 16,
-    oreMinimeFrequenza: 14,
-    massimoPartecipanti: 14,
-    stato: 'Programmato',
-    lezioni: [
-      {
-        id: 'lez-aut-01',
-        numero: 1,
-        titolo: 'Sessione Teorica: Dinamica del veicolo e codice della strada in emergenza',
-        data: '2026-11-22',
-        orarioInizio: '09:00',
-        orarioFine: '17:00',
-        ore: 8,
-        sedeSvolgimentoTipo: 'sezione_salvata',
-        sedeSvolgimentoSedeId: 'sede-massa-ronchi',
-        sedeNome: 'Sede Legale Massa (Ronchi) — Aula Formazione',
-        indirizzoCompleto: 'Via Como, 12 Località Ronchi, 54100 Marina di Massa (MS)',
-        coordinate: { lat: 43.99419, lng: 10.12367 }
-      },
-      {
-        id: 'lez-aut-02',
-        numero: 2,
-        titolo: 'Sessione Pratica: Prove di skid car e frenata con ostacolo improvviso',
-        data: '2026-11-23',
-        orarioInizio: '09:00',
-        orarioFine: '17:00',
-        ore: 8,
-        sedeSvolgimentoTipo: 'sezione_salvata',
-        sedeSvolgimentoSedeId: 'sede-massa-lejare',
-        sedeNome: 'Piazzale Autoparco Massa (Le Jare)',
-        indirizzoCompleto: 'Via Delle Jare, 9, 54100 Massa (MS)',
-        coordinate: { lat: 44.01700, lng: 10.15121 }
-      }
-    ],
-    iscritti: [
-      {
-        volontarioId: 'vol-156',
-        volontarioNome: 'Claudio Simonini',
-        qualifica: 'Autista',
-        oreFrequentate: 0,
-        esito: 'Iscritto',
-        tipoAttestato: 'partecipazione'
-      },
-      {
-        volontarioId: 'vol-004',
-        volontarioNome: 'Alessandro Conti',
-        qualifica: 'Autista 4x4',
-        oreFrequentate: 0,
-        esito: 'Iscritto',
-        tipoAttestato: 'partecipazione'
-      }
-    ]
-  },
-  {
-    id: 'corso-blsd-01',
-    codiceCorso: 'BLSD-2026-01',
-    titolo: 'Corso Esecutore BLSD / DAE Adulto e Pediatrico',
-    sottotitolo: 'Rianimazione Cardiopolmonare e Defibrillazione Precoce',
-    tipologia: 'BLSD',
-    descrizione: 'Formazione teorico-pratica con manichini QCPR su rianimazione cardiopolmonare, manovre di disostruzione e uso del defibrillatore semiautomatico esterno.',
-    docenteFormatore: 'Dott.ssa Valentina Moriconi (Formatore IRC / 118)',
-    enteAccreditato: 'Regione Toscana — Centrale 118 Alta Toscana',
-    sedeCorso: 'Sede Legale & Direzione Generale Massa (Ronchi) — Aula Magna',
-    sedeSvolgimentoTipo: 'sezione_salvata',
-    sedeSvolgimentoSedeId: 'sede-massa-ronchi',
-    indirizzoCompleto: 'Via Como, 12 Località Ronchi, 54100 Marina di Massa (MS)',
-    coordinate: { lat: 43.99419, lng: 10.12367 },
-    orarioInizioLezione: '08:30',
-    orarioFineLezione: '12:30',
-    sezioniDestinatarieIds: ['sede-massa-ronchi', 'sede-massa-lejare', 'sede-carrara-fossone', 'sede-pietrasanta', 'sede-lunigiana'],
-    sezioniDestinatarieNomi: ['Tutte le Sezioni dell\'Associazione'],
-    percentualeMinimaPresenza: 100,
-    dataInizio: '2026-11-08',
-    dataFine: '2026-11-09',
-    oreTotali: 8,
-    oreMinimeFrequenza: 8,
-    massimoPartecipanti: 16,
-    stato: 'Concluso',
-    iscritti: [
-      {
-        volontarioId: 'vol-156',
-        volontarioNome: 'Claudio Simonini',
-        qualifica: 'Autista',
-        oreFrequentate: 8,
-        esito: 'Idoneo / Superato',
-        tipoAttestato: 'idoneita',
-        timbraturaEntrata: '2026-11-08 08:28 (GPS Confermato)',
-        timbraturaUscita: '2026-11-09 12:34 (GPS Confermato)',
-        numeroAttestato: 'ATT-BLSD-2026-041',
-        dataRilascioAttestato: '2026-11-09',
-        scadenzaBrevetto: '2028-11-09'
-      },
-      {
-        volontarioId: 'vol-102',
-        volontarioNome: 'Marco Bernardini',
-        qualifica: 'Soccorritore',
-        oreFrequentate: 8,
-        esito: 'Idoneo / Superato',
-        tipoAttestato: 'idoneita',
-        numeroAttestato: 'ATT-BLSD-2024-089',
-        dataRilascioAttestato: '2024-11-18',
-        scadenzaBrevetto: '2026-11-18' // In scadenza entro 15 giorni (Retraining urgente)
-      },
-      {
-        volontarioId: 'vol-103',
-        volontarioNome: 'Elena Ricci',
-        qualifica: 'Autista Soccorritore',
-        oreFrequentate: 8,
-        esito: 'Idoneo / Superato',
-        tipoAttestato: 'idoneita',
-        numeroAttestato: 'ATT-BLSD-2024-112',
-        dataRilascioAttestato: '2024-11-28',
-        scadenzaBrevetto: '2026-11-28' // In scadenza entro 30 giorni (Preavviso rinnovo)
-      }
-    ]
-  },
-  {
-    id: 'corso-pc0-01',
-    codiceCorso: 'PC-0-2026',
-    titolo: 'Protezione Civile Corso 0 — Avviamento al Servizio di Emergenza',
-    tipologia: 'Protezione Civile Corso 0',
-    descrizione: 'Corso propedeutico di ingresso per volontari operativi: catena di comando, sicurezza e DPI, radio comunicazioni DMR.',
-    docenteFormatore: 'Geom. Marco Vivaldi (Formatore PC)',
-    enteAccreditato: 'Dipartimento Protezione Civile — Regione Toscana',
-    sedeCorso: 'Sede Operativa H24 Massa (Le Jare)',
-    sedeSvolgimentoTipo: 'sezione_salvata',
-    sedeSvolgimentoSedeId: 'sede-massa-lejare',
-    indirizzoCompleto: 'Via Delle Jare, 9, 54100 Massa (MS)',
-    coordinate: { lat: 44.01700, lng: 10.15121 },
-    orarioInizioLezione: '20:30',
-    orarioFineLezione: '23:00',
-    sezioniDestinatarieIds: ['sede-massa-ronchi', 'sede-massa-lejare'],
-    sezioniDestinatarieNomi: ['Massa (Ronchi)', 'Massa (Le Jare)'],
-    percentualeMinimaPresenza: 100,
-    dataInizio: '2026-11-18',
-    dataFine: '2026-11-19',
-    oreTotali: 5,
-    oreMinimeFrequenza: 5,
-    massimoPartecipanti: 25,
-    stato: 'Programmato',
-    iscritti: []
-  },
-  {
-    id: 'corso-pcbase-01',
-    codiceCorso: 'PC-BASE-2026',
-    titolo: 'Protezione Civile Corso Base — Antincendio Boschivo & Rischio Idrogeologico',
-    tipologia: 'Protezione Civile Corso Base',
-    descrizione: 'Formazione operativa per interventi su alluvioni, uso motopompe e idrovore carrellate, motoseghe e presidio del territorio.',
-    docenteFormatore: 'Caposquadra AIB Regione Toscana',
-    enteAccreditato: 'Regione Toscana / Croce Oro OdV',
-    sedeCorso: 'Sezione Territoriale Carrara (Fossone / Monteverde)',
-    sedeSvolgimentoTipo: 'sezione_salvata',
-    sedeSvolgimentoSedeId: 'sede-carrara-fossone',
-    indirizzoCompleto: 'Strada Comunale di Monteverde, 49 Località Fossone, 54033 Carrara (MS)',
-    coordinate: { lat: 44.066716, lng: 10.049207 },
-    orarioInizioLezione: '08:30',
-    orarioFineLezione: '17:30',
-    sezioniDestinatarieIds: ['sede-carrara-fossone', 'sede-lunigiana'],
-    sezioniDestinatarieNomi: ['Carrara (Fossone / Monteverde)', 'Lunigiana (Aulla)'],
-    percentualeMinimaPresenza: 85,
-    dataInizio: '2026-12-12',
-    dataFine: '2026-12-13',
-    oreTotali: 16,
-    oreMinimeFrequenza: 14,
-    massimoPartecipanti: 20,
-    stato: 'Programmato',
-    iscritti: []
-  },
-  {
-    id: 'corso-form-psv-01',
-    codiceCorso: 'FORMAZ-PSV-2026',
-    titolo: 'Formazione PSV — Tecniche Avanzate Soccorso Sanitario Veterinario',
-    tipologia: 'Formazione PSV',
-    descrizione: 'Percorso formativo completo per operatori ambulanza veterinaria: gestione emergenze respiratorie, emorragie, immobilizzazione e coordinamento 24h.',
-    docenteFormatore: 'Dott.ssa Valentina Moriconi & Dott. Enrico Landi',
-    enteAccreditato: 'Ordine Medici Veterinari Massa-Carrara',
-    sedeCorso: 'Sede Legale Massa (Ronchi)',
-    sedeSvolgimentoTipo: 'sezione_salvata',
-    sedeSvolgimentoSedeId: 'sede-massa-ronchi',
-    indirizzoCompleto: 'Via Como, 12 Località Ronchi, 54100 Marina di Massa (MS)',
-    coordinate: { lat: 43.99419, lng: 10.12367 },
-    orarioInizioLezione: '09:00',
-    orarioFineLezione: '13:00',
-    sezioniDestinatarieIds: ['sede-massa-ronchi', 'sede-massa-lejare', 'sede-carrara-fossone'],
-    sezioniDestinatarieNomi: ['Tutte le sezioni'],
-    percentualeMinimaPresenza: 80,
-    dataInizio: '2026-12-19',
-    dataFine: '2026-12-20',
-    oreTotali: 8,
-    oreMinimeFrequenza: 8,
-    massimoPartecipanti: 18,
-    stato: 'Programmato',
-    iscritti: []
-  }
+export const LEGACY_MOCK_CORSI_IDS: string[] = [
+  'corso-psv-01',
+  'corso-aut-01',
+  'corso-blsd-01',
+  'corso-pc0-01',
+  'corso-pcbase-01',
+  'corso-form-psv-01'
 ];
+
+export const CORSI_FORMAZIONE_INIZIALI: CorsoFormazione[] = [];
 
 // ---------------------------------------------------------------------------
 // 5. GESTIONE MAGAZZINO VESTIARIO ED ATTREZZATURE
@@ -852,87 +501,171 @@ export const CORSI_FORMAZIONE_INIZIALI: CorsoFormazione[] = [
 export const MAGAZZINO_VESTIARIO_INIZIALE: ArticoloVestiarioMagazzino[] = [
   {
     id: 'vest-001',
-    codiceArticolo: 'GIACCA-AV-M',
-    nome: 'Giacca Alta Visibilità 4 Stagioni EN ISO 20471',
+    codiceArticolo: 'GIAC-INV-M',
+    nome: 'Giubbotto Invernale Termico Impermeabile Alta Visibilità',
     categoria: 'Giacche & Giubbotti',
     taglia: 'M',
     giacenzaAttuale: 12,
     scortaMinima: 5,
     prezzoUnitarioFornitore: 85.0,
+    cauzione: 0,
+    chiaveVestiarioAccount: 'giubbottoInvernale',
     fornitore: 'Siggi Group SpA',
     ubicazioneScaffale: 'Armadio A1 - Ripiano 2'
   },
   {
     id: 'vest-002',
-    codiceArticolo: 'GIACCA-AV-L',
-    nome: 'Giacca Alta Visibilità 4 Stagioni EN ISO 20471',
+    codiceArticolo: 'GIAC-INV-L',
+    nome: 'Giubbotto Invernale Termico Impermeabile Alta Visibilità',
     categoria: 'Giacche & Giubbotti',
     taglia: 'L',
     giacenzaAttuale: 15,
     scortaMinima: 6,
     prezzoUnitarioFornitore: 85.0,
+    cauzione: 0,
+    chiaveVestiarioAccount: 'giubbottoInvernale',
     fornitore: 'Siggi Group SpA',
     ubicazioneScaffale: 'Armadio A1 - Ripiano 3'
   },
   {
     id: 'vest-003',
-    codiceArticolo: 'GIACCA-AV-XL',
-    nome: 'Giacca Alta Visibilità 4 Stagioni EN ISO 20471',
+    codiceArticolo: 'GIUB-OP-M',
+    nome: 'Giubbetto Operativo / Gilet Mezza Stagione',
     categoria: 'Giacche & Giubbotti',
-    taglia: 'XL',
-    giacenzaAttuale: 4,
-    scortaMinima: 5,
-    prezzoUnitarioFornitore: 85.0,
+    taglia: 'M',
+    giacenzaAttuale: 10,
+    scortaMinima: 4,
+    prezzoUnitarioFornitore: 48.0,
+    cauzione: 45.0,
+    chiaveVestiarioAccount: 'giubbetto',
+    fornitore: 'Siggi Group SpA',
+    ubicazioneScaffale: 'Armadio A1 - Ripiano 4'
+  },
+  {
+    id: 'vest-003b',
+    codiceArticolo: 'GIUB-OP-L',
+    nome: 'Giubbetto Operativo / Gilet Mezza Stagione',
+    categoria: 'Giacche & Giubbotti',
+    taglia: 'L',
+    giacenzaAttuale: 12,
+    scortaMinima: 4,
+    prezzoUnitarioFornitore: 48.0,
+    cauzione: 45.0,
+    chiaveVestiarioAccount: 'giubbetto',
     fornitore: 'Siggi Group SpA',
     ubicazioneScaffale: 'Armadio A1 - Ripiano 4'
   },
   {
     id: 'vest-004',
     codiceArticolo: 'PANT-SOCC-M',
-    nome: 'Pantaloni Soccorso Bielastici con Ginocchiere Rinforzate',
+    nome: 'Pantaloni Operativi Soccorso con Bande Rifrangenti',
     categoria: 'Pantaloni Soccorso',
     taglia: 'M',
     giacenzaAttuale: 18,
     scortaMinima: 8,
     prezzoUnitarioFornitore: 52.0,
+    cauzione: 30.0,
+    chiaveVestiarioAccount: 'pantaloni',
     fornitore: 'Siggi Group SpA',
     ubicazioneScaffale: 'Armadio B2 - Ripiano 1'
   },
   {
     id: 'vest-005',
     codiceArticolo: 'PANT-SOCC-L',
-    nome: 'Pantaloni Soccorso Bielastici con Ginocchiere Rinforzate',
+    nome: 'Pantaloni Operativi Soccorso con Bande Rifrangenti',
     categoria: 'Pantaloni Soccorso',
     taglia: 'L',
     giacenzaAttuale: 14,
     scortaMinima: 8,
     prezzoUnitarioFornitore: 52.0,
+    cauzione: 30.0,
+    chiaveVestiarioAccount: 'pantaloni',
     fornitore: 'Siggi Group SpA',
     ubicazioneScaffale: 'Armadio B2 - Ripiano 2'
   },
   {
     id: 'vest-006',
-    codiceArticolo: 'POLO-CROCE-M',
-    nome: 'Polo Tecnica Estiva Manica Corta Giallo Fluo / Blu Navy',
+    codiceArticolo: 'TSHIRT-CROCE-M',
+    nome: 'T-Shirt / Polo Istituzionale Giallo Fluo / Blu Navy',
     categoria: 'Polo & T-Shirt',
     taglia: 'M',
     giacenzaAttuale: 25,
     scortaMinima: 10,
     prezzoUnitarioFornitore: 22.0,
+    cauzione: 0,
+    chiaveVestiarioAccount: 'tshirt',
     fornitore: 'Confezioni Toscane',
     ubicazioneScaffale: 'Scatolone C3'
   },
   {
     id: 'vest-007',
-    codiceArticolo: 'POLO-CROCE-L',
-    nome: 'Polo Tecnica Estiva Manica Corta Giallo Fluo / Blu Navy',
+    codiceArticolo: 'TSHIRT-CROCE-L',
+    nome: 'T-Shirt / Polo Istituzionale Giallo Fluo / Blu Navy',
     categoria: 'Polo & T-Shirt',
     taglia: 'L',
     giacenzaAttuale: 30,
     scortaMinima: 10,
     prezzoUnitarioFornitore: 22.0,
+    cauzione: 0,
+    chiaveVestiarioAccount: 'tshirt',
     fornitore: 'Confezioni Toscane',
     ubicazioneScaffale: 'Scatolone C3'
+  },
+  {
+    id: 'vest-010',
+    codiceArticolo: 'FELPA-ZIP-M',
+    nome: 'Felpa con Zip Istituzionale Ricamata',
+    categoria: 'Felpe & Pile',
+    taglia: 'M',
+    giacenzaAttuale: 16,
+    scortaMinima: 5,
+    prezzoUnitarioFornitore: 34.0,
+    cauzione: 0,
+    chiaveVestiarioAccount: 'felpa',
+    fornitore: 'Confezioni Toscane',
+    ubicazioneScaffale: 'Armadio C1 - Ripiano 1'
+  },
+  {
+    id: 'vest-011',
+    codiceArticolo: 'FELPA-ZIP-L',
+    nome: 'Felpa con Zip Istituzionale Ricamata',
+    categoria: 'Felpe & Pile',
+    taglia: 'L',
+    giacenzaAttuale: 16,
+    scortaMinima: 5,
+    prezzoUnitarioFornitore: 34.0,
+    cauzione: 0,
+    chiaveVestiarioAccount: 'felpa',
+    fornitore: 'Confezioni Toscane',
+    ubicazioneScaffale: 'Armadio C1 - Ripiano 2'
+  },
+  {
+    id: 'vest-012',
+    codiceArticolo: 'PILE-AV-M',
+    nome: 'Pile Termico Alta Visibilità',
+    categoria: 'Felpe & Pile',
+    taglia: 'M',
+    giacenzaAttuale: 12,
+    scortaMinima: 4,
+    prezzoUnitarioFornitore: 29.0,
+    cauzione: 0,
+    chiaveVestiarioAccount: 'pile',
+    fornitore: 'Siggi Group SpA',
+    ubicazioneScaffale: 'Armadio C2 - Ripiano 1'
+  },
+  {
+    id: 'vest-013',
+    codiceArticolo: 'PILE-AV-L',
+    nome: 'Pile Termico Alta Visibilità',
+    categoria: 'Felpe & Pile',
+    taglia: 'L',
+    giacenzaAttuale: 14,
+    scortaMinima: 4,
+    prezzoUnitarioFornitore: 29.0,
+    cauzione: 0,
+    chiaveVestiarioAccount: 'pile',
+    fornitore: 'Siggi Group SpA',
+    ubicazioneScaffale: 'Armadio C2 - Ripiano 2'
   },
   {
     id: 'vest-008',
@@ -943,6 +676,8 @@ export const MAGAZZINO_VESTIARIO_INIZIALE: ArticoloVestiarioMagazzino[] = [
     giacenzaAttuale: 8,
     scortaMinima: 4,
     prezzoUnitarioFornitore: 78.0,
+    cauzione: 0,
+    chiaveVestiarioAccount: 'dpi',
     fornitore: 'Base Protection',
     ubicazioneScaffale: 'Scarpiera Magazzino Basso'
   },
@@ -955,8 +690,67 @@ export const MAGAZZINO_VESTIARIO_INIZIALE: ArticoloVestiarioMagazzino[] = [
     giacenzaAttuale: 7,
     scortaMinima: 4,
     prezzoUnitarioFornitore: 78.0,
+    cauzione: 0,
+    chiaveVestiarioAccount: 'dpi',
     fornitore: 'Base Protection',
     ubicazioneScaffale: 'Scarpiera Magazzino Basso'
+  },
+  {
+    id: 'vest-014',
+    codiceArticolo: 'DPI-CASCO-UNI',
+    nome: 'Casco & Kit DPI Operativi (Guanti + Occhiali + Maschera)',
+    categoria: 'DPI & Caschi',
+    taglia: 'Unica',
+    giacenzaAttuale: 15,
+    scortaMinima: 5,
+    prezzoUnitarioFornitore: 42.0,
+    cauzione: 0,
+    chiaveVestiarioAccount: 'dpi',
+    fornitore: 'Base Protection',
+    ubicazioneScaffale: 'Armadio DPI D1'
+  }
+];
+
+export const TARIFFE_COSTI_SERVIZIO_INIZIALI: TariffaCostoServizio[] = [
+  {
+    id: 'cost-km-01',
+    categoria: 'mezzo_km',
+    siglaBreve: 'KM',
+    descrizioneSigla: 'Tariffa chilometrica percorrenza mezzo di soccorso / veterinario',
+    nomeVoce: 'Costo Mezzo al KM',
+    importoUnitario: 1.2,
+    unitaMisura: '€/km',
+    attivo: true
+  },
+  {
+    id: 'cost-usc-01',
+    categoria: 'uscita_mezzo',
+    siglaBreve: 'USC',
+    descrizioneSigla: 'Diritto fisso di uscita e approntamento mezzo operativo',
+    nomeVoce: 'Costo Uscita Mezzo',
+    importoUnitario: 35.0,
+    unitaMisura: '€/uscita',
+    attivo: true
+  },
+  {
+    id: 'cost-op-01',
+    categoria: 'operatore',
+    siglaBreve: 'OP',
+    descrizioneSigla: 'Impiego orario singolo operatore / soccorritore / autista in servizio',
+    nomeVoce: 'Costo Operatore Orario',
+    importoUnitario: 18.0,
+    unitaMisura: '€/ora',
+    attivo: true
+  },
+  {
+    id: 'cost-ed-01',
+    categoria: 'editabile',
+    siglaBreve: 'ATT',
+    descrizioneSigla: 'Intervento di assistenza ad atto esecutivo / ufficiale giudiziario',
+    nomeVoce: 'Assistenza Atto Esecutivo',
+    importoUnitario: 50.0,
+    unitaMisura: '€/servizio',
+    attivo: true
   }
 ];
 

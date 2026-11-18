@@ -18,10 +18,14 @@ export interface EsitoVerificaTurno {
 
 export interface AttivitaRilevataTimbratura {
   trovata: boolean;
-  tipo: 'turno' | 'corso' | null;
+  tipo: 'turno' | 'corso' | 'entrambi' | null;
   titolo: string;
   mezzoAssegnato?: string;
   turnoId?: string;
+  corsoId?: string;
+  lezioneId?: string;
+  titoloTurno?: string;
+  titoloCorso?: string;
 }
 
 const ANTICIPO_INGRESSO_MS = 30 * 60 * 1000;
@@ -464,7 +468,51 @@ export function rilevaAttivitaProgrammataPerTimbratura(params: {
   const oggiStr = nowItaly.isoDate;
   const volNorm = normalizzaNome(volontarioNome);
 
-  // 0. Se il punto GPS validato corrisponde direttamente a un corso formativo
+  // 1. Ricerca su tutti i tabelloni turni in app
+  const turni = loadTurniFallback(turniParam);
+  let turnoRilevato: { titolo: string; mezzoAssegnato?: string; turnoId: string } | null = null;
+
+  if (turni.length > 0) {
+    // A) Priorità al turno attivo in questa fascia oraria (inclusi notturni e anticipo pre-turno)
+    const turnoAttivoAdesso = trovaTurnoAttivoNeiTabelloni(volontarioId, volontarioNome, turni);
+    if (turnoAttivoAdesso) {
+      turnoRilevato = {
+        titolo: formatNomeTurnoPerTimbratura(turnoAttivoAdesso.turno),
+        mezzoAssegnato: turnoAttivoAdesso.turno.mezzoAssegnato,
+        turnoId: turnoAttivoAdesso.turno.id
+      };
+    } else {
+      // B) Eventuale altro turno programmato per la data di oggi su qualsiasi tabellone
+      const turniOggi = turni
+        .filter(t => {
+          const dataNorm = normalizzaDataIsoSemplice(t.data);
+          if (dataNorm !== oggiStr) return false;
+          return Boolean(trovaAssegnazioneVolontario(t, volontarioId, volontarioNome));
+        })
+        .sort((a, b) => {
+          const ba = resolveBoundsTurnoMs(a);
+          const bb = resolveBoundsTurnoMs(b);
+          const aFuture = ba && ba.endMs >= nowMs ? 0 : 1;
+          const bFuture = bb && bb.endMs >= nowMs ? 0 : 1;
+          if (aFuture !== bFuture) return aFuture - bFuture;
+          if (ba && bb) return Math.abs(ba.startMs - nowMs) - Math.abs(bb.startMs - nowMs);
+          return 0;
+        });
+
+      const turnoOggi = turniOggi[0];
+      if (turnoOggi) {
+        turnoRilevato = {
+          titolo: formatNomeTurnoPerTimbratura(turnoOggi),
+          mezzoAssegnato: turnoOggi.mezzoAssegnato,
+          turnoId: turnoOggi.id
+        };
+      }
+    }
+  }
+
+  // 2. Ricerca nei Corsi / Formazione (da punto GPS oppure da iscrizione)
+  let corsoRilevato: { titolo: string; corsoId: string; lezioneId?: string } | null = null;
+
   if (targetCorsoId && corsiFormazione.length > 0) {
     const corsoGps = corsiFormazione.find(c => c.id === targetCorsoId);
     if (corsoGps) {
@@ -474,61 +522,15 @@ export function rilevaAttivitaProgrammataPerTimbratura(params: {
       const lezDesc = lezGps
         ? ` — Lez. #${lezGps.numero}${lezGps.titolo ? `: ${lezGps.titolo}` : ''}`
         : '';
-      return {
-        trovata: true,
-        tipo: 'corso',
-        titolo: `Corso: ${corsoGps.titolo}${lezDesc}`
+      corsoRilevato = {
+        titolo: `Corso: ${corsoGps.titolo}${lezDesc}`,
+        corsoId: corsoGps.id,
+        lezioneId: lezGps?.id
       };
     }
   }
 
-  // 1. Ricerca su tutti i tabelloni turni in app
-  const turni = loadTurniFallback(turniParam);
-
-  if (turni.length > 0) {
-    // A) Priorità al turno attivo in questa fascia oraria (inclusi notturni e anticipo pre-turno)
-    const turnoAttivoAdesso = trovaTurnoAttivoNeiTabelloni(volontarioId, volontarioNome, turni);
-    if (turnoAttivoAdesso) {
-      return {
-        trovata: true,
-        tipo: 'turno',
-        titolo: formatNomeTurnoPerTimbratura(turnoAttivoAdesso.turno),
-        mezzoAssegnato: turnoAttivoAdesso.turno.mezzoAssegnato,
-        turnoId: turnoAttivoAdesso.turno.id
-      };
-    }
-
-    // B) Eventuale altro turno programmato per la data di oggi su qualsiasi tabellone (preferendo quello non ancora concluso o più vicino)
-    const turniOggi = turni
-      .filter(t => {
-        const dataNorm = normalizzaDataIsoSemplice(t.data);
-        if (dataNorm !== oggiStr) return false;
-        return Boolean(trovaAssegnazioneVolontario(t, volontarioId, volontarioNome));
-      })
-      .sort((a, b) => {
-        const ba = resolveBoundsTurnoMs(a);
-        const bb = resolveBoundsTurnoMs(b);
-        const aFuture = ba && ba.endMs >= nowMs ? 0 : 1;
-        const bFuture = bb && bb.endMs >= nowMs ? 0 : 1;
-        if (aFuture !== bFuture) return aFuture - bFuture;
-        if (ba && bb) return Math.abs(ba.startMs - nowMs) - Math.abs(bb.startMs - nowMs);
-        return 0;
-      });
-
-    const turnoOggi = turniOggi[0];
-    if (turnoOggi) {
-      return {
-        trovata: true,
-        tipo: 'turno',
-        titolo: formatNomeTurnoPerTimbratura(turnoOggi),
-        mezzoAssegnato: turnoOggi.mezzoAssegnato,
-        turnoId: turnoOggi.id
-      };
-    }
-  }
-
-  // 2. Ricerca nei Corsi / Formazione dove il volontario è iscritto
-  if (corsiFormazione && corsiFormazione.length > 0) {
+  if (!corsoRilevato && corsiFormazione && corsiFormazione.length > 0) {
     const corsiIscritto = corsiFormazione.filter(c =>
       c.stato !== 'Annullato' &&
       c.stato !== 'Concluso' &&
@@ -539,35 +541,72 @@ export function rilevaAttivitaProgrammataPerTimbratura(params: {
       )
     );
 
-    // A) Corso con lezione in programma nella data odierna
     for (const c of corsiIscritto) {
       const lezOggi = c.lezioni?.find(l => normalizzaDataIsoSemplice(l.data) === oggiStr);
       if (lezOggi) {
         const orarioLez = lezOggi.orarioInizio && lezOggi.orarioFine ? ` (${lezOggi.orarioInizio}-${lezOggi.orarioFine})` : '';
-        return {
-          trovata: true,
-          tipo: 'corso',
-          titolo: `Corso: ${c.titolo} — Lez. #${lezOggi.numero}${lezOggi.titolo ? `: ${lezOggi.titolo}` : ''}${orarioLez}`
+        corsoRilevato = {
+          titolo: `Corso: ${c.titolo} — Lez. #${lezOggi.numero}${lezOggi.titolo ? `: ${lezOggi.titolo}` : ''}${orarioLez}`,
+          corsoId: c.id,
+          lezioneId: lezOggi.id
         };
+        break;
       }
     }
 
-    // B) Corso "In Corso" o il cui intervallo date comprende oggi
-    const corsoAttivoOggi = corsiIscritto.find(c => {
-      const di = normalizzaDataIsoSemplice(c.dataInizio);
-      const df = normalizzaDataIsoSemplice(c.dataFine);
-      return c.stato === 'In Corso' || (di && df && oggiStr >= di && oggiStr <= df);
-    });
-    if (corsoAttivoOggi) {
-      return {
-        trovata: true,
-        tipo: 'corso',
-        titolo: `Corso: ${corsoAttivoOggi.titolo}${corsoAttivoOggi.tipologia ? ` (${corsoAttivoOggi.tipologia})` : ''}`
-      };
+    if (!corsoRilevato) {
+      const corsoAttivoOggi = corsiIscritto.find(c => {
+        const di = normalizzaDataIsoSemplice(c.dataInizio);
+        const df = normalizzaDataIsoSemplice(c.dataFine);
+        return c.stato === 'In Corso' || (di && df && oggiStr >= di && oggiStr <= df);
+      });
+      if (corsoAttivoOggi) {
+        corsoRilevato = {
+          titolo: `Corso: ${corsoAttivoOggi.titolo}${corsoAttivoOggi.tipologia ? ` (${corsoAttivoOggi.tipologia})` : ''}`,
+          corsoId: corsoAttivoOggi.id
+        };
+      }
     }
   }
 
-  // 3. Nessun turno o corso trovato -> campo editabile libero
+  // 3. Se presenti CONTEMPORANEAMENTE Corso/Formazione e Turno, il volontario timbra per entrambi!
+  if (turnoRilevato && corsoRilevato) {
+    return {
+      trovata: true,
+      tipo: 'entrambi',
+      titolo: `${turnoRilevato.titolo} + ${corsoRilevato.titolo}`,
+      mezzoAssegnato: turnoRilevato.mezzoAssegnato,
+      turnoId: turnoRilevato.turnoId,
+      corsoId: corsoRilevato.corsoId,
+      lezioneId: corsoRilevato.lezioneId,
+      titoloTurno: turnoRilevato.titolo,
+      titoloCorso: corsoRilevato.titolo
+    };
+  }
+
+  if (corsoRilevato) {
+    return {
+      trovata: true,
+      tipo: 'corso',
+      titolo: corsoRilevato.titolo,
+      corsoId: corsoRilevato.corsoId,
+      lezioneId: corsoRilevato.lezioneId,
+      titoloCorso: corsoRilevato.titolo
+    };
+  }
+
+  if (turnoRilevato) {
+    return {
+      trovata: true,
+      tipo: 'turno',
+      titolo: turnoRilevato.titolo,
+      mezzoAssegnato: turnoRilevato.mezzoAssegnato,
+      turnoId: turnoRilevato.turnoId,
+      titoloTurno: turnoRilevato.titolo
+    };
+  }
+
+  // 4. Nessun turno o corso trovato -> campo editabile libero
   return {
     trovata: false,
     tipo: null,

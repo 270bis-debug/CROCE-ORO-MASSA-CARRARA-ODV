@@ -47,13 +47,28 @@ import {
   Upload
 } from 'lucide-react';
 import { DatabaseVolontariModal, Volontario, SEDI_TURNI_DISPONIBILI } from '../DatabaseVolontariModal';
-import { TimbraturaVolontario, LuogoTimbratura, TipoLuogoTimbratura } from '../../types/adminTypes';
+import {
+  TimbraturaVolontario,
+  LuogoTimbratura,
+  TipoLuogoTimbratura,
+  ArticoloVestiarioMagazzino,
+  MovimentoMagazzino
+} from '../../types/adminTypes';
 import { SEDI_ASSOCIATIVE_INIZIALI, LUOGHI_TIMBRATURA_DEFAULT } from '../../data/adminMockData';
-import { MacroCategoriaId, LISTA_MACRO_CATEGORIE, TUTTE_LE_MACRO_CATEGORIE } from '../../constants/macroCategorie';
+import {
+  MacroCategoriaId,
+  LISTA_MACRO_CATEGORIE,
+  TUTTE_LE_MACRO_CATEGORIE,
+  getNomiDatabaseCustom,
+  salvaNomiDatabaseCustom,
+  getTitoloDatabase
+} from '../../constants/macroCategorie';
 import { inviaNotificaModificaAdmin } from '../../utils/notificaModificaAdmin';
 import { MappaSelezioneLuogoTimbratura } from './MappaSelezioneLuogoTimbratura';
 import { mergeVolontariListsSafe } from '../../utils/volontariMerge';
 import { normalizzaNomeCarraraTesto, normalizzaListaLuoghiTimbratura } from '../../utils/sediNormalize';
+import { calcolaCauzioneTotale } from '../../data/vestiarioDocumenti';
+import { realtime } from '../../services/realtime';
 import {
   ModalitaPeriodoTimbrature,
   formatLocalISODate,
@@ -72,16 +87,25 @@ import {
   eliminaMansioneCatalogo,
   modificaMansioneCatalogo,
   ripristinaMansioniDefault,
+  getCategorieMansioni,
+  creaCategoriaMansione,
+  modificaCategoriaMansione,
+  eliminaCategoriaMansione,
+  ripristinaCategorieMansioniDefault,
   aggiornaVolontariDopoModificaMansione,
   aggiornaVolontariDopoEliminazioneMansione,
   getMansioniVolontario,
   getMansioniEffettiveVolontario,
   getMansionePrincipale,
   getStileMansione,
+  getDescendantMansioneIds,
+  getDescendantCategoriaIds,
   MansioneOperativa,
-  CategoriaMansione
+  CategoriaMansione,
+  CategoriaMansioneItem
 } from '../../utils/mansioniVolontari';
 import { addDaysISODate, formatDateItaly, formatISODateItaly, formatTimeItaly } from '../../utils/italianTime';
+import { useTitoloDatabase } from '../../hooks/useNomiDatabase';
 
 interface SezioneVolontariProps {
   volontari: Volontario[];
@@ -95,6 +119,10 @@ interface SezioneVolontariProps {
   onAggiornaTimbrature: (timbrature: TimbraturaVolontario[]) => void;
   luoghiTimbratura?: LuogoTimbratura[];
   onAggiornaLuoghiTimbratura?: (luoghi: LuogoTimbratura[]) => void;
+  magazzinoVestiario?: ArticoloVestiarioMagazzino[];
+  onAggiornaMagazzinoVestiario?: (nuovi: ArticoloVestiarioMagazzino[]) => void;
+  movimentiMagazzino?: MovimentoMagazzino[];
+  onAggiornaMovimentiMagazzino?: (nuovi: MovimentoMagazzino[]) => void;
 }
 
 export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
@@ -108,7 +136,11 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
   timbrature,
   onAggiornaTimbrature,
   luoghiTimbratura = LUOGHI_TIMBRATURA_DEFAULT,
-  onAggiornaLuoghiTimbratura
+  onAggiornaLuoghiTimbratura,
+  magazzinoVestiario = [],
+  onAggiornaMagazzinoVestiario,
+  movimentiMagazzino = [],
+  onAggiornaMovimentiMagazzino
 }) => {
   // Privilegi effettivi amministrativi (condivisi tra Amministratore e Presidente)
   const isEffettivoAdmin = Boolean(isAdmin || isPresidente);
@@ -116,8 +148,9 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
   // Sotto-schede della macro-categoria 2
   const [sottoTab, setSottoTab] = useState<'anagrafiche' | 'mansioni' | 'vestiario' | 'pin' | 'domande' | 'timbrature' | 'gruppi' | 'permessi_database'>('anagrafiche');
 
-  // Stato per Gestione Mansioni e Assegnazione Multipla
+  // Stato per Gestione Mansioni, Categorie, Genitorialità e Assegnazione Multipla
   const [catalogoMansioni, setCatalogoMansioni] = useState<MansioneOperativa[]>(() => getMansioniCatalogo());
+  const [categorieMansioni, setCategorieMansioni] = useState<CategoriaMansioneItem[]>(() => getCategorieMansioni());
   const [selectedVolontariMansioniIds, setSelectedVolontariMansioniIds] = useState<string[]>([]);
   const [selectedMansioniNomi, setSelectedMansioniNomi] = useState<string[]>([]);
   const [modalNuovaMansioneAperta, setModalNuovaMansioneAperta] = useState(false);
@@ -126,9 +159,48 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
   const [nuovaMansioneDescrizione, setNuovaMansioneDescrizione] = useState('');
   const [nuovaMansioneCategoria, setNuovaMansioneCategoria] = useState<CategoriaMansione>('Emergenza 118');
   const [nuovaMansioneEmoji, setNuovaMansioneEmoji] = useState('⭐');
+  const [nuovaMansioneParentId, setNuovaMansioneParentId] = useState<string>('');
   const [nuovaMansioneIncluse, setNuovaMansioneIncluse] = useState<string[]>(['Volontario']);
   const [ricercaMansioniVolontari, setRicercaMansioniVolontari] = useState('');
   const [filtroCategoriaMansione, setFiltroCategoriaMansione] = useState('tutte');
+
+  // Gestione Categorie Mansioni (CRUD + Genitorialità)
+  const [modalCategoriaAperta, setModalCategoriaAperta] = useState(false);
+  const [categoriaInModifica, setCategoriaInModifica] = useState<CategoriaMansioneItem | null>(null);
+  const [formCategoriaNome, setFormCategoriaNome] = useState('');
+  const [formCategoriaEmoji, setFormCategoriaEmoji] = useState('📁');
+  const [formCategoriaParentId, setFormCategoriaParentId] = useState<string>('');
+
+  // Rinomina Nomi Database (effetto immediato su tutti i device)
+  const titoloDbVolontari = useTitoloDatabase('volontari', 'Database Volontari & Personale Operativo');
+  const [nomiDbCustom, setNomiDbCustom] = useState<Record<string, string>>(() => getNomiDatabaseCustom());
+  const [draftNomiDb, setDraftNomiDb] = useState<Record<string, string>>(() => getNomiDatabaseCustom());
+
+  // Modale di conferma in-app (sostituisce confirm() nativi)
+  const [confermaAzioneModal, setConfermaAzioneModal] = useState<{
+    titolo: string;
+    messaggio: string;
+    labelConferma?: string;
+    onConfirm: () => void;
+  } | null>(null);
+
+  useEffect(() => {
+    const onMansioniSync = () => {
+      setCatalogoMansioni(getMansioniCatalogo());
+      setCategorieMansioni(getCategorieMansioni());
+    };
+    const onNomiDbSync = () => {
+      const agg = getNomiDatabaseCustom();
+      setNomiDbCustom(agg);
+      setDraftNomiDb(agg);
+    };
+    window.addEventListener('croceoro_mansioni_updated', onMansioniSync);
+    window.addEventListener('croceoro_nomi_db_updated', onNomiDbSync);
+    return () => {
+      window.removeEventListener('croceoro_mansioni_updated', onMansioniSync);
+      window.removeEventListener('croceoro_nomi_db_updated', onNomiDbSync);
+    };
+  }, []);
 
   // Stato per Sezione 8: Accesso ai Database (Assegnazione Multipla Volontari <-> Autorizzazioni)
   const [selectedVolontariPermessiIds, setSelectedVolontariPermessiIds] = useState<string[]>([]);
@@ -243,20 +315,20 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
         },
         (err) => {
           setRilevamentoGpsLuogoInCorso(false);
-          alert(`Impossibile acquisire coordinate GPS: ${err.message}. Puoi inserirle manualmente.`);
+          mostraAvviso(`Impossibile acquisire coordinate GPS: ${err.message}. Puoi inserirle manualmente.`);
         },
         { enableHighAccuracy: true, timeout: 8000 }
       );
     } else {
       setRilevamentoGpsLuogoInCorso(false);
-      alert('Geolocalizzazione non supportata su questo browser.');
+      mostraAvviso('Geolocalizzazione non supportata su questo browser.');
     }
   };
 
   const handleSalvaLuogoTimbratura = (e: React.FormEvent) => {
     e.preventDefault();
     if (!formLuogoNome.trim()) {
-      alert('Inserisci il nome del luogo o della postazione.');
+      mostraAvviso('Inserisci il nome del luogo o della postazione.');
       return;
     }
 
@@ -313,11 +385,17 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
   };
 
   const handleEliminaLuogo = (id: string, nome: string) => {
-    if (!confirm(`Sei sicuro di voler eliminare il luogo di timbratura "${nome}"? I volontari non potranno più timbrare a questa postazione.`)) return;
-    const aggiornati = (luoghiTimbratura || LUOGHI_TIMBRATURA_DEFAULT).filter((l) => l.id !== id);
-    onAggiornaLuoghiTimbratura?.(aggiornati);
-    onNotificaRadio?.(`🗑️ TIMBRATURE GPS: Eliminato luogo di timbratura "${nome}" da ${operatoreCorrente}`, 'sistema');
-    mostraAvviso(`Luogo "${nome}" eliminato con effetto immediato.`);
+    setConfermaAzioneModal({
+      titolo: 'Elimina Luogo di Timbratura',
+      messaggio: `Sei sicuro di voler eliminare il luogo di timbratura "${nome}"? I volontari non potranno più timbrare a questa postazione.`,
+      labelConferma: 'Elimina Luogo',
+      onConfirm: () => {
+        const aggiornati = (luoghiTimbratura || LUOGHI_TIMBRATURA_DEFAULT).filter((l) => l.id !== id);
+        onAggiornaLuoghiTimbratura?.(aggiornati);
+        onNotificaRadio?.(`🗑️ TIMBRATURE GPS: Eliminato luogo di timbratura "${nome}" da ${operatoreCorrente}`, 'sistema');
+        mostraAvviso(`Luogo "${nome}" eliminato con effetto immediato.`);
+      }
+    });
   };
 
   // Notifiche locali
@@ -526,7 +604,7 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
     e.preventDefault();
     const vol = volontari.find((v) => v.id === formTimbVolontarioId);
     if (!vol) {
-      alert('Seleziona un volontario valido.');
+      mostraAvviso('Seleziona un volontario valido.');
       return;
     }
 
@@ -566,11 +644,17 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
 
   // Elimina Timbratura
   const handleEliminaTimbratura = (id: string, nome: string) => {
-    if (!confirm(`Sei sicuro di voler eliminare definitivamente questa registrazione di timbratura per ${nome}?`)) return;
-    const filtrate = timbrature.filter((t) => t.id !== id);
-    onAggiornaTimbrature(filtrate);
-    onNotificaRadio?.(`🗑️ TIMBRATURE: Rimossa registrazione timbratura per ${nome}`, 'sistema');
-    mostraAvviso(`Timbratura eliminata con successo.`);
+    setConfermaAzioneModal({
+      titolo: 'Elimina Timbratura',
+      messaggio: `Sei sicuro di voler eliminare definitivamente questa registrazione di timbratura per ${nome}?`,
+      labelConferma: 'Elimina Timbratura',
+      onConfirm: () => {
+        const filtrate = timbrature.filter((t) => t.id !== id);
+        onAggiornaTimbrature(filtrate);
+        onNotificaRadio?.(`🗑️ TIMBRATURE: Rimossa registrazione timbratura per ${nome}`, 'sistema');
+        mostraAvviso(`Timbratura eliminata con successo.`);
+      }
+    });
   };
 
   // Volontari filtrati per testo, mansione e stato
@@ -767,13 +851,14 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
     mostraAvviso(`Report Excel (.xls) esportato con successo: ${nomeFile} (${timbratureFiltrate.length} timbrature).`);
   };
 
-  // Gestione Mansioni: Creazione, Modifica di qualsiasi mansione esistente ed Eliminazione con aggiornamento a cascata
+  // Gestione Mansioni: Creazione, Modifica di qualsiasi mansione esistente, Genitorialità ed Eliminazione con aggiornamento a cascata
   const handleApriCreaMansione = () => {
     setMansioneInModifica(null);
     setNuovaMansioneNome('');
     setNuovaMansioneDescrizione('');
-    setNuovaMansioneCategoria('Emergenza 118');
+    setNuovaMansioneCategoria(categorieMansioni[0]?.nome || 'Emergenza 118');
     setNuovaMansioneEmoji('🎖️');
+    setNuovaMansioneParentId('');
     setNuovaMansioneIncluse(['Volontario']);
     setModalNuovaMansioneAperta(true);
   };
@@ -784,6 +869,7 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
     setNuovaMansioneDescrizione(m.descrizione || '');
     setNuovaMansioneCategoria(m.categoria);
     setNuovaMansioneEmoji(m.badgeEmoji || '🎖️');
+    setNuovaMansioneParentId(m.parentMansioneId || '');
     setNuovaMansioneIncluse(Array.isArray(m.mansioniIncluse) && m.mansioniIncluse.length > 0 ? [...m.mansioniIncluse] : ['Volontario']);
     setModalNuovaMansioneAperta(true);
   };
@@ -793,7 +879,6 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
     if (!nuovaMansioneNome.trim()) return;
 
     if (mansioneInModifica) {
-      // Modifica mansione esistente nel catalogo
       const vecchioNome = mansioneInModifica.nome;
       const nuovoNome = nuovaMansioneNome.trim();
       const aggiornato = modificaMansioneCatalogo(mansioneInModifica.id, {
@@ -801,11 +886,12 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
         descrizione: nuovaMansioneDescrizione.trim() || undefined,
         categoria: nuovaMansioneCategoria,
         badgeEmoji: nuovaMansioneEmoji || '🎖️',
+        parentMansioneId: nuovaMansioneParentId ? nuovaMansioneParentId : null,
         mansioniIncluse: nuovaMansioneIncluse
       });
       setCatalogoMansioni(aggiornato);
+      realtime.syncMansioniConfig(aggiornato, getCategorieMansioni());
 
-      // Aggiorna in cascata tutti i volontari che avevano la mansione
       if (vecchioNome !== nuovoNome) {
         const volontariAggiornati = aggiornaVolontariDopoModificaMansione(volontari, vecchioNome, nuovoNome);
         onAggiornaVolontari(volontariAggiornati);
@@ -814,29 +900,32 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
       setMansioneInModifica(null);
       setNuovaMansioneNome('');
       setNuovaMansioneDescrizione('');
+      setNuovaMansioneParentId('');
       setNuovaMansioneIncluse(['Volontario']);
       setModalNuovaMansioneAperta(false);
 
       onNotificaRadio?.(`🏅 MANSIONI: Modificata mansione "${vecchioNome}" in "${nuovoNome}" (${nuovaMansioneCategoria})`, 'sistema');
-      mostraAvviso(`✓ Mansione "${nuovoNome}" aggiornata con successo nel catalogo e nei fascicoli dei volontari.`);
+      mostraAvviso(`✓ Mansione "${nuovoNome}" aggiornata e sincronizzata su tutti i dispositivi.`);
     } else {
-      // Creazione nuova mansione
       const creata = creaNuovaMansione({
         nome: nuovaMansioneNome.trim(),
         descrizione: nuovaMansioneDescrizione.trim() || undefined,
         categoria: nuovaMansioneCategoria,
         badgeEmoji: nuovaMansioneEmoji || '🎖️',
+        parentMansioneId: nuovaMansioneParentId || undefined,
         mansioniIncluse: nuovaMansioneIncluse
       });
-
-      setCatalogoMansioni(getMansioniCatalogo());
+      const nuovoCat = getMansioniCatalogo();
+      setCatalogoMansioni(nuovoCat);
+      realtime.syncMansioniConfig(nuovoCat, getCategorieMansioni());
       setNuovaMansioneNome('');
       setNuovaMansioneDescrizione('');
+      setNuovaMansioneParentId('');
       setNuovaMansioneIncluse(['Volontario']);
       setModalNuovaMansioneAperta(false);
 
       onNotificaRadio?.(`🏅 MANSIONI: Creata nuova mansione operativa "${creata.nome}" (${creata.categoria})`, 'sistema');
-      mostraAvviso(`✓ Mansione "${creata.nome}" creata e aggiunta con successo al catalogo.`);
+      mostraAvviso(`✓ Mansione "${creata.nome}" creata e sincronizzata su tutti i dispositivi.`);
     }
   };
 
@@ -844,38 +933,139 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
     const nomeDaMostrare = nome || 'selezionata';
     const numVolontariConMansione = volontari.filter(v => getMansioniVolontario(v).includes(nomeDaMostrare)).length;
     const msgConferma = numVolontariConMansione > 0
-      ? `Sei sicuro di voler eliminare la mansione "${nomeDaMostrare}" dal catalogo?\n\nAttenzione: è attualmente assegnata a ${numVolontariConMansione} volontari e verrà rimossa dai loro fascicoli.`
+      ? `Sei sicuro di voler eliminare la mansione "${nomeDaMostrare}" dal catalogo? Attualmente è assegnata a ${numVolontariConMansione} volontari e verrà rimossa dai loro fascicoli.`
       : `Sei sicuro di voler eliminare la mansione "${nomeDaMostrare}" dal catalogo?`;
 
-    if (!confirm(msgConferma)) return;
+    setConfermaAzioneModal({
+      titolo: 'Elimina Mansione',
+      messaggio: msgConferma,
+      labelConferma: 'Elimina Mansione',
+      onConfirm: () => {
+        const aggiornato = eliminaMansioneCatalogo(id);
+        setCatalogoMansioni(aggiornato);
+        realtime.syncMansioniConfig(aggiornato, getCategorieMansioni());
 
-    const aggiornato = eliminaMansioneCatalogo(id);
-    setCatalogoMansioni(aggiornato);
+        if (nome) {
+          const volontariAggiornati = aggiornaVolontariDopoEliminazioneMansione(volontari, nome);
+          onAggiornaVolontari(volontariAggiornati);
+        }
 
-    // Aggiorna in cascata i volontari rimuovendo la mansione eliminata
-    if (nome) {
-      const volontariAggiornati = aggiornaVolontariDopoEliminazioneMansione(volontari, nome);
-      onAggiornaVolontari(volontariAggiornati);
-    }
-
-    onNotificaRadio?.(`🗑️ MANSIONI: Rimossa mansione "${nomeDaMostrare}" dal catalogo`, 'sistema');
-    mostraAvviso(`Mansione "${nomeDaMostrare}" eliminata dal catalogo.`);
+        onNotificaRadio?.(`🗑️ MANSIONI: Rimossa mansione "${nomeDaMostrare}" dal catalogo`, 'sistema');
+        mostraAvviso(`Mansione "${nomeDaMostrare}" eliminata e sincronizzata su tutti i dispositivi.`);
+      }
+    });
   };
 
   const handleRipristinaMansioniDefault = () => {
-    if (!confirm("Vuoi ripristinare il catalogo iniziale delle mansioni predefinite della Croce Oro? Tutte le mansioni standard verranno reintegrate.")) return;
-    const defaultMansioni = ripristinaMansioniDefault();
-    setCatalogoMansioni(defaultMansioni);
-    mostraAvviso("✓ Catalogo mansioni predefinite ripristinato con successo.");
+    setConfermaAzioneModal({
+      titolo: 'Ripristina Mansioni Predefinite',
+      messaggio: 'Vuoi ripristinare il catalogo iniziale delle mansioni predefinite della Croce Oro? Tutte le mansioni standard verranno reintegrate su tutti i dispositivi.',
+      labelConferma: 'Ripristina Catalogo',
+      onConfirm: () => {
+        const defaultMansioni = ripristinaMansioniDefault();
+        setCatalogoMansioni(defaultMansioni);
+        realtime.syncMansioniConfig(defaultMansioni, getCategorieMansioni());
+        mostraAvviso('✓ Catalogo mansioni predefinite ripristinato e sincronizzato su tutti i dispositivi.');
+      }
+    });
+  };
+
+  // Gestione Categorie Mansioni (Modifica, Creazione, Genitorialità, Eliminazione)
+  const handleApriCreaCategoria = () => {
+    setCategoriaInModifica(null);
+    setFormCategoriaNome('');
+    setFormCategoriaEmoji('📁');
+    setFormCategoriaParentId('');
+    setModalCategoriaAperta(true);
+  };
+
+  const handleApriModificaCategoria = (cat: CategoriaMansioneItem) => {
+    setCategoriaInModifica(cat);
+    setFormCategoriaNome(cat.nome);
+    setFormCategoriaEmoji(cat.badgeEmoji || '📁');
+    setFormCategoriaParentId(cat.parentCategoriaId || '');
+    setModalCategoriaAperta(true);
+  };
+
+  const handleSalvaCategoria = (e?: React.FormEvent) => {
+    e?.preventDefault();
+    const nomePulito = formCategoriaNome.trim();
+    if (!nomePulito) return;
+
+    if (categoriaInModifica) {
+      const res = modificaCategoriaMansione(categoriaInModifica.id, {
+        nome: nomePulito,
+        badgeEmoji: formCategoriaEmoji || '📁',
+        parentCategoriaId: formCategoriaParentId ? formCategoriaParentId : null
+      });
+      setCategorieMansioni(res.categorie);
+      setCatalogoMansioni(res.catalogo);
+      if (filtroCategoriaMansione === res.vecchioNome && res.nuovoNome) {
+        setFiltroCategoriaMansione(res.nuovoNome);
+      }
+      realtime.syncMansioniConfig(res.catalogo, res.categorie);
+      onNotificaRadio?.(`📁 CATEGORIE MANSIONI: Modificata categoria "${res.vecchioNome}" in "${res.nuovoNome}" (effetto immediato globale)`, 'sistema');
+      mostraAvviso(`✓ Categoria "${res.nuovoNome}" aggiornata su tutti i dispositivi.`);
+    } else {
+      const agg = creaCategoriaMansione({
+        nome: nomePulito,
+        badgeEmoji: formCategoriaEmoji || '📁',
+        parentCategoriaId: formCategoriaParentId || undefined
+      });
+      setCategorieMansioni(agg);
+      realtime.syncMansioniConfig(getMansioniCatalogo(), agg);
+      onNotificaRadio?.(`📁 CATEGORIE MANSIONI: Creata categoria "${nomePulito}" (effetto immediato globale)`, 'sistema');
+      mostraAvviso(`✓ Categoria "${nomePulito}" creata e sincronizzata su tutti i dispositivi.`);
+    }
+
+    setCategoriaInModifica(null);
+    setFormCategoriaNome('');
+    setFormCategoriaEmoji('📁');
+    setFormCategoriaParentId('');
+    setModalCategoriaAperta(false);
+  };
+
+  const handleEliminaCategoria = (cat: CategoriaMansioneItem) => {
+    setConfermaAzioneModal({
+      titolo: 'Elimina Categoria Mansioni',
+      messaggio: `Sei sicuro di voler eliminare la categoria "${cat.nome}"? Le mansioni eventualmente collegate verranno riassegnate alla prima categoria disponibile.`,
+      labelConferma: 'Elimina Categoria',
+      onConfirm: () => {
+        const res = eliminaCategoriaMansione(cat.id);
+        setCategorieMansioni(res.categorie);
+        setCatalogoMansioni(res.catalogo);
+        if (filtroCategoriaMansione === cat.nome) {
+          setFiltroCategoriaMansione('tutte');
+        }
+        realtime.syncMansioniConfig(res.catalogo, res.categorie);
+        onNotificaRadio?.(`🗑️ CATEGORIE MANSIONI: Eliminata categoria "${cat.nome}"`, 'sistema');
+        mostraAvviso(`Categoria "${cat.nome}" eliminata e sincronizzata su tutti i dispositivi.`);
+      }
+    });
+  };
+
+  const handleRipristinaCategorieDefault = () => {
+    setConfermaAzioneModal({
+      titolo: 'Ripristina Categorie Predefinite',
+      messaggio: 'Vuoi ripristinare le categorie mansioni predefinite? La modifica sarà applicata immediatamente su tutti i dispositivi.',
+      labelConferma: 'Ripristina Categorie',
+      onConfirm: () => {
+        const defCats = ripristinaCategorieMansioniDefault();
+        setCategorieMansioni(defCats);
+        setFiltroCategoriaMansione('tutte');
+        realtime.syncMansioniConfig(getMansioniCatalogo(), defCats);
+        mostraAvviso('✓ Categorie mansioni predefinite ripristinate su tutti i dispositivi.');
+      }
+    });
   };
 
   const handleAssegnaMansioniMassive = (azione: 'aggiungi' | 'sostituisci' | 'rimuovi') => {
     if (selectedVolontariMansioniIds.length === 0) {
-      alert('Seleziona almeno un volontario a cui assegnare o modificare le mansioni.');
+      mostraAvviso('Seleziona almeno un volontario a cui assegnare o modificare le mansioni.');
       return;
     }
     if (selectedMansioniNomi.length === 0) {
-      alert('Seleziona almeno una mansione dal catalogo da applicare.');
+      mostraAvviso('Seleziona almeno una mansione dal catalogo da applicare.');
       return;
     }
 
@@ -960,7 +1150,7 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
                 Macro Categoria 2
               </span>
               <h2 className="text-xl font-black text-white uppercase tracking-wide">
-                Database Volontari & Personale Operativo
+                {titoloDbVolontari}
               </h2>
             </div>
             <p className="text-xs text-slate-300 mt-0.5">
@@ -970,6 +1160,17 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
         </div>
 
         <div className="flex items-center gap-2 flex-wrap">
+          {isEffettivoAdmin && (
+            <button
+              type="button"
+              onClick={() => setSottoTab('permessi_database')}
+              className="px-3 py-2 rounded-xl bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-200 border border-indigo-500/40 text-xs font-bold uppercase flex items-center gap-1.5 transition-all cursor-pointer"
+              title="Rinomina i nomi dei Database o gestisci gli accessi"
+            >
+              <Edit2 className="w-3.5 h-3.5 text-indigo-300" />
+              <span>Rinomina DB</span>
+            </button>
+          )}
           <button
             type="button"
             onClick={() => setSottoTab('mansioni')}
@@ -1530,7 +1731,7 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
                     const vest = v.vestiario;
                     const giaccaConsegnata = vest?.giubbetto?.consegnato;
                     const pantConsegnati = vest?.pantaloni?.consegnato;
-                    const cauzione = (giaccaConsegnata ? 45 : 0) + (pantConsegnati ? 30 : 0);
+                    const cauzione = calcolaCauzioneTotale(vest).totale;
 
                     return (
                       <tr key={v.id} className="hover:bg-slate-900/50 transition-colors">
@@ -3824,16 +4025,13 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
           return m.categoria === filtroCategoriaMansione;
         });
 
-        // Categorie disponibili
+        // Categorie disponibili dinamiche (modificabili dall'utente con genitorialità)
         const categorieDisponibili: { key: string; label: string }[] = [
           { key: 'tutte', label: 'Tutte le Categorie' },
-          { key: 'Emergenza 118', label: '🚑 Emergenza 118' },
-          { key: 'Centrale Operativa', label: '📻 Centrale Operativa' },
-          { key: 'Servizi Ordinari', label: '🚐 Servizi Ordinari' },
-          { key: 'Protezione Civile & Sociale', label: '🛡️ Protezione Civile & Sociale' },
-          { key: 'Formazione & Istruzione', label: '🎓 Formazione & Istruzione' },
-          { key: 'Direttivo & Coordinamento', label: '👑 Direttivo & Coordinamento' },
-          { key: 'Altro / Speciale', label: '✨ Altro / Speciale' }
+          ...categorieMansioni.map((c) => ({
+            key: c.nome,
+            label: `${c.badgeEmoji || '📁'} ${c.nome}`
+          }))
         ];
 
         return (
@@ -3845,19 +4043,19 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
                   🎖️
                 </div>
                 <div>
-                  <h3 className="text-lg font-black text-white flex items-center gap-2">
-                    <span>7. Gestione Mansioni & Competenze</span>
+                  <h3 className="text-lg font-black text-white flex items-center gap-2 flex-wrap">
+                    <span>7. Gestione Mansioni, Categorie & Competenze</span>
                     <span className="text-xs px-2.5 py-0.5 rounded-full bg-blue-500/20 text-blue-300 border border-blue-400/30 font-mono">
-                      {catalogoMansioni.length} Mansioni nel Catalogo
+                      {catalogoMansioni.length} Mansioni • {categorieMansioni.length} Categorie
                     </span>
                   </h3>
                   <p className="text-xs text-slate-300 mt-0.5">
-                    Definisci infinite mansioni personalizzate e assegnale a uno o più volontari contemporaneamente sia da qui che dal fascicolo anagrafico.
+                    Crea e modifica mansioni, categorie e relazioni gerarchiche (genitorialità). Ogni modifica diventa efficace subito su tutti i dispositivi.
                   </p>
                 </div>
               </div>
 
-              <div className="flex items-center gap-2 shrink-0">
+              <div className="flex items-center gap-2 shrink-0 flex-wrap">
                 <button
                   type="button"
                   onClick={handleRipristinaMansioniDefault}
@@ -3869,12 +4067,103 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
                 </button>
                 <button
                   type="button"
+                  onClick={handleApriCreaCategoria}
+                  className="px-3.5 py-2.5 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 font-black text-xs uppercase flex items-center gap-1.5 active:scale-95 transition-all cursor-pointer shadow-md"
+                >
+                  <PlusCircle className="w-4 h-4" />
+                  <span>+ Nuova Categoria</span>
+                </button>
+                <button
+                  type="button"
                   onClick={handleApriCreaMansione}
                   className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-black text-xs uppercase flex items-center gap-2 shadow-lg shadow-blue-900/30 active:scale-95 transition-all cursor-pointer"
                 >
                   <PlusCircle className="w-4 h-4" />
                   <span>+ Crea Nuova Mansione</span>
                 </button>
+              </div>
+            </div>
+
+            {/* SEZIONE 0: GESTIONE CATEGORIE & GENITORIALITÀ */}
+            <div className="bg-slate-900/90 border border-amber-500/30 rounded-2xl p-5 shadow-xl space-y-4">
+              <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 border-b border-slate-800 pb-3">
+                <div>
+                  <h4 className="text-sm font-black text-amber-300 uppercase tracking-wider flex items-center gap-2">
+                    <Layers className="w-4 h-4 text-amber-400" />
+                    <span>Categorie Mansioni & Genitorialità ({categorieMansioni.length})</span>
+                  </h4>
+                  <p className="text-[11px] text-slate-400">
+                    Modifica, aggiungi o elimina categorie e imposta la categoria genitore. Le modifiche sono sincronizzate istantaneamente su tutti i dispositivi.
+                  </p>
+                </div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <button
+                    type="button"
+                    onClick={handleRipristinaCategorieDefault}
+                    className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px] font-bold flex items-center gap-1.5 border border-slate-700 cursor-pointer"
+                  >
+                    <RotateCcw className="w-3 h-3 text-amber-400" />
+                    <span>Ripristina Categorie</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleApriCreaCategoria}
+                    className="px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-[11px] uppercase flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <PlusCircle className="w-3.5 h-3.5" />
+                    <span>Aggiungi Categoria</span>
+                  </button>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
+                {categorieMansioni.map((cat) => {
+                  const parentCat = cat.parentCategoriaId
+                    ? categorieMansioni.find((p) => p.id === cat.parentCategoriaId)
+                    : undefined;
+                  const mansioniInCat = catalogoMansioni.filter((m) => m.categoria === cat.nome).length;
+                  return (
+                    <div
+                      key={cat.id}
+                      className="p-3 rounded-xl bg-slate-950/90 border border-slate-800 flex items-center justify-between gap-2"
+                    >
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="text-lg shrink-0">{cat.badgeEmoji || '📁'}</span>
+                          <span className="font-bold text-white text-xs truncate">{cat.nome}</span>
+                        </div>
+                        <div className="text-[10px] text-slate-400 mt-0.5 flex items-center gap-2 flex-wrap">
+                          <span>{mansioniInCat} mansioni</span>
+                          {parentCat && (
+                            <span className="px-1.5 py-0.2 rounded bg-amber-950/80 text-amber-300 border border-amber-500/40 font-semibold">
+                              Genitore: {parentCat.nome}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-1 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => handleApriModificaCategoria(cat)}
+                          className="p-1.5 rounded-lg text-slate-400 hover:text-amber-300 hover:bg-amber-950/40 cursor-pointer"
+                          title="Modifica nome, emoji e genitorialità categoria"
+                        >
+                          <Edit2 className="w-3.5 h-3.5" />
+                        </button>
+                        {categorieMansioni.length > 1 && (
+                          <button
+                            type="button"
+                            onClick={() => handleEliminaCategoria(cat)}
+                            className="p-1.5 rounded-lg text-slate-400 hover:text-red-400 hover:bg-red-950/40 cursor-pointer"
+                            title="Elimina categoria"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             </div>
 
@@ -3910,7 +4199,9 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
                 {mansioniFiltrateCatalogo.map((m) => {
                   // Conta quanti volontari hanno questa mansione
                   const volontariConMansione = volontari.filter(v => getMansioniVolontario(v).includes(m.nome));
-                  const isPersonalizzata = m.creataDaAdmin === true;
+                  const mansioneGenitore = m.parentMansioneId
+                    ? catalogoMansioni.find((p) => p.id === m.parentMansioneId)
+                    : undefined;
 
                   return (
                     <div
@@ -3938,7 +4229,7 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
                               type="button"
                               onClick={() => handleApriModificaMansione(m)}
                               className="text-slate-400 hover:text-blue-400 p-1.5 rounded-lg hover:bg-blue-950/40 transition-colors cursor-pointer"
-                              title="Modifica mansione (nome, categoria, emoji, requisiti)"
+                              title="Modifica mansione (nome, categoria, genitorialità, emoji, requisiti)"
                             >
                               <Edit2 className="w-3.5 h-3.5" />
                             </button>
@@ -3952,6 +4243,14 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
                             </button>
                           </div>
                         </div>
+
+                        {mansioneGenitore && (
+                          <div className="mt-2">
+                            <span className="text-[9.5px] px-1.5 py-0.5 rounded bg-indigo-950/80 text-indigo-300 border border-indigo-500/40 font-semibold inline-block">
+                              Genitore: {mansioneGenitore.nome}
+                            </span>
+                          </div>
+                        )}
 
                         {m.descrizione && (
                           <p className="text-[11px] text-slate-400 mt-2 line-clamp-2 leading-relaxed">
@@ -4358,9 +4657,34 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
           );
           onAggiornaVolontari(aggiornati);
           const infoCat = LISTA_MACRO_CATEGORIE.find((c) => c.id === catId);
+          const titoloDb = infoCat ? getTitoloDatabase(infoCat.id, infoCat.titolo, nomiDbCustom) : catId;
           mostraAvviso(
-            `${nuovi.includes(catId) ? 'Abilitato' : 'Revocato'} accesso "${infoCat?.titolo || catId}" per ${vol.nome} ${vol.cognome}.`
+            `${nuovi.includes(catId) ? 'Abilitato' : 'Revocato'} accesso "${titoloDb}" per ${vol.nome} ${vol.cognome}.`
           );
+        };
+
+        const handleSalvaNomiDatabase = () => {
+          const saved = salvaNomiDatabaseCustom(draftNomiDb, true);
+          setNomiDbCustom(saved);
+          setDraftNomiDb(saved);
+          realtime.syncNomiDatabase(saved);
+          onNotificaRadio?.(
+            `🏷️ NOMI DATABASE AGGIORNATI: ${operatoreCorrente} ha personalizzato i nomi dei database (effetto immediato su tutti i dispositivi).`,
+            'sistema'
+          );
+          mostraAvviso('✓ Nomi dei Database salvati e propagati immediatamente a tutti i dispositivi!');
+        };
+
+        const handleRipristinaNomiDatabase = () => {
+          const saved = salvaNomiDatabaseCustom({}, true);
+          setNomiDbCustom(saved);
+          setDraftNomiDb(saved);
+          realtime.syncNomiDatabase(saved);
+          onNotificaRadio?.(
+            `🏷️ NOMI DATABASE RIPRISTINATI: ${operatoreCorrente} ha ripristinato i nomi standard dei database.`,
+            'sistema'
+          );
+          mostraAvviso('✓ Nomi dei Database ripristinati ai valori predefiniti su tutti i dispositivi.');
         };
 
         return (
@@ -4412,6 +4736,59 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
                 <span className="text-xs font-mono font-bold px-3 py-1.5 rounded-xl bg-indigo-900/70 text-indigo-100 border border-indigo-400/50">
                   {selectedVolontariPermessiIds.length} Account • {selectedCategoriePermessi.length} DB scelti
                 </span>
+              </div>
+            </div>
+
+            {/* Riquadro Amministratore: Personalizza e Rinomina Nomi dei Database (Effetto Immediato su tutti i device) */}
+            <div className="bg-slate-900 border-2 border-amber-500/40 rounded-2xl p-4 sm:p-5 shadow-xl space-y-3">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2.5 border-b border-slate-800">
+                <div>
+                  <h4 className="text-xs sm:text-sm font-black text-amber-300 uppercase tracking-wider flex items-center gap-2">
+                    <Edit2 className="w-4 h-4 text-amber-400" />
+                    <span>Rinomina Nomi Database (Effetto Immediato su Tutti i Dispositivi)</span>
+                  </h4>
+                  <p className="text-[11px] text-slate-400 mt-0.5">
+                    L&apos;amministratore può personalizzare il titolo di ciascun database. Le modifiche diventano subito efficaci su tutti i dispositivi senza aggiornare l&apos;app.
+                  </p>
+                </div>
+                <div className="flex items-center gap-2 shrink-0 flex-wrap">
+                  <button
+                    type="button"
+                    onClick={handleRipristinaNomiDatabase}
+                    className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold flex items-center gap-1.5 border border-slate-700 cursor-pointer"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5 text-amber-400" />
+                    <span>Ripristina Standard</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleSalvaNomiDatabase}
+                    className="px-3.5 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs uppercase flex items-center gap-1.5 shadow-md cursor-pointer active:scale-95"
+                  >
+                    <Save className="w-3.5 h-3.5" />
+                    <span>Salva & Applica Subito</span>
+                  </button>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2.5">
+                {LISTA_MACRO_CATEGORIE.map((cat) => (
+                  <div key={cat.id} className="p-2.5 rounded-xl bg-slate-950 border border-slate-800 space-y-1">
+                    <label className="block text-[10px] font-bold text-slate-400 uppercase truncate">
+                      {cat.icona} DB {cat.numero} (Predef.: {cat.titolo})
+                    </label>
+                    <input
+                      type="text"
+                      value={draftNomiDb[cat.id] !== undefined ? draftNomiDb[cat.id] : cat.titolo}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setDraftNomiDb((prev) => ({ ...prev, [cat.id]: val }));
+                      }}
+                      placeholder={cat.titolo}
+                      className="w-full px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-white text-xs font-semibold focus:outline-none focus:border-amber-400"
+                    />
+                  </div>
+                ))}
               </div>
             </div>
 
@@ -4476,6 +4853,7 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2">
                 {LISTA_MACRO_CATEGORIE.map((cat) => {
                   const picked = selectedCategoriePermessi.includes(cat.id);
+                  const titoloCorrente = getTitoloDatabase(cat.id, cat.titolo, nomiDbCustom);
                   return (
                     <button
                       key={cat.id}
@@ -4490,7 +4868,7 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
                       <div className="min-w-0">
                         <div className="flex items-center gap-1.5 font-black text-xs text-white">
                           <span>{cat.icona}</span>
-                          <span className="truncate">{cat.numero}. {cat.titolo}</span>
+                          <span className="truncate">{cat.numero}. {titoloCorrente}</span>
                         </div>
                         <div className="text-[10px] text-slate-400 truncate mt-0.5">{cat.sottotitolo}</div>
                       </div>
@@ -4704,6 +5082,7 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
                                 <div className="flex flex-wrap gap-1.5">
                                   {LISTA_MACRO_CATEGORIE.map((cat) => {
                                     const on = abilitati.includes(cat.id);
+                                    const titoloDb = getTitoloDatabase(cat.id, cat.titolo, nomiDbCustom);
                                     return (
                                       <button
                                         key={cat.id}
@@ -4714,10 +5093,10 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
                                             ? 'bg-emerald-500/20 text-emerald-200 border-emerald-500/60 hover:bg-emerald-500/30'
                                             : 'bg-slate-900/70 text-slate-500 border-slate-800 hover:text-slate-300 hover:border-slate-700'
                                         }`}
-                                        title={`Clicca per ${on ? 'revocare' : 'concedere'} accesso "${cat.titolo}" a ${v.nome} ${v.cognome}`}
+                                        title={`Clicca per ${on ? 'revocare' : 'concedere'} accesso "${titoloDb}" a ${v.nome} ${v.cognome}`}
                                       >
                                         <span>{cat.icona}</span>
-                                        <span>{cat.numero}. {cat.titolo.split(' ')[0]}</span>
+                                        <span>{cat.numero}. {titoloDb.split(' ')[0]}</span>
                                         {on ? (
                                           <Check className="w-3 h-3 text-emerald-400" />
                                         ) : (
@@ -4809,13 +5188,11 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
                     onChange={(e) => setNuovaMansioneCategoria(e.target.value as CategoriaMansione)}
                     className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white text-xs focus:outline-none focus:border-blue-500"
                   >
-                    <option value="Emergenza 118">Emergenza 118</option>
-                    <option value="Centrale Operativa">Centrale Operativa</option>
-                    <option value="Servizi Ordinari">Servizi Ordinari</option>
-                    <option value="Protezione Civile & Sociale">Protezione Civile</option>
-                    <option value="Formazione & Istruzione">Formazione</option>
-                    <option value="Direttivo & Coordinamento">Direttivo</option>
-                    <option value="Altro / Speciale">Altro / Speciale</option>
+                    {categorieMansioni.map((c) => (
+                      <option key={c.id} value={c.nome}>
+                        {c.badgeEmoji ? `${c.badgeEmoji} ` : ''}{c.nome}
+                      </option>
+                    ))}
                   </select>
                 </div>
 
@@ -4845,6 +5222,31 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
                     </div>
                   </div>
                 </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-300 mb-1">
+                  Genitorialità (Mansione Genitore)
+                </label>
+                <select
+                  value={nuovaMansioneParentId}
+                  onChange={(e) => setNuovaMansioneParentId(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white text-xs focus:outline-none focus:border-blue-500"
+                >
+                  <option value="">Nessuna mansione genitore (livello principale)</option>
+                  {(() => {
+                    const excludedIds = mansioneInModifica
+                      ? new Set([mansioneInModifica.id, ...getDescendantMansioneIds(mansioneInModifica.id, catalogoMansioni)])
+                      : new Set<string>();
+                    return catalogoMansioni
+                      .filter((m) => !excludedIds.has(m.id))
+                      .map((m) => (
+                        <option key={m.id} value={m.id}>
+                          {m.badgeEmoji || '🏷️'} {m.nome} ({m.categoria})
+                        </option>
+                      ));
+                  })()}
+                </select>
               </div>
 
               <div>
@@ -4992,6 +5394,165 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
         </div>
       )}
 
+      {/* MODALE GESTIONE CATEGORIA MANSIONI & GENITORIALITÀ */}
+      {modalCategoriaAperta && (
+        <div className="fixed inset-0 z-[110] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <form
+            onSubmit={handleSalvaCategoria}
+            className="bg-slate-900 border border-amber-500/50 rounded-2xl w-full max-w-md overflow-hidden shadow-2xl space-y-0"
+          >
+            <div className="p-4 bg-slate-950 border-b border-slate-800 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="text-xl">{formCategoriaEmoji || '📁'}</span>
+                <div>
+                  <h4 className="font-black text-white text-sm">
+                    {categoriaInModifica ? 'Modifica Categoria Mansioni' : 'Nuova Categoria Mansioni'}
+                  </h4>
+                  <p className="text-[11px] text-slate-400">
+                    Modifica nome, icona e categoria genitore (effetto immediato)
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setModalCategoriaAperta(false);
+                  setCategoriaInModifica(null);
+                }}
+                className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-slate-300 mb-1">
+                  Nome Categoria *
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={formCategoriaNome}
+                  onChange={(e) => setFormCategoriaNome(e.target.value)}
+                  placeholder="Es. Emergenza 118, Protezione Civile..."
+                  className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white text-xs focus:outline-none focus:border-amber-400"
+                  autoFocus
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-300 mb-1">
+                  Icona Emoji
+                </label>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={formCategoriaEmoji}
+                    onChange={(e) => setFormCategoriaEmoji(e.target.value)}
+                    maxLength={4}
+                    className="w-14 text-center px-2 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white text-lg focus:outline-none focus:border-amber-400"
+                  />
+                  <div className="flex gap-1 flex-wrap">
+                    {['🚑', '📻', '🚐', '🛡️', '👑', '🎓', '📁', '⭐'].map((em) => (
+                      <button
+                        key={em}
+                        type="button"
+                        onClick={() => setFormCategoriaEmoji(em)}
+                        className="px-1.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-sm cursor-pointer"
+                      >
+                        {em}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-300 mb-1">
+                  Genitorialità (Categoria Genitore)
+                </label>
+                <select
+                  value={formCategoriaParentId}
+                  onChange={(e) => setFormCategoriaParentId(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white text-xs focus:outline-none focus:border-amber-400"
+                >
+                  <option value="">Nessuna categoria genitore (categoria principale)</option>
+                  {(() => {
+                    const excludedCatIds = categoriaInModifica
+                      ? new Set([categoriaInModifica.id, ...getDescendantCategoriaIds(categoriaInModifica.id, categorieMansioni)])
+                      : new Set<string>();
+                    return categorieMansioni
+                      .filter((c) => !excludedCatIds.has(c.id))
+                      .map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.badgeEmoji || '📁'} {c.nome}
+                        </option>
+                      ));
+                  })()}
+                </select>
+              </div>
+            </div>
+
+            <div className="p-4 bg-slate-950 border-t border-slate-800 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setModalCategoriaAperta(false);
+                  setCategoriaInModifica(null);
+                }}
+                className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold cursor-pointer"
+              >
+                Annulla
+              </button>
+              <button
+                type="submit"
+                disabled={!formCategoriaNome.trim()}
+                className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-black uppercase flex items-center gap-1.5 cursor-pointer"
+              >
+                <Save className="w-3.5 h-3.5" />
+                <span>{categoriaInModifica ? 'Aggiorna Categoria' : 'Salva Categoria'}</span>
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* MODALE CONFERMA AZIONE GENERICA IN-APP */}
+      {confermaAzioneModal && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[130] flex items-center justify-center p-4">
+          <div className="bg-slate-900 border-2 border-amber-500/80 rounded-3xl max-w-sm w-full p-6 text-white shadow-2xl space-y-4">
+            <div className="flex items-center gap-3 text-amber-400">
+              <div className="w-11 h-11 rounded-2xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center shrink-0">
+                <AlertTriangle className="w-6 h-6 text-amber-400" />
+              </div>
+              <h4 className="font-black text-sm uppercase">{confermaAzioneModal.titolo}</h4>
+            </div>
+            <p className="text-xs text-slate-300 leading-relaxed">{confermaAzioneModal.messaggio}</p>
+            <div className="flex items-center gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => {
+                  const fn = confermaAzioneModal.onConfirm;
+                  setConfermaAzioneModal(null);
+                  fn();
+                }}
+                className="flex-1 py-2.5 px-3 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs uppercase rounded-xl transition-all cursor-pointer shadow-md"
+              >
+                {confermaAzioneModal.labelConferma || 'Conferma'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setConfermaAzioneModal(null)}
+                className="py-2.5 px-4 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold rounded-xl transition-all cursor-pointer"
+              >
+                Annulla
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* MODALE DATABASE VOLONTARI COMPLETO */}
       <DatabaseVolontariModal
         isOpen={modalDatabaseCompletoAperta}
@@ -5002,6 +5563,11 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
         onNotificaRadio={(msg, tipo) => onNotificaRadio?.(msg, tipo)}
         isAdmin={isEffettivoAdmin}
         timbrature={timbrature}
+        operatoreCorrente={operatoreCorrente}
+        magazzinoVestiario={magazzinoVestiario}
+        onAggiornaMagazzinoVestiario={onAggiornaMagazzinoVestiario}
+        movimentiMagazzino={movimentiMagazzino}
+        onAggiornaMovimentiMagazzino={onAggiornaMovimentiMagazzino}
       />
     </div>
   );

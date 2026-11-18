@@ -3,14 +3,14 @@ import { Volontario } from '../components/DatabaseVolontariModal';
 import { DatiDomandaIscrizione } from '../data/domandaIscrizione';
 import {
   disegnaHeaderIstituzionale,
-  disegnaFooterIstituzionale
+  disegnaFooterIstituzionale,
+  sanitizeWinAnsi
 } from './pdfInstitutionalLayout';
 import { FIRMA_PRESIDENTE_SIMONINI_BASE64 } from '../assets/firmaPresidenteBase64';
 import { formatISODateItaly, getCurrentYearItaly } from './italianTime';
 
 function pulisciTesto(str?: string): string {
-  if (!str) return '';
-  return str.replace(/[^\x20-\x7E\xA0-\xFF]/g, ' ').trim();
+  return sanitizeWinAnsi(str);
 }
 
 /**
@@ -216,7 +216,7 @@ export function generaPDFDomandaIscrizione(
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(7);
   doc.setTextColor(51, 65, 85);
-  doc.text(`${pulisciTesto(volontario.telefono || 'N/D')} • ${pulisciTesto(volontario.email || 'N/D')}`, textStartX + 26, currentY + 27);
+  doc.text(`${pulisciTesto(volontario.telefono || 'N/D')} - ${pulisciTesto(volontario.email || 'N/D')}`, textStartX + 26, currentY + 27, { maxWidth: contentWidth / 2 - 20 });
 
   // Colonna 2 Anagrafica
   doc.setFont('helvetica', 'bold');
@@ -226,7 +226,7 @@ export function generaPDFDomandaIscrizione(
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(7.5);
   doc.setTextColor(15, 23, 42);
-  doc.text(`${pulisciTesto(volontario.matricola || 'VOL')} • ${pulisciTesto(volontario.qualifica || 'Volontario')}`, col2X + 26, currentY + 10.5);
+  doc.text(`${pulisciTesto(volontario.matricola || 'VOL')} - ${pulisciTesto(volontario.qualifica || 'Volontario')}`, col2X + 26, currentY + 10.5, { maxWidth: contentWidth / 2 - 42 });
 
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(7);
@@ -495,11 +495,12 @@ export function generaPDFDomandaIscrizione(
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(6.0);
   doc.setTextColor(51, 65, 85);
-  const testoPriv =
-    'CROCE ORO MASSA CARRARA OdV tratterà i dati forniti per gestire la domanda, valutare l’ammissione e, se accolta, amministrare il rapporto associativo ' +
-    'e l’eventuale attività di volontariato. I dati saranno trattati secondo il Regolamento (UE) 2016/679 e la normativa applicabile.\n' +
-    'I dati saranno accessibili soltanto a persone autorizzate e conservati per il tempo necessario alle finalità e agli obblighi di legge. ' +
-    'L’interessato può esercitare i diritti previsti dalla normativa contattando l’associazione ai recapiti ufficiali (informativa completa: www.croceoro.org).';
+  const testoPriv = sanitizeWinAnsi(
+    "CROCE ORO MASSA CARRARA OdV trattera i dati forniti per gestire la domanda, valutare l'ammissione e, se accolta, amministrare il rapporto associativo " +
+    "e l'eventuale attivita di volontariato. I dati saranno trattati secondo il Regolamento (UE) 2016/679 e la normativa applicabile.\n" +
+    "I dati saranno accessibili soltanto a persone autorizzate e conservati per il tempo necessario alle finalita e agli obblighi di legge. " +
+    "L'interessato puo esercitare i diritti previsti dalla normativa contattando l'associazione ai recapiti ufficiali (informativa completa: www.croceoro.org)."
+  );
   const splitPriv = doc.splitTextToSize(testoPriv, contentWidth - 8);
   doc.text(splitPriv, margin + 4, currentY + 9.5);
 
@@ -508,7 +509,7 @@ export function generaPDFDomandaIscrizione(
   doc.setFontSize(6.8);
   doc.setTextColor(29, 26, 96);
   const pvMark = dati.presaVisionePrivacy !== false ? '[ X ]' : '[   ]';
-  doc.text(`${pvMark} Dichiaro di aver preso visione dell’informativa privacy completa.`, margin + 4, currentY + 28, { maxWidth: 100 });
+  doc.text(`${pvMark} Dichiaro di aver preso visione dell'informativa privacy completa.`, margin + 4, currentY + 28, { maxWidth: 100 });
 
   doc.text('Firma per presa visione:', margin + 110, currentY + 28);
 

@@ -180,6 +180,45 @@ export interface TesseraAssociativa {
   timbroCartaceo?: boolean;
 }
 
+export interface ProprietarioImmobileData {
+  nomeCognome: string;
+  codiceFiscale: string;
+  indirizzoResidenza: string;
+}
+
+export interface TariffaCostoServizio {
+  id: string;
+  tipoVoce?: 'mezzo_km' | 'uscita_mezzo' | 'operatore' | 'editabile';
+  categoria?: 'mezzo_km' | 'uscita_mezzo' | 'operatore' | 'editabile';
+  siglaBreve: string;
+  descrizioneSigla: string;
+  nomeVoce: string;
+  importoUnitario: number;
+  unitaMisura: '€/km' | '€/servizio' | '€/ora' | '€ fisso' | string;
+  attivo?: boolean;
+  attiva?: boolean;
+  note?: string;
+}
+
+export interface VoceNotaDiDebito {
+  id: string;
+  tariffaId?: string;
+  siglaBreve?: string;
+  sigla?: string;
+  descrizioneSigla?: string;
+  descrizioneVoce?: string;
+  descrizione?: string;
+  quantita: number;
+  unitaMisura?: string;
+  unita?: string;
+  prezzoUnitario: number;
+  subtotale?: number;
+  totaleRiga?: number;
+  editabile?: boolean;
+  modificabile?: boolean;
+  completamenteEditabile?: boolean;
+}
+
 export interface NotaDiDebito {
   id: string;
   numeroProgressivo: string; // es. "ND-2026/001"
@@ -189,6 +228,17 @@ export interface NotaDiDebito {
   indirizzoDebitore: string;
   causale: string; // es. "Servizio Trasporto Paziente Dializzato codice ORO-412"
   codiceServizioRiferimento?: string;
+  servizioCollegatoId?: string;
+  kmPercorsiServizio?: number;
+  oreImpiegoServizio?: number;
+  vociDettaglio?: VoceNotaDiDebito[];
+  imponibileLordo?: number;
+  scontoTipo?: 'nessuno' | 'percentuale' | 'fisso';
+  scontoValore?: number;
+  scontoImportoCalcolato?: number;
+  scontoDescrizione?: string;
+  datiProprietarioImmobile?: ProprietarioImmobileData;
+  proprietarioImmobile?: ProprietarioImmobileData;
   importoTotale: number; // in euro
   scadenzaPagamento: string; // YYYY-MM-DD
   metodoPagamento: string; // es. "Bonifico Bancario - Credit Agricole (IBAN: IT79M...)" o "Bonifico Bancario IBAN"
@@ -322,6 +372,15 @@ export interface PartecipanteCorso {
 // ---------------------------------------------------------------------------
 // 5. MACRO CATEGORIA 6: GESTIONE MAGAZZINO VESTIARIO ED ATTREZZATURE
 // ---------------------------------------------------------------------------
+export type ChiaveVestiarioAccount =
+  | 'tshirt'
+  | 'felpa'
+  | 'pile'
+  | 'pantaloni'
+  | 'giubbetto'
+  | 'giubbottoInvernale'
+  | 'dpi';
+
 export interface ArticoloVestiarioMagazzino {
   id: string;
   codiceArticolo: string;
@@ -331,6 +390,8 @@ export interface ArticoloVestiarioMagazzino {
   giacenzaAttuale: number;
   scortaMinima: number;
   prezzoUnitarioFornitore?: number;
+  cauzione?: number; // Eventuale deposito cauzionale previsto per il singolo articolo (€)
+  chiaveVestiarioAccount?: ChiaveVestiarioAccount;
   fornitore?: string;
   ubicazioneScaffale: string;
 }
@@ -557,6 +618,7 @@ export type CategoriaNotificaAccount =
 
 export interface NotificaRicevutaAccount {
   id: string;
+  dedupKey?: string;
   categoria: CategoriaNotificaAccount;
   titolo: string;
   messaggio: string;

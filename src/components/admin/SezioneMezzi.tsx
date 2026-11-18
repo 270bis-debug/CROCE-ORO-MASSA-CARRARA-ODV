@@ -36,6 +36,7 @@ import {
 import { MezzoFlotta, InterventoManutenzione, RicambioUtilizzatoManutenzione, DotazioneMagazzinoMezzo, SedeAssociativaCompleta, ArticoloMagazzinoMezzi, ContattoEsterno } from '../../types/adminTypes';
 import { SEDI_ASSOCIATIVE_INIZIALI } from '../../data/adminMockData';
 import { inviaNotificaModificaAdmin } from '../../utils/notificaModificaAdmin';
+import { useTitoloDatabase } from '../../hooks/useNomiDatabase';
 import {
   calcolaManutenzioniInScadenza,
   getEmailResponsabileMezzi,
@@ -905,7 +906,7 @@ export const SezioneMezzi: React.FC<SezioneMezziProps> = ({
                 Macro Categoria 3
               </span>
               <h2 className="text-xl font-black text-white uppercase tracking-wide">
-                Database Mezzi, Flotta & Manutenzione
+                {useTitoloDatabase('mezzi', 'Database Mezzi, Flotta & Manutenzione')}
               </h2>
             </div>
             <p className="text-xs text-slate-300 mt-0.5">

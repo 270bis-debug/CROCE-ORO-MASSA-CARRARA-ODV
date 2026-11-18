@@ -25,7 +25,7 @@ import {
   TIPOLOGIE_SERVIZIO_VETERINARIO
 } from '../data/tipologieServizio';
 import { LISTA_ANIMALI_DIFFUSI } from '../data/animali';
-import { IndirizzoCollezionato } from '../types/adminTypes';
+import { IndirizzoCollezionato, ProprietarioImmobileData } from '../types/adminTypes';
 import { IndirizzoAutocompleteInput, RisultatoSelezioneIndirizzo } from './IndirizzoAutocompleteInput';
 import { formatDateItaly, formatISODateItaly, formatTimeItaly, getCurrentYearItaly } from '../utils/italianTime';
 
@@ -114,6 +114,12 @@ export interface DatiInizialiSchedaDiretta {
   noteCritiche?: string;
   mezzo?: string;
   datiProprietarioCentrale?: any;
+  proprietarioImmobile?: ProprietarioImmobileData;
+  dataInizioServizioSpecifico?: string;
+  oraInizioServizioSpecifico?: string;
+  dataArrivoRichiestaServizio?: string;
+  oraArrivoRichiestaServizio?: string;
+  kmInizio?: string;
   resetFormCentrale?: boolean;
 }
 
@@ -121,6 +127,10 @@ export interface PayloadSalvataggioSchedaDiretta {
   codice: string;
   anno: number;
   data: string;
+  dataInizioServizioSpecifico?: string;
+  oraInizioServizioSpecifico?: string;
+  dataArrivoRichiestaServizio?: string;
+  oraArrivoRichiestaServizio?: string;
   urgenza: 'ROSSO' | 'GIALLO' | 'VERDE' | 'BIANCO';
   mezzo: string;
   chiamante: string;
@@ -142,6 +152,7 @@ export interface PayloadSalvataggioSchedaDiretta {
   microchip?: string;
   noMicrochip?: boolean;
   datiProprietarioCentrale?: any;
+  proprietarioImmobile?: ProprietarioImmobileData;
   specifiche: string;
   sintesi: string;
   noteCritiche: string;
@@ -172,6 +183,7 @@ interface ModalSchedaDirettaArchivioProps {
   prossimoProgressivo: number;
   archivioEsistente?: Array<{ codice: string; anno?: number }>;
   flottaMezzi: string[];
+  getKmInizialiSuggeriti?: (mezzo: string) => number | null;
   volontari: Array<{ id: string; nome: string; cognome: string; telefono?: string }>;
   knownAddresses: IndirizzoCollezionato[];
   vetStructures: Array<{
@@ -204,6 +216,7 @@ export const ModalSchedaDirettaArchivio: React.FC<ModalSchedaDirettaArchivioProp
   prossimoProgressivo,
   archivioEsistente,
   flottaMezzi,
+  getKmInizialiSuggeriti,
   volontari,
   knownAddresses,
   vetStructures,
@@ -219,6 +232,10 @@ export const ModalSchedaDirettaArchivio: React.FC<ModalSchedaDirettaArchivioProp
   const [urgenza, setUrgenza] = useState<'ROSSO' | 'GIALLO' | 'VERDE' | 'BIANCO'>('VERDE');
   const [dataIso, setDataIso] = useState<string>(oggiIso);
   const [oraChiamata, setOraChiamata] = useState<string>(oraAttuale);
+  const [dataInizioServizioSpecifico, setDataInizioServizioSpecifico] = useState<string>(oggiIso);
+  const [oraInizioServizioSpecifico, setOraInizioServizioSpecifico] = useState<string>('');
+  const [dataArrivoRichiestaServizio, setDataArrivoRichiestaServizio] = useState<string>(oggiIso);
+  const [oraArrivoRichiestaServizio, setOraArrivoRichiestaServizio] = useState<string>(oraAttuale);
   const [mezzo, setMezzo] = useState<string>(flottaMezzi[0] || 'T4606');
   const [codiceScheda, setCodiceScheda] = useState<string>('');
   const [codiceModificatoManualmente, setCodiceModificatoManualmente] = useState<boolean>(false);
@@ -241,6 +258,10 @@ export const ModalSchedaDirettaArchivio: React.FC<ModalSchedaDirettaArchivioProp
   const [nonDiProprieta, setNonDiProprieta] = useState<boolean>(false);
   const [microchip, setMicrochip] = useState<string>('');
 
+  const [propImmobileNomeCognome, setPropImmobileNomeCognome] = useState<string>('');
+  const [propImmobileCF, setPropImmobileCF] = useState<string>('');
+  const [propImmobileIndirizzo, setPropImmobileIndirizzo] = useState<string>('');
+
   const [specifiche, setSpecifiche] = useState<string>('');
   const [sintesi, setSintesi] = useState<string>('');
   const [noteCritiche, setNoteCritiche] = useState<string>('');
@@ -257,6 +278,7 @@ export const ModalSchedaDirettaArchivio: React.FC<ModalSchedaDirettaArchivioProp
   const [oraRientro, setOraRientro] = useState<string>('');
 
   const [kmInizio, setKmInizio] = useState<string>('');
+  const [kmInizioModificato, setKmInizioModificato] = useState<boolean>(false);
   const [kmFine, setKmFine] = useState<string>('');
   const [svuotaFormCentrale, setSvuotaFormCentrale] = useState<boolean>(false);
   const [errore, setErrore] = useState<string | null>(null);
@@ -269,7 +291,12 @@ export const ModalSchedaDirettaArchivio: React.FC<ModalSchedaDirettaArchivioProp
     setUrgenza(initialData?.urgenza || 'VERDE');
     setDataIso(dIso);
     setOraChiamata(oStr);
-    setMezzo(initialData?.mezzo || flottaMezzi[0] || 'T4606');
+    setDataInizioServizioSpecifico(initialData?.dataInizioServizioSpecifico || dIso);
+    setOraInizioServizioSpecifico(initialData?.oraInizioServizioSpecifico || '');
+    setDataArrivoRichiestaServizio(initialData?.dataArrivoRichiestaServizio || dIso);
+    setOraArrivoRichiestaServizio(initialData?.oraArrivoRichiestaServizio || oStr);
+    const mInit = initialData?.mezzo || flottaMezzi[0] || 'T4606';
+    setMezzo(mInit);
     setCodiceModificatoManualmente(false);
     setChiamante(initialData?.chiamante || '');
     setTelefono(initialData?.telefono || '');
@@ -295,6 +322,9 @@ export const ModalSchedaDirettaArchivio: React.FC<ModalSchedaDirettaArchivioProp
     setTipoAnimaleAltro(initialData?.tipoAnimaleAltro || '');
     setNonDiProprieta(Boolean(initialData?.nonDiProprieta));
     setMicrochip('');
+    setPropImmobileNomeCognome(initialData?.proprietarioImmobile?.nomeCognome || '');
+    setPropImmobileCF(initialData?.proprietarioImmobile?.codiceFiscale || '');
+    setPropImmobileIndirizzo(initialData?.proprietarioImmobile?.indirizzoResidenza || '');
     setSpecifiche(initialData?.specifiche || '');
     setSintesi(initialData?.sintesi || '');
     setNoteCritiche(initialData?.noteCritiche || '');
@@ -307,11 +337,23 @@ export const ModalSchedaDirettaArchivio: React.FC<ModalSchedaDirettaArchivioProp
     setOraArrivoDest('');
     setOraFineMissione('');
     setOraRientro('');
-    setKmInizio('');
+    const kmSuggeriti = initialData?.kmInizio || (getKmInizialiSuggeriti?.(mInit) !== null && getKmInizialiSuggeriti?.(mInit) !== undefined ? String(getKmInizialiSuggeriti(mInit)) : '');
+    setKmInizio(kmSuggeriti);
+    setKmInizioModificato(Boolean(initialData?.kmInizio));
     setKmFine('');
     setSvuotaFormCentrale(Boolean(initialData?.resetFormCentrale));
     setErrore(null);
-  }, [isOpen, initialData, flottaMezzi]);
+  }, [isOpen, initialData, flottaMezzi, getKmInizialiSuggeriti]);
+
+  useEffect(() => {
+    if (!isOpen || kmInizioModificato) return;
+    if (mezzo === 'N/D') {
+      setKmInizio('');
+      return;
+    }
+    const sug = getKmInizialiSuggeriti?.(mezzo);
+    setKmInizio(sug !== null && sug !== undefined ? String(sug) : '');
+  }, [isOpen, mezzo, kmInizioModificato, getKmInizialiSuggeriti]);
 
   const annoScelto = useMemo(() => {
     const y = parseInt((dataIso || '').slice(0, 4), 10);
@@ -453,10 +495,25 @@ export const ModalSchedaDirettaArchivio: React.FC<ModalSchedaDirettaArchivioProp
       onSaveAddressInfo?.(finalDestinazione, 'destinazione');
     }
 
+    const proprietarioImmobilePayload: ProprietarioImmobileData | undefined =
+      isVet &&
+      sottoAmbitoVet === 'ASSISTENZA ATTO ESECUTIVO' &&
+      (propImmobileNomeCognome.trim() || propImmobileCF.trim() || propImmobileIndirizzo.trim())
+        ? {
+            nomeCognome: propImmobileNomeCognome.trim(),
+            codiceFiscale: propImmobileCF.trim().toUpperCase(),
+            indirizzoResidenza: propImmobileIndirizzo.trim()
+          }
+        : undefined;
+
     onSave({
       codice: codiceFinale,
       anno: annoScelto,
       data: dataCompleta,
+      dataInizioServizioSpecifico: dataInizioServizioSpecifico.trim() || undefined,
+      oraInizioServizioSpecifico: oraInizioServizioSpecifico.trim() || undefined,
+      dataArrivoRichiestaServizio: dataArrivoRichiestaServizio.trim() || undefined,
+      oraArrivoRichiestaServizio: oraArrivoRichiestaServizio.trim() || undefined,
       urgenza,
       mezzo,
       chiamante: chiamante.trim() || 'Inserimento Diretto Centrale',
@@ -478,6 +535,7 @@ export const ModalSchedaDirettaArchivio: React.FC<ModalSchedaDirettaArchivioProp
       microchip: isVet ? (microchip.trim() || undefined) : undefined,
       noMicrochip: isVet ? !microchip.trim() : undefined,
       datiProprietarioCentrale: isVet ? initialData?.datiProprietarioCentrale : undefined,
+      proprietarioImmobile: proprietarioImmobilePayload,
       specifiche: specifiche.trim() || (isVet ? sottoAmbitoVet : tipologiaServizio),
       sintesi: sintesi.trim() || 'Scheda registrata direttamente dalla Centrale Operativa in archivio senza invio a terminale volontario.',
       noteCritiche: noteCritiche.trim() || '-',
@@ -614,7 +672,10 @@ export const ModalSchedaDirettaArchivio: React.FC<ModalSchedaDirettaArchivioProp
               <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">Mezzo</label>
               <select
                 value={mezzo}
-                onChange={(e) => setMezzo(e.target.value)}
+                onChange={(e) => {
+                  setMezzo(e.target.value);
+                  setKmInizioModificato(false);
+                }}
                 className="w-full px-2.5 py-2 rounded-xl bg-slate-950 border border-slate-700 text-emerald-300 font-mono font-bold text-xs focus:ring-1 focus:ring-cyan-500 focus:outline-none"
               >
                 {flottaMezzi.map((m) => (
@@ -624,6 +685,46 @@ export const ModalSchedaDirettaArchivio: React.FC<ModalSchedaDirettaArchivioProp
                 ))}
                 <option value="N/D">N/D (Nessun mezzo)</option>
               </select>
+            </div>
+          </div>
+
+          {/* Riga 1-bis: Date e Orari Arrivo Richiesta e Inizio Servizio Specifico */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 p-3 rounded-2xl bg-slate-950/70 border border-cyan-500/30">
+            <div>
+              <label className="block text-[10px] font-bold text-cyan-300 uppercase mb-1">Data Arrivo Richiesta</label>
+              <input
+                type="date"
+                value={dataArrivoRichiestaServizio}
+                onChange={(e) => setDataArrivoRichiestaServizio(e.target.value)}
+                className="w-full px-2.5 py-1.5 rounded-xl bg-slate-900 border border-slate-700 text-white text-xs"
+              />
+            </div>
+            <div>
+              <label className="block text-[10px] font-bold text-cyan-300 uppercase mb-1">Ora Arrivo Richiesta</label>
+              <input
+                type="time"
+                value={oraArrivoRichiestaServizio}
+                onChange={(e) => setOraArrivoRichiestaServizio(e.target.value)}
+                className="w-full px-2.5 py-1.5 rounded-xl bg-slate-900 border border-slate-700 text-white font-mono text-xs"
+              />
+            </div>
+            <div>
+              <label className="block text-[10px] font-bold text-amber-300 uppercase mb-1">Data Inizio Servizio Specifico</label>
+              <input
+                type="date"
+                value={dataInizioServizioSpecifico}
+                onChange={(e) => setDataInizioServizioSpecifico(e.target.value)}
+                className="w-full px-2.5 py-1.5 rounded-xl bg-slate-900 border border-slate-700 text-white text-xs"
+              />
+            </div>
+            <div>
+              <label className="block text-[10px] font-bold text-amber-300 uppercase mb-1">Ora Inizio Servizio Specifico</label>
+              <input
+                type="time"
+                value={oraInizioServizioSpecifico}
+                onChange={(e) => setOraInizioServizioSpecifico(e.target.value)}
+                className="w-full px-2.5 py-1.5 rounded-xl bg-slate-900 border border-slate-700 text-white font-mono text-xs"
+              />
             </div>
           </div>
 
@@ -765,16 +866,57 @@ export const ModalSchedaDirettaArchivio: React.FC<ModalSchedaDirettaArchivioProp
                     className="w-full px-2.5 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white font-mono text-xs"
                   />
                 </div>
-                <div className="flex items-end pb-1.5">
-                  <label className="flex items-center gap-2 cursor-pointer text-xs text-slate-200 select-none">
+                  <div className="flex items-end pb-1.5">
+                    <label className="flex items-center gap-2 cursor-pointer text-xs text-slate-200 select-none">
+                      <input
+                        type="checkbox"
+                        checked={nonDiProprieta}
+                        onChange={(e) => setNonDiProprieta(e.target.checked)}
+                        className="w-4 h-4 accent-amber-500 rounded"
+                      />
+                      <span className="font-bold">Animale non di proprietà</span>
+                    </label>
+                  </div>
+                </div>
+            )}
+
+            {ambito === 'SERVIZIO VETERINARIO' && sottoAmbitoVet === 'ASSISTENZA ATTO ESECUTIVO' && (
+              <div className="p-3 rounded-2xl bg-amber-950/30 border border-amber-500/40 space-y-2.5 mt-2">
+                <div className="text-[10.5px] font-black text-amber-300 uppercase">
+                  Dati Proprietario dell&apos;Immobile (Assistenza Atto Esecutivo — per Nota di Debito)
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">Nome e Cognome Proprietario</label>
                     <input
-                      type="checkbox"
-                      checked={nonDiProprieta}
-                      onChange={(e) => setNonDiProprieta(e.target.checked)}
-                      className="w-4 h-4 accent-amber-500 rounded"
+                      type="text"
+                      value={propImmobileNomeCognome}
+                      onChange={(e) => setPropImmobileNomeCognome(e.target.value)}
+                      placeholder="Es. Mario Rossi"
+                      className="w-full px-2.5 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white text-xs"
                     />
-                    <span className="font-bold">Animale non di proprietà</span>
-                  </label>
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">Codice Fiscale</label>
+                    <input
+                      type="text"
+                      maxLength={16}
+                      value={propImmobileCF}
+                      onChange={(e) => setPropImmobileCF(e.target.value.toUpperCase())}
+                      placeholder="RSSMRA80A01E625X"
+                      className="w-full px-2.5 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white font-mono uppercase text-xs"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">Indirizzo di Residenza</label>
+                    <input
+                      type="text"
+                      value={propImmobileIndirizzo}
+                      onChange={(e) => setPropImmobileIndirizzo(e.target.value)}
+                      placeholder="Es. Via Roma 10, Massa"
+                      className="w-full px-2.5 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white text-xs"
+                    />
+                  </div>
                 </div>
               </div>
             )}
@@ -956,13 +1098,16 @@ export const ModalSchedaDirettaArchivio: React.FC<ModalSchedaDirettaArchivioProp
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-1 border-t border-slate-800/70">
               <div>
-                <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">KM Inizio (opz.)</label>
+                <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">KM Inizio (Auto / Modificabile)</label>
                 <input
                   type="number"
                   min={0}
                   step="0.1"
                   value={kmInizio}
-                  onChange={(e) => setKmInizio(e.target.value)}
+                  onChange={(e) => {
+                    setKmInizio(e.target.value);
+                    setKmInizioModificato(true);
+                  }}
                   placeholder="Es. 12450"
                   className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white font-mono text-xs"
                 />

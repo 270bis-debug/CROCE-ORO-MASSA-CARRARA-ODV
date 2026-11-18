@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   Users,
   KeyRound,
@@ -81,8 +81,17 @@ import {
   getMansionePrincipale,
   MansioneOperativa,
   CategoriaMansione,
-  getStileMansione
+  getStileMansione,
+  getCategorieMansioni,
+  creaCategoriaMansione,
+  modificaCategoriaMansione,
+  eliminaCategoriaMansione,
+  ripristinaCategorieMansioniDefault,
+  getDescendantMansioneIds,
+  getDescendantCategoriaIds,
+  CategoriaMansioneItem
 } from '../utils/mansioniVolontari';
+import { useTitoloDatabase } from '../hooks/useNomiDatabase';
 import {
   TagliaVestiario,
   TAGLIE_DISPONIBILI,
@@ -94,9 +103,14 @@ import {
   PatenteGuidaVolontario,
   creaDotazioneVuota,
   calcolaStatoScadenzaPatente,
-  applicaEvidenziazioneUltimaConsegna
+  applicaEvidenziazioneUltimaConsegna,
+  CAUZIONE_PANTALONI,
+  CAUZIONE_GIUBBETTO,
+  calcolaCauzioneTotale,
+  RiconsegnaVestiarioStoricoItem
 } from '../data/vestiarioDocumenti';
 import { scaricaSchedaVestiarioPDF } from '../utils/pdfSchedaVestiario';
+import { scaricaPDFRestituzioneDivisa, CapoRestituzioneDettaglio } from '../utils/pdfRestituzioneDivisa';
 import {
   CaricaConsiglioDirettivo,
   CARICHE_DIRETTIVO_DISPONIBILI,
@@ -119,7 +133,12 @@ import { ModalCompilaDomandaIscrizione } from './ModalCompilaDomandaIscrizione';
 import { scaricaPDFDomandaIscrizione } from '../utils/pdfDomandaIscrizione';
 import { MappaGeolocalizzazioneResidenza, DatiResidenzaMultiCampo } from './MappaGeolocalizzazioneResidenza';
 import { calcolaCodiceFiscale, decodificaCodiceFiscale } from '../utils/codiceFiscale';
-import { TimbraturaVolontario } from '../types/adminTypes';
+import {
+  TimbraturaVolontario,
+  ArticoloVestiarioMagazzino,
+  MovimentoMagazzino,
+  ChiaveVestiarioAccount
+} from '../types/adminTypes';
 export const SEDI_TURNI_DISPONIBILI = [
   { id: 'sede-massa-ronchi', codice: 'SEDE-01-RONCHI', nome: 'Sede Legale & Direzione Generale Massa (Ronchi)', icona: '🏛️' },
   { id: 'sede-massa-lejare', codice: 'SEDE-02-LEJARE', nome: 'Sede Operativa H24 & Autoparco Emergenze Massa (Le Jare)', icona: '🚑' },
@@ -190,6 +209,10 @@ interface DatabaseVolontariModalProps {
   canDelete?: boolean; // Se false, eliminazione inibita e riservata all'amministratore
   operatoreCorrente?: string;
   timbrature?: TimbraturaVolontario[];
+  magazzinoVestiario?: ArticoloVestiarioMagazzino[];
+  onAggiornaMagazzinoVestiario?: (nuovi: ArticoloVestiarioMagazzino[]) => void;
+  movimentiMagazzino?: MovimentoMagazzino[];
+  onAggiornaMovimentiMagazzino?: (nuovi: MovimentoMagazzino[]) => void;
 }
 
 export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
@@ -202,7 +225,11 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
   isAdmin = true,
   canDelete,
   operatoreCorrente = 'Amministratore',
-  timbrature = []
+  timbrature = [],
+  magazzinoVestiario = [],
+  onAggiornaMagazzinoVestiario,
+  movimentiMagazzino = [],
+  onAggiornaMovimentiMagazzino
 }) => {
   const [adminSbloccato, setAdminSbloccato] = useState(false);
   const [pinAdminInput, setPinAdminInput] = useState('');
@@ -294,7 +321,9 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
   const [formQualifica, setFormQualifica] = useState<Volontario['qualifica']>('Autista');
   // Mansioni multiple assegnate contemporaneamente (nuova gestione dinamica)
   const [formMansioni, setFormMansioni] = useState<string[]>(['Autista Soccorritore 118']);
+  const titoloDbVolontari = useTitoloDatabase('volontari', 'Database Volontari & Operatori');
   const [catalogoMansioni, setCatalogoMansioni] = useState<MansioneOperativa[]>(() => getMansioniCatalogo());
+  const [categorieMansioni, setCategorieMansioni] = useState<CategoriaMansioneItem[]>(() => getCategorieMansioni());
   const [mostraCreaMansioneRapida, setMostraCreaMansioneRapida] = useState(false);
   const [nuovaMansioneNomeRapida, setNuovaMansioneNomeRapida] = useState('');
   // Vista Principale Database: 'profili' (Anagrafiche e PIN) oppure 'mansioni' (Catalogo e Assegnazione Multipla)
@@ -307,9 +336,25 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
   const [nuovaMansioneCategoriaModal, setNuovaMansioneCategoriaModal] = useState<CategoriaMansione>('Emergenza 118');
   const [nuovaMansioneEmojiModal, setNuovaMansioneEmojiModal] = useState('🎖️');
   const [nuovaMansioneDescrizioneModal, setNuovaMansioneDescrizioneModal] = useState('');
+  const [nuovaMansioneParentIdModal, setNuovaMansioneParentIdModal] = useState<string>('');
   const [nuovaMansioneIncluseModal, setNuovaMansioneIncluseModal] = useState<string[]>(['Volontario']);
   const [filtroCategoriaMansioneModal, setFiltroCategoriaMansioneModal] = useState('tutte');
   const [ricercaMansioniModal, setRicercaMansioniModal] = useState('');
+  // Gestione Categorie Mansioni & Genitorialità
+  const [modalCategoriaModalAperta, setModalCategoriaModalAperta] = useState(false);
+  const [categoriaInModificaModal, setCategoriaInModificaModal] = useState<CategoriaMansioneItem | null>(null);
+  const [formCategoriaNomeModal, setFormCategoriaNomeModal] = useState('');
+  const [formCategoriaEmojiModal, setFormCategoriaEmojiModal] = useState('📁');
+  const [formCategoriaParentIdModal, setFormCategoriaParentIdModal] = useState('');
+
+  useEffect(() => {
+    const syncHandler = () => {
+      setCatalogoMansioni(getMansioniCatalogo());
+      setCategorieMansioni(getCategorieMansioni());
+    };
+    window.addEventListener('croceoro_mansioni_updated', syncHandler);
+    return () => window.removeEventListener('croceoro_mansioni_updated', syncHandler);
+  }, []);
   const [formCaricaDirettivo, setFormCaricaDirettivo] = useState<CaricaConsiglioDirettivo>('Nessuna');
   const [formTelefono, setFormTelefono] = useState('');
   const [formEmail, setFormEmail] = useState('');
@@ -350,6 +395,13 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
 
   // Dotazione Vestiario & DPI
   const [formVestiario, setFormVestiario] = useState<DotazioneVestiario>(() => creaDotazioneVuota());
+  const [cauzioneDrafts, setCauzioneDrafts] = useState<Record<string, string>>({});
+  // Riconsegna Vestiario & DPI
+  const [riconsegnaAperta, setRiconsegnaAperta] = useState(false);
+  const [riconsegnaSelezionati, setRiconsegnaSelezionati] = useState<Record<string, boolean>>({});
+  const [riconsegnaData, setRiconsegnaData] = useState<string>(() => formatISODateItaly());
+  const [riconsegnaRimborsoStr, setRiconsegnaRimborsoStr] = useState<string>('0');
+  const [riconsegnaNote, setRiconsegnaNote] = useState<string>('');
 
   const [erroreForm, setErroreForm] = useState('');
 
@@ -364,6 +416,13 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
   const [publicPortalUrlInput, setPublicPortalUrlInput] = useState(() => realtime.getPublicAppUrl() || getConfiguredPublicUrl());
   const [linkCopiato, setLinkCopiato] = useState(false);
   const [avvisoTemporaneo, setAvvisoTemporaneo] = useState<string | null>(null);
+  const [confermaAzioneModal, setConfermaAzioneModal] = useState<{
+    titolo: string;
+    messaggio: string;
+    labelConferma?: string;
+    variante?: 'danger' | 'warning' | 'info';
+    onConferma: () => void;
+  } | null>(null);
 
   // Modale Rapida Carica/Aggiorna Firma Trasparente (per account attivi o in secondo momento)
   const [volontarioPerFirmaRapida, setVolontarioPerFirmaRapida] = useState<Volontario | null>(null);
@@ -621,9 +680,196 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
     setFormQuotaVersata(calcolo.importo);
   };
 
+  // Helper per collegamento Magazzino Vestiario <-> Account Vestiario & Cauzioni
+  const getDefaultCauzioneChiave = (chiave: ChiaveVestiarioAccount): number => {
+    if (chiave === 'pantaloni') return CAUZIONE_PANTALONI;
+    if (chiave === 'giubbetto') return CAUZIONE_GIUBBETTO;
+    return 0;
+  };
+
+  const trovaArticoloMagazzinoPerCapo = (
+    chiave: ChiaveVestiarioAccount,
+    taglia?: string,
+    preferId?: string
+  ): ArticoloVestiarioMagazzino | undefined => {
+    if (!magazzinoVestiario || magazzinoVestiario.length === 0) return undefined;
+    if (preferId) {
+      const exactId = magazzinoVestiario.find(a => a.id === preferId);
+      if (exactId) return exactId;
+    }
+    const kwMap: Record<ChiaveVestiarioAccount, string[]> = {
+      tshirt: ['t-shirt', 'tshirt', 'polo'],
+      felpa: ['felpa'],
+      pile: ['pile'],
+      pantaloni: ['pantalon'],
+      giubbetto: ['giubbet', 'gilet'],
+      giubbottoInvernale: ['giubbot', 'invernale', 'giacca'],
+      dpi: ['dpi', 'casco', 'guanti']
+    };
+    const kws = kwMap[chiave] || [];
+    const candidati = magazzinoVestiario.filter(a => {
+      if (a.chiaveVestiarioAccount) return a.chiaveVestiarioAccount === chiave;
+      const nm = `${a.nome || ''} ${a.categoria || ''}`.toLowerCase();
+      return kws.some(k => nm.includes(k));
+    });
+    if (candidati.length === 0) return undefined;
+    if (taglia) {
+      const exactTaglia = candidati.find(
+        c => String(c.taglia || '').toUpperCase() === String(taglia).toUpperCase()
+      );
+      if (exactTaglia) return exactTaglia;
+    }
+    return candidati[0];
+  };
+
+  const getCauzionePrecaricataCapo = (
+    chiave: ChiaveVestiarioAccount,
+    taglia?: string,
+    preferId?: string
+  ): { cauzione: number; articolo?: ArticoloVestiarioMagazzino } => {
+    const articolo = trovaArticoloMagazzinoPerCapo(chiave, taglia, preferId);
+    if (articolo && typeof articolo.cauzione === 'number' && !Number.isNaN(articolo.cauzione)) {
+      return { cauzione: Math.max(0, articolo.cauzione), articolo };
+    }
+    return { cauzione: getDefaultCauzioneChiave(chiave), articolo };
+  };
+
+  const notificaForzaturaCauzione = (params: {
+    capoNome: string;
+    dettaglio: string;
+    importoPrecedente: number;
+    nuovoImporto: number;
+    esente?: boolean;
+  }) => {
+    const volNome = `${formNome.trim()} ${formCognome.trim()}`.trim() || 'Nuovo Account';
+    const opNome = operatoreCorrente || 'Amministratore';
+    const testoAllarme = `⚠️ FORZATURA CAUZIONE VESTIARIO (Avviso Presidente & Tesoriere): ${opNome} ha modificato "${params.capoNome}" per ${volNome} da € ${params.importoPrecedente.toFixed(2)} a ${
+      params.esente ? 'ESENTE CAUZIONE (€ 0,00)' : `€ ${params.nuovoImporto.toFixed(2)}`
+    }. ${params.dettaglio}`;
+    onNotificaRadio(testoAllarme, 'allarme');
+
+    fetch(`${realtime.getApiBaseUrl()}/api/notifica-forzatura-cauzione`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        volontarioId: volontarioInModifica?.id || 'nuovo-account',
+        volontarioNome: volNome,
+        operatore: opNome,
+        capoNome: params.capoNome,
+        dettaglio: params.dettaglio,
+        importoPrecedente: params.importoPrecedente,
+        nuovoImporto: params.nuovoImporto,
+        esente: Boolean(params.esente),
+        volontari
+      })
+    }).catch(() => {});
+  };
+
+  const applicaModificaCauzioneConForzatura = (params: {
+    capoNome: string;
+    importoAttesoPrecaricato: number;
+    nuovoImporto: number;
+    esente: boolean;
+    onApplica: () => void;
+  }) => {
+    const diffImporto = Math.abs(params.nuovoImporto - params.importoAttesoPrecaricato) > 0.009;
+    const isForzatura = (params.esente && params.importoAttesoPrecaricato > 0) || (!params.esente && diffImporto);
+    if (!isForzatura) {
+      params.onApplica();
+      return;
+    }
+    setConfermaAzioneModal({
+      titolo: 'Forzatura Importo Cauzione',
+      messaggio:
+        `Sei davvero sicuro di forzare l'importo?\n\n` +
+        `Voce: ${params.capoNome}\n` +
+        `Importo precaricato dal sistema/magazzino: € ${params.importoAttesoPrecaricato.toFixed(2).replace('.', ',')}\n` +
+        `Nuovo importo richiesto: ${params.esente ? 'ESENTE (€ 0,00)' : `€ ${params.nuovoImporto.toFixed(2).replace('.', ',')}`}\n\n` +
+        `Confermando, verrà inviata immediatamente una notifica ed una email ufficiale al Presidente e al Tesoriere.`,
+      labelConferma: 'Sì, Forza Importo e Avvisa',
+      variante: 'warning',
+      onConferma: () => {
+        params.onApplica();
+        notificaForzaturaCauzione({
+          capoNome: params.capoNome,
+          dettaglio: 'Forzatura manuale nella dotazione Vestiario & DPI account.',
+          importoPrecedente: params.importoAttesoPrecaricato,
+          nuovoImporto: params.esente ? 0 : params.nuovoImporto,
+          esente: params.esente
+        });
+        setAvvisoTemporaneo('✅ Importo cauzione aggiornato e segnalato a Presidente e Tesoriere.');
+        setTimeout(() => setAvvisoTemporaneo(null), 5000);
+      }
+    });
+  };
+
+  const calcolaElencoCapiConsegnati = (vest: DotazioneVestiario): Array<{
+    key: string;
+    nome: string;
+    taglia?: string;
+    cauzione: number;
+    esente: boolean;
+    articoloMagazzinoId?: string;
+    chiaveAccount: ChiaveVestiarioAccount;
+    tshirtIdx?: number;
+  }> => {
+    const list: Array<{
+      key: string;
+      nome: string;
+      taglia?: string;
+      cauzione: number;
+      esente: boolean;
+      articoloMagazzinoId?: string;
+      chiaveAccount: ChiaveVestiarioAccount;
+      tshirtIdx?: number;
+    }> = [];
+    (vest.tshirt || []).forEach((t, idx) => {
+      if (t?.consegnato) {
+        const pre = getCauzionePrecaricataCapo('tshirt', t.taglia, t.articoloMagazzinoId).cauzione;
+        const c = t.esenteCauzione ? 0 : (typeof t.cauzioneApplicata === 'number' ? t.cauzioneApplicata : pre);
+        list.push({
+          key: `tshirt-${idx}`,
+          nome: `T-Shirt Istituzionale #${idx + 1}`,
+          taglia: t.taglia,
+          cauzione: c,
+          esente: Boolean(t.esenteCauzione),
+          articoloMagazzinoId: t.articoloMagazzinoId,
+          chiaveAccount: 'tshirt',
+          tshirtIdx: idx
+        });
+      }
+    });
+    const singoli: Array<{ chiave: 'felpa' | 'pile' | 'pantaloni' | 'giubbetto' | 'giubbottoInvernale'; nome: string }> = [
+      { chiave: 'felpa', nome: 'Felpa con Zip' },
+      { chiave: 'pile', nome: 'Pile' },
+      { chiave: 'pantaloni', nome: 'Pantaloni Operativi' },
+      { chiave: 'giubbetto', nome: 'Giubbetto Operativo' },
+      { chiave: 'giubbottoInvernale', nome: 'Giubbotto Invernale' }
+    ];
+    singoli.forEach(({ chiave, nome }) => {
+      const capo = vest[chiave];
+      if (capo?.consegnato) {
+        const pre = getCauzionePrecaricataCapo(chiave, capo.taglia, capo.articoloMagazzinoId).cauzione;
+        const c = capo.esenteCauzione ? 0 : (typeof capo.cauzioneApplicata === 'number' ? capo.cauzioneApplicata : pre);
+        list.push({
+          key: chiave,
+          nome,
+          taglia: capo.taglia,
+          cauzione: c,
+          esente: Boolean(capo.esenteCauzione),
+          articoloMagazzinoId: capo.articoloMagazzinoId,
+          chiaveAccount: chiave
+        });
+      }
+    });
+    return list;
+  };
+
   // Helper per gestione stato Vestiario nel form
   const toggleTShirtConsegnato = (idx: number, consegnato: boolean) => {
     const oggiIso = formatISODateItaly();
+    const tagliaCorr = formVestiario.tshirt?.[idx]?.taglia || 'L';
+    const { cauzione, articolo } = getCauzionePrecaricataCapo('tshirt', tagliaCorr, formVestiario.tshirt?.[idx]?.articoloMagazzinoId);
     setFormVestiario(prev => {
       const copia = JSON.parse(JSON.stringify(prev)) as DotazioneVestiario;
       if (!copia.tshirt || copia.tshirt.length < 3) {
@@ -636,16 +882,30 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
       copia.tshirt[idx].consegnato = consegnato;
       if (consegnato) {
         if (!copia.tshirt[idx].dataConsegna) copia.tshirt[idx].dataConsegna = oggiIso;
-        if (!copia.tshirt[idx].taglia) copia.tshirt[idx].taglia = 'L';
+        if (!copia.tshirt[idx].taglia) copia.tshirt[idx].taglia = tagliaCorr;
+        if (copia.tshirt[idx].cauzioneApplicata === undefined) {
+          copia.tshirt[idx].cauzioneApplicata = cauzione;
+        }
+        if (articolo && !copia.tshirt[idx].articoloMagazzinoId) {
+          copia.tshirt[idx].articoloMagazzinoId = articolo.id;
+        }
       }
       return copia;
     });
+    if (consegnato) {
+      setCauzioneDrafts(prev => ({
+        ...prev,
+        [`tshirt-${idx}`]: prev[`tshirt-${idx}`] ?? String(cauzione)
+      }));
+    }
   };
 
   const setTShirtTaglia = (idx: number, taglia: TagliaVestiario) => {
+    const articolo = trovaArticoloMagazzinoPerCapo('tshirt', taglia);
     setFormVestiario(prev => {
       const copia = JSON.parse(JSON.stringify(prev)) as DotazioneVestiario;
       copia.tshirt[idx].taglia = taglia;
+      if (articolo) copia.tshirt[idx].articoloMagazzinoId = articolo.id;
       return copia;
     });
   };
@@ -663,25 +923,41 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
     consegnato: boolean
   ) => {
     const oggiIso = formatISODateItaly();
+    const tagliaCorr = formVestiario[chiave]?.taglia || 'L';
+    const { cauzione, articolo } = getCauzionePrecaricataCapo(chiave, tagliaCorr, formVestiario[chiave]?.articoloMagazzinoId);
     setFormVestiario(prev => {
       const copia = JSON.parse(JSON.stringify(prev)) as DotazioneVestiario;
       if (!copia[chiave]) copia[chiave] = { consegnato: false };
       copia[chiave].consegnato = consegnato;
       if (consegnato) {
         if (!copia[chiave].dataConsegna) copia[chiave].dataConsegna = oggiIso;
-        if (!copia[chiave].taglia) copia[chiave].taglia = 'L';
+        if (!copia[chiave].taglia) copia[chiave].taglia = tagliaCorr;
+        if (copia[chiave].cauzioneApplicata === undefined) {
+          copia[chiave].cauzioneApplicata = cauzione;
+        }
+        if (articolo && !copia[chiave].articoloMagazzinoId) {
+          copia[chiave].articoloMagazzinoId = articolo.id;
+        }
       }
       return copia;
     });
+    if (consegnato) {
+      setCauzioneDrafts(prev => ({
+        ...prev,
+        [chiave]: prev[chiave] ?? String(cauzione)
+      }));
+    }
   };
 
   const setCapoTaglia = (
     chiave: 'felpa' | 'pile' | 'pantaloni' | 'giubbetto' | 'giubbottoInvernale',
     taglia: TagliaVestiario
   ) => {
+    const articolo = trovaArticoloMagazzinoPerCapo(chiave, taglia);
     setFormVestiario(prev => {
       const copia = JSON.parse(JSON.stringify(prev)) as DotazioneVestiario;
       copia[chiave].taglia = taglia;
+      if (articolo) copia[chiave].articoloMagazzinoId = articolo.id;
       return copia;
     });
   };
@@ -703,6 +979,155 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
       copia.ibanRestituzioneCauzione = iban.toUpperCase().replace(/\s/g, '');
       return copia;
     });
+  };
+
+  const eseguiRiconsegnaConfermata = (importoFinale: number, importoCalcolato: number, capiDaRestituire: ReturnType<typeof calcolaElencoCapiConsegnati>) => {
+    const dataRest = riconsegnaData || formatISODateItaly();
+    const volTarget = buildVolontarioLiveDaForm();
+    const capiDettaglio: CapoRestituzioneDettaglio[] = capiDaRestituire.map(c => ({
+      nome: c.nome,
+      taglia: c.taglia,
+      quantita: 1,
+      restituito: true,
+      cauzioneUnitaria: c.esente ? 0 : c.cauzione,
+      esenteCauzione: c.esente,
+      importoRimborso: c.esente ? 0 : c.cauzione
+    }));
+    const storicoVoce: RiconsegnaVestiarioStoricoItem = {
+      id: `ric-vest-${Date.now()}`,
+      dataRestituzione: dataRest,
+      capiRestituiti: capiDaRestituire.map(c => `${c.nome}${c.taglia ? ` (Tg. ${c.taglia})` : ''}`),
+      importoRimborsoCalcolato: importoCalcolato,
+      importoRimborsoFinale: importoFinale,
+      forzatoManualmente: Math.abs(importoFinale - importoCalcolato) > 0.009,
+      ibanBonifico: formVestiario.ibanRestituzioneCauzione || '',
+      operatore: operatoreCorrente || 'Amministratore',
+      annotazioni: riconsegnaNote.trim() || undefined
+    };
+
+    // 1. Aggiorna formVestiario (segna come non consegnato e salva storico)
+    const copiaVest = JSON.parse(JSON.stringify(formVestiario)) as DotazioneVestiario;
+    capiDaRestituire.forEach(c => {
+      if (c.tshirtIdx !== undefined && copiaVest.tshirt?.[c.tshirtIdx]) {
+        copiaVest.tshirt[c.tshirtIdx].consegnato = false;
+        copiaVest.tshirt[c.tshirtIdx].isUltimaConsegna = false;
+      } else if (c.chiaveAccount !== 'tshirt' && c.chiaveAccount !== 'dpi') {
+        const k = c.chiaveAccount;
+        if (copiaVest[k]) {
+          copiaVest[k].consegnato = false;
+          copiaVest[k].isUltimaConsegna = false;
+        }
+      }
+    });
+    copiaVest.storicoRiconsegne = [storicoVoce, ...(copiaVest.storicoRiconsegne || [])];
+    setFormVestiario(copiaVest);
+
+    // 2. Ripristina giacenza (+1) in Magazzino e registra movimento 'Reso a Magazzino'
+    if (onAggiornaMagazzinoVestiario && magazzinoVestiario.length > 0) {
+      let nextMag = [...magazzinoVestiario];
+      const nuoviMov: MovimentoMagazzino[] = [];
+      const oraMov = formatDateTimeItaly(undefined, false).slice(0, 16);
+      capiDaRestituire.forEach((c, idxMov) => {
+        const art = trovaArticoloMagazzinoPerCapo(c.chiaveAccount, c.taglia, c.articoloMagazzinoId);
+        if (art) {
+          nextMag = nextMag.map(item =>
+            item.id === art.id ? { ...item, giacenzaAttuale: (item.giacenzaAttuale || 0) + 1 } : item
+          );
+          nuoviMov.push({
+            id: `mov-reso-${Date.now()}-${idxMov}`,
+            data: oraMov,
+            tipo: 'Reso a Magazzino',
+            articoloNome: `${art.nome}${c.taglia ? ` (Tg. ${c.taglia})` : ''}`,
+            quantita: 1,
+            destinatarioOOrigine: `${volTarget.cognome} ${volTarget.nome}`.trim(),
+            operatore: operatoreCorrente || 'Amministratore',
+            note: `Riconsegna Vestiario & DPI — Rimborso € ${importoFinale.toFixed(2)}`
+          });
+        }
+      });
+      onAggiornaMagazzinoVestiario(nextMag);
+      if (onAggiornaMovimentiMagazzino && nuoviMov.length > 0) {
+        onAggiornaMovimentiMagazzino([...nuoviMov, ...movimentiMagazzino]);
+      }
+    }
+
+    // 3. Se stiamo modificando un volontario esistente, persisti subito i dati aggiornati
+    if (volontarioInModifica) {
+      const aggiornati = volontari.map(v =>
+        v.id === volontarioInModifica.id ? { ...v, vestiario: copiaVest } : v
+      );
+      onAggiornaVolontari(aggiornati);
+      setVolontarioInModifica(prev => (prev ? { ...prev, vestiario: copiaVest } : prev));
+    }
+
+    // 4. Genera e scarica il PDF Verbale di Restituzione Divisa precompilato
+    scaricaPDFRestituzioneDivisa(
+      { ...volTarget, vestiario: copiaVest },
+      {
+        dataRestituzione: dataRest,
+        ibanBonifico: formVestiario.ibanRestituzioneCauzione || '',
+        intestatarioBonifico: `${volTarget.cognome} ${volTarget.nome}`.trim(),
+        restituitoPantaloni: capiDaRestituire.some(c => c.chiaveAccount === 'pantaloni'),
+        restituitoGiubbetto: capiDaRestituire.some(c => c.chiaveAccount === 'giubbetto'),
+        altriCapiRestituiti: capiDaRestituire
+          .filter(c => c.chiaveAccount !== 'pantaloni' && c.chiaveAccount !== 'giubbetto')
+          .map(c => `${c.nome}${c.taglia ? ` (${c.taglia})` : ''}`),
+        capiDettaglio,
+        cifraRimborsoTotale: importoFinale,
+        annotazioniAdmin: riconsegnaNote.trim() || undefined,
+        amministratoreNome: operatoreCorrente || 'Amministratore'
+      }
+    );
+
+    onNotificaRadio(
+      `📦 RICONSEGNA VESTIARIO & DPI: ${volTarget.nome} ${volTarget.cognome} ha riconsegnato ${capiDaRestituire.length} capi. Rimborso cauzione: € ${importoFinale.toFixed(2)}.`,
+      'centrale'
+    );
+    setAvvisoTemporaneo(`✅ Riconsegna completata per ${volTarget.nome} ${volTarget.cognome}, magazzino aggiornato e Verbale PDF scaricato!`);
+    setTimeout(() => setAvvisoTemporaneo(null), 5000);
+    setRiconsegnaSelezionati({});
+    setRiconsegnaNote('');
+    setRiconsegnaAperta(false);
+  };
+
+  const handleConfermaRiconsegnaVestiario = () => {
+    const capiConsegnati = calcolaElencoCapiConsegnati(formVestiario);
+    const capiDaRestituire = capiConsegnati.filter(c => riconsegnaSelezionati[c.key]);
+    if (capiDaRestituire.length === 0) {
+      setAvvisoTemporaneo('⚠️ Seleziona almeno un capo o DPI consegnato da riconsegnare.');
+      setTimeout(() => setAvvisoTemporaneo(null), 4000);
+      return;
+    }
+    const importoCalcolato = capiDaRestituire.reduce((s, c) => s + (c.esente ? 0 : c.cauzione), 0);
+    const parsedFinale = Number(String(riconsegnaRimborsoStr).replace(',', '.'));
+    const importoFinale = Number.isNaN(parsedFinale) ? importoCalcolato : Math.max(0, parsedFinale);
+    const forzato = Math.abs(importoFinale - importoCalcolato) > 0.009;
+
+    if (forzato) {
+      setConfermaAzioneModal({
+        titolo: 'Forzatura Importo Restituzione Cauzione',
+        messaggio:
+          `Sei davvero sicuro di forzare l'importo?\n\n` +
+          `Rimborso calcolato automaticamente dai capi riconsegnati: € ${importoCalcolato.toFixed(2).replace('.', ',')}\n` +
+          `Importo forzato inserito: € ${importoFinale.toFixed(2).replace('.', ',')}\n\n` +
+          `Confermando, verrà inviata notifica ed email ufficiale al Presidente e al Tesoriere e verrà generato il Verbale PDF di restituzione.`,
+        labelConferma: 'Sì, Forza Importo & Genera PDF',
+        variante: 'warning',
+        onConferma: () => {
+          notificaForzaturaCauzione({
+            capoNome: `Restituzione Divisa (${capiDaRestituire.length} capi)`,
+            dettaglio: `Forzatura importo rimborso alla riconsegna (${capiDaRestituire.map(c => c.nome).join(', ')}).`,
+            importoPrecedente: importoCalcolato,
+            nuovoImporto: importoFinale,
+            esente: importoFinale === 0
+          });
+          eseguiRiconsegnaConfermata(importoFinale, importoCalcolato, capiDaRestituire);
+        }
+      });
+      return;
+    }
+
+    eseguiRiconsegnaConfermata(importoFinale, importoCalcolato, capiDaRestituire);
   };
 
   const handleUploadDocumentoFirmatoForm = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1035,7 +1460,8 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
 
   const apriAggiungiOperatoreCentrale = () => {
     if (operatoriCentrale.length >= 10) {
-      alert("Tutti i 10 slot per Operatori Centrale sono già occupati. Elimina un operatore esistente per liberare uno slot.");
+      setAvvisoTemporaneo("Tutti i 10 slot per Operatori Centrale sono già occupati. Elimina un operatore esistente per liberare uno slot.");
+      setTimeout(() => setAvvisoTemporaneo(null), 5000);
       return;
     }
     setVolontarioInModifica(null);
@@ -1051,6 +1477,13 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
     setFormFirmaBase64(null);
     setFormMacroCategorie(['centrale']);
     setFormSezioneAppartenenzaId('sede-massa-ronchi');
+    setFormVestiario(creaDotazioneVuota());
+    setCauzioneDrafts({});
+    setRiconsegnaAperta(false);
+    setRiconsegnaSelezionati({});
+    setRiconsegnaData(formatISODateItaly());
+    setRiconsegnaRimborsoStr('0');
+    setRiconsegnaNote('');
 
     // Tesseramento operatore: progressivo calcolato
     const infoTessOp = calcolaProssimoNumeroTessera(volontari, true);
@@ -1075,7 +1508,7 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
             <Lock className="w-7 h-7" />
           </div>
           <div>
-            <h3 className="text-lg font-black uppercase text-amber-400">Database Volontari & Operatori</h3>
+            <h3 className="text-lg font-black uppercase text-amber-400">{titoloDbVolontari}</h3>
             <p className="text-xs mt-1 leading-relaxed text-slate-300">
               Gestione Account, PIN e Tesseramento riservati ad <strong>Amministratore e Presidente</strong> (stessi privilegi ed autorizzazioni).
             </p>
@@ -1223,12 +1656,97 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
     }));
   };
 
+  const handleApriCreaCategoriaModal = () => {
+    setCategoriaInModificaModal(null);
+    setFormCategoriaNomeModal('');
+    setFormCategoriaEmojiModal('📁');
+    setFormCategoriaParentIdModal('');
+    setModalCategoriaModalAperta(true);
+  };
+
+  const handleApriModificaCategoriaModal = (cat: CategoriaMansioneItem) => {
+    setCategoriaInModificaModal(cat);
+    setFormCategoriaNomeModal(cat.nome);
+    setFormCategoriaEmojiModal(cat.badgeEmoji || '📁');
+    setFormCategoriaParentIdModal(cat.parentCategoriaId || '');
+    setModalCategoriaModalAperta(true);
+  };
+
+  const handleSalvaCategoriaModal = () => {
+    const cleanNome = formCategoriaNomeModal.trim();
+    if (!cleanNome) return;
+    if (categoriaInModificaModal) {
+      const res = modificaCategoriaMansione(categoriaInModificaModal.id, {
+        nome: cleanNome,
+        badgeEmoji: formCategoriaEmojiModal.trim() || '📁',
+        parentCategoriaId: formCategoriaParentIdModal || null
+      });
+      setCategorieMansioni(res.categorie);
+      setCatalogoMansioni(res.catalogo);
+      realtime.syncMansioniConfig(res.catalogo, res.categorie);
+      onNotificaRadio(`📂 CATEGORIE MANSIONI: Modificata categoria "${cleanNome}"`, 'centrale');
+      setAvvisoTemporaneo(`✅ Categoria "${cleanNome}" aggiornata su tutti i dispositivi.`);
+    } else {
+      const aggiornate = creaCategoriaMansione({
+        nome: cleanNome,
+        badgeEmoji: formCategoriaEmojiModal.trim() || '📁',
+        parentCategoriaId: formCategoriaParentIdModal || undefined
+      });
+      const catCorr = getMansioniCatalogo();
+      setCategorieMansioni(aggiornate);
+      realtime.syncMansioniConfig(catCorr, aggiornate);
+      onNotificaRadio(`📂 CATEGORIE MANSIONI: Creata nuova categoria "${cleanNome}"`, 'centrale');
+      setAvvisoTemporaneo(`✅ Nuova categoria "${cleanNome}" aggiunta su tutti i dispositivi.`);
+    }
+    setTimeout(() => setAvvisoTemporaneo(null), 4000);
+    setModalCategoriaModalAperta(false);
+    setCategoriaInModificaModal(null);
+  };
+
+  const handleEliminaCategoriaModal = (cat: CategoriaMansioneItem) => {
+    setConfermaAzioneModal({
+      titolo: 'Elimina Categoria Mansioni',
+      messaggio: `Sei sicuro di voler eliminare la categoria "${cat.nome}"?\n\nLe mansioni attualmente collegate a questa categoria verranno spostate nella prima categoria disponibile.`,
+      labelConferma: 'Elimina Categoria',
+      variante: 'danger',
+      onConferma: () => {
+        const res = eliminaCategoriaMansione(cat.id);
+        setCategorieMansioni(res.categorie);
+        setCatalogoMansioni(res.catalogo);
+        if (filtroCategoriaMansioneModal === cat.nome) {
+          setFiltroCategoriaMansioneModal('tutte');
+        }
+        realtime.syncMansioniConfig(res.catalogo, res.categorie);
+        onNotificaRadio(`🗑️ CATEGORIE MANSIONI: Eliminata categoria "${cat.nome}"`, 'centrale');
+        setAvvisoTemporaneo(`Categoria "${cat.nome}" eliminata.`);
+        setTimeout(() => setAvvisoTemporaneo(null), 4000);
+      }
+    });
+  };
+
+  const handleRipristinaCategorieDefaultModal = () => {
+    setConfermaAzioneModal({
+      titolo: 'Ripristina Categorie Predefinite',
+      messaggio: 'Vuoi ripristinare le categorie predefinite di sistema? Tutte le categorie standard verranno reintegrate e sincronizzate su tutti i dispositivi.',
+      labelConferma: 'Ripristina Categorie',
+      variante: 'warning',
+      onConferma: () => {
+        const defCats = ripristinaCategorieMansioniDefault();
+        setCategorieMansioni(defCats);
+        realtime.syncMansioniConfig(getMansioniCatalogo(), defCats);
+        setAvvisoTemporaneo('✓ Categorie mansioni predefinite ripristinate.');
+        setTimeout(() => setAvvisoTemporaneo(null), 4000);
+      }
+    });
+  };
+
   const handleApriCreaMansioneModal = () => {
     setMansioneInModificaModal(null);
     setNuovaMansioneNomeModal('');
     setNuovaMansioneDescrizioneModal('');
-    setNuovaMansioneCategoriaModal('Emergenza 118');
+    setNuovaMansioneCategoriaModal(categorieMansioni[0]?.nome || 'Emergenza 118');
     setNuovaMansioneEmojiModal('🎖️');
+    setNuovaMansioneParentIdModal('');
     setNuovaMansioneIncluseModal(['Volontario']);
     setModalCreaNuovaMansioneInModal(true);
   };
@@ -1239,6 +1757,7 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
     setNuovaMansioneDescrizioneModal(m.descrizione || '');
     setNuovaMansioneCategoriaModal(m.categoria);
     setNuovaMansioneEmojiModal(m.badgeEmoji || '🎖️');
+    setNuovaMansioneParentIdModal(m.parentMansioneId || '');
     setNuovaMansioneIncluseModal(Array.isArray(m.mansioniIncluse) && m.mansioniIncluse.length > 0 ? [...m.mansioniIncluse] : ['Volontario']);
     setModalCreaNuovaMansioneInModal(true);
   };
@@ -1255,9 +1774,11 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
         descrizione: nuovaMansioneDescrizioneModal.trim() || undefined,
         categoria: nuovaMansioneCategoriaModal,
         badgeEmoji: nuovaMansioneEmojiModal || '🎖️',
+        parentMansioneId: nuovaMansioneParentIdModal ? nuovaMansioneParentIdModal : null,
         mansioniIncluse: nuovaMansioneIncluseModal
       });
       setCatalogoMansioni(aggiornato);
+      realtime.syncMansioniConfig(aggiornato, categorieMansioni);
 
       // Aggiornamento a cascata di tutti i volontari che avevano la mansione
       if (vecchioNome !== nuovoNome) {
@@ -1268,11 +1789,12 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
       setMansioneInModificaModal(null);
       setNuovaMansioneNomeModal('');
       setNuovaMansioneDescrizioneModal('');
+      setNuovaMansioneParentIdModal('');
       setNuovaMansioneIncluseModal(['Volontario']);
       setModalCreaNuovaMansioneInModal(false);
 
       onNotificaRadio(`🎖️ MANSIONI: Modificata mansione "${vecchioNome}" in "${nuovoNome}" (${nuovaMansioneCategoriaModal})`, 'centrale');
-      setAvvisoTemporaneo(`✅ Mansione "${nuovoNome}" aggiornata nel catalogo e nei fascicoli dei volontari!`);
+      setAvvisoTemporaneo(`✅ Mansione "${nuovoNome}" aggiornata su tutti i dispositivi e nei fascicoli!`);
       setTimeout(() => setAvvisoTemporaneo(null), 4000);
     } else {
       // Creazione nuova mansione
@@ -1281,16 +1803,19 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
         descrizione: nuovaMansioneDescrizioneModal.trim(),
         categoria: nuovaMansioneCategoriaModal,
         badgeEmoji: nuovaMansioneEmojiModal || '🎖️',
+        parentMansioneId: nuovaMansioneParentIdModal || undefined,
         mansioniIncluse: nuovaMansioneIncluseModal
       });
       const agg = getMansioniCatalogo();
       setCatalogoMansioni(agg);
+      realtime.syncMansioniConfig(agg, categorieMansioni);
       setNuovaMansioneNomeModal('');
       setNuovaMansioneDescrizioneModal('');
+      setNuovaMansioneParentIdModal('');
       setNuovaMansioneIncluseModal(['Volontario']);
       setModalCreaNuovaMansioneInModal(false);
       onNotificaRadio(`🎖️ MANSIONI: Creata nuova mansione "${creata.nome}" (${creata.categoria})`, 'centrale');
-      setAvvisoTemporaneo(`✅ Nuova mansione "${creata.nome}" aggiunta con successo al catalogo!`);
+      setAvvisoTemporaneo(`✅ Nuova mansione "${creata.nome}" aggiunta e sincronizzata su tutti i dispositivi!`);
       setTimeout(() => setAvvisoTemporaneo(null), 4000);
     }
   };
@@ -1302,37 +1827,54 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
       ? `Sei sicuro di voler eliminare la mansione "${nomeDaMostrare}" dal catalogo?\n\nAttenzione: è attualmente assegnata a ${numVolontariConMansione} volontari e verrà rimossa dai loro fascicoli.`
       : `Sei sicuro di voler eliminare la mansione "${nomeDaMostrare}" dal catalogo?`;
 
-    if (!confirm(msgConferma)) return;
+    setConfermaAzioneModal({
+      titolo: 'Elimina Mansione dal Catalogo',
+      messaggio: msgConferma,
+      labelConferma: 'Elimina Mansione',
+      variante: 'danger',
+      onConferma: () => {
+        const aggiornato = eliminaMansioneCatalogo(id);
+        setCatalogoMansioni(aggiornato);
+        realtime.syncMansioniConfig(aggiornato, categorieMansioni);
 
-    const aggiornato = eliminaMansioneCatalogo(id);
-    setCatalogoMansioni(aggiornato);
+        // Aggiornamento in cascata: rimozione mansione da tutti i volontari che la possedevano
+        if (nome) {
+          const volontariAggiornati = aggiornaVolontariDopoEliminazioneMansione(volontari, nome);
+          onAggiornaVolontari(volontariAggiornati);
+        }
 
-    // Aggiornamento in cascata: rimozione mansione da tutti i volontari che la possedevano
-    if (nome) {
-      const volontariAggiornati = aggiornaVolontariDopoEliminazioneMansione(volontari, nome);
-      onAggiornaVolontari(volontariAggiornati);
-    }
-
-    onNotificaRadio(`🗑️ MANSIONI: Eliminata mansione "${nomeDaMostrare}" dal catalogo`, 'centrale');
-    setAvvisoTemporaneo(`Mansione "${nomeDaMostrare}" eliminata dal catalogo.`);
-    setTimeout(() => setAvvisoTemporaneo(null), 4000);
+        onNotificaRadio(`🗑️ MANSIONI: Eliminata mansione "${nomeDaMostrare}" dal catalogo`, 'centrale');
+        setAvvisoTemporaneo(`Mansione "${nomeDaMostrare}" eliminata dal catalogo.`);
+        setTimeout(() => setAvvisoTemporaneo(null), 4000);
+      }
+    });
   };
 
   const handleRipristinaMansioniDefaultModal = () => {
-    if (!confirm("Vuoi ripristinare il catalogo iniziale delle mansioni predefinite della Croce Oro? Tutte le mansioni standard verranno reintegrate.")) return;
-    const defaultMansioni = ripristinaMansioniDefault();
-    setCatalogoMansioni(defaultMansioni);
-    setAvvisoTemporaneo("✓ Catalogo mansioni predefinite ripristinato con successo.");
-    setTimeout(() => setAvvisoTemporaneo(null), 4000);
+    setConfermaAzioneModal({
+      titolo: 'Ripristina Mansioni Predefinite',
+      messaggio: 'Vuoi ripristinare il catalogo iniziale delle mansioni predefinite della Croce Oro? Tutte le mansioni standard verranno reintegrate su tutti i dispositivi.',
+      labelConferma: 'Ripristina Predefinite',
+      variante: 'warning',
+      onConferma: () => {
+        const defaultMansioni = ripristinaMansioniDefault();
+        setCatalogoMansioni(defaultMansioni);
+        realtime.syncMansioniConfig(defaultMansioni, categorieMansioni);
+        setAvvisoTemporaneo('✓ Catalogo mansioni predefinite ripristinato con successo.');
+        setTimeout(() => setAvvisoTemporaneo(null), 4000);
+      }
+    });
   };
 
   const handleAssegnaMansioniMassiveModal = (azione: 'aggiungi' | 'sostituisci' | 'rimuovi') => {
     if (selectedVolontariMansioniModalIds.length === 0) {
-      alert('Seleziona almeno un volontario a cui assegnare o modificare le mansioni.');
+      setAvvisoTemporaneo('Seleziona almeno un volontario a cui assegnare o modificare le mansioni.');
+      setTimeout(() => setAvvisoTemporaneo(null), 4000);
       return;
     }
     if (selectedMansioniNomiModal.length === 0) {
-      alert('Seleziona almeno una mansione dal catalogo da applicare.');
+      setAvvisoTemporaneo('Seleziona almeno una mansione dal catalogo da applicare.');
+      setTimeout(() => setAvvisoTemporaneo(null), 4000);
       return;
     }
 
@@ -1438,6 +1980,12 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
     setFormPatenteNumero('');
     setFormPatenteScadenza('');
     setFormVestiario(creaDotazioneVuota());
+    setCauzioneDrafts({});
+    setRiconsegnaAperta(false);
+    setRiconsegnaSelezionati({});
+    setRiconsegnaData(formatISODateItaly());
+    setRiconsegnaRimborsoStr('0');
+    setRiconsegnaNote('');
     setFormDomandaIscrizioneDati(undefined);
     setFormDomandaIscrizioneFirmata(undefined);
     setTabModaleEdit('anagrafica');
@@ -1554,6 +2102,12 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
     } else {
       setFormVestiario(creaDotazioneVuota());
     }
+    setCauzioneDrafts({});
+    setRiconsegnaAperta(false);
+    setRiconsegnaSelezionati({});
+    setRiconsegnaData(formatISODateItaly());
+    setRiconsegnaRimborsoStr('0');
+    setRiconsegnaNote('');
 
     setFormMacroCategorie(volontario.macroCategorieAbilitate || (volontario.profiloCentrale ? ['centrale'] : []));
     setFormSezioneAppartenenzaId(volontario.sezioneAppartenenzaId || 'sede-massa-ronchi');
@@ -1940,6 +2494,67 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
       setTimeout(() => setAvvisoTemporaneo(null), 5000);
     }
 
+    // Scalo automatico giacenze Magazzino Vestiario & DPI per i nuovi capi consegnati
+    if (onAggiornaMagazzinoVestiario && magazzinoVestiario.length > 0) {
+      const prevVest = volontarioInModifica?.vestiario;
+      const nuoviScarichi: Array<{ chiave: ChiaveVestiarioAccount; nome: string; taglia?: string; prefId?: string }> = [];
+      (vestiarioAggiornato.tshirt || []).forEach((p, idx) => {
+        const was = Boolean(prevVest?.tshirt?.[idx]?.consegnato);
+        if (p?.consegnato && !was) {
+          nuoviScarichi.push({
+            chiave: 'tshirt',
+            nome: `T-Shirt #${idx + 1}`,
+            taglia: p.taglia,
+            prefId: p.articoloMagazzinoId
+          });
+        }
+      });
+      (['felpa', 'pile', 'pantaloni', 'giubbetto', 'giubbottoInvernale'] as const).forEach(chiave => {
+        const now = vestiarioAggiornato[chiave];
+        const was = Boolean(prevVest?.[chiave]?.consegnato);
+        if (now?.consegnato && !was) {
+          nuoviScarichi.push({
+            chiave,
+            nome: chiave,
+            taglia: now.taglia,
+            prefId: now.articoloMagazzinoId
+          });
+        }
+      });
+      if (nuoviScarichi.length > 0) {
+        let nextMag = [...magazzinoVestiario];
+        const nuoviMov: MovimentoMagazzino[] = [];
+        const oraMov = formatDateTimeItaly(undefined, false).slice(0, 16);
+        const destNome = `${formNome.trim()} ${formCognome.trim()}`.trim();
+        nuoviScarichi.forEach((sc, i) => {
+          const art = trovaArticoloMagazzinoPerCapo(sc.chiave, sc.taglia, sc.prefId);
+          if (art) {
+            nextMag = nextMag.map(item =>
+              item.id === art.id
+                ? { ...item, giacenzaAttuale: Math.max(0, (item.giacenzaAttuale || 0) - 1) }
+                : item
+            );
+            nuoviMov.push({
+              id: `mov-scarico-${Date.now()}-${i}`,
+              data: oraMov,
+              tipo: 'Scarico / Assegnazione',
+              articoloNome: `${art.nome}${sc.taglia ? ` (Tg. ${sc.taglia})` : ''}`,
+              quantita: 1,
+              destinatarioOOrigine: destNome,
+              operatore: operatoreCorrente || 'Amministratore',
+              note: 'Assegnazione automatica da Scheda Account Vestiario & DPI'
+            });
+          }
+        });
+        if (nuoviMov.length > 0) {
+          onAggiornaMagazzinoVestiario(nextMag);
+          if (onAggiornaMovimentiMagazzino) {
+            onAggiornaMovimentiMagazzino([...nuoviMov, ...movimentiMagazzino]);
+          }
+        }
+      }
+    }
+
     setModaleEditAperta(false);
   };
 
@@ -2038,7 +2653,7 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
   return (
     <div className="fixed inset-0 bg-black/85 backdrop-blur-md z-50 flex flex-col items-center justify-start sm:justify-center p-1 sm:p-2.5 overflow-y-auto">
       <div
-        className="bg-slate-900 border border-slate-700/80 rounded-2xl sm:rounded-3xl w-[98vw] max-w-[99vw] 2xl:max-w-[1720px] my-auto max-h-[96dvh] sm:max-h-[95vh] flex flex-col shadow-2xl overflow-hidden touch-pan-y text-slate-100"
+        className="bg-slate-900 border border-slate-700/80 rounded-2xl sm:rounded-3xl w-[98vw] max-w-[99vw] 2xl:max-w-[1720px] my-auto max-h-[96dvh] md:max-h-[95vh] flex flex-col shadow-2xl overflow-y-auto md:overflow-hidden overscroll-contain touch-pan-y text-slate-100"
       >
         
         {/* Intestazione Fissa Modale Database Profili */}
@@ -2050,7 +2665,7 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
             <div>
               <div className="flex items-center gap-2 flex-wrap">
                 <h3 className="text-sm sm:text-base font-black uppercase tracking-wide text-white">
-                  Database Profili & Gestione PIN
+                  {titoloDbVolontari} • Profili &amp; Gestione PIN
                 </h3>
                 <span className="text-[10px] font-bold px-2 py-0.5 rounded-full border bg-emerald-500/20 text-emerald-400 border-emerald-500/40">
                   {inTurnoCount} In Turno
@@ -2150,8 +2765,21 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
           )}
         </div>
 
-        {/* CORPO SCORRIBILE UNICO (Garantisce scroll fluido su Android e Touch Screen) */}
-        <div className="flex-1 overflow-y-auto min-h-0 overscroll-contain touch-pan-y divide-y divide-slate-800/80 bg-slate-900">
+        {/* CORPO SCORRIBILE UNICO (Su mobile scorre insieme all'intestazione; su desktop resta ancorato al centro) */}
+        <div className="shrink-0 md:shrink md:flex-1 md:overflow-y-auto md:min-h-0 md:overscroll-contain touch-pan-y divide-y divide-slate-800/80 bg-slate-900">
+          {avvisoTemporaneo && (
+            <div className="bg-amber-500/15 border-b border-amber-500/30 px-4 py-2 flex items-center justify-between text-xs text-amber-200 md:sticky md:top-0 z-30 backdrop-blur-md">
+              <span className="font-semibold">{avvisoTemporaneo}</span>
+              <button
+                type="button"
+                onClick={() => setAvvisoTemporaneo(null)}
+                className="text-amber-300 hover:text-white cursor-pointer ml-2 shrink-0"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
+
           {vistaDatabaseModal === 'mansioni' ? (
             <div className="p-4 sm:p-6 space-y-6">
               {/* Header Sezione Mansioni */}
@@ -2168,12 +2796,20 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
                       </span>
                     </h3>
                     <p className="text-xs text-slate-300 mt-0.5">
-                      Crea infinite mansioni personalizzate e assegna una o più mansioni contemporaneamente a qualsiasi volontario.
+                      Crea e modifica mansioni, categorie e relative genitorialità: ogni aggiornamento è attivo subito su tutti i dispositivi.
                     </p>
                   </div>
                 </div>
 
-                <div className="flex items-center gap-2 shrink-0">
+                <div className="flex items-center gap-2 shrink-0 flex-wrap">
+                  <button
+                    type="button"
+                    onClick={handleApriCreaCategoriaModal}
+                    className="px-3 py-2.5 rounded-xl bg-purple-600/30 hover:bg-purple-600/50 text-purple-200 hover:text-white font-bold text-xs uppercase flex items-center gap-1.5 border border-purple-500/40 active:scale-95 transition-all cursor-pointer shadow-md"
+                  >
+                    <Layers className="w-3.5 h-3.5 text-purple-300" />
+                    <span>+ Nuova Categoria</span>
+                  </button>
                   <button
                     type="button"
                     onClick={handleRipristinaMansioniDefaultModal}
@@ -2191,6 +2827,89 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
                     <PlusCircle className="w-4 h-4" />
                     <span>+ Crea Nuova Mansione</span>
                   </button>
+                </div>
+              </div>
+
+              {/* Riquadro Categorie Mansioni & Genitorialità */}
+              <div className="bg-slate-950/90 border border-purple-500/30 rounded-2xl p-4 sm:p-5 shadow-xl space-y-3">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-800 pb-3">
+                  <div>
+                    <h4 className="text-xs sm:text-sm font-black text-purple-200 uppercase tracking-wider flex items-center gap-2">
+                      <Layers className="w-4 h-4 text-purple-400" />
+                      <span>Gestione Categorie Mansioni & Genitorialità ({categorieMansioni.length})</span>
+                    </h4>
+                    <p className="text-[11px] text-slate-400">
+                      Modifica il nome, l'icona o la categoria genitore. Le modifiche vengono propagate immediatamente a tutti i dispositivi connessi.
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      type="button"
+                      onClick={handleRipristinaCategorieDefaultModal}
+                      className="px-2.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px] font-bold border border-slate-700 flex items-center gap-1 cursor-pointer"
+                    >
+                      <RotateCcw className="w-3 h-3 text-amber-400" />
+                      <span>Ripristina Categorie</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleApriCreaCategoriaModal}
+                      className="px-3 py-1.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white text-[11px] font-black uppercase flex items-center gap-1 cursor-pointer"
+                    >
+                      <PlusCircle className="w-3.5 h-3.5" />
+                      <span>+ Categoria</span>
+                    </button>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
+                  {categorieMansioni.map(cat => {
+                    const parentCat = cat.parentCategoriaId
+                      ? categorieMansioni.find(p => p.id === cat.parentCategoriaId)
+                      : undefined;
+                    const countMans = catalogoMansioni.filter(m => m.categoria === cat.nome).length;
+                    return (
+                      <div
+                        key={cat.id}
+                        className="p-3 rounded-xl bg-slate-900 border border-slate-800 flex items-center justify-between gap-2"
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className="text-lg shrink-0">{cat.badgeEmoji || '📁'}</span>
+                          <div className="min-w-0">
+                            <div className="text-xs font-bold text-white truncate">{cat.nome}</div>
+                            <div className="text-[10px] text-slate-400 flex items-center gap-1.5 flex-wrap">
+                              <span>{countMans} mansioni</span>
+                              {parentCat && (
+                                <span className="px-1.5 py-0.2 rounded bg-purple-500/20 text-purple-300 border border-purple-500/30 font-semibold">
+                                  Genitore: {parentCat.badgeEmoji || ''} {parentCat.nome}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-1 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => handleApriModificaCategoriaModal(cat)}
+                            className="p-1.5 rounded-lg text-slate-400 hover:text-purple-300 hover:bg-purple-950/40 cursor-pointer"
+                            title="Modifica categoria e genitorialità"
+                          >
+                            <Edit2 className="w-3.5 h-3.5" />
+                          </button>
+                          {categorieMansioni.length > 1 && (
+                            <button
+                              type="button"
+                              onClick={() => handleEliminaCategoriaModal(cat)}
+                              className="p-1.5 rounded-lg text-slate-400 hover:text-red-400 hover:bg-red-950/40 cursor-pointer"
+                              title="Elimina categoria"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
 
@@ -2215,12 +2934,11 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
                       className="w-full sm:w-auto px-3 py-1.5 rounded-xl bg-slate-900 border border-slate-700 text-xs text-white focus:outline-none focus:border-blue-500"
                     >
                       <option value="tutte">Tutte le Categorie</option>
-                      <option value="Emergenza 118">🚑 Emergenza 118</option>
-                      <option value="Centrale & TLC">📻 Centrale & TLC</option>
-                      <option value="Ordinario & Sociale">🚐 Ordinario & Sociale</option>
-                      <option value="Protezione Civile">🛡️ Protezione Civile</option>
-                      <option value="Gestionale & Logistica">👑 Gestionale & Logistica</option>
-                      <option value="Altro">⭐ Altro / Speciale</option>
+                      {categorieMansioni.map(cat => (
+                        <option key={cat.id} value={cat.nome}>
+                          {cat.badgeEmoji || '📁'} {cat.nome}
+                        </option>
+                      ))}
                     </select>
                   </div>
                 </div>
@@ -2231,7 +2949,9 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
                     .filter(m => filtroCategoriaMansioneModal === 'tutte' || m.categoria === filtroCategoriaMansioneModal)
                     .map((m) => {
                       const countVol = volontari.filter(v => getMansioniVolontario(v).includes(m.nome)).length;
-                      const isCustom = m.creataDaAdmin === true;
+                      const parentMansione = m.parentMansioneId
+                        ? catalogoMansioni.find(pm => pm.id === m.parentMansioneId)
+                        : undefined;
 
                       return (
                         <div
@@ -2251,6 +2971,11 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
                                   <span className="text-[10px] text-slate-400 block truncate">
                                     {m.categoria}
                                   </span>
+                                  {parentMansione && (
+                                    <span className="text-[9.5px] text-amber-300 font-semibold block truncate mt-0.5">
+                                      ↳ Genitore: {parentMansione.badgeEmoji || ''} {parentMansione.nome}
+                                    </span>
+                                  )}
                                 </div>
                               </div>
 
@@ -2259,7 +2984,7 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
                                   type="button"
                                   onClick={() => handleApriModificaMansioneModal(m)}
                                   className="text-slate-400 hover:text-blue-400 p-1.5 rounded-lg hover:bg-blue-950/40 transition-colors cursor-pointer"
-                                  title="Modifica mansione (nome, categoria, emoji, requisiti)"
+                                  title="Modifica mansione (nome, categoria, genitorialità, emoji, requisiti)"
                                 >
                                   <Edit2 className="w-3.5 h-3.5" />
                                 </button>
@@ -2560,7 +3285,7 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
               {/* VISTA 1: ELENCO PROFILI & ANAGRAFICHE */}
               {/* Barra Ricerca e Strumenti Sticky */}
               <div
-                className="sticky top-0 p-2.5 sm:p-3 border-b border-slate-800 bg-slate-900/95 backdrop-blur-md flex flex-wrap items-center justify-between gap-2 text-xs z-20"
+                className="md:sticky md:top-0 p-2.5 sm:p-3 border-b border-slate-800 bg-slate-900/95 backdrop-blur-md flex flex-wrap items-center justify-between gap-2 text-xs z-20"
               >
             <div className="relative flex-1 min-w-[200px]">
               <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-2.5" />
@@ -2977,17 +3702,6 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
               </div>
             </div>
           )}
-          {avvisoTemporaneo && (
-            <div className="bg-red-500/15 px-4 py-2 flex items-center justify-between text-xs text-red-300">
-              <span>{avvisoTemporaneo}</span>
-              <button
-                onClick={() => setAvvisoTemporaneo(null)}
-                className="text-red-400 hover:text-white cursor-pointer"
-              >
-                <X className="w-3.5 h-3.5" />
-              </button>
-            </div>
-          )}
 
           {/* BANNER ALLERTA PATENTI DI GUIDA IN SCADENZA (≤ 7 GIORNI) PER AMMINISTRATORE */}
           {patentiInScadenza.length > 0 && (
@@ -3041,7 +3755,7 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
           )}
 
           {/* Barra Filtri Categoria / Livello Profilo Sticky */}
-          <div className="sticky top-[52px] bg-slate-950/95 backdrop-blur-md px-3 sm:px-4 py-2 border-b border-slate-800 flex flex-wrap items-center justify-between gap-2 text-xs z-10">
+          <div className="md:sticky md:top-[52px] bg-slate-950/95 backdrop-blur-md px-3 sm:px-4 py-2 border-b border-slate-800 flex flex-wrap items-center justify-between gap-2 text-xs z-10">
             <div className="flex items-center gap-1.5 flex-wrap">
               <span className="text-[10px] uppercase font-bold text-slate-500 mr-1">Filtra:</span>
               <button
@@ -4175,12 +4889,14 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
                       onChange={(e) => setNuovaMansioneCategoriaModal(e.target.value as CategoriaMansione)}
                       className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white text-xs focus:outline-none focus:border-blue-500"
                     >
-                      <option value="Emergenza 118">Emergenza 118</option>
-                      <option value="Centrale & TLC">Centrale & TLC</option>
-                      <option value="Ordinario & Sociale">Ordinario & Sociale</option>
-                      <option value="Protezione Civile">Protezione Civile</option>
-                      <option value="Gestionale & Logistica">Gestionale & Logistica</option>
-                      <option value="Altro">Altro / Speciale</option>
+                      {categorieMansioni.map(cat => (
+                        <option key={cat.id} value={cat.nome}>
+                          {cat.badgeEmoji || '📁'} {cat.nome}
+                        </option>
+                      ))}
+                      {!categorieMansioni.some(c => c.nome === nuovaMansioneCategoriaModal) && nuovaMansioneCategoriaModal && (
+                        <option value={nuovaMansioneCategoriaModal}>{nuovaMansioneCategoriaModal}</option>
+                      )}
                     </select>
                   </div>
 
@@ -4210,6 +4926,31 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
                       </div>
                     </div>
                   </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-300 mb-1">
+                    Genitorialità (Mansione Genitore Opzionale)
+                  </label>
+                  <select
+                    value={nuovaMansioneParentIdModal}
+                    onChange={(e) => setNuovaMansioneParentIdModal(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white text-xs focus:outline-none focus:border-blue-500"
+                  >
+                    <option value="">Nessuna mansione genitore (Livello principale)</option>
+                    {(() => {
+                      const excludedIds = mansioneInModificaModal
+                        ? new Set([mansioneInModificaModal.id, ...getDescendantMansioneIds(mansioneInModificaModal.id, catalogoMansioni)])
+                        : new Set<string>();
+                      return catalogoMansioni
+                        .filter(m => !excludedIds.has(m.id))
+                        .map(m => (
+                          <option key={m.id} value={m.id}>
+                            {m.badgeEmoji || '🏷️'} {m.nome} ({m.categoria})
+                          </option>
+                        ));
+                    })()}
+                  </select>
                 </div>
 
                 <div>
@@ -4760,10 +5501,12 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
                               if (!nuovaMansioneNomeRapida.trim()) return;
                               const creata = creaNuovaMansione({
                                 nome: nuovaMansioneNomeRapida.trim(),
-                                categoria: 'Altro',
+                                categoria: categorieMansioni[0]?.nome || 'Altro',
                                 badgeEmoji: '⭐'
                               });
-                              setCatalogoMansioni(getMansioniCatalogo());
+                              const aggCat = getMansioniCatalogo();
+                              setCatalogoMansioni(aggCat);
+                              realtime.syncMansioniConfig(aggCat, categorieMansioni);
                               setFormQualifica(creata.nome);
                               if (!formMansioni.includes(creata.nome)) {
                                 setFormMansioni([...formMansioni, creata.nome]);
@@ -5166,16 +5909,19 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
                 </div>
               )}
 
-              {/* TAB 3: DOTAZIONE VESTIARIO & DPI CON TAGLIE DA XXS A XXL E DATE */}
-              {tabModaleEdit === 'vestiario' && (
+              {/* TAB 3: DOTAZIONE VESTIARIO & DPI CON TAGLIE DA XXS A XXL, MAGAZZINO, CAUZIONI E RICONSEGNA */}
+              {tabModaleEdit === 'vestiario' && (() => {
+                const riepilogoCauzioni = calcolaCauzioneTotale(formVestiario);
+                const capiAttualmenteConsegnati = calcolaElencoCapiConsegnati(formVestiario);
+
+                return (
                 <div className="space-y-4">
                   <div className="p-3 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-200 text-xs leading-relaxed">
                     <strong className="block text-amber-300 uppercase font-black mb-0.5">
-                      🦺 Registro Consegna Vestiario & D.P.I.
+                      🦺 Registro Consegna Vestiario & D.P.I. (Collegato al Magazzino)
                     </strong>
-                    Spunta i capi consegnati, la taglia assegnata (<strong>da XXS a XXL</strong>) e la data di consegna.
-                    Per la voce <strong>T-shirt</strong> possono essere consegnati fino a <strong>3 pezzi</strong> anche di taglie diverse.
-                    Ogni volta che viene salvato un capo consegnato, nella stampa PDF verrà automaticamente evidenziato in giallo per la firma dell'amministratore e dell'assegnatario.
+                    Spunta i capi consegnati, la taglia assegnata (<strong>da XXS a 4XL</strong>) e la data di consegna.
+                    Le cauzioni previste in Magazzino vengono precaricate in automatico e al salvataggio il capo viene scalato dalla giacenza. Puoi prevedere esenzioni o modificare la cauzione di ciascun articolo.
                   </div>
 
                   {/* 1. T-SHIRT (MAX 3 PEZZI) */}
@@ -5194,11 +5940,21 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
                       {[0, 1, 2].map((idx) => {
                         const pezzo = formVestiario.tshirt?.[idx] || { id: idx + 1, consegnato: false };
                         const isConsegnato = !!pezzo.consegnato;
+                        const { cauzione: preCauzioneTshirt, articolo: artTshirt } = getCauzionePrecaricataCapo(
+                          'tshirt',
+                          pezzo.taglia,
+                          pezzo.articoloMagazzinoId
+                        );
+                        const cauzioneEffettiva = pezzo.esenteCauzione
+                          ? 0
+                          : (typeof pezzo.cauzioneApplicata === 'number' ? pezzo.cauzioneApplicata : preCauzioneTshirt);
+                        const draftKey = `tshirt-${idx}`;
+                        const draftVal = cauzioneDrafts[draftKey] ?? String(cauzioneEffettiva);
 
                         return (
                           <div
                             key={idx}
-                            className={`p-3 rounded-xl border transition-all ${
+                            className={`p-3 rounded-xl border transition-all space-y-2 ${
                               isConsegnato
                                 ? 'bg-slate-900 border-amber-500/40 shadow-sm'
                                 : 'bg-slate-900/40 border-slate-800/80'
@@ -5206,19 +5962,26 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
                           >
                             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
                               {/* Checkbox Consegnato */}
-                              <label className="flex items-center gap-2 text-xs font-bold text-white cursor-pointer shrink-0">
-                                <input
-                                  type="checkbox"
-                                  checked={isConsegnato}
-                                  onChange={(e) => toggleTShirtConsegnato(idx, e.target.checked)}
-                                  className="w-4 h-4 rounded text-amber-500 focus:ring-amber-400 accent-amber-500 cursor-pointer"
-                                />
-                                <span className={isConsegnato ? 'text-amber-300 font-bold' : 'text-slate-400'}>
-                                  T-shirt #{idx + 1}
-                                </span>
-                              </label>
+                              <div>
+                                <label className="flex items-center gap-2 text-xs font-bold text-white cursor-pointer shrink-0">
+                                  <input
+                                    type="checkbox"
+                                    checked={isConsegnato}
+                                    onChange={(e) => toggleTShirtConsegnato(idx, e.target.checked)}
+                                    className="w-4 h-4 rounded text-amber-500 focus:ring-amber-400 accent-amber-500 cursor-pointer"
+                                  />
+                                  <span className={isConsegnato ? 'text-amber-300 font-bold' : 'text-slate-400'}>
+                                    T-shirt #{idx + 1}
+                                  </span>
+                                </label>
+                                {artTshirt && (
+                                  <span className="text-[10px] text-slate-400 pl-6 block">
+                                    Magazzino: {artTshirt.nome} — Giacenza: <strong className={artTshirt.giacenzaAttuale <= artTshirt.scortaMinima ? 'text-red-400' : 'text-emerald-400'}>{artTshirt.giacenzaAttuale}</strong>
+                                  </span>
+                                )}
+                              </div>
 
-                              {/* Caselle Taglia XXS -> XXL */}
+                              {/* Caselle Taglia XXS -> 4XL */}
                               <div className="flex items-center gap-1 flex-wrap">
                                 <span className="text-[10px] uppercase font-bold text-slate-500 mr-1">Taglia:</span>
                                 {TAGLIE_DISPONIBILI.map((taglia) => {
@@ -5257,6 +6020,80 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
                                 />
                               </div>
                             </div>
+
+                            {isConsegnato && (
+                              <div className="pt-2 border-t border-slate-800/80 flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                                <label className="flex items-center gap-1.5 cursor-pointer text-emerald-300 font-semibold">
+                                  <input
+                                    type="checkbox"
+                                    checked={Boolean(pezzo.esenteCauzione)}
+                                    onChange={(e) => {
+                                      const nextEsente = e.target.checked;
+                                      applicaModificaCauzioneConForzatura({
+                                        capoNome: `T-Shirt #${idx + 1}`,
+                                        importoAttesoPrecaricato: preCauzioneTshirt,
+                                        nuovoImporto: nextEsente ? 0 : preCauzioneTshirt,
+                                        esente: nextEsente,
+                                        onApplica: () => {
+                                          setFormVestiario(prev => {
+                                            const copia = JSON.parse(JSON.stringify(prev)) as DotazioneVestiario;
+                                            copia.tshirt[idx].esenteCauzione = nextEsente;
+                                            if (nextEsente) copia.tshirt[idx].cauzioneApplicata = 0;
+                                            else copia.tshirt[idx].cauzioneApplicata = preCauzioneTshirt;
+                                            return copia;
+                                          });
+                                          setCauzioneDrafts(prev => ({
+                                            ...prev,
+                                            [draftKey]: nextEsente ? '0' : String(preCauzioneTshirt)
+                                          }));
+                                        }
+                                      });
+                                    }}
+                                    className="w-3.5 h-3.5 rounded accent-emerald-500 cursor-pointer"
+                                  />
+                                  <span>Esente cauzione</span>
+                                </label>
+
+                                <div className="flex items-center gap-1.5">
+                                  <span className="text-slate-400">Cauzione (€):</span>
+                                  <input
+                                    type="number"
+                                    step="0.5"
+                                    min="0"
+                                    disabled={Boolean(pezzo.esenteCauzione)}
+                                    value={pezzo.esenteCauzione ? '0' : draftVal}
+                                    onChange={(e) => setCauzioneDrafts(prev => ({ ...prev, [draftKey]: e.target.value }))}
+                                    className="w-20 px-2 py-1 rounded-lg bg-slate-950 border border-slate-700 text-amber-300 font-mono text-xs disabled:opacity-40"
+                                  />
+                                  {!pezzo.esenteCauzione && (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        const valNum = Number(String(draftVal).replace(',', '.'));
+                                        const sicuro = Number.isNaN(valNum) ? preCauzioneTshirt : Math.max(0, valNum);
+                                        applicaModificaCauzioneConForzatura({
+                                          capoNome: `T-Shirt #${idx + 1}`,
+                                          importoAttesoPrecaricato: preCauzioneTshirt,
+                                          nuovoImporto: sicuro,
+                                          esente: false,
+                                          onApplica: () => {
+                                            setFormVestiario(prev => {
+                                              const copia = JSON.parse(JSON.stringify(prev)) as DotazioneVestiario;
+                                              copia.tshirt[idx].esenteCauzione = false;
+                                              copia.tshirt[idx].cauzioneApplicata = sicuro;
+                                              return copia;
+                                            });
+                                          }
+                                        });
+                                      }}
+                                      className="px-2 py-1 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 font-bold text-[10px] cursor-pointer"
+                                    >
+                                      Applica
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+                            )}
                           </div>
                         );
                       })}
@@ -5273,11 +6110,20 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
                   ].map(({ chiave, nome, descr }) => {
                     const capo = formVestiario[chiave] || { consegnato: false };
                     const isConsegnato = !!capo.consegnato;
+                    const { cauzione: preCauzioneCapo, articolo: artMag } = getCauzionePrecaricataCapo(
+                      chiave,
+                      capo.taglia,
+                      capo.articoloMagazzinoId
+                    );
+                    const cauzioneEffettiva = capo.esenteCauzione
+                      ? 0
+                      : (typeof capo.cauzioneApplicata === 'number' ? capo.cauzioneApplicata : preCauzioneCapo);
+                    const draftVal = cauzioneDrafts[chiave] ?? String(cauzioneEffettiva);
 
                     return (
                       <div
                         key={chiave}
-                        className={`p-3.5 rounded-2xl border transition-all ${
+                        className={`p-3.5 rounded-2xl border transition-all space-y-2 ${
                           isConsegnato
                             ? 'bg-slate-950/90 border-amber-500/40 shadow-sm'
                             : 'bg-slate-950/50 border-slate-800'
@@ -5296,11 +6142,23 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
                               <span className={isConsegnato ? 'text-amber-300 font-bold' : 'text-slate-300'}>
                                 {nome}
                               </span>
+                              {preCauzioneCapo > 0 && (
+                                <span className="text-[10px] px-1.5 py-0.2 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30 font-mono">
+                                  Cauzione: € {preCauzioneCapo.toFixed(2).replace('.', ',')}
+                                </span>
+                              )}
                             </label>
-                            <span className="text-[10px] text-slate-500 block pl-6 mt-0.5">{descr}</span>
+                            <span className="text-[10px] text-slate-500 block pl-6 mt-0.5">
+                              {descr}
+                              {artMag && (
+                                <>
+                                  {' • '}Magazzino: <strong className={artMag.giacenzaAttuale <= artMag.scortaMinima ? 'text-red-400' : 'text-emerald-400'}>{artMag.giacenzaAttuale} disp.</strong>
+                                </>
+                              )}
+                            </span>
                           </div>
 
-                          {/* Caselle Taglia XXS -> XXL */}
+                          {/* Caselle Taglia XXS -> 4XL */}
                           <div className="flex items-center gap-1 flex-wrap pl-6 sm:pl-0">
                             <span className="text-[10px] uppercase font-bold text-slate-500 mr-1">Taglia:</span>
                             {TAGLIE_DISPONIBILI.map((taglia) => {
@@ -5339,6 +6197,81 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
                             />
                           </div>
                         </div>
+
+                        {isConsegnato && (
+                          <div className="pt-2 border-t border-slate-800/80 flex flex-wrap items-center justify-between gap-2 text-[11px] pl-6">
+                            <label className="flex items-center gap-1.5 cursor-pointer text-emerald-300 font-semibold">
+                              <input
+                                type="checkbox"
+                                checked={Boolean(capo.esenteCauzione)}
+                                onChange={(e) => {
+                                  const nextEsente = e.target.checked;
+                                  applicaModificaCauzioneConForzatura({
+                                    capoNome: nome,
+                                    importoAttesoPrecaricato: preCauzioneCapo,
+                                    nuovoImporto: nextEsente ? 0 : preCauzioneCapo,
+                                    esente: nextEsente,
+                                    onApplica: () => {
+                                      setFormVestiario(prev => {
+                                        const copia = JSON.parse(JSON.stringify(prev)) as DotazioneVestiario;
+                                        if (!copia[chiave]) copia[chiave] = { consegnato: true };
+                                        copia[chiave].esenteCauzione = nextEsente;
+                                        copia[chiave].cauzioneApplicata = nextEsente ? 0 : preCauzioneCapo;
+                                        return copia;
+                                      });
+                                      setCauzioneDrafts(prev => ({
+                                        ...prev,
+                                        [chiave]: nextEsente ? '0' : String(preCauzioneCapo)
+                                      }));
+                                    }
+                                  });
+                                }}
+                                className="w-3.5 h-3.5 rounded accent-emerald-500 cursor-pointer"
+                              />
+                              <span>Esente cauzione</span>
+                            </label>
+
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-slate-400">Cauzione applicata (€):</span>
+                              <input
+                                type="number"
+                                step="0.5"
+                                min="0"
+                                disabled={Boolean(capo.esenteCauzione)}
+                                value={capo.esenteCauzione ? '0' : draftVal}
+                                onChange={(e) => setCauzioneDrafts(prev => ({ ...prev, [chiave]: e.target.value }))}
+                                className="w-20 px-2 py-1 rounded-lg bg-slate-900 border border-slate-700 text-amber-300 font-mono text-xs disabled:opacity-40"
+                              />
+                              {!capo.esenteCauzione && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const valNum = Number(String(draftVal).replace(',', '.'));
+                                    const sicuro = Number.isNaN(valNum) ? preCauzioneCapo : Math.max(0, valNum);
+                                    applicaModificaCauzioneConForzatura({
+                                      capoNome: nome,
+                                      importoAttesoPrecaricato: preCauzioneCapo,
+                                      nuovoImporto: sicuro,
+                                      esente: false,
+                                      onApplica: () => {
+                                        setFormVestiario(prev => {
+                                          const copia = JSON.parse(JSON.stringify(prev)) as DotazioneVestiario;
+                                          if (!copia[chiave]) copia[chiave] = { consegnato: true };
+                                          copia[chiave].esenteCauzione = false;
+                                          copia[chiave].cauzioneApplicata = sicuro;
+                                          return copia;
+                                        });
+                                      }
+                                    });
+                                  }}
+                                  className="px-2 py-1 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 font-bold text-[10px] cursor-pointer"
+                                >
+                                  Applica
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        )}
                       </div>
                     );
                   })}
@@ -5355,15 +6288,12 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
                       <div className="flex items-center gap-2">
                         <span className="text-[11px] font-mono text-slate-400">Cauzione Totale Custodita:</span>
                         <span className="text-xs font-black text-amber-300 bg-amber-500/20 px-2.5 py-0.5 rounded-full border border-amber-500/40 font-mono">
-                          € {(
-                            (formVestiario.pantaloni?.consegnato ? 30 : 0) +
-                            (formVestiario.giubbetto?.consegnato ? 45 : 0)
-                          ).toFixed(2).replace('.', ',')}
+                          € {riepilogoCauzioni.totale.toFixed(2).replace('.', ',')}
                         </span>
                       </div>
                     </div>
 
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 text-[11px]">
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 text-[11px]">
                       <div className={`p-2.5 rounded-xl border transition-all ${
                         formVestiario.pantaloni?.consegnato
                           ? 'bg-amber-500/10 border-amber-500/40 text-amber-200'
@@ -5371,10 +6301,12 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
                       }`}>
                         <div className="font-bold flex items-center justify-between">
                           <span>Pantaloni Operativi:</span>
-                          <span className="font-black">€ 30,00</span>
+                          <span className="font-black">€ {riepilogoCauzioni.cauzionePantaloni.toFixed(2).replace('.', ',')}</span>
                         </div>
                         <div className="text-[10px] mt-0.5">
-                          {formVestiario.pantaloni?.consegnato ? '✓ Consegnati (cauzione da versare)' : 'Non consegnati'}
+                          {formVestiario.pantaloni?.consegnato
+                            ? (formVestiario.pantaloni.esenteCauzione ? 'Esente cauzione' : '✓ Consegnati (cauzione applicata)')
+                            : 'Non consegnati'}
                         </div>
                       </div>
 
@@ -5385,10 +6317,26 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
                       }`}>
                         <div className="font-bold flex items-center justify-between">
                           <span>Giubbetto Operativo:</span>
-                          <span className="font-black">€ 45,00</span>
+                          <span className="font-black">€ {riepilogoCauzioni.cauzioneGiubbetto.toFixed(2).replace('.', ',')}</span>
                         </div>
                         <div className="text-[10px] mt-0.5">
-                          {formVestiario.giubbetto?.consegnato ? '✓ Consegnato (cauzione da versare)' : 'Non consegnato'}
+                          {formVestiario.giubbetto?.consegnato
+                            ? (formVestiario.giubbetto.esenteCauzione ? 'Esente cauzione' : '✓ Consegnato (cauzione applicata)')
+                            : 'Non consegnato'}
+                        </div>
+                      </div>
+
+                      <div className={`p-2.5 rounded-xl border transition-all ${
+                        riepilogoCauzioni.altreCauzioni > 0
+                          ? 'bg-amber-500/10 border-amber-500/40 text-amber-200'
+                          : 'bg-slate-900/60 border-slate-800 text-slate-400'
+                      }`}>
+                        <div className="font-bold flex items-center justify-between">
+                          <span>Altri Capi / DPI:</span>
+                          <span className="font-black">€ {riepilogoCauzioni.altreCauzioni.toFixed(2).replace('.', ',')}</span>
+                        </div>
+                        <div className="text-[10px] mt-0.5">
+                          Cauzioni da articoli magazzino collegati
                         </div>
                       </div>
                     </div>
@@ -5422,6 +6370,183 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
                         L'amministratore indica qui l'IBAN del volontario. Questo codice viene inserito in automatico nella Scheda Vestiario & DPI stampata e nel Verbale di Restituzione quando la persona riconsegnerà i capi.
                       </p>
                     </div>
+                  </div>
+
+                  {/* 3B. CASELLA SPUNTABILE: RICONSEGNA VESTIARIO & DPI CON VERBALE PDF PRECOMPILATO */}
+                  <div className="p-4 rounded-2xl bg-slate-950/90 border border-blue-500/30 space-y-3 shadow-sm">
+                    <label className="flex items-center justify-between gap-2 cursor-pointer">
+                      <div className="flex items-center gap-2.5">
+                        <input
+                          type="checkbox"
+                          checked={riconsegnaAperta}
+                          onChange={(e) => {
+                            const aperta = e.target.checked;
+                            setRiconsegnaAperta(aperta);
+                            if (aperta) {
+                              const tutti = calcolaElencoCapiConsegnati(formVestiario);
+                              const selInit: Record<string, boolean> = {};
+                              tutti.forEach(c => { selInit[c.key] = true; });
+                              setRiconsegnaSelezionati(selInit);
+                              setRiconsegnaData(formatISODateItaly());
+                              const rimbTot = tutti.reduce((s, c) => s + (c.esente ? 0 : c.cauzione), 0);
+                              setRiconsegnaRimborsoStr(rimbTot.toFixed(2));
+                            }
+                          }}
+                          className="w-4 h-4 rounded accent-blue-500 cursor-pointer"
+                        />
+                        <div>
+                          <span className="text-xs font-black text-blue-300 uppercase tracking-wide flex items-center gap-1.5">
+                            <RotateCcw className="w-3.5 h-3.5 text-blue-400" />
+                            <span>Riconsegna Vestiario & DPI</span>
+                          </span>
+                          <span className="text-[10.5px] text-slate-400 block">
+                            Spunta per registrare la restituzione dei capi, ripristinare il magazzino e generare il PDF precompilato di restituzione cauzione
+                          </span>
+                        </div>
+                      </div>
+                      <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-300 border border-blue-500/30">
+                        {capiAttualmenteConsegnati.length} consegnati
+                      </span>
+                    </label>
+
+                    {riconsegnaAperta && (
+                      <div className="pt-3 border-t border-slate-800 space-y-3 animate-in fade-in">
+                        {capiAttualmenteConsegnati.length === 0 ? (
+                          <div className="p-3 rounded-xl bg-slate-900 border border-slate-800 text-xs text-slate-400 text-center">
+                            Nessun capo o DPI risulta attualmente consegnato a questo account.
+                          </div>
+                        ) : (
+                          <>
+                            <div className="space-y-1.5">
+                              <span className="text-[11px] font-bold text-slate-300 block">
+                                Seleziona i capi e DPI oggetto di riconsegna:
+                              </span>
+                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                {capiAttualmenteConsegnati.map(capo => {
+                                  const checked = Boolean(riconsegnaSelezionati[capo.key]);
+                                  return (
+                                    <label
+                                      key={capo.key}
+                                      className={`p-2.5 rounded-xl border flex items-center justify-between gap-2 cursor-pointer text-xs ${
+                                        checked
+                                          ? 'bg-blue-950/40 border-blue-500/50 text-white'
+                                          : 'bg-slate-900/60 border-slate-800 text-slate-400'
+                                      }`}
+                                    >
+                                      <div className="flex items-center gap-2 min-w-0">
+                                        <input
+                                          type="checkbox"
+                                          checked={checked}
+                                          onChange={(e) => {
+                                            const nextMap = { ...riconsegnaSelezionati, [capo.key]: e.target.checked };
+                                            setRiconsegnaSelezionati(nextMap);
+                                            const rimb = capiAttualmenteConsegnati
+                                              .filter(x => nextMap[x.key])
+                                              .reduce((s, x) => s + (x.esente ? 0 : x.cauzione), 0);
+                                            setRiconsegnaRimborsoStr(rimb.toFixed(2));
+                                          }}
+                                          className="w-4 h-4 rounded accent-blue-500 cursor-pointer"
+                                        />
+                                        <span className="truncate font-semibold">
+                                          {capo.nome}{capo.taglia ? ` (Tg. ${capo.taglia})` : ''}
+                                        </span>
+                                      </div>
+                                      <span className="font-mono text-[11px] font-bold text-amber-300 shrink-0">
+                                        {capo.esente ? 'Esente' : `€ ${capo.cauzione.toFixed(2).replace('.', ',')}`}
+                                      </span>
+                                    </label>
+                                  );
+                                })}
+                              </div>
+                            </div>
+
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                              <div>
+                                <label className="block text-[11px] font-bold text-slate-300 mb-1">
+                                  Data Restituzione * (suggerita oggi)
+                                </label>
+                                <input
+                                  type="date"
+                                  value={riconsegnaData}
+                                  onChange={(e) => setRiconsegnaData(e.target.value)}
+                                  className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white text-xs focus:outline-none focus:border-blue-500"
+                                />
+                              </div>
+
+                              <div>
+                                <label className="block text-[11px] font-bold text-slate-300 mb-1">
+                                  Importo Restituzione Cauzione (€)
+                                </label>
+                                <input
+                                  type="number"
+                                  step="0.5"
+                                  min="0"
+                                  value={riconsegnaRimborsoStr}
+                                  onChange={(e) => setRiconsegnaRimborsoStr(e.target.value)}
+                                  className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-amber-300 font-mono font-bold text-xs focus:outline-none focus:border-blue-500"
+                                />
+                                {(() => {
+                                  const calc = capiAttualmenteConsegnati
+                                    .filter(c => riconsegnaSelezionati[c.key])
+                                    .reduce((s, c) => s + (c.esente ? 0 : c.cauzione), 0);
+                                  const ins = Number(String(riconsegnaRimborsoStr).replace(',', '.'));
+                                  if (!Number.isNaN(ins) && Math.abs(ins - calc) > 0.009) {
+                                    return (
+                                      <span className="text-[10px] text-amber-400 font-bold block mt-1">
+                                        ⚠️ Importo diverso dal calcolato (€ {calc.toFixed(2).replace('.', ',')}): alla conferma verrà richiesta verifica e saranno avvisati Presidente e Tesoriere.
+                                      </span>
+                                    );
+                                  }
+                                  return null;
+                                })()}
+                              </div>
+                            </div>
+
+                            <div>
+                              <label className="block text-[11px] font-bold text-slate-300 mb-1">
+                                Note Verbale di Restituzione (Opzionale)
+                              </label>
+                              <input
+                                type="text"
+                                value={riconsegnaNote}
+                                onChange={(e) => setRiconsegnaNote(e.target.value)}
+                                placeholder="Es. Capi lavati e integri, restituzione tramite bonifico..."
+                                className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white text-xs placeholder-slate-500 focus:outline-none focus:border-blue-500"
+                              />
+                            </div>
+
+                            <div className="flex flex-wrap items-center justify-end gap-2 pt-1">
+                              <button
+                                type="button"
+                                onClick={handleConfermaRiconsegnaVestiario}
+                                className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-black text-xs uppercase flex items-center gap-2 shadow-lg cursor-pointer active:scale-95"
+                              >
+                                <FileDown className="w-4 h-4" />
+                                <span>Conferma Riconsegna & Scarica PDF Verbale</span>
+                              </button>
+                            </div>
+                          </>
+                        )}
+
+                        {formVestiario.storicoRiconsegne && formVestiario.storicoRiconsegne.length > 0 && (
+                          <div className="pt-2 border-t border-slate-800 space-y-1.5">
+                            <span className="text-[10px] font-bold uppercase text-slate-400 block">
+                              Storico Riconsegne Registrate ({formVestiario.storicoRiconsegne.length})
+                            </span>
+                            {formVestiario.storicoRiconsegne.slice(0, 3).map(st => (
+                              <div key={st.id} className="p-2 rounded-lg bg-slate-900 border border-slate-800 text-[10.5px] flex items-center justify-between gap-2">
+                                <span className="text-slate-300 truncate">
+                                  <strong>{st.dataRestituzione}</strong> — {st.capiRestituiti.join(', ')}
+                                </span>
+                                <span className="font-mono text-amber-300 font-bold shrink-0">
+                                  € {st.importoRimborsoFinale.toFixed(2).replace('.', ',')}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
 
                   {/* 4. SEZIONE ARCHIVIAZIONE DIGITALE: UPLOAD SCHEDA STAMPATA E FIRMATA */}
@@ -5516,7 +6641,8 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
                     )}
                   </div>
                 </div>
-              )}
+                );
+              })()}
               {/* TAB 4: DOMANDA ISCRIZIONE */}
               {tabModaleEdit === 'domanda_iscrizione' && (
                 <ModalCompilaDomandaIscrizione
@@ -5741,6 +6867,180 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
         }}
         onNotificaRadio={onNotificaRadio}
       />
+
+      {/* MODALE CREAZIONE / MODIFICA CATEGORIA MANSIONI */}
+      {modalCategoriaModalAperta && (
+        <div className="fixed inset-0 z-[130] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-purple-500/40 rounded-2xl w-full max-w-md overflow-hidden shadow-2xl">
+            <div className="p-4 bg-slate-950 border-b border-slate-800 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="text-xl">{formCategoriaEmojiModal || '📁'}</span>
+                <div>
+                  <h4 className="font-black text-white text-sm">
+                    {categoriaInModificaModal ? 'Modifica Categoria Mansioni' : 'Nuova Categoria Mansioni'}
+                  </h4>
+                  <p className="text-[11px] text-slate-400">Nome, icona e genitorialità della categoria</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setModalCategoriaModalAperta(false)}
+                className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-3.5">
+              <div>
+                <label className="block text-xs font-bold text-slate-300 mb-1">Nome Categoria *</label>
+                <input
+                  type="text"
+                  value={formCategoriaNomeModal}
+                  onChange={(e) => setFormCategoriaNomeModal(e.target.value)}
+                  placeholder="Es. Emergenza 118, Sanitario Speciale..."
+                  className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white text-xs focus:outline-none focus:border-purple-500"
+                  autoFocus
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-300 mb-1">Icona Emoji</label>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={formCategoriaEmojiModal}
+                    onChange={(e) => setFormCategoriaEmojiModal(e.target.value)}
+                    maxLength={4}
+                    className="w-14 text-center px-2 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white text-base focus:outline-none focus:border-purple-500"
+                  />
+                  <div className="flex gap-1 flex-wrap">
+                    {['🚑', '📻', '🚐', '🛡️', '👑', '⭐', '📁', '🏥'].map(em => (
+                      <button
+                        key={em}
+                        type="button"
+                        onClick={() => setFormCategoriaEmojiModal(em)}
+                        className="px-1.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-sm cursor-pointer"
+                      >
+                        {em}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-300 mb-1">
+                  Genitorialità (Categoria Genitore Opzionale)
+                </label>
+                <select
+                  value={formCategoriaParentIdModal}
+                  onChange={(e) => setFormCategoriaParentIdModal(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white text-xs focus:outline-none focus:border-purple-500"
+                >
+                  <option value="">Nessuna categoria genitore (Livello principale)</option>
+                  {(() => {
+                    const excludedCatIds = categoriaInModificaModal
+                      ? new Set([categoriaInModificaModal.id, ...getDescendantCategoriaIds(categoriaInModificaModal.id, categorieMansioni)])
+                      : new Set<string>();
+                    return categorieMansioni
+                      .filter(c => !excludedCatIds.has(c.id))
+                      .map(c => (
+                        <option key={c.id} value={c.id}>
+                          {c.badgeEmoji || '📁'} {c.nome}
+                        </option>
+                      ));
+                  })()}
+                </select>
+              </div>
+            </div>
+
+            <div className="p-4 bg-slate-950 border-t border-slate-800 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setModalCategoriaModalAperta(false)}
+                className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold cursor-pointer"
+              >
+                Annulla
+              </button>
+              <button
+                type="button"
+                onClick={handleSalvaCategoriaModal}
+                disabled={!formCategoriaNomeModal.trim()}
+                className={`px-4 py-2 rounded-xl text-xs font-black uppercase flex items-center gap-1.5 ${
+                  formCategoriaNomeModal.trim()
+                    ? 'bg-purple-600 hover:bg-purple-500 text-white cursor-pointer'
+                    : 'bg-slate-800 text-slate-500 cursor-not-allowed'
+                }`}
+              >
+                <Save className="w-3.5 h-3.5" />
+                <span>Salva Categoria</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODALE CONFERMA AZIONI / FORZATURE CAUZIONE */}
+      {confermaAzioneModal && (
+        <div className="fixed inset-0 z-[140] bg-black/85 backdrop-blur-sm flex items-center justify-center p-4">
+          <div
+            className={`bg-slate-900 border-2 rounded-3xl max-w-md w-full p-5 sm:p-6 text-white shadow-2xl space-y-4 ${
+              confermaAzioneModal.variante === 'danger'
+                ? 'border-red-500/80'
+                : confermaAzioneModal.variante === 'warning'
+                ? 'border-amber-500/80'
+                : 'border-blue-500/80'
+            }`}
+          >
+            <div className="flex items-center gap-3">
+              <div
+                className={`w-11 h-11 rounded-2xl flex items-center justify-center shrink-0 border ${
+                  confermaAzioneModal.variante === 'danger'
+                    ? 'bg-red-500/20 border-red-500/40 text-red-400'
+                    : confermaAzioneModal.variante === 'warning'
+                    ? 'bg-amber-500/20 border-amber-500/40 text-amber-400'
+                    : 'bg-blue-500/20 border-blue-500/40 text-blue-400'
+                }`}
+              >
+                <AlertTriangle className="w-6 h-6" />
+              </div>
+              <h4 className="font-black text-sm uppercase">{confermaAzioneModal.titolo}</h4>
+            </div>
+
+            <p className="text-xs text-slate-200 leading-relaxed whitespace-pre-line">
+              {confermaAzioneModal.messaggio}
+            </p>
+
+            <div className="flex items-center gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => {
+                  const fn = confermaAzioneModal.onConferma;
+                  setConfermaAzioneModal(null);
+                  fn();
+                }}
+                className={`flex-1 py-2.5 px-3 font-black text-xs uppercase rounded-xl transition-all cursor-pointer shadow-md active:scale-95 ${
+                  confermaAzioneModal.variante === 'danger'
+                    ? 'bg-red-600 hover:bg-red-500 text-white'
+                    : confermaAzioneModal.variante === 'warning'
+                    ? 'bg-amber-500 hover:bg-amber-400 text-slate-950'
+                    : 'bg-blue-600 hover:bg-blue-500 text-white'
+                }`}
+              >
+                {confermaAzioneModal.labelConferma || 'Conferma'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setConfermaAzioneModal(null)}
+                className="py-2.5 px-4 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold rounded-xl transition-all cursor-pointer"
+              >
+                Annulla
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

@@ -46,10 +46,35 @@ export interface OpzioniFooter {
 }
 
 /**
+ * Normalizza qualsiasi stringa ai caratteri sicuri WinAnsi / Latin-1 supportati
+ * dai font standard jsPDF, evitando mojibake e sfasamenti di larghezza.
+ */
+export function sanitizeWinAnsi(input?: string | number | null): string {
+  if (input === undefined || input === null) return '';
+  return String(input)
+    .replace(/\[?Ø=ÜÍ\]?/g, '')
+    .replace(/[\u2713\u2714]/g, '[OK]')
+    .replace(/[\u2715\u2716\u2717\u2718]/g, '[X]')
+    .replace(/[\u2605\u2606]/g, '*')
+    .replace(/[\u25B6\u25BA]/g, '>')
+    .replace(/[\u2014\u2013\u2212]/g, '-')
+    .replace(/\u2022/g, '-')
+    .replace(/[\u2018\u2019\u201A]/g, "'")
+    .replace(/[\u201C\u201D\u201E]/g, '"')
+    .replace(/\u2026/g, '...')
+    .replace(/\u00A0/g, ' ')
+    .replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g, '')
+    .replace(/[\u2600-\u27BF]|\uFE0F|\u200D/g, '')
+    .replace(/[^\x20-\x7E\xA0-\xFF\u20AC\n]/g, '')
+    .replace(/[ \t]{2,}/g, ' ')
+    .trim();
+}
+
+/**
  * Disegna l'intestazione istituzionale unificata per tutti i documenti PDF di Croce Oro Massa Carrara OdV.
  * Mantiene la fascia blu navy (#1d1a60) con filetto in oro (#bfa353), il logo ufficiale a sinistra,
  * tutti i dati associativi aggiornati (Sede Legale, Sede Massa, Sede Carrara, Sede Pietrasanta, CF, Tel, Web, Email, PEC)
- * e il rettangolo in alto a destra specifico per tipo di file.
+ * e il rettangolo in alto a destra specifico per tipo di file, con calcolo dinamico righe senza sovrapposizioni.
  */
 export function disegnaHeaderIstituzionale(doc: jsPDF, opzioni: OpzioniHeader): void {
   const pageWidth = opzioni.pageWidth || 210;
@@ -57,7 +82,7 @@ export function disegnaHeaderIstituzionale(doc: jsPDF, opzioni: OpzioniHeader): 
   const info = getDatiCartaIntestata();
 
   // 1. Fascia Istituzionale Blu Navy (#1d1a60) e Filetto Oro (#bfa353)
-  const headerNavyH = 28;
+  const headerNavyH = 29.5;
   const headerOroH = 1.8;
 
   doc.setFillColor(29, 26, 96);
@@ -68,14 +93,14 @@ export function disegnaHeaderIstituzionale(doc: jsPDF, opzioni: OpzioniHeader): 
 
   // 2. Logo Ufficiale a sinistra (21x21 mm)
   try {
-    doc.addImage(LOGO_IPOTESI_SEMITRASP_BASE64, 'PNG', margin, 3.5, 21, 21, undefined, 'FAST');
+    doc.addImage(LOGO_IPOTESI_SEMITRASP_BASE64, 'PNG', margin, 4, 21, 21, undefined, 'FAST');
   } catch {}
 
   // 3. Rettangolo in Alto a Destra (Personalizzato per tipologia di documento)
   const badgeW = 54;
-  const badgeH = 20.5;
+  const badgeH = 21;
   const badgeX = pageWidth - margin - badgeW;
-  const badgeY = 3.8;
+  const badgeY = 4;
 
   doc.setFillColor(15, 23, 42); // slate-900 profondo
   doc.roundedRect(badgeX, badgeY, badgeW, badgeH, 1.5, 1.5, 'F');
@@ -85,67 +110,82 @@ export function disegnaHeaderIstituzionale(doc: jsPDF, opzioni: OpzioniHeader): 
 
   // Testo Rettangolo in Alto a Destra
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(6.0);
-  doc.setTextColor(245, 158, 11); // ambra vivace
-  doc.text(opzioni.badge.riga1Tag.toUpperCase(), badgeX + badgeW / 2, badgeY + 5.0, {
+  doc.setFontSize(5.8);
+  doc.setTextColor(245, 158, 11);
+  doc.text(sanitizeWinAnsi(opzioni.badge.riga1Tag).toUpperCase(), badgeX + badgeW / 2, badgeY + 5.0, {
     align: 'center',
-    maxWidth: badgeW - 3
+    maxWidth: badgeW - 4
   });
 
-  doc.setFontSize(8.2);
+  doc.setFontSize(7.8);
   doc.setTextColor(255, 255, 255);
-  doc.text(opzioni.badge.riga2Valore, badgeX + badgeW / 2, badgeY + 11.2, {
+  doc.text(sanitizeWinAnsi(opzioni.badge.riga2Valore), badgeX + badgeW / 2, badgeY + 11.4, {
     align: 'center',
-    maxWidth: badgeW - 3
+    maxWidth: badgeW - 4
   });
 
   doc.setFont('helvetica', 'normal');
-  doc.setFontSize(5.6);
-  doc.setTextColor(203, 213, 225); // slate-300
-  doc.text(opzioni.badge.riga3Sotto, badgeX + badgeW / 2, badgeY + 16.5, {
+  doc.setFontSize(5.4);
+  doc.setTextColor(203, 213, 225);
+  doc.text(sanitizeWinAnsi(opzioni.badge.riga3Sotto), badgeX + badgeW / 2, badgeY + 17.0, {
     align: 'center',
-    maxWidth: badgeW - 3
+    maxWidth: badgeW - 4
   });
 
-  // 4. Testi Istituzionali a Sinistra (tra Logo e Badge)
+  // 4. Testi Istituzionali a Sinistra (tra Logo e Badge) con avanzamento Y dinamico
   const textX = margin + 24;
-  const maxTextW = badgeX - textX - 3; // ~107mm di larghezza libera
-  const socialStr = formattaSocialCartaIntestata(info);
+  const maxTextW = badgeX - textX - 4;
+  const socialStr = sanitizeWinAnsi(formattaSocialCartaIntestata(info));
   const hasSocial = socialStr.length > 0;
+
+  let curY = 6.8;
 
   // Riga 1: Nome Associazione
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(10.5);
+  doc.setFontSize(10.0);
   doc.setTextColor(255, 255, 255);
-  doc.text((info.denominazione || DATI_CARTA_INTESTATA_DEFAULT.denominazione).toUpperCase(), textX, hasSocial ? 7.2 : 8.2);
+  const nomeAssoc = sanitizeWinAnsi(info.denominazione || DATI_CARTA_INTESTATA_DEFAULT.denominazione).toUpperCase();
+  const righeNome = doc.splitTextToSize(nomeAssoc, maxTextW);
+  doc.text(righeNome.slice(0, 1), textX, curY);
+  curY += 4.2;
 
   // Riga 2: Titolo Documento in Giallo/Ambra
-  doc.setFontSize(7.2);
-  doc.setTextColor(253, 224, 71); // amber-300
-  doc.text(opzioni.titoloDocumento, textX, hasSocial ? 11.4 : 12.8, { maxWidth: maxTextW });
+  doc.setFontSize(6.9);
+  doc.setTextColor(253, 224, 71);
+  const titoloDoc = sanitizeWinAnsi(opzioni.titoloDocumento);
+  const righeTitolo = doc.splitTextToSize(titoloDoc, maxTextW);
+  doc.text(righeTitolo.slice(0, 1), textX, curY);
+  curY += 3.8;
 
-  // Riga 3: Sede Legale & Tutte le Sedi Operative (Massa, Carrara, Pietrasanta)
+  // Riga 3: Sede Legale & Tutte le Sedi Operative
   doc.setFont('helvetica', 'normal');
-  doc.setFontSize(4.3);
-  doc.setTextColor(226, 232, 240); // slate-200
-  const testoSedi = `Sede Legale: ${info.sedeLegale} • Sede Massa: ${info.sedeMassa} • Sede Carrara: ${info.sedeCarrara} • Sede Pietrasanta: ${info.sedePietrasanta}`;
-  doc.text(testoSedi, textX, hasSocial ? 15.2 : 17.2, { maxWidth: maxTextW });
+  doc.setFontSize(4.2);
+  doc.setTextColor(226, 232, 240);
+  const testoSedi = sanitizeWinAnsi(
+    `Sede Legale: ${info.sedeLegale} - Sede Massa: ${info.sedeMassa} - Sede Carrara: ${info.sedeCarrara} - Sede Pietrasanta: ${info.sedePietrasanta}`
+  );
+  const righeSedi = doc.splitTextToSize(testoSedi, maxTextW).slice(0, 2);
+  doc.text(righeSedi, textX, curY);
+  curY += righeSedi.length * 2.7 + 0.8;
 
   // Riga 4: Contatti, Telefono Centrale, CF, Sito Web
-  doc.setFontSize(4.5);
-  doc.setTextColor(203, 213, 225); // slate-300
-  const testoContatti = `Centrale Tel: ${info.centraleTel} • Codice Fiscale: ${info.codiceFiscale} • ${info.sitoWeb}`;
-  doc.text(testoContatti, textX, hasSocial ? 18.8 : 21.6, { maxWidth: maxTextW });
+  doc.setFontSize(4.3);
+  doc.setTextColor(203, 213, 225);
+  const testoContatti = sanitizeWinAnsi(`Centrale Tel: ${info.centraleTel} - Codice Fiscale: ${info.codiceFiscale} - ${info.sitoWeb}`);
+  const righeContatti = doc.splitTextToSize(testoContatti, maxTextW).slice(0, 1);
+  doc.text(righeContatti, textX, curY);
+  curY += 3.1;
 
-  // Riga 5: Email Ufficiale e Posta Elettronica Certificata (PEC)
-  const testoEmailPec = `Email: ${info.email} • Pec: ${info.pec}`;
-  doc.text(testoEmailPec, textX, hasSocial ? 22.3 : 25.4, { maxWidth: maxTextW });
+  // Riga 5: Email Ufficiale e PEC
+  const testoEmailPec = sanitizeWinAnsi(`Email: ${info.email} - Pec: ${info.pec}`);
+  doc.text(doc.splitTextToSize(testoEmailPec, maxTextW).slice(0, 1), textX, curY);
+  curY += 3.0;
 
-  // Riga 6 (facoltativa): Riferimenti Social Ufficiali - mostrata SOLO se almeno un social è compilato
-  if (hasSocial) {
-    doc.setFontSize(4.2);
+  // Riga 6 (facoltativa): Social
+  if (hasSocial && curY <= 27.8) {
+    doc.setFontSize(4.1);
     doc.setTextColor(253, 224, 71);
-    doc.text(socialStr, textX, 25.8, { maxWidth: maxTextW });
+    doc.text(doc.splitTextToSize(socialStr, maxTextW).slice(0, 1), textX, curY);
   }
 }
 
@@ -161,35 +201,42 @@ export function disegnaFooterIstituzionale(doc: jsPDF, opzioni: OpzioniFooter): 
   const contentWidth = pageWidth - margin * 2;
   const info = getDatiCartaIntestata();
 
-  // Filetto separatore oro (#bfa353) a y = 282.5mm
-  const filettoY = pageHeight - 14.5;
+  // Filetto separatore oro (#bfa353)
+  const filettoY = pageHeight - 15.5;
   doc.setFillColor(191, 163, 83);
   doc.rect(margin, filettoY, contentWidth, 0.4, 'F');
 
-  // Riga 1 (Sedi & Telefono Centrale) a y = 286.2mm
+  // Riga 1 (Sedi & Telefono Centrale)
   doc.setFont('helvetica', 'normal');
-  doc.setFontSize(4.4);
-  doc.setTextColor(71, 85, 105); // slate-600
-  const footerSedi = `${info.denominazione} • Sede Legale: ${info.sedeLegale} • Sede Massa: ${info.sedeMassa} • Sede Carrara: ${info.sedeCarrara} • Sede Pietrasanta: ${info.sedePietrasanta}`;
-  doc.text(footerSedi, pageWidth / 2, pageHeight - 10.8, { align: 'center', maxWidth: contentWidth });
+  doc.setFontSize(4.3);
+  doc.setTextColor(71, 85, 105);
+  const footerSedi = sanitizeWinAnsi(
+    `${info.denominazione} - Sede Legale: ${info.sedeLegale} - Sede Massa: ${info.sedeMassa} - Sede Carrara: ${info.sedeCarrara} - Sede Pietrasanta: ${info.sedePietrasanta}`
+  );
+  const righeFooterSedi = doc.splitTextToSize(footerSedi, contentWidth).slice(0, 2);
+  const yRiga1 = filettoY + 3.2;
+  doc.text(righeFooterSedi, pageWidth / 2, yRiga1, { align: 'center' });
 
   // Riga 2 (Centrale Tel, Codice Fiscale, Sito, Email, Pec + eventuali Social)
-  const socialStrFooter = formattaSocialCartaIntestata(info);
-  doc.setFontSize(socialStrFooter ? 4.2 : 4.5);
-  doc.setTextColor(100, 116, 139); // slate-500
-  const footerContatti =
-    `Centrale Tel: ${info.centraleTel} • Codice Fiscale: ${info.codiceFiscale} • ${info.sitoWeb} • Email: ${info.email} • Pec: ${info.pec}` +
-    (socialStrFooter ? ` • ${socialStrFooter}` : '');
-  doc.text(footerContatti, pageWidth / 2, pageHeight - 7.5, { align: 'center', maxWidth: contentWidth });
+  const socialStrFooter = sanitizeWinAnsi(formattaSocialCartaIntestata(info));
+  doc.setFontSize(socialStrFooter ? 4.1 : 4.3);
+  doc.setTextColor(100, 116, 139);
+  const footerContatti = sanitizeWinAnsi(
+    `Centrale Tel: ${info.centraleTel} - Codice Fiscale: ${info.codiceFiscale} - ${info.sitoWeb} - Email: ${info.email} - Pec: ${info.pec}` +
+      (socialStrFooter ? ` - ${socialStrFooter}` : '')
+  );
+  const yRiga2 = yRiga1 + righeFooterSedi.length * 2.8 + 0.6;
+  doc.text(doc.splitTextToSize(footerContatti, contentWidth).slice(0, 1), pageWidth / 2, yRiga2, { align: 'center' });
 
-  // Riga 3 (Dicitura Archiviazione, Numero Pagina, Registro) a y = 292.8mm
+  // Riga 3 (Dicitura Archiviazione, Numero Pagina, Registro)
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(4.8);
-  doc.setTextColor(148, 163, 184); // slate-400
+  doc.setFontSize(4.7);
+  doc.setTextColor(148, 163, 184);
+  const yRiga3 = Math.max(yRiga2 + 3.2, pageHeight - 3.8);
   doc.text(
-    opzioni.dicituraArchiviazione,
+    sanitizeWinAnsi(opzioni.dicituraArchiviazione),
     pageWidth / 2,
-    pageHeight - 4.2,
+    yRiga3,
     { align: 'center', maxWidth: contentWidth }
   );
 }

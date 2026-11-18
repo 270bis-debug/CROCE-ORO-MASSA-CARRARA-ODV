@@ -29,6 +29,7 @@ import { inviaNotificaModificaAdmin } from '../../utils/notificaModificaAdmin';
 import { CommentiBachecaPost } from '../bacheca/CommentiBachecaPost';
 import { realtime } from '../../services/realtime';
 import { formatISODateItaly, formatTimeItaly } from '../../utils/italianTime';
+import { useTitoloDatabase } from '../../hooks/useNomiDatabase';
 
 interface SezioneBachecaProps {
   comunicazioni: ComunicazioneBacheca[];
@@ -359,7 +360,7 @@ export const SezioneBacheca: React.FC<SezioneBachecaProps> = ({
               </span>
             </div>
             <h2 className="text-xl sm:text-2xl font-black text-white uppercase tracking-wide mt-1">
-              Bacheca di Sezione & Comunicazioni Ufficiali
+              {useTitoloDatabase('bacheca', 'Bacheca di Sezione & Comunicazioni Ufficiali')}
             </h2>
             <p className="text-xs text-slate-400 mt-0.5 max-w-2xl">
               Pubblica comunicazioni di servizio, disposizioni operative, circolari e avvisi urgenti. I volontari hanno accesso diretto alla bacheca tramite un pulsante dedicato nella prima schermata appena effettuato il login.
