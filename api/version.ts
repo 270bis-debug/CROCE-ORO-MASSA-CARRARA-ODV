@@ -3,10 +3,10 @@
 import type { IncomingMessage, ServerResponse } from 'http';
 
 export const BUILD_INFO = {
-  "version": "4.5.0",
-  "buildId": "croce-oro-v4.5.0-1794996149377",
-  "buildTimestamp": 1794996149377,
-  "builtAt": "2026-11-18T10:02:29.377Z"
+  "version": "4.6.0",
+  "buildId": "croce-oro-v4.6.0-1794997185109",
+  "buildTimestamp": 1794997185109,
+  "builtAt": "2026-11-18T10:19:45.109Z"
 };
 
 export default function handler(req: IncomingMessage & { method?: string }, res: ServerResponse & { status?: (code: number) => any; json?: (data: any) => any }) {

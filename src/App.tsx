@@ -155,6 +155,10 @@ import {
   getCategorieMansioni,
   applicaMansioniConfigDaSync,
 } from './utils/mansioniVolontari';
+import {
+  getTipologieMezzoCatalogo,
+  applicaTipologieMezzoDaSync,
+} from './utils/tipologieMezzo';
 import { AdminTopNavbar } from './components/admin/AdminTopNavbar';
 import { SezioneVolontari } from './components/admin/SezioneVolontari';
 import { SezioneMezzi } from './components/admin/SezioneMezzi';
@@ -1241,6 +1245,14 @@ export default function App() {
     } catch {}
     realtime.syncMezziFlotta(ordinati);
   };
+
+  const flottaSigleDinamiche = useMemo(() => {
+    const sigle = new Set<string>(FLOTTA_COMPLETA);
+    mezziFlotta.forEach((m) => {
+      if (m?.sigla?.trim()) sigle.add(m.sigla.trim().toUpperCase());
+    });
+    return Array.from(sigle).sort((a, b) => a.localeCompare(b, 'it', { numeric: true, sensitivity: 'base' }));
+  }, [mezziFlotta]);
 
   // 3. Manutenzioni Mezzi
   const [manutenzioniMezzi, setManutenzioniMezzi] = useState<InterventoManutenzione[]>(() => {
@@ -9641,6 +9653,9 @@ KM TOTALI: ${kmTot} KM`;
         if (s.nomiDatabase && typeof s.nomiDatabase === 'object' && !Array.isArray(s.nomiDatabase)) {
           applicaNomiDatabaseDaSync(s.nomiDatabase, s.nomiDatabaseUpdatedAt);
         }
+        if (Array.isArray(s.tipologieMezzo) && s.tipologieMezzo.length > 0) {
+          applicaTipologieMezzoDaSync(s.tipologieMezzo, s.tipologieMezzoUpdatedAt);
+        }
         if (s.ringing && s.ringing.active) {
           const rTs = Number(s.ringing.timestamp || 0);
           if (rTs > lastServerRingTsRef.current) lastServerRingTsRef.current = rTs;
@@ -9828,6 +9843,9 @@ KM TOTALI: ${kmTot} KM`;
         }
         if (s.nomiDatabase && typeof s.nomiDatabase === 'object' && !Array.isArray(s.nomiDatabase)) {
           applicaNomiDatabaseDaSync(s.nomiDatabase, s.nomiDatabaseUpdatedAt);
+        }
+        if (Array.isArray(s.tipologieMezzo) && s.tipologieMezzo.length > 0) {
+          applicaTipologieMezzoDaSync(s.tipologieMezzo, s.tipologieMezzoUpdatedAt);
         }
         if (s.activeMission) {
           if (isBlockedOrGhostMission(s.activeMission, s.codiciEliminati)) {
@@ -11764,6 +11782,11 @@ KM TOTALI: ${kmTot} KM`;
           } catch {}
         }
       }),
+      realtime.on('TIPOLOGIE_MEZZO_UPDATED', (payload: any) => {
+        if (Array.isArray(payload?.tipologieMezzo) && payload.tipologieMezzo.length > 0) {
+          applicaTipologieMezzoDaSync(payload.tipologieMezzo, payload.updatedAt);
+        }
+      }),
       realtime.on('FORZATURA_CAUZIONE_ALERT', (payload: any) => {
         if (!payload) return;
         const currentRole = ruoloRef.current;
@@ -11819,6 +11842,7 @@ KM TOTALI: ${kmTot} KM`;
           mezziFlotta: readLS('CROCE_ORO_MEZZI_FLOTTA', MEZZI_FLOTTA_INIZIALI),
           catalogoMansioni: getMansioniCatalogo(),
           categorieMansioni: getCategorieMansioni(),
+          tipologieMezzo: getTipologieMezzoCatalogo(),
           nomiDatabase: getNomiDatabaseCustom(),
           timbrature: readLS('CROCE_ORO_TIMBRATURE', []),
           luoghiTimbratura: normalizzaListaLuoghiTimbratura(readLS('CROCE_ORO_LUOGHI_TIMBRATURA', LUOGHI_TIMBRATURA_DEFAULT), sediLocali),
@@ -12240,6 +12264,8 @@ KM TOTALI: ${kmTot} KM`;
               costiServizio,
               catalogoMansioni: getMansioniCatalogo(),
               categorieMansioni: getCategorieMansioni(),
+              tipologieMezzo: getTipologieMezzoCatalogo(),
+              mezziFlotta,
               nomiDatabase: getNomiDatabaseCustom(),
               timbrature: timbratureVolontari,
               luoghiTimbratura,
@@ -13221,7 +13247,8 @@ KM TOTALI: ${kmTot} KM`;
                     <SchermataTurnoVolontario
                       sessione={sessioneTurno}
                       volontari={volontari}
-                      flottaMezzi={FLOTTA_COMPLETA}
+                      flottaMezzi={flottaSigleDinamiche}
+                      mezziFlotta={mezziFlotta}
                       mezziFuoriServizio={mezziFuoriServizio}
                       missioneAttiva={missioneBase}
                       onLogin={handleLoginVolontario}
@@ -13252,7 +13279,8 @@ KM TOTALI: ${kmTot} KM`;
                       <SchermataTurnoVolontario
                         sessione={sessioneTurno}
                         volontari={volontari}
-                        flottaMezzi={FLOTTA_COMPLETA}
+                        flottaMezzi={flottaSigleDinamiche}
+                        mezziFlotta={mezziFlotta}
                         mezziFuoriServizio={mezziFuoriServizio}
                         missioneAttiva={missioneBase}
                         onLogin={handleLoginVolontario}
@@ -17636,6 +17664,7 @@ KM TOTALI: ${kmTot} KM`;
                     }}
                     ambitoCorrente={formAmbito}
                     mezziFuoriServizio={mezziFuoriServizio}
+                    mezziFlotta={mezziFlotta}
                     onApriGestioneStatoFlotta={() => setModaleGestioneFlottaAperta(true)}
                   />
                 </div>
@@ -20078,6 +20107,8 @@ KM TOTALI: ${kmTot} KM`;
             costiServizio,
             catalogoMansioni: getMansioniCatalogo(),
             categorieMansioni: getCategorieMansioni(),
+            tipologieMezzo: getTipologieMezzoCatalogo(),
+            mezziFlotta,
             nomiDatabase: getNomiDatabaseCustom(),
             timbrature: timbratureVolontari,
             luoghiTimbratura,
@@ -20364,7 +20395,8 @@ KM TOTALI: ${kmTot} KM`;
           isOpen={modalChecklistPostTimbraturaAperta}
           templates={checklistsTemplates}
           mezzoSigla={inAttesaChecklistDopoTimbratura?.mezzo || sessioneTurno.mezzoScelto || ''}
-          flottaMezzi={FLOTTA_COMPLETA}
+          flottaMezzi={flottaSigleDinamiche}
+          mezziFlotta={mezziFlotta}
           volontario={volontarioLoggatoCorrente}
           ruoloTurno={inAttesaChecklistDopoTimbratura?.ruolo || sessioneTurno.qualificaTurno || volontarioLoggatoCorrente.qualifica}
           onConfermaOperativita={(compilata) => {

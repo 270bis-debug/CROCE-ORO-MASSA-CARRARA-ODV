@@ -24,6 +24,8 @@ import {
 } from '../types/checklistTypes';
 import { Volontario } from './DatabaseVolontariModal';
 import { CHECKLIST_TEMPLATES_INIZIALI, trovaTemplatePerTipo, deduciTipoMezzoDaNome } from '../data/checklistMockData';
+import { getTipologieAssociateTemplate } from '../types/checklistTypes';
+import { MezzoFlotta } from '../types/adminTypes';
 import { formatDateTimeItaly } from '../utils/italianTime';
 
 export interface ModalChecklistInizioTurnoGuidataProps {
@@ -33,6 +35,7 @@ export interface ModalChecklistInizioTurnoGuidataProps {
   mezzoSigla?: string;
   mezzo?: string;
   flottaMezzi?: string[];
+  mezziFlotta?: MezzoFlotta[];
   volontario: Volontario;
   ruoloTurno?: string;
   onConferma?: (compilata: ChecklistCompilataTurno) => void;
@@ -48,6 +51,7 @@ export const ModalChecklistInizioTurnoGuidata: React.FC<ModalChecklistInizioTurn
   mezzoSigla,
   mezzo,
   flottaMezzi,
+  mezziFlotta,
   volontario,
   ruoloTurno,
   onConferma,
@@ -56,24 +60,47 @@ export const ModalChecklistInizioTurnoGuidata: React.FC<ModalChecklistInizioTurn
   onClose
 }) => {
   const hasMezzoPreassegnato = Boolean((mezzoSigla || mezzo || '').trim());
+  const listaSigleMezzi = React.useMemo(() => {
+    const base = new Set<string>(flottaMezzi || []);
+    (mezziFlotta || []).forEach(m => {
+      if (m?.sigla) base.add(m.sigla);
+    });
+    return Array.from(base);
+  }, [flottaMezzi, mezziFlotta]);
+
   const [mezzoSelezionato, setMezzoSelezionato] = useState<string>(
-    mezzoSigla || mezzo || (flottaMezzi && flottaMezzi[0]) || 'Mezzo'
+    mezzoSigla || mezzo || (listaSigleMezzi && listaSigleMezzi[0]) || 'Mezzo'
   );
   React.useEffect(() => {
     const incoming = mezzoSigla || mezzo;
     if (incoming && incoming.trim()) {
       setMezzoSelezionato(incoming);
-    } else if (flottaMezzi && flottaMezzi.length > 0 && !flottaMezzi.includes(mezzoSelezionato)) {
-      setMezzoSelezionato(flottaMezzi[0]);
+    } else if (listaSigleMezzi.length > 0 && !listaSigleMezzi.includes(mezzoSelezionato)) {
+      setMezzoSelezionato(listaSigleMezzi[0]);
     }
-  }, [mezzoSigla, mezzo, flottaMezzi]);
+  }, [mezzoSigla, mezzo, listaSigleMezzi]);
 
   const effMezzo = mezzoSelezionato || 'Mezzo';
   const effRuolo = ruoloTurno || volontario?.qualifica || 'Soccorritore';
   const handleFinalConferma = onConfermaOperativita || onConferma || (() => {});
   const handleFinalAnnulla = onClose || onAnnulla || (() => {});
 
-  const activeTemplate = template || (templates ? trovaTemplatePerTipo(templates, deduciTipoMezzoDaNome(effMezzo), effMezzo) : undefined) || CHECKLIST_TEMPLATES_INIZIALI[0];
+  const siglaNorm = effMezzo.split(' ')[0].trim().toUpperCase();
+  const mezzoArchivio = React.useMemo(() => {
+    if (!mezziFlotta || mezziFlotta.length === 0) return undefined;
+    return mezziFlotta.find(
+      (m) =>
+        m.sigla.toUpperCase() === siglaNorm ||
+        effMezzo.toUpperCase().includes(m.sigla.toUpperCase())
+    );
+  }, [mezziFlotta, siglaNorm, effMezzo]);
+
+  const tipoMezzoEffettivo = mezzoArchivio?.tipo || deduciTipoMezzoDaNome(effMezzo);
+  const activeTemplate =
+    template ||
+    (templates ? trovaTemplatePerTipo(templates, tipoMezzoEffettivo, effMezzo) : undefined) ||
+    CHECKLIST_TEMPLATES_INIZIALI[0];
+  const tipologieTemplateLabel = getTipologieAssociateTemplate(activeTemplate).join(', ') || activeTemplate.tipologiaMezzo;
 
   // Stato delle risposte: mappa voceId -> { conforme: boolean, noteKo: string }
   const [risposte, setRisposte] = useState<Record<string, { conforme: boolean; noteKo: string }>>(() => {
@@ -83,6 +110,16 @@ export const ModalChecklistInizioTurnoGuidata: React.FC<ModalChecklistInizioTurn
     });
     return init;
   });
+
+  React.useEffect(() => {
+    setRisposte(prev => {
+      const next: Record<string, { conforme: boolean; noteKo: string }> = {};
+      (activeTemplate.voci || []).forEach(v => {
+        next[v.id] = prev[v.id] || { conforme: true, noteKo: '' };
+      });
+      return next;
+    });
+  }, [activeTemplate.id]);
 
   const [kmIniziali, setKmIniziali] = useState<string>('');
   const [noteGenerali, setNoteGenerali] = useState<string>('');
@@ -164,9 +201,9 @@ export const ModalChecklistInizioTurnoGuidata: React.FC<ModalChecklistInizioTurn
       id: `chk-comp-${Date.now()}`,
       templateId: activeTemplate.id,
       templateTitolo: activeTemplate.titolo,
-      tipologiaMezzo: activeTemplate.tipologiaMezzo,
+      tipologiaMezzo: mezzoArchivio?.tipo || tipologieTemplateLabel,
       mezzoSigla: effMezzo.split(' ')[0] || effMezzo,
-      mezzoModello: effMezzo,
+      mezzoModello: mezzoArchivio?.modello || effMezzo,
       volontarioId: volontario.id,
       volontarioNome: `${volontario.nome} ${volontario.cognome || ''}`.trim(),
       qualificaTurno: effRuolo,
@@ -202,7 +239,7 @@ export const ModalChecklistInizioTurnoGuidata: React.FC<ModalChecklistInizioTurn
                   Controllo Inizio Turno Guidato
                 </span>
                 <span className="text-[10px] font-mono text-slate-400">
-                  {activeTemplate.tipologiaMezzo}
+                  {mezzoArchivio?.tipo || tipologieTemplateLabel}
                 </span>
               </div>
               <h3 className="text-sm sm:text-base font-black text-white uppercase tracking-tight truncate mt-0.5">

@@ -414,6 +414,8 @@ export interface ServerState {
   nomiDatabaseUpdatedAt?: number;
   mezziFlotta?: any[];
   mezziFlottaUpdatedAt?: number;
+  tipologieMezzo?: any[];
+  tipologieMezzoUpdatedAt?: number;
   indirizziCollezionati?: any[];
   contatti?: any[];
   radioPtt?: RadioPttState;
@@ -889,6 +891,8 @@ function loadPersistedState(): ServerState {
           nomiDatabaseUpdatedAt: typeof parsed.nomiDatabaseUpdatedAt === 'number' ? parsed.nomiDatabaseUpdatedAt : undefined,
           mezziFlotta: Array.isArray(parsed.mezziFlotta) ? parsed.mezziFlotta : undefined,
           mezziFlottaUpdatedAt: typeof parsed.mezziFlottaUpdatedAt === 'number' ? parsed.mezziFlottaUpdatedAt : undefined,
+          tipologieMezzo: Array.isArray(parsed.tipologieMezzo) ? parsed.tipologieMezzo : undefined,
+          tipologieMezzoUpdatedAt: typeof parsed.tipologieMezzoUpdatedAt === 'number' ? parsed.tipologieMezzoUpdatedAt : undefined,
           indirizziCollezionati: Array.isArray(parsed.indirizziCollezionati) ? parsed.indirizziCollezionati : [],
           contatti: Array.isArray(parsed.contatti) ? parsed.contatti : undefined,
           radioPtt: {
@@ -4733,6 +4737,22 @@ async function startServer() {
                 catalogoMansioni: state.catalogoMansioni,
                 categorieMansioni: state.categorieMansioni,
                 updatedAt: state.mansioniConfigUpdatedAt
+              });
+            }
+            break;
+          }
+
+          case 'UPDATE_TIPOLOGIE_MEZZO': {
+            const incomingTs = typeof data?.updatedAt === 'number' && Number.isFinite(data.updatedAt) ? data.updatedAt : Date.now();
+            const currTs = typeof state.tipologieMezzoUpdatedAt === 'number' ? state.tipologieMezzoUpdatedAt : 0;
+            if (Array.isArray(data?.tipologieMezzo) && (currTs === 0 || incomingTs >= currTs)) {
+              state.tipologieMezzo = data.tipologieMezzo;
+              state.tipologieMezzoUpdatedAt = incomingTs;
+              persistState();
+              broadcast({
+                type: 'TIPOLOGIE_MEZZO_UPDATED',
+                tipologieMezzo: state.tipologieMezzo,
+                updatedAt: state.tipologieMezzoUpdatedAt
               });
             }
             break;

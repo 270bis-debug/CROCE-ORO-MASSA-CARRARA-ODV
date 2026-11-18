@@ -65,13 +65,31 @@ export interface LuogoTimbratura {
 // ---------------------------------------------------------------------------
 // 2. MACRO CATEGORIA 3: DATABASE MEZZI, MANUTENZIONE & MAGAZZINO MEZZI
 // ---------------------------------------------------------------------------
+export type TipologiaMezzoStandard =
+  | 'Ambulanza Emergenza'
+  | 'Ambulanza Trasporto'
+  | 'Fuoristrada 4x4'
+  | 'Pulmino Disabili'
+  | 'Furgone Logistico'
+  | 'Automedica';
+
+export interface TipologiaMezzoItem {
+  id: string;
+  nome: string;
+  descrizione?: string;
+  flottaDefault?: 'vet' | 'pc' | 'tutte';
+  icona?: string;
+  predefinita?: boolean;
+  dataCreazione?: string;
+}
+
 export interface MezzoFlotta {
   id: string;
   sigla: string; // es. T4606, T4609, T4613...
   targa: string; // es. FX829AB
   modello: string; // es. Fiat Ducato Maxi 2.3 Multijet
   annoImmatricolazione: number;
-  tipo: 'Ambulanza Emergenza' | 'Ambulanza Trasporto' | 'Fuoristrada 4x4' | 'Pulmino Disabili' | 'Furgone Logistico' | 'Automedica';
+  tipo: string; // Collegato al catalogo Tipologie Mezzo (default: TipologiaMezzoStandard)
   flotta: 'vet' | 'pc'; // Veterinario / Emergenza o Protezione Civile
   stato: 'Operativo' | 'Fuori Servizio' | 'In Manutenzione' | 'In Sanificazione';
   chilometraggioAttuale: number;

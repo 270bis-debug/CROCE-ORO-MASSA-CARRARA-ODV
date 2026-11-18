@@ -31,9 +31,10 @@ import {
   Send,
   Coins,
   Download,
-  ClipboardCheck
+  ClipboardCheck,
+  Tags
 } from 'lucide-react';
-import { MezzoFlotta, InterventoManutenzione, RicambioUtilizzatoManutenzione, DotazioneMagazzinoMezzo, SedeAssociativaCompleta, ArticoloMagazzinoMezzi, ContattoEsterno } from '../../types/adminTypes';
+import { MezzoFlotta, InterventoManutenzione, RicambioUtilizzatoManutenzione, DotazioneMagazzinoMezzo, SedeAssociativaCompleta, ArticoloMagazzinoMezzi, ContattoEsterno, TipologiaMezzoItem } from '../../types/adminTypes';
 import { SEDI_ASSOCIATIVE_INIZIALI } from '../../data/adminMockData';
 import { inviaNotificaModificaAdmin } from '../../utils/notificaModificaAdmin';
 import { useTitoloDatabase } from '../../hooks/useNomiDatabase';
@@ -53,9 +54,17 @@ import { SezioneConsumiMezzi } from './SezioneConsumiMezzi';
 import { RifornimentoCarburante } from '../../types/consumiTypes';
 import { RIFORNIMENTI_INIZIALI } from '../../data/rifornimentiMockData';
 import { GestioneChecklistMezzi } from './GestioneChecklistMezzi';
+import { SezioneTipologieMezzo } from './SezioneTipologieMezzo';
 import { ChecklistTemplate, ChecklistCompilataTurno } from '../../types/checklistTypes';
 import { CHECKLIST_TEMPLATES_INIZIALI, CHECKLIST_COMPILATE_INIZIALI } from '../../data/checklistMockData';
 import { formatDateTimeItaly, formatISODateItaly, formatTimeItaly, getCurrentYearItaly } from '../../utils/italianTime';
+import {
+  useTipologieMezzo,
+  salvaTipologieMezzoCatalogo,
+  getIconaTipologiaMezzo,
+  TIPOLOGIE_MEZZO_DEFAULT
+} from '../../utils/tipologieMezzo';
+import { realtime } from '../../services/realtime';
 
 export const ARTICOLI_MAGAZZINO_MEZZI_DEFAULT: ArticoloMagazzinoMezzi[] = [];
 
@@ -105,13 +114,36 @@ export const SezioneMezzi: React.FC<SezioneMezziProps> = ({
   // Lista sicura di tutte le sezioni associative territoriali (fallback completo se sedi non ancora caricate)
   const listaSedi = (sedi && sedi.length > 0) ? sedi : SEDI_ASSOCIATIVE_INIZIALI;
 
-  const [sottoTab, setSottoTab] = useState<'flotta' | 'manutenzione' | 'consumi' | 'dotazione' | 'magazzinoMezzi' | 'monitoraggio' | 'checklist'>('flotta');
+  const [sottoTab, setSottoTab] = useState<'flotta' | 'manutenzione' | 'consumi' | 'dotazione' | 'magazzinoMezzi' | 'monitoraggio' | 'checklist' | 'tipologie'>('flotta');
+
+  // Catalogo sincronizzato Tipologie Mezzo
+  const tipologieMezzo = useTipologieMezzo();
+  const tipologieSelectOptions = useMemo<TipologiaMezzoItem[]>(() => {
+    const map = new Map<string, TipologiaMezzoItem>();
+    tipologieMezzo.forEach((t) => {
+      if (t?.nome?.trim()) map.set(t.nome.trim().toLowerCase(), t);
+    });
+    mezzi.forEach((m) => {
+      const k = String(m.tipo || '').trim().toLowerCase();
+      if (k && !map.has(k)) {
+        map.set(k, {
+          id: `tipo-arch-${k.replace(/[^a-z0-9]/g, '-')}`,
+          nome: m.tipo.trim(),
+          descrizione: 'Tipologia presente in archivio flotta',
+          flottaDefault: m.flotta,
+          icona: getIconaTipologiaMezzo(m.tipo, tipologieMezzo),
+          predefinita: false
+        });
+      }
+    });
+    return Array.from(map.values());
+  }, [tipologieMezzo, mezzi]);
 
   // Stato Checklist Inizio Turno Guidata (Templates e Storico Verifiche)
   const [templatesChecklist, setTemplatesChecklist] = useState<ChecklistTemplate[]>(() => {
     if (checklistsTemplates && checklistsTemplates.length > 0) return checklistsTemplates;
     try {
-      const s = localStorage.getItem('CROCE_ORO_CHECKLIST_TEMPLATES');
+      const s = localStorage.getItem('CROCE_ORO_CHECKLISTS_TEMPLATES') || localStorage.getItem('CROCE_ORO_CHECKLIST_TEMPLATES');
       if (s) return JSON.parse(s);
     } catch {}
     return CHECKLIST_TEMPLATES_INIZIALI;
@@ -120,7 +152,7 @@ export const SezioneMezzi: React.FC<SezioneMezziProps> = ({
   const [compilateChecklist, setCompilateChecklist] = useState<ChecklistCompilataTurno[]>(() => {
     if (checklistsCompilate && checklistsCompilate.length > 0) return checklistsCompilate;
     try {
-      const s = localStorage.getItem('CROCE_ORO_CHECKLIST_COMPILATE');
+      const s = localStorage.getItem('CROCE_ORO_CHECKLISTS_COMPILATE') || localStorage.getItem('CROCE_ORO_CHECKLIST_COMPILATE');
       if (s) return JSON.parse(s);
     } catch {}
     return CHECKLIST_COMPILATE_INIZIALI;
@@ -881,7 +913,7 @@ export const SezioneMezzi: React.FC<SezioneMezziProps> = ({
       m.modello.toLowerCase().includes(ricerca.toLowerCase()) ||
       m.sedeStazionamento.toLowerCase().includes(ricerca.toLowerCase());
 
-    const matchTipo = filtroTipo === 'tutti' || m.tipo === filtroTipo;
+    const matchTipo = filtroTipo === 'tutti' || String(m.tipo || '').trim().toLowerCase() === filtroTipo.trim().toLowerCase();
     const matchStato = filtroStato === 'tutti' || m.stato === filtroStato;
     const matchFlotta = filtroFlotta === 'tutti' || m.flotta === filtroFlotta;
 
@@ -940,7 +972,7 @@ export const SezioneMezzi: React.FC<SezioneMezziProps> = ({
               setFormTarga('');
               setFormModello('');
               setFormAnno(getCurrentYearItaly());
-              setFormTipo('Ambulanza Emergenza');
+              setFormTipo(tipologieSelectOptions[0]?.nome || TIPOLOGIE_MEZZO_DEFAULT[0].nome);
               setFormFlotta('vet');
               setFormKm(40000);
               setFormSede(sedi[0]?.nome || 'Massa (Le Jare)');
@@ -1045,6 +1077,19 @@ export const SezioneMezzi: React.FC<SezioneMezziProps> = ({
           <ClipboardCheck className="w-4 h-4 text-amber-400" />
           <span>6. Checklist Inizio Turno ({templatesChecklist.length} Modelli)</span>
         </button>
+
+        <button
+          type="button"
+          onClick={() => setSottoTab('tipologie')}
+          className={`px-4 py-2.5 rounded-xl text-xs font-black uppercase flex items-center gap-2 transition-all cursor-pointer ${
+            sottoTab === 'tipologie'
+              ? 'bg-amber-500 text-slate-950 shadow-lg shadow-amber-500/30 border border-amber-400 font-black'
+              : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
+          }`}
+        >
+          <Tags className={`w-4 h-4 ${sottoTab === 'tipologie' ? 'text-slate-950' : 'text-amber-400'}`} />
+          <span>7. Tipologia Mezzo ({tipologieMezzo.length})</span>
+        </button>
       </div>
 
       {/* ===================================================================== */}
@@ -1120,6 +1165,20 @@ export const SezioneMezzi: React.FC<SezioneMezziProps> = ({
               </select>
 
               <select
+                value={filtroTipo}
+                onChange={(e) => setFiltroTipo(e.target.value)}
+                className="px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-xs text-white focus:outline-none"
+                title="Filtra per Tipologia Mezzo"
+              >
+                <option value="tutti">Tutte le Tipologie Mezzo</option>
+                {tipologieSelectOptions.map((t) => (
+                  <option key={t.id} value={t.nome}>
+                    {t.icona || '🚑'} {t.nome}
+                  </option>
+                ))}
+              </select>
+
+              <select
                 value={filtroStato}
                 onChange={(e) => setFiltroStato(e.target.value)}
                 className="px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-xs text-white focus:outline-none"
@@ -1164,7 +1223,10 @@ export const SezioneMezzi: React.FC<SezioneMezziProps> = ({
                     <div>
                       <div className="text-xs font-black text-white">{m.modello}</div>
                       <div className="text-[11px] text-slate-400 font-mono">Targa: {m.targa} • Anno {m.annoImmatricolazione}</div>
-                      <div className="text-[10px] text-slate-500 mt-0.5">{m.tipo}</div>
+                      <div className="text-[10px] text-amber-300/90 mt-1 font-bold flex items-center gap-1">
+                        <span>{getIconaTipologiaMezzo(m.tipo, tipologieMezzo)}</span>
+                        <span>{m.tipo}</span>
+                      </div>
                     </div>
 
                     {isFuori && m.motivoFuoriServizio && (
@@ -2097,6 +2159,7 @@ export const SezioneMezzi: React.FC<SezioneMezziProps> = ({
           onAggiornaTemplates={(newTemplates: ChecklistTemplate[]) => {
             setTemplatesChecklist(newTemplates);
             try {
+              localStorage.setItem('CROCE_ORO_CHECKLISTS_TEMPLATES', JSON.stringify(newTemplates));
               localStorage.setItem('CROCE_ORO_CHECKLIST_TEMPLATES', JSON.stringify(newTemplates));
             } catch {}
             onAggiornaChecklistsTemplates?.(newTemplates);
@@ -2105,6 +2168,7 @@ export const SezioneMezzi: React.FC<SezioneMezziProps> = ({
           onAggiornaCompilate={(newList: ChecklistCompilataTurno[]) => {
             setCompilateChecklist(newList);
             try {
+              localStorage.setItem('CROCE_ORO_CHECKLISTS_COMPILATE', JSON.stringify(newList));
               localStorage.setItem('CROCE_ORO_CHECKLIST_COMPILATE', JSON.stringify(newList));
             } catch {}
             onAggiornaChecklistsCompilate?.(newList);
@@ -2113,6 +2177,49 @@ export const SezioneMezzi: React.FC<SezioneMezziProps> = ({
           operatoreCorrente={operatoreCorrente}
           isAdmin={isAdmin}
           onNotificaRadio={onNotificaRadio}
+          onApriGestioneTipologie={() => setSottoTab('tipologie')}
+        />
+      )}
+
+      {/* ===================================================================== */}
+      {/* 7. SOTTO-TAB: GESTIONE TIPOLOGIE MEZZO & ASSOCIAZIONE CHECKLIST       */}
+      {/* ===================================================================== */}
+      {sottoTab === 'tipologie' && (
+        <SezioneTipologieMezzo
+          tipologie={tipologieMezzo}
+          onAggiornaTipologie={(nuoveTipologie: TipologiaMezzoItem[]) => {
+            const salvate = salvaTipologieMezzoCatalogo(nuoveTipologie);
+            realtime.syncTipologieMezzo(salvate);
+          }}
+          mezzi={mezzi}
+          onAggiornaMezzi={onAggiornaMezzi}
+          templates={templatesChecklist}
+          onAggiornaTemplates={(newTemplates: ChecklistTemplate[]) => {
+            setTemplatesChecklist(newTemplates);
+            try {
+              localStorage.setItem('CROCE_ORO_CHECKLISTS_TEMPLATES', JSON.stringify(newTemplates));
+              localStorage.setItem('CROCE_ORO_CHECKLIST_TEMPLATES', JSON.stringify(newTemplates));
+            } catch {}
+            onAggiornaChecklistsTemplates?.(newTemplates);
+          }}
+          compilate={compilateChecklist}
+          onAggiornaCompilate={(newList: ChecklistCompilataTurno[]) => {
+            setCompilateChecklist(newList);
+            try {
+              localStorage.setItem('CROCE_ORO_CHECKLISTS_COMPILATE', JSON.stringify(newList));
+              localStorage.setItem('CROCE_ORO_CHECKLIST_COMPILATE', JSON.stringify(newList));
+            } catch {}
+            onAggiornaChecklistsCompilate?.(newList);
+          }}
+          onFiltraFlottaPerTipologia={(tipologiaNome: string) => {
+            setFiltroTipo(tipologiaNome);
+            setSottoTab('flotta');
+          }}
+          onApriTabChecklist={() => setSottoTab('checklist')}
+          operatoreCorrente={operatoreCorrente}
+          isAdmin={isAdmin}
+          onNotificaRadio={onNotificaRadio}
+          onAvvisa={avvisa}
         />
       )}
 
@@ -2259,18 +2366,32 @@ export const SezioneMezzi: React.FC<SezioneMezziProps> = ({
                   />
                 </div>
                 <div>
-                  <label className="block text-slate-400 font-bold mb-1">Tipologia Mezzo</label>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="block text-slate-400 font-bold">Tipologia Mezzo</label>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setModaleMezzoAperta(false);
+                        setSottoTab('tipologie');
+                      }}
+                      className="text-[10px] font-black text-amber-400 hover:text-amber-300 underline cursor-pointer"
+                    >
+                      Gestisci Tipologie
+                    </button>
+                  </div>
                   <select
                     value={formTipo}
-                    onChange={(e) => setFormTipo(e.target.value as any)}
+                    onChange={(e) => setFormTipo(e.target.value)}
                     className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white"
                   >
-                    <option value="Ambulanza Emergenza">Ambulanza Soccorso / Emergenza</option>
-                    <option value="Ambulanza Trasporto">Ambulanza Trasporto / Lungo Raggio</option>
-                    <option value="Fuoristrada 4x4">Fuoristrada 4x4 Protezione Civile</option>
-                    <option value="Pulmino Disabili">Pulmino 9 Posti Disabili</option>
-                    <option value="Furgone Logistico">Furgone Logistico</option>
-                    <option value="Automedica">Automedica / Doblò</option>
+                    {tipologieSelectOptions.map((t) => (
+                      <option key={t.id} value={t.nome}>
+                        {t.icona || '🚑'} {t.nome}
+                      </option>
+                    ))}
+                    {formTipo && !tipologieSelectOptions.some((t) => t.nome.toLowerCase() === formTipo.trim().toLowerCase()) && (
+                      <option value={formTipo}>🚐 {formTipo}</option>
+                    )}
                   </select>
                 </div>
               </div>

@@ -48,6 +48,7 @@ import {
 import { LEGACY_MOCK_CORSI_IDS } from '../data/adminMockData';
 import { applicaMansioniConfigDaSync, getMansioniConfigUpdatedAt } from '../utils/mansioniVolontari';
 import { applicaNomiDatabaseDaSync, getNomiDatabaseUpdatedAt } from '../constants/macroCategorie';
+import { applicaTipologieMezzoDaSync, getTipologieMezzoUpdatedAt } from '../utils/tipologieMezzo';
 
 const stripLegacyCorsi = (list: any): any[] => {
   if (!Array.isArray(list)) return [];
@@ -633,6 +634,17 @@ class RealtimeService {
           updatedAt: payload.nomiDatabaseUpdatedAt,
         });
       }
+      if (Array.isArray(payload.tipologieMezzo) && payload.tipologieMezzo.length > 0) {
+        this.cloudState.tipologieMezzo = payload.tipologieMezzo;
+        if (payload.tipologieMezzoUpdatedAt) {
+          this.cloudState.tipologieMezzoUpdatedAt = payload.tipologieMezzoUpdatedAt;
+        }
+        applicaTipologieMezzoDaSync(payload.tipologieMezzo, payload.tipologieMezzoUpdatedAt);
+        this.emit('TIPOLOGIE_MEZZO_UPDATED', {
+          tipologieMezzo: payload.tipologieMezzo,
+          updatedAt: payload.tipologieMezzoUpdatedAt,
+        });
+      }
       if (typeof payload.publicAppUrl === 'string' && payload.publicAppUrl.trim() && !isProtectedAiStudioHost(payload.publicAppUrl)) {
         const saved = saveConfiguredPublicUrlLocal(payload.publicAppUrl);
         this.cloudState.publicAppUrl = saved;
@@ -885,6 +897,8 @@ class RealtimeService {
           mansioniConfigUpdatedAt: this.cloudState.mansioniConfigUpdatedAt || undefined,
           nomiDatabase: this.cloudState.nomiDatabase && typeof this.cloudState.nomiDatabase === 'object' ? this.cloudState.nomiDatabase : undefined,
           nomiDatabaseUpdatedAt: this.cloudState.nomiDatabaseUpdatedAt || undefined,
+          tipologieMezzo: Array.isArray(this.cloudState.tipologieMezzo) ? this.cloudState.tipologieMezzo : undefined,
+          tipologieMezzoUpdatedAt: this.cloudState.tipologieMezzoUpdatedAt || undefined,
         };
     }
   }
@@ -1110,6 +1124,7 @@ class RealtimeService {
           (Array.isArray(snapshot.mezziFlotta) && snapshot.mezziFlotta.length > 0) ||
           (Array.isArray(snapshot.catalogoMansioni) && snapshot.catalogoMansioni.length > 0) ||
           (Array.isArray(snapshot.categorieMansioni) && snapshot.categorieMansioni.length > 0) ||
+          (Array.isArray(snapshot.tipologieMezzo) && snapshot.tipologieMezzo.length > 0) ||
           Boolean(snapshot.nomiDatabase && Object.keys(snapshot.nomiDatabase).length > 0) ||
           Boolean(getConfiguredPublicUrl()),
         patch: {
@@ -1120,6 +1135,8 @@ class RealtimeService {
           catalogoMansioni: snapshot.catalogoMansioni,
           categorieMansioni: snapshot.categorieMansioni,
           mansioniConfigUpdatedAt: getMansioniConfigUpdatedAt() || Date.now(),
+          tipologieMezzo: snapshot.tipologieMezzo,
+          tipologieMezzoUpdatedAt: getTipologieMezzoUpdatedAt() || Date.now(),
           nomiDatabase: snapshot.nomiDatabase,
           nomiDatabaseUpdatedAt: getNomiDatabaseUpdatedAt() || Date.now(),
           publicAppUrl: this.cloudState.publicAppUrl || getConfiguredPublicUrl() || '',
@@ -1242,6 +1259,8 @@ class RealtimeService {
           catalogoMansioni: snapshot.catalogoMansioni ?? this.cloudState.catalogoMansioni,
           categorieMansioni: snapshot.categorieMansioni ?? this.cloudState.categorieMansioni,
           mansioniConfigUpdatedAt: getMansioniConfigUpdatedAt() || Date.now(),
+          tipologieMezzo: snapshot.tipologieMezzo ?? this.cloudState.tipologieMezzo,
+          tipologieMezzoUpdatedAt: getTipologieMezzoUpdatedAt() || Date.now(),
           nomiDatabase: snapshot.nomiDatabase ?? this.cloudState.nomiDatabase,
           nomiDatabaseUpdatedAt: getNomiDatabaseUpdatedAt() || Date.now(),
           publicAppUrl: this.cloudState.publicAppUrl || getConfiguredPublicUrl() || '',
@@ -1389,6 +1408,10 @@ class RealtimeService {
             } else if (payload.type === 'MEZZI_FLOTTA_UPDATED' && Array.isArray(payload.mezziFlotta)) {
               this.cloudState.mezziFlotta = payload.mezziFlotta;
               if (payload.updatedAt) this.cloudState.mezziFlottaUpdatedAt = payload.updatedAt;
+            } else if (payload.type === 'TIPOLOGIE_MEZZO_UPDATED' && Array.isArray(payload.tipologieMezzo)) {
+              this.cloudState.tipologieMezzo = payload.tipologieMezzo;
+              if (payload.updatedAt) this.cloudState.tipologieMezzoUpdatedAt = payload.updatedAt;
+              applicaTipologieMezzoDaSync(payload.tipologieMezzo, payload.updatedAt);
             }
             this.emit(payload.type, payload);
           }
@@ -1461,6 +1484,9 @@ class RealtimeService {
     }
     if (this.cloudState.nomiDatabase && typeof this.cloudState.nomiDatabase === 'object' && !Array.isArray(this.cloudState.nomiDatabase)) {
       applicaNomiDatabaseDaSync(this.cloudState.nomiDatabase, this.cloudState.nomiDatabaseUpdatedAt);
+    }
+    if (Array.isArray(this.cloudState.tipologieMezzo) && this.cloudState.tipologieMezzo.length > 0) {
+      applicaTipologieMezzoDaSync(this.cloudState.tipologieMezzo, this.cloudState.tipologieMezzoUpdatedAt);
     }
 
     // Ponte bidirezionale: se Express ha nuovi account non ancora presenti su Firestore, sincronizza verso Firestore
@@ -2212,6 +2238,14 @@ class RealtimeService {
           this.scheduleShardWrite('config', {
             mezziFlotta: data.mezziFlotta,
             mezziFlottaUpdatedAt: data?.updatedAt || Date.now(),
+          });
+        }
+        break;
+      case 'UPDATE_TIPOLOGIE_MEZZO':
+        if (Array.isArray(data?.tipologieMezzo)) {
+          this.scheduleShardWrite('config', {
+            tipologieMezzo: data.tipologieMezzo,
+            tipologieMezzoUpdatedAt: data?.updatedAt || Date.now(),
           });
         }
         break;
@@ -3454,6 +3488,11 @@ class RealtimeService {
 
   public syncMezziFlotta(mezziFlotta: any[]) {
     this.send('UPDATE_MEZZI_FLOTTA', { mezziFlotta, updatedAt: Date.now() });
+  }
+
+  public syncTipologieMezzo(tipologieMezzo: any[]) {
+    const updatedAt = getTipologieMezzoUpdatedAt() || Date.now();
+    this.send('UPDATE_TIPOLOGIE_MEZZO', { tipologieMezzo, updatedAt });
   }
 }
 

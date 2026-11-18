@@ -232,6 +232,7 @@ export const ModalStatoConnessione: React.FC<ModalStatoConnessioneProps> = ({
           contatti: readJson('CROCE_ORO_CONTATTI_ESTERNI'),
           checklistsTemplates: readJson('CROCE_ORO_CHECKLISTS_TEMPLATES'),
           checklistsCompilate: readJson('CROCE_ORO_CHECKLISTS_COMPILATE'),
+          tipologieMezzo: readJson('CROCE_ORO_TIPOLOGIE_MEZZO'),
           sedi: readJson('CROCE_ORO_SEDI_COMPLETE'),
         });
       }

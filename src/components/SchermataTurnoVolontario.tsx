@@ -34,6 +34,7 @@ import { UploadFirmaTrasparente } from './UploadFirmaTrasparente';
 import { ModalChecklistInizioTurnoGuidata } from './ModalChecklistInizioTurnoGuidata';
 import { ChecklistTemplate, ChecklistCompilataTurno, deduciTipoMezzoDaNome } from '../types/checklistTypes';
 import { CHECKLIST_TEMPLATES_INIZIALI, trovaTemplatePerTipo } from '../data/checklistMockData';
+import { MezzoFlotta } from '../types/adminTypes';
 import { TurnoSedeOperativa, TimbraturaVolontario } from '../types/adminTypes';
 import { verificaVolontarioInTurnoAdesso, hasTimbraturaApertaPerVolontario, EsitoVerificaTurno } from '../utils/turnoVerifica';
 import { formatDateItaly, formatDateTimeItaly, getItalianDateParts } from '../utils/italianTime';
@@ -51,6 +52,7 @@ interface SchermataTurnoVolontarioProps {
   sessione: SessioneTurno;
   volontari: Volontario[];
   flottaMezzi: string[];
+  mezziFlotta?: MezzoFlotta[];
   mezziFuoriServizio?: Record<string, MezzoFuoriServizio>;
   onLogin: (volontario: Volontario, mezzo: string, ruolo: string) => void;
   onLogout?: () => void;
@@ -87,6 +89,7 @@ export const SchermataTurnoVolontario: React.FC<SchermataTurnoVolontarioProps> =
   sessione,
   volontari,
   flottaMezzi,
+  mezziFlotta = [],
   mezziFuoriServizio = {},
   onLogin,
   onRegistraNuovoVolontario,
@@ -1315,6 +1318,7 @@ export const SchermataTurnoVolontario: React.FC<SchermataTurnoVolontarioProps> =
           }}
           mezzo={volontarioInAttesaChecklist.mezzo}
           flottaMezzi={flottaMezzi}
+          mezziFlotta={mezziFlotta}
           volontario={volontarioInAttesaChecklist.vol}
           templates={checklistsTemplates}
           onConfermaOperativita={handleConfermaChecklist}
@@ -1328,6 +1332,7 @@ export const SchermataTurnoVolontario: React.FC<SchermataTurnoVolontarioProps> =
           onClose={() => setModaleVisualizzaChecklistAperta(false)}
           mezzo={sessione.mezzoScelto || ''}
           flottaMezzi={flottaMezzi}
+          mezziFlotta={mezziFlotta}
           volontario={
             volontari.find(v => v.id === sessione.volontarioId) || {
               id: sessione.volontarioId || 'vol-corrente',

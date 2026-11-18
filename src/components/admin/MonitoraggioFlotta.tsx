@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import { MezzoFlotta, InterventoManutenzione } from '../../types/adminTypes';
 import { getCurrentYearItaly } from '../../utils/italianTime';
+import { useTipologieMezzo } from '../../utils/tipologieMezzo';
 
 interface MonitoraggioFlottaProps {
   mezzi: MezzoFlotta[];
@@ -49,7 +50,9 @@ export const MonitoraggioFlotta: React.FC<MonitoraggioFlottaProps> = ({
   annoRiferimento = getCurrentYearItaly(),
   onSelezionaMezzo
 }) => {
+  const tipologieCatalogo = useTipologieMezzo();
   const [filtroTipo, setFiltroTipo] = useState<'tutti' | 'emergenza' | 'pc' | 'trasporto'>('tutti');
+  const [filtroTipologiaEsatta, setFiltroTipologiaEsatta] = useState<string>('tutti');
   const [ordinamento, setOrdinamento] = useState<'km_desc' | 'km_asc' | 'nome' | 'missioni'>('km_desc');
   const [modalitaGrafico, setModalitaGrafico] = useState<'orizzontale' | 'verticale'>('orizzontale');
 
@@ -134,13 +137,24 @@ export const MonitoraggioFlotta: React.FC<MonitoraggioFlottaProps> = ({
     };
   }, [mezzi, serviziArchivio, annoRiferimento]);
 
+  const tipologieDisponibili = useMemo(() => {
+    const s = new Set<string>(tipologieCatalogo.map(t => t.nome));
+    mezzi.forEach(m => {
+      if (m.tipo) s.add(m.tipo);
+    });
+    return Array.from(s);
+  }, [tipologieCatalogo, mezzi]);
+
   // Filtra e ordina
   const mezziFiltrati = useMemo(() => {
     return statisticheMezzi
       .filter((m) => {
-        if (filtroTipo === 'emergenza') return m.tipo.includes('Emergenza');
+        if (filtroTipologiaEsatta !== 'tutti' && m.tipo.toLowerCase() !== filtroTipologiaEsatta.toLowerCase()) {
+          return false;
+        }
+        if (filtroTipo === 'emergenza') return m.tipo.toLowerCase().includes('emergenza');
         if (filtroTipo === 'pc') return m.flotta === 'pc';
-        if (filtroTipo === 'trasporto') return m.tipo.includes('Trasporto') || m.tipo.includes('Pulmino');
+        if (filtroTipo === 'trasporto') return m.tipo.toLowerCase().includes('trasporto') || m.tipo.toLowerCase().includes('pulmino');
         return true;
       })
       .sort((a, b) => {
@@ -150,7 +164,7 @@ export const MonitoraggioFlotta: React.FC<MonitoraggioFlottaProps> = ({
         if (ordinamento === 'missioni') return b.missioniAnnoCorrente - a.missioniAnnoCorrente;
         return 0;
       });
-  }, [statisticheMezzi, filtroTipo, ordinamento]);
+  }, [statisticheMezzi, filtroTipo, filtroTipologiaEsatta, ordinamento]);
 
   const maxKm = useMemo(() => {
     return Math.max(...mezziFiltrati.map((m) => m.kmAnnoCorrente), 1);
@@ -319,7 +333,21 @@ export const MonitoraggioFlotta: React.FC<MonitoraggioFlottaProps> = ({
         </div>
 
         {/* Ordinamento & Switch Visualizzazione */}
-        <div className="flex items-center gap-2.5 w-full md:w-auto justify-end">
+        <div className="flex items-center gap-2.5 w-full md:w-auto justify-end flex-wrap">
+          <select
+            value={filtroTipologiaEsatta}
+            onChange={(e) => setFiltroTipologiaEsatta(e.target.value)}
+            className="p-1.5 px-2.5 rounded-xl bg-slate-900 border border-slate-700 text-amber-300 text-xs font-bold focus:ring-1 focus:ring-amber-500 focus:outline-none"
+            title="Filtra per Tipologia Mezzo dall'archivio"
+          >
+            <option value="tutti">Tutte le Tipologie Mezzo</option>
+            {tipologieDisponibili.map((tp) => (
+              <option key={tp} value={tp}>
+                {tp}
+              </option>
+            ))}
+          </select>
+
           <div className="flex items-center gap-1.5">
             <span className="text-[11px] font-bold uppercase text-slate-400 hidden sm:inline">Ordina:</span>
             <select

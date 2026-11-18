@@ -30,10 +30,13 @@ import {
   ChecklistTemplate,
   ChecklistCompilataTurno,
   VoceChecklistTemplate,
-  CategoriaVoceChecklist
+  CategoriaVoceChecklist,
+  getTipologieAssociateTemplate,
+  templateCopreTipologia
 } from '../../types/checklistTypes';
 import { MezzoFlotta } from '../../types/adminTypes';
 import { formatDateItaly } from '../../utils/italianTime';
+import { useTipologieMezzo, getIconaTipologiaMezzo } from '../../utils/tipologieMezzo';
 
 interface GestioneChecklistMezziProps {
   templates: ChecklistTemplate[];
@@ -44,6 +47,7 @@ interface GestioneChecklistMezziProps {
   onNotificaRadio?: (testo: string, tipo?: 'centrale' | 'mezzo' | 'sistema' | 'allarme') => void;
   operatoreCorrente?: string;
   isAdmin?: boolean;
+  onApriGestioneTipologie?: () => void;
 }
 
 const CATEGORIE_DISPONIBILI: CategoriaVoceChecklist[] = [
@@ -63,8 +67,10 @@ export const GestioneChecklistMezzi: React.FC<GestioneChecklistMezziProps> = ({
   mezzi,
   onNotificaRadio,
   operatoreCorrente = 'Amministratore',
-  isAdmin = true
+  isAdmin = true,
+  onApriGestioneTipologie
 }) => {
+  const tipologieCatalogo = useTipologieMezzo();
   const [vistaAttiva, setVistaAttiva] = useState<'modelli' | 'registro'>('modelli');
   const [filtroTipoMezzo, setFiltroTipoMezzo] = useState<string>('TUTTE');
   const [ricerca, setRicerca] = useState<string>('');
@@ -74,8 +80,10 @@ export const GestioneChecklistMezzi: React.FC<GestioneChecklistMezziProps> = ({
   const [templateInModifica, setTemplateInModifica] = useState<ChecklistTemplate | null>(null);
   const [formTitolo, setFormTitolo] = useState('');
   const [formDescrizione, setFormDescrizione] = useState('');
-  const [formTipoMezzo, setFormTipoMezzo] = useState('Ambulanza Emergenza');
+  const [formTipologieMezzo, setFormTipologieMezzo] = useState<string[]>(['Ambulanza Emergenza']);
   const [formVoci, setFormVoci] = useState<VoceChecklistTemplate[]>([]);
+  const [erroreFormTemplate, setErroreFormTemplate] = useState<string | null>(null);
+  const [templateDaEliminare, setTemplateDaEliminare] = useState<{ id: string; titolo: string } | null>(null);
 
   // Form aggiunta singola voce nel builder
   const [nuovaVoceTitolo, setNuovaVoceTitolo] = useState('');
@@ -86,26 +94,32 @@ export const GestioneChecklistMezzi: React.FC<GestioneChecklistMezziProps> = ({
   // Modale visualizzazione dettagli verifica compilata
   const [verificaDettaglio, setVerificaDettaglio] = useState<ChecklistCompilataTurno | null>(null);
 
-  // Tipologie veicolo rilevate dalla flotta
+  // Tipologie veicolo sincronizzate dal catalogo Tipologia Mezzo + flotta + template esistenti
   const tipologieMezzoDisponibili = React.useMemo(() => {
     const setT = new Set<string>();
-    mezzi.forEach(m => setT.add(m.tipo));
-    setT.add('Ambulanza Emergenza');
-    setT.add('Ambulanza Trasporto');
-    setT.add('Fuoristrada 4x4');
-    setT.add('Pulmino Disabili');
-    setT.add('Automedica');
-    setT.add('Furgone Logistico');
-    setT.add('Tutte le tipologie');
+    tipologieCatalogo.forEach(t => {
+      if (t.nome) setT.add(t.nome);
+    });
+    mezzi.forEach(m => {
+      if (m.tipo) setT.add(m.tipo);
+    });
+    templates.forEach(t => {
+      getTipologieAssociateTemplate(t).forEach(tp => {
+        if (tp && tp.toLowerCase() !== 'tutte le tipologie' && tp.toLowerCase() !== 'tutte') {
+          setT.add(tp);
+        }
+      });
+    });
     return Array.from(setT);
-  }, [mezzi]);
+  }, [tipologieCatalogo, mezzi, templates]);
 
   // Apri modale per nuovo template
   const apriNuovoTemplate = () => {
     setTemplateInModifica(null);
+    setErroreFormTemplate(null);
     setFormTitolo('Nuova Checklist Inizio Turno');
     setFormDescrizione('Controlli e verifiche visive pre-partenza per l\'equipaggio di bordo.');
-    setFormTipoMezzo('Ambulanza Emergenza');
+    setFormTipologieMezzo([tipologieMezzoDisponibili[0] || 'Ambulanza Emergenza']);
     setFormVoci([
       {
         id: `v-${Date.now()}-1`,
@@ -135,9 +149,11 @@ export const GestioneChecklistMezzi: React.FC<GestioneChecklistMezziProps> = ({
   // Apri modale per modificare template esistente
   const apriModificaTemplate = (tmpl: ChecklistTemplate) => {
     setTemplateInModifica(tmpl);
+    setErroreFormTemplate(null);
     setFormTitolo(tmpl.titolo);
     setFormDescrizione(tmpl.descrizione);
-    setFormTipoMezzo(tmpl.tipologiaMezzo);
+    const assoc = getTipologieAssociateTemplate(tmpl);
+    setFormTipologieMezzo(assoc.length > 0 ? assoc : ['Tutte le tipologie']);
     setFormVoci([...tmpl.voci]);
     setModaleTemplateAperta(true);
   };
@@ -156,13 +172,29 @@ export const GestioneChecklistMezzi: React.FC<GestioneChecklistMezziProps> = ({
     onNotificaRadio?.(`📋 CHECKLIST MEZZI: Duplicato modello "${nuovo.titolo}"`, 'sistema');
   };
 
-  // Elimina template
-  const eliminaTemplate = (id: string, titolo: string) => {
-    if (confirm(`Sei sicuro di voler eliminare definitivamente il modello di checklist "${titolo}"?`)) {
-      const aggiornati = templates.filter(t => t.id !== id);
-      onAggiornaTemplates(aggiornati);
-      onNotificaRadio?.(`🗑️ CHECKLIST MEZZI: Rimosso modello "${titolo}"`, 'centrale');
+  // Conferma eliminazione template
+  const confermaEliminaTemplate = () => {
+    if (!templateDaEliminare) return;
+    const aggiornati = templates.filter(t => t.id !== templateDaEliminare.id);
+    onAggiornaTemplates(aggiornati);
+    onNotificaRadio?.(`🗑️ CHECKLIST MEZZI: Rimosso modello "${templateDaEliminare.titolo}"`, 'centrale');
+    setTemplateDaEliminare(null);
+  };
+
+  // Toggle selezione Tipologia Mezzo nel modale template
+  const toggleFormTipologiaMezzo = (nome: string) => {
+    setErroreFormTemplate(null);
+    if (nome === 'Tutte le tipologie') {
+      setFormTipologieMezzo(prev => (prev.includes('Tutte le tipologie') ? [] : ['Tutte le tipologie']));
+      return;
     }
+    setFormTipologieMezzo(prev => {
+      const senzaTutte = prev.filter(x => x !== 'Tutte le tipologie' && x !== 'Tutte');
+      if (senzaTutte.includes(nome)) {
+        return senzaTutte.filter(x => x !== nome);
+      }
+      return [...senzaTutte, nome];
+    });
   };
 
   // Aggiungi voce al form builder
@@ -194,10 +226,17 @@ export const GestioneChecklistMezzi: React.FC<GestioneChecklistMezziProps> = ({
     e.preventDefault();
     if (!formTitolo.trim()) return;
     if (formVoci.length === 0) {
-      alert('Inserisci almeno una voce di controllo nella checklist.');
+      setErroreFormTemplate('Inserisci almeno una voce di controllo nella checklist.');
+      return;
+    }
+    if (formTipologieMezzo.length === 0) {
+      setErroreFormTemplate('Seleziona almeno una Tipologia Mezzo associata a questa checklist.');
       return;
     }
 
+    const tipologiePulite = Array.from(new Set(formTipologieMezzo.map(t => t.trim()).filter(Boolean)));
+    const tipoPrimario = tipologiePulite[0] || 'Tutte le tipologie';
+    const labelLog = tipologiePulite.join(', ');
     const nowStr = formatDateItaly();
 
     if (templateInModifica) {
@@ -207,20 +246,22 @@ export const GestioneChecklistMezzi: React.FC<GestioneChecklistMezziProps> = ({
               ...t,
               titolo: formTitolo.trim(),
               descrizione: formDescrizione.trim(),
-              tipologiaMezzo: formTipoMezzo,
+              tipologiaMezzo: tipoPrimario,
+              tipologieMezzo: tipologiePulite,
               voci: formVoci,
               dataUltimaModifica: nowStr
             }
           : t
       );
       onAggiornaTemplates(aggiornati);
-      onNotificaRadio?.(`📋 CHECKLIST AGGIORNATA: Modello "${formTitolo}" per ${formTipoMezzo} salvato nel database.`, 'sistema');
+      onNotificaRadio?.(`📋 CHECKLIST AGGIORNATA: Modello "${formTitolo}" per ${labelLog} salvato nel database.`, 'sistema');
     } else {
       const nuovo: ChecklistTemplate = {
         id: `chk-${Date.now()}`,
         titolo: formTitolo.trim(),
         descrizione: formDescrizione.trim(),
-        tipologiaMezzo: formTipoMezzo,
+        tipologiaMezzo: tipoPrimario,
+        tipologieMezzo: tipologiePulite,
         attiva: true,
         dataCreazione: nowStr,
         dataUltimaModifica: nowStr,
@@ -228,9 +269,10 @@ export const GestioneChecklistMezzi: React.FC<GestioneChecklistMezziProps> = ({
         voci: formVoci
       };
       onAggiornaTemplates([nuovo, ...templates]);
-      onNotificaRadio?.(`📋 NUOVA CHECKLIST MEZZI: Creato modello "${nuovo.titolo}" per ${formTipoMezzo}.`, 'sistema');
+      onNotificaRadio?.(`📋 NUOVA CHECKLIST MEZZI: Creato modello "${nuovo.titolo}" per ${labelLog}.`, 'sistema');
     }
 
+    setErroreFormTemplate(null);
     setModaleTemplateAperta(false);
   };
 
@@ -247,14 +289,14 @@ export const GestioneChecklistMezzi: React.FC<GestioneChecklistMezziProps> = ({
 
   // Filtraggio Modelli
   const templatesFiltrati = templates.filter(t => {
-    const matchTipo = filtroTipoMezzo === 'TUTTE' || t.tipologiaMezzo === filtroTipoMezzo || t.tipologiaMezzo === 'Tutte le tipologie';
+    const matchTipo = filtroTipoMezzo === 'TUTTE' || templateCopreTipologia(t, filtroTipoMezzo);
     const matchQ = !ricerca.trim() || t.titolo.toLowerCase().includes(ricerca.toLowerCase()) || t.descrizione.toLowerCase().includes(ricerca.toLowerCase()) || t.voci.some(v => v.titolo.toLowerCase().includes(ricerca.toLowerCase()));
     return matchTipo && matchQ;
   });
 
   // Filtraggio Registro Compilate
   const compilateFiltrate = compilate.filter(c => {
-    const matchTipo = filtroTipoMezzo === 'TUTTE' || c.tipologiaMezzo === filtroTipoMezzo;
+    const matchTipo = filtroTipoMezzo === 'TUTTE' || c.tipologiaMezzo.toLowerCase() === filtroTipoMezzo.toLowerCase();
     const matchQ = !ricerca.trim() || c.mezzoSigla.toLowerCase().includes(ricerca.toLowerCase()) || c.volontarioNome.toLowerCase().includes(ricerca.toLowerCase()) || c.templateTitolo.toLowerCase().includes(ricerca.toLowerCase());
     return matchTipo && matchQ;
   });
@@ -284,6 +326,16 @@ export const GestioneChecklistMezzi: React.FC<GestioneChecklistMezziProps> = ({
         </div>
 
         <div className="flex items-center gap-2 flex-wrap shrink-0">
+          {onApriGestioneTipologie && (
+            <button
+              type="button"
+              onClick={onApriGestioneTipologie}
+              className="px-3.5 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-amber-300 border border-amber-500/40 font-black text-xs uppercase flex items-center gap-1.5 shadow transition-transform active:scale-95 cursor-pointer"
+            >
+              <Car className="w-4 h-4 text-amber-400" />
+              <span>Gestisci Tipologie Mezzo</span>
+            </button>
+          )}
           <button
             type="button"
             onClick={apriNuovoTemplate}
@@ -369,16 +421,29 @@ export const GestioneChecklistMezzi: React.FC<GestioneChecklistMezziProps> = ({
                         📋
                       </span>
                       <div>
-                        <span className="px-2 py-0.5 rounded-full bg-slate-800 border border-slate-700 font-mono text-[10px] font-bold text-amber-300 uppercase">
-                          {tmpl.tipologiaMezzo}
-                        </span>
+                        <div className="flex items-center gap-1 flex-wrap mb-1">
+                          {getTipologieAssociateTemplate(tmpl).length === 0 ? (
+                            <span className="px-2 py-0.5 rounded-full bg-slate-900 border border-slate-700 font-mono text-[10px] font-bold text-slate-400 uppercase">
+                              Nessuna Tipologia Mezzo associata
+                            </span>
+                          ) : (
+                            getTipologieAssociateTemplate(tmpl).map((tp) => (
+                              <span
+                                key={tp}
+                                className="px-2 py-0.5 rounded-full bg-slate-800 border border-amber-500/40 font-mono text-[10px] font-bold text-amber-300 uppercase"
+                              >
+                                {getIconaTipologiaMezzo(tp, tipologieCatalogo)} {tp}
+                              </span>
+                            ))
+                          )}
+                        </div>
                         <h4 className="text-sm font-black text-white uppercase tracking-tight mt-0.5">
                           {tmpl.titolo}
                         </h4>
                       </div>
                     </div>
 
-                    <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 text-[10px] font-mono font-bold">
+                    <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 text-[10px] font-mono font-bold shrink-0">
                       {tmpl.voci.length} Voci
                     </span>
                   </div>
@@ -432,8 +497,8 @@ export const GestioneChecklistMezzi: React.FC<GestioneChecklistMezziProps> = ({
                     </button>
                     <button
                       type="button"
-                      onClick={() => eliminaTemplate(tmpl.id, tmpl.titolo)}
-                      className="p-1.5 rounded-lg bg-slate-900 hover:bg-red-900/60 text-slate-400 hover:text-red-300 transition-colors"
+                      onClick={() => setTemplateDaEliminare({ id: tmpl.id, titolo: tmpl.titolo })}
+                      className="p-1.5 rounded-lg bg-slate-900 hover:bg-red-900/60 text-slate-400 hover:text-red-300 transition-colors cursor-pointer"
                       title="Elimina"
                     >
                       <Trash2 className="w-3.5 h-3.5" />
@@ -575,34 +640,71 @@ export const GestioneChecklistMezzi: React.FC<GestioneChecklistMezziProps> = ({
 
             {/* Campi Principali */}
             <div className="p-4 sm:p-5 overflow-y-auto space-y-4 flex-1">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-bold text-slate-300 uppercase mb-1">
-                    Titolo Checklist *
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    value={formTitolo}
-                    onChange={(e) => setFormTitolo(e.target.value)}
-                    placeholder="Es: Checklist Giornaliera Ambulanza Emergenza"
-                    className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white text-xs font-bold focus:ring-1 focus:ring-amber-500 focus:outline-none"
-                  />
+              {erroreFormTemplate && (
+                <div className="p-3 rounded-xl bg-red-950/80 border border-red-500 text-red-200 text-xs font-bold flex items-center gap-2">
+                  <AlertTriangle className="w-4 h-4 text-red-400 shrink-0" />
+                  <span>{erroreFormTemplate}</span>
                 </div>
+              )}
 
-                <div>
-                  <label className="block text-xs font-bold text-slate-300 uppercase mb-1">
-                    Tipologia Mezzo Associata *
+              <div>
+                <label className="block text-xs font-bold text-slate-300 uppercase mb-1">
+                  Titolo Checklist *
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={formTitolo}
+                  onChange={(e) => {
+                    setFormTitolo(e.target.value);
+                    setErroreFormTemplate(null);
+                  }}
+                  placeholder="Es: Checklist Giornaliera Ambulanza Emergenza"
+                  className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white text-xs font-bold focus:ring-1 focus:ring-amber-500 focus:outline-none"
+                />
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between gap-2 mb-1.5">
+                  <label className="block text-xs font-bold text-slate-300 uppercase">
+                    Tipologie Mezzo Associate * (seleziona una o più tipologie)
                   </label>
-                  <select
-                    value={formTipoMezzo}
-                    onChange={(e) => setFormTipoMezzo(e.target.value)}
-                    className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-amber-300 font-bold text-xs focus:ring-1 focus:ring-amber-500 focus:outline-none"
+                  <button
+                    type="button"
+                    onClick={() => toggleFormTipologiaMezzo('Tutte le tipologie')}
+                    className={`px-2 py-0.5 rounded-lg text-[10px] font-black uppercase border cursor-pointer transition-colors ${
+                      formTipologieMezzo.includes('Tutte le tipologie')
+                        ? 'bg-amber-500 text-slate-950 border-amber-400'
+                        : 'bg-slate-950 text-slate-400 border-slate-700 hover:text-white'
+                    }`}
                   >
-                    {tipologieMezzoDisponibili.map(t => (
-                      <option key={t} value={t}>{t}</option>
-                    ))}
-                  </select>
+                    Tutte le tipologie
+                  </button>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 p-2.5 rounded-2xl bg-slate-950 border border-slate-800 max-h-40 overflow-y-auto">
+                  {tipologieMezzoDisponibili.map((t) => {
+                    const checked = formTipologieMezzo.includes(t) || formTipologieMezzo.includes('Tutte le tipologie');
+                    return (
+                      <label
+                        key={t}
+                        className={`flex items-center gap-2 px-2.5 py-1.5 rounded-xl border text-xs cursor-pointer transition-colors select-none ${
+                          checked
+                            ? 'bg-amber-500/15 border-amber-500/60 text-amber-200 font-bold'
+                            : 'bg-slate-900/70 border-slate-800 text-slate-300 hover:border-slate-700'
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={formTipologieMezzo.includes(t)}
+                          onChange={() => toggleFormTipologiaMezzo(t)}
+                          className="w-4 h-4 rounded accent-amber-500 cursor-pointer"
+                        />
+                        <span className="truncate">
+                          {getIconaTipologiaMezzo(t, tipologieCatalogo)} {t}
+                        </span>
+                      </label>
+                    );
+                  })}
                 </div>
               </div>
 
@@ -854,6 +956,38 @@ export const GestioneChecklistMezzi: React.FC<GestioneChecklistMezziProps> = ({
                   Chiudi
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODALE CONFERMA ELIMINAZIONE CHECKLIST */}
+      {templateDaEliminare && (
+        <div className="fixed inset-0 bg-slate-950/85 backdrop-blur-sm z-[120] flex items-center justify-center p-4">
+          <div className="bg-slate-900 border-2 border-red-500/60 rounded-3xl max-w-md w-full p-5 space-y-4 shadow-2xl text-slate-100">
+            <div className="flex items-center gap-2.5 text-red-400">
+              <AlertTriangle className="w-5 h-5 shrink-0" />
+              <h4 className="text-sm font-black uppercase text-white">Conferma Eliminazione Checklist</h4>
+            </div>
+            <p className="text-xs text-slate-300 leading-relaxed">
+              Sei sicuro di voler eliminare definitivamente il modello di checklist{' '}
+              <strong className="text-white">&quot;{templateDaEliminare.titolo}&quot;</strong>?
+            </p>
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-800">
+              <button
+                type="button"
+                onClick={() => setTemplateDaEliminare(null)}
+                className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs cursor-pointer"
+              >
+                Annulla
+              </button>
+              <button
+                type="button"
+                onClick={confermaEliminaTemplate}
+                className="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-500 text-white font-black text-xs uppercase cursor-pointer"
+              >
+                Elimina Modello
+              </button>
             </div>
           </div>
         </div>

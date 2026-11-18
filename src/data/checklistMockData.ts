@@ -1,4 +1,4 @@
-import { ChecklistTemplate, ChecklistCompilataTurno } from '../types/checklistTypes';
+import { ChecklistTemplate, ChecklistCompilataTurno, getTipologieAssociateTemplate, deduciTipoMezzoDaNome as deduciTipoMezzo } from '../types/checklistTypes';
 
 export const CHECKLIST_TEMPLATES_INIZIALI: ChecklistTemplate[] = [
   {
@@ -362,18 +362,7 @@ export const CHECKLIST_COMPILATE_INIZIALI: ChecklistCompilataTurno[] = [
 ];
 
 export function deduciTipoMezzoDaNome(mezzo: string): string {
-  if (!mezzo) return 'Ambulanza Emergenza';
-  const m = mezzo.toLowerCase();
-  if (m.includes('fuoristrada') || m.includes('4x4') || m.includes('protezione civile') || m.includes('t4608')) {
-    return 'Fuoristrada 4x4';
-  }
-  if (m.includes('disabili') || m.includes('pulmino') || m.includes('trasporto') || m.includes('t4610')) {
-    return 'Pulmino Disabili';
-  }
-  if (m.includes('automedica') || m.includes('medica') || m.includes('t4614')) {
-    return 'Automedica';
-  }
-  return 'Ambulanza Emergenza';
+  return deduciTipoMezzo(mezzo);
 }
 
 export function trovaTemplatePerTipo(templates: ChecklistTemplate[], tipo: string, mezzo?: string): ChecklistTemplate | undefined {
@@ -383,8 +372,23 @@ export function trovaTemplatePerTipo(templates: ChecklistTemplate[], tipo: strin
     const specifico = templates.find(t => t.attiva && t.mezziAssegnati && t.mezziAssegnati.some(sigla => mezzoNorm.includes(sigla.toUpperCase())));
     if (specifico) return specifico;
   }
-  const perTipo = templates.find(t => t.attiva && t.tipologiaMezzo.toLowerCase() === tipo.toLowerCase());
-  if (perTipo) return perTipo;
-  const generico = templates.find(t => t.attiva && (t.tipologiaMezzo === 'Tutte' || t.tipologiaMezzo.toLowerCase().includes('emergenza')));
+  const tipoNorm = String(tipo || '').trim().toLowerCase();
+  if (tipoNorm) {
+    const perTipo = templates.find(
+      t =>
+        t.attiva &&
+        getTipologieAssociateTemplate(t).some(tp => tp.toLowerCase() === tipoNorm)
+    );
+    if (perTipo) return perTipo;
+  }
+  const perTutte = templates.find(
+    t =>
+      t.attiva &&
+      getTipologieAssociateTemplate(t).some(
+        tp => tp.toLowerCase() === 'tutte' || tp.toLowerCase() === 'tutte le tipologie'
+      )
+  );
+  if (perTutte) return perTutte;
+  const generico = templates.find(t => t.attiva && t.tipologiaMezzo.toLowerCase().includes('emergenza'));
   return generico || templates[0];
 }

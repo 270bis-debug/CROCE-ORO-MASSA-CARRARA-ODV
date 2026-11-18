@@ -6,6 +6,8 @@ import {
   MezzoFuoriServizio,
   MOTIVI_FUORI_SERVIZIO_LABELS
 } from '../data/suggerimentiMezzi';
+import { MezzoFlotta } from '../types/adminTypes';
+import { getIconaTipologiaMezzo, useTipologieMezzo } from '../utils/tipologieMezzo';
 
 interface GuidaMezziCentraleProps {
   mezzoSelezionato: string;
@@ -13,6 +15,7 @@ interface GuidaMezziCentraleProps {
   onSelezionaMezzo: (sigla: string) => void;
   ambitoCorrente?: string;
   mezziFuoriServizio?: Record<string, MezzoFuoriServizio>;
+  mezziFlotta?: MezzoFlotta[];
   onApriGestioneStatoFlotta?: () => void;
 }
 
@@ -22,8 +25,10 @@ export const GuidaMezziCentrale: React.FC<GuidaMezziCentraleProps> = ({
   onSelezionaMezzo,
   ambitoCorrente,
   mezziFuoriServizio = {},
+  mezziFlotta = [],
   onApriGestioneStatoFlotta
 }) => {
+  const tipologieCatalogo = useTipologieMezzo();
   const [aperto, setAperto] = useState<boolean>(true);
   const [filtroFlotta, setFiltroFlotta] = useState<'tutti' | 'vet' | 'pc'>(() => {
     if (ambitoCorrente === 'SERVIZIO VETERINARIO') return 'vet';
@@ -31,8 +36,39 @@ export const GuidaMezziCentrale: React.FC<GuidaMezziCentraleProps> = ({
     return 'tutti';
   });
 
-  const flottaVet = FLOTTA_SUGGERIMENTI.filter(m => m.flotta === 'vet');
-  const flottaPC = FLOTTA_SUGGERIMENTI.filter(m => m.flotta === 'pc');
+  const suggList = React.useMemo<SuggerimentoMezzo[]>(() => {
+    const base = FLOTTA_SUGGERIMENTI.map((s) => {
+      const dbMatch = mezziFlotta.find((m) => m.sigla.toUpperCase() === s.sigla.toUpperCase());
+      if (!dbMatch) return s;
+      return {
+        ...s,
+        flotta: dbMatch.flotta,
+        icona: getIconaTipologiaMezzo(dbMatch.tipo, tipologieCatalogo) || s.icona,
+        tipologia: `${dbMatch.tipo}${s.tipologia && !s.tipologia.toLowerCase().includes(dbMatch.tipo.toLowerCase()) ? ` (${s.tipologia})` : ''}`,
+      };
+    });
+    const existingSigle = new Set(base.map((b) => b.sigla.toUpperCase()));
+    const extra: SuggerimentoMezzo[] = mezziFlotta
+      .filter((m) => m.sigla && !existingSigle.has(m.sigla.toUpperCase()))
+      .map((m) => ({
+        sigla: m.sigla,
+        titolo: `${getIconaTipologiaMezzo(m.tipo, tipologieCatalogo)} ${m.sigla} — ${m.modello}`,
+        nomeEsteso: m.modello,
+        icona: getIconaTipologiaMezzo(m.tipo, tipologieCatalogo),
+        flotta: m.flotta,
+        flottaTitolo:
+          m.flotta === 'vet'
+            ? '🐾 Flotta Servizio Veterinario & Emergenza'
+            : '🌲 Flotta Protezione Civile',
+        tipologia: m.tipo,
+        impiegoOperativo: m.note || `${m.tipo} (${m.sedeStazionamento})`,
+        etichettaVolontario: m.sigla,
+      }));
+    return [...base, ...extra];
+  }, [mezziFlotta, tipologieCatalogo]);
+
+  const flottaVet = suggList.filter(m => m.flotta === 'vet');
+  const flottaPC = suggList.filter(m => m.flotta === 'pc');
 
   const siglaSelezionata = (mezzoSelezionato || '').split(' ')[0].toUpperCase();
   const siglaConsigliata = (mezzoConsigliato || '').split(' ')[0].toUpperCase();
@@ -98,7 +134,7 @@ export const GuidaMezziCentrale: React.FC<GuidaMezziCentraleProps> = ({
           {/* Dettagli Tipologia e Impiego Operativo richiesti */}
           <div className="space-y-1 text-[11px] text-slate-300 leading-snug">
             <p>
-              <strong className="text-slate-400">Tipologia:</strong> {m.tipologia}
+              <strong className="text-slate-400">Tipologia Mezzo:</strong> {m.tipologia}
             </p>
             <p>
               <strong className="text-amber-400">Impiego operativo:</strong> {m.impiegoOperativo}
