@@ -55,7 +55,7 @@ export const SchermataSceltaRuolo: React.FC<SchermataSceltaRuoloProps> = ({
     telefono: '0585625410',
     email: 'croceoromassacarrara@gmail.com',
     pin: '4451',
-    inTurno: true,
+    inTurno: false,
     profiloCentrale: true,
     approvato: true,
     dataRegistrazione: '2026-01-01'

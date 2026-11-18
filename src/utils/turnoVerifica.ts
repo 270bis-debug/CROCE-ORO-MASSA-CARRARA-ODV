@@ -4,6 +4,7 @@ import { addDaysISODate, getItalianDateParts, parseItalianDateTimeMs } from './i
 
 export interface EsitoVerificaTurno {
   isDiTurno: boolean;
+  haTurnoProgrammato?: boolean;
   motivo: string;
   dettaglioTurno?: {
     sedeNome?: string;
@@ -369,7 +370,31 @@ export function verificaFinestraTimbraturaTurno(params: {
 }
 
 /**
+ * Verifica se un account/volontario ha una timbratura di ingresso attualmente aperta (senza orarioUscita).
+ * Un account è "di turno" SOLO quando ha effettuato la timbratura.
+ */
+export function hasTimbraturaApertaPerVolontario(
+  vol?: { id?: string; nome?: string; cognome?: string } | null,
+  listaTimbrature: TimbraturaVolontario[] = []
+): TimbraturaVolontario | undefined {
+  if (!vol || !Array.isArray(listaTimbrature) || listaTimbrature.length === 0) return undefined;
+  const nomeCompletoNorm = normalizzaNome(`${vol.nome || ''} ${vol.cognome || ''}`);
+  const cognomeNomeNorm = normalizzaNome(`${vol.cognome || ''} ${vol.nome || ''}`);
+  return listaTimbrature.find((t) => {
+    if (!t || (t.orarioUscita && String(t.orarioUscita).trim() !== '')) return false;
+    if (vol.id && t.volontarioId === vol.id) return true;
+    const tNomeNorm = normalizzaNome(t.volontarioNome);
+    if (tNomeNorm && (tNomeNorm === nomeCompletoNorm || (cognomeNomeNorm && tNomeNorm === cognomeNomeNorm))) {
+      return true;
+    }
+    return false;
+  });
+}
+
+/**
  * Determina se il volontario specificato è di turno in questo preciso momento.
+ * Regola operativa: un account è considerato "di turno" SOLO quando ha effettuato la timbratura (timbratura aperta).
+ * Il semplice accesso/login o la sola presenza sul tabellone turni non rendono l'account di turno finché non timbra.
  */
 export function verificaVolontarioInTurnoAdesso(
   vol: Volontario,
@@ -377,12 +402,9 @@ export function verificaVolontarioInTurnoAdesso(
   listaTimbrature: TimbraturaVolontario[] = []
 ): EsitoVerificaTurno {
   if (!vol) {
-    return { isDiTurno: false, motivo: 'Nessun nominativo selezionato' };
+    return { isDiTurno: false, haTurnoProgrammato: false, motivo: 'Nessun nominativo selezionato' };
   }
 
-  const now = new Date();
-  const nowItaly = getItalianDateParts(now);
-  const oggiStr = nowItaly.isoDate;
   const volNomeCompleto = `${vol.nome} ${vol.cognome}`.trim();
   const matchTabellone = trovaTurnoAttivoNeiTabelloni(vol.id, volNomeCompleto, listaTurni);
 
@@ -398,45 +420,31 @@ export function verificaVolontarioInTurnoAdesso(
       }
     : undefined;
 
-  // 1. Controllo timbrature di presenza del volontario (se ha timbrato l'ingresso e non ancora l'uscita)
-  if (listaTimbrature && listaTimbrature.length > 0) {
-    const volNorm = normalizzaNome(volNomeCompleto);
-    const timbraturaAperta = listaTimbrature.find(t => {
-      const matchId = t.volontarioId === vol.id;
-      const matchNome = t.volontarioNome && normalizzaNome(t.volontarioNome) === volNorm;
-      return (matchId || matchNome) && !t.orarioUscita && (t.data === oggiStr || !t.data);
-    });
-
-    if (timbraturaAperta) {
-      return {
-        isDiTurno: true,
-        motivo: `Timbratura ingresso attiva dalle ore ${timbraturaAperta.orarioIngresso || 'inizio servizio'} presso ${timbraturaAperta.sede || 'la sede operativa'}`,
-        dettaglioTurno: dettaglioDaTabellone || (vol.mezzoAttivo ? { mezzoAssegnato: vol.mezzoAttivo } : undefined)
-      };
-    }
-  }
-
-  // 2. Controllo flag inTurno sul profilo volontario
-  if (vol.inTurno) {
+  // 1. Controllo timbrature di presenza del volontario (unico stato valido per "In Turno")
+  const timbraturaAperta = hasTimbraturaApertaPerVolontario(vol, listaTimbrature);
+  if (timbraturaAperta) {
     return {
       isDiTurno: true,
-      motivo: 'Stato di servizio "In Turno" attivo sul profilo',
-      dettaglioTurno: dettaglioDaTabellone || (vol.mezzoAttivo ? { mezzoAssegnato: vol.mezzoAttivo } : undefined)
+      haTurnoProgrammato: Boolean(matchTabellone),
+      motivo: `Timbratura ingresso attiva dalle ore ${timbraturaAperta.orarioIngresso || 'inizio servizio'} presso ${timbraturaAperta.sede || 'la sede operativa'}`,
+      dettaglioTurno: dettaglioDaTabellone
     };
   }
 
-  // 3. Controllo nel Calendario Turni di tutte le sedi operative
+  // 2. Se programmato sul tabellone turni ma non ancora timbrato: non è ancora di turno!
   if (matchTabellone && dettaglioDaTabellone) {
     return {
-      isDiTurno: true,
-      motivo: matchTabellone.motivo,
+      isDiTurno: false,
+      haTurnoProgrammato: true,
+      motivo: `${matchTabellone.motivo} • Effettua il login e timbra per risultare di turno`,
       dettaglioTurno: dettaglioDaTabellone
     };
   }
 
   return {
     isDiTurno: false,
-    motivo: 'Nessun turno operativo programmato per questo volontario al momento'
+    haTurnoProgrammato: false,
+    motivo: 'Nessuna timbratura attiva al momento'
   };
 }
 

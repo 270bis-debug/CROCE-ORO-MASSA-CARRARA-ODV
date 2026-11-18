@@ -59,17 +59,20 @@ export const ModalNuovoServizioAutonomo: React.FC<ModalNuovoServizioAutonomoProp
   const [tipologia, setTipologia] = useState<string>(TIPOLOGIE_SERVIZIO_ISTITUTO[0]);
   const [tipologiaCustom, setTipologiaCustom] = useState<string>('');
   const [luogo, setLuogo] = useState<string>('Territorio Comunale Massa-Carrara');
-  const [mezzo, setMezzo] = useState<string>(mezzoPredefinito || flottaMezzi[0] || 'T4606');
+  const [mezzo, setMezzo] = useState<string>(mezzoPredefinito || '');
+  const [erroreMezzo, setErroreMezzo] = useState<string | null>(null);
   const [kmInizio, setKmInizio] = useState<string>('');
   const [kmInizioModificato, setKmInizioModificato] = useState<boolean>(false);
   const [urgenza, setUrgenza] = useState<'VERDE' | 'BIANCO' | 'GIALLO'>('VERDE');
   const [note, setNote] = useState<string>('');
 
   useEffect(() => {
-    if (mezzoPredefinito) {
-      setMezzo(mezzoPredefinito);
+    if (isOpen) {
+      setMezzo(mezzoPredefinito || '');
+      setErroreMezzo(null);
+      setKmInizioModificato(false);
     }
-  }, [mezzoPredefinito]);
+  }, [isOpen, mezzoPredefinito]);
 
   useEffect(() => {
     if (!isOpen) {
@@ -77,8 +80,12 @@ export const ModalNuovoServizioAutonomo: React.FC<ModalNuovoServizioAutonomoProp
       return;
     }
     if (!kmInizioModificato) {
-      const suggeriti = getKmInizialiSuggeriti?.(mezzo);
-      setKmInizio(suggeriti !== null && suggeriti !== undefined ? String(suggeriti) : '');
+      if (!mezzo) {
+        setKmInizio('');
+      } else {
+        const suggeriti = getKmInizialiSuggeriti?.(mezzo);
+        setKmInizio(suggeriti !== null && suggeriti !== undefined ? String(suggeriti) : '');
+      }
     }
   }, [isOpen, mezzo, kmInizioModificato, getKmInizialiSuggeriti]);
 
@@ -96,6 +103,10 @@ export const ModalNuovoServizioAutonomo: React.FC<ModalNuovoServizioAutonomoProp
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (!mezzo || !mezzo.trim()) {
+      setErroreMezzo('Seleziona il mezzo operativo prima di avviare il servizio.');
+      return;
+    }
     const tipologiaFinale = tipologiaCustom.trim() || tipologia;
     const luogoFinale = luogo.trim() || 'Territorio Massa-Carrara';
 
@@ -103,7 +114,7 @@ export const ModalNuovoServizioAutonomo: React.FC<ModalNuovoServizioAutonomoProp
       ambito,
       tipologiaServizio: tipologiaFinale,
       luogo: luogoFinale,
-      mezzo: mezzo || mezzoPredefinito || 'T4606',
+      mezzo: mezzo.trim(),
       urgenza,
       note: note.trim(),
       kmInizio: kmInizio.trim() || undefined
@@ -155,7 +166,7 @@ export const ModalNuovoServizioAutonomo: React.FC<ModalNuovoServizioAutonomoProp
                 <span>Notifica Immediata Centrale Operativa</span>
               </div>
               <p className="text-[11px] text-slate-300 leading-snug">
-                All'avvio, la Centrale Operativa riceverà istantaneamente una <strong>notifica di allerta con sirena e messaggio radio</strong> che la informa che il mezzo <strong>{mezzo}</strong> si sta spostando per questo servizio.
+                All'avvio, la Centrale Operativa riceverà istantaneamente una <strong>notifica di allerta con sirena e messaggio radio</strong> che la informa che {mezzo ? <>il mezzo <strong>{mezzo}</strong></> : 'il mezzo selezionato'} si sta spostando per questo servizio.
               </p>
             </div>
 
@@ -269,22 +280,30 @@ export const ModalNuovoServizioAutonomo: React.FC<ModalNuovoServizioAutonomoProp
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <div>
                 <label className="block text-slate-300 font-bold uppercase text-[11px] mb-1">
-                  Mezzo Operativo
+                  Mezzo Operativo <span className="text-red-400">*</span>
                 </label>
                 <select
+                  required
                   value={mezzo}
                   onChange={(e) => {
                     setMezzo(e.target.value);
+                    setErroreMezzo(null);
                     setKmInizioModificato(false);
                   }}
-                  className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white font-mono font-bold text-xs cursor-pointer"
+                  className={`w-full p-2.5 rounded-xl bg-slate-950 border ${
+                    erroreMezzo ? 'border-red-500 ring-1 ring-red-500' : !mezzo ? 'border-amber-500/70' : 'border-slate-700'
+                  } text-white font-mono font-bold text-xs cursor-pointer`}
                 >
+                  <option value="">-- Seleziona Mezzo --</option>
                   {[...flottaMezzi].sort((a, b) => a.localeCompare(b, 'it', { numeric: true, sensitivity: 'base' })).map((m) => (
                     <option key={m} value={m}>
                       🚑 {m}
                     </option>
                   ))}
                 </select>
+                {erroreMezzo && (
+                  <p className="text-[10px] text-red-400 font-bold mt-1">{erroreMezzo}</p>
+                )}
               </div>
 
               <div>

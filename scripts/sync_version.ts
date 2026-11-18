@@ -84,10 +84,13 @@ export const APP_VERSION_LABEL = \`v \${APP_VERSION}\`;
 }
 
 // Se invocato direttamente da riga di comando
-const arg = process.argv[2];
-if (arg) {
-  syncAllFilesToVersion(arg);
-} else {
-  const current = readCurrentVersion();
-  syncAllFilesToVersion(current);
+const isDirectRun = Boolean(process.argv[1] && process.argv[1].replace(/\\/g, '/').endsWith('sync_version.ts'));
+if (isDirectRun) {
+  const arg = process.argv[2];
+  if (arg) {
+    syncAllFilesToVersion(arg);
+  } else {
+    const current = readCurrentVersion();
+    syncAllFilesToVersion(current);
+  }
 }

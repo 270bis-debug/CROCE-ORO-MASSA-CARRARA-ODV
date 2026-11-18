@@ -95,7 +95,7 @@ import { mergeVolontariListsSafe, normalizeDeletedIds } from './utils/volontariM
 import { ModalDecisioneSbloccoAdmin } from './components/ModalDecisioneSbloccoAdmin';
 import { SchermataTurnoVolontario, SessioneTurno } from './components/SchermataTurnoVolontario';
 import { ModalChecklistInizioTurnoGuidata } from './components/ModalChecklistInizioTurnoGuidata';
-import { verificaVolontarioInTurnoAdesso, verificaFinestraTimbraturaTurno } from './utils/turnoVerifica';
+import { verificaVolontarioInTurnoAdesso, verificaFinestraTimbraturaTurno, hasTimbraturaApertaPerVolontario } from './utils/turnoVerifica';
 import { TabelloneTurniSettimanale } from './components/TabelloneTurniSettimanale';
 import { SchermataSceltaRuolo } from './components/SchermataSceltaRuolo';
 import { SchermataAccountInAttivazione } from './components/SchermataAccountInAttivazione';
@@ -1169,12 +1169,15 @@ export default function App() {
     timbratureVolontariRef.current = timbratureVolontari;
   }, [timbratureVolontari]);
 
+  const syncInTurnoConTimbratureRef = useRef<(timbList: TimbraturaVolontario[], broadcastToServer?: boolean) => void>(() => {});
+
   const handleAggiornaTimbrature = (nuove: TimbraturaVolontario[]) => {
     timbratureVolontariRef.current = nuove;
     setTimbratureVolontari(nuove);
     try {
       localStorage.setItem('CROCE_ORO_TIMBRATURE', JSON.stringify(nuove));
     } catch {}
+    syncInTurnoConTimbratureRef.current(nuove, true);
     realtime.syncTimbrature(nuove);
   };
 
@@ -4127,6 +4130,9 @@ export default function App() {
       if ((s.volontari && Array.isArray(s.volontari) && s.volontari.length > 0) || Array.isArray(s.volontariEliminatiIds)) {
         applicaVolontari(Array.isArray(s.volontari) ? s.volontari : [], s.volontariEliminatiIds);
       }
+      if (Array.isArray(s.timbrature)) {
+        syncInTurnoConTimbratureRef.current(s.timbrature.length > 0 ? s.timbrature : timbratureVolontariRef.current, false);
+      }
       if (s.activeMission) {
         if (isBlockedOrGhostMission(s.activeMission, s.codiciEliminati)) {
           setMissione(null);
@@ -4218,6 +4224,68 @@ export default function App() {
     // Sincronizza istantaneamente su cloud e verso tutti gli altri smartphone/centrali connessi
     realtime.syncVolontariList(merged, currentDeleted);
   }, []);
+
+  const syncInTurnoConTimbrature = useCallback((timbList: TimbraturaVolontario[], broadcastToServer = false) => {
+    let changed = false;
+    const next = volontariRef.current.map(v => {
+      const hasOpen = Boolean(hasTimbraturaApertaPerVolontario(v, timbList));
+      if (Boolean(v.inTurno) !== hasOpen) {
+        changed = true;
+        return { ...v, inTurno: hasOpen };
+      }
+      return v;
+    });
+    if (changed) {
+      if (broadcastToServer) {
+        aggiornaVolontari(next);
+      } else {
+        volontariRef.current = next;
+        setVolontari(next);
+        try {
+          localStorage.setItem('CROCE_ORO_VOLONTARI_DB', JSON.stringify(next));
+        } catch {}
+      }
+    }
+  }, [aggiornaVolontari]);
+  syncInTurnoConTimbratureRef.current = syncInTurnoConTimbrature;
+
+  const aggiornaStatoLoginCentrale = useCallback((volId: string | undefined, isLoggedIn: boolean) => {
+    const targetId = volId || 'vol-admin';
+    const adesso = formatOrarioConSecondi(new Date());
+    const found = volontariRef.current.some(v => v.id === targetId);
+    if (!found) return;
+    const next = volontariRef.current.map(v => {
+      if (v.id !== targetId) return v;
+      const haTimb = Boolean(hasTimbraturaApertaPerVolontario(v, timbratureVolontariRef.current));
+      return {
+        ...v,
+        loggato: isLoggedIn ? true : (sessioneTurnoRef.current.attivo && sessioneTurnoRef.current.volontarioId === targetId),
+        inTurno: haTimb,
+        ...(isLoggedIn ? { ultimoAccesso: adesso } : {})
+      };
+    });
+    aggiornaVolontari(next);
+  }, [aggiornaVolontari]);
+
+  const pulisciMezzoAssociatoPostServizio = useCallback(() => {
+    if (sessioneTurnoRef.current.attivo && sessioneTurnoRef.current.mezzoScelto) {
+      const aggSess: SessioneTurno = {
+        ...sessioneTurnoRef.current,
+        mezzoScelto: ''
+      };
+      aggiornaSessioneTurno(aggSess);
+    }
+    const targetVolId = sessioneTurnoRef.current.volontarioId;
+    if (targetVolId) {
+      const vol = volontariRef.current.find(v => v.id === targetVolId);
+      if (vol && vol.mezzoAttivo) {
+        const next = volontariRef.current.map(v =>
+          v.id === targetVolId ? { ...v, mezzoAttivo: '' } : v
+        );
+        aggiornaVolontari(next);
+      }
+    }
+  }, [aggiornaVolontari]);
 
   const handleEliminaVolontario = useCallback((id: string) => {
     if (!id) return;
@@ -4423,7 +4491,7 @@ export default function App() {
     }
   };
 
-  const handleLoginVolontario = (volontario: Volontario, mezzo: string, ruolo: string) => {
+  const handleLoginVolontario = (volontario: Volontario, _mezzo: string, ruolo: string) => {
     // L'amministratore non può entrare come volontario
     if (volontario.id === 'vol-admin' || volontario.pin === '4451' || volontario.nome.toLowerCase().includes('amministratore')) {
       alert("⛔ L'Amministratore non può accedere come volontario di bordo mezzo. Utilizza la postazione di Centrale Operativa / Amministrazione.");
@@ -4433,25 +4501,19 @@ export default function App() {
     const now = new Date();
     const orarioAdesso = formatOrarioConSecondi(now);
     const nomeCompleto = `${volontario.nome} ${volontario.cognome}`.trim();
-    const nomeNorm = nomeCompleto.toLowerCase();
 
-    const matchesVol = (t: TimbraturaVolontario) =>
-      (volontario.id && t.volontarioId === volontario.id) ||
-      (nomeNorm && t.volontarioNome?.trim().toLowerCase() === nomeNorm);
-
-    // Verifica se esiste già una timbratura di servizio aperta: in tal caso Inizio Turno combacia con quella entrata
-    const timbApertaEsistente = timbratureVolontariRef.current.find(
-      t => matchesVol(t) && !t.orarioUscita && !t.corsoId
-    );
-
+    // Verifica se esiste già una timbratura aperta: un account è di turno SOLO se ha effettuato la timbratura
+    const timbApertaEsistente = hasTimbraturaApertaPerVolontario(volontario, timbratureVolontariRef.current);
+    const isDiTurno = Boolean(timbApertaEsistente);
     const orarioInizioTurno = timbApertaEsistente?.orarioIngresso || orarioAdesso;
 
+    // Al login NON viene associato alcun mezzo: il mezzo viene scelto al servizio autonomo oppure assegnato dalla Centrale
     const nuovaSessione: SessioneTurno = {
       attivo: true,
       volontarioId: volontario.id,
       volontarioNome: nomeCompleto,
       qualificaTurno: ruolo,
-      mezzoScelto: mezzo,
+      mezzoScelto: '',
       orarioInizio: orarioInizioTurno
     };
     aggiornaSessioneTurno(nuovaSessione);
@@ -4468,21 +4530,22 @@ export default function App() {
       realtime.updateGps(posizioneVolontario);
     }
 
-    const aggiornati = volontari.map(v =>
+    const aggiornati = volontariRef.current.map(v =>
       v.id === volontario.id
         ? {
             ...v,
-            inTurno: true,
-            mezzoAttivo: mezzo || undefined,
+            loggato: true,
+            inTurno: isDiTurno,
+            mezzoAttivo: '',
             ruoloTurno: ruolo,
-            ultimoAccesso: orarioInizioTurno
+            ultimoAccesso: orarioAdesso
           }
         : v
     );
     aggiornaVolontari(aggiornati);
 
     // Se esiste una missione attiva indirizzata a specifici volontari e questo volontario è tra i destinatari:
-    // Al primo accesso di uno dei volontari selezionati, il servizio viene assegnato in esclusiva a lui fino al completamento!
+    // Al primo accesso di uno dei volontari selezionati, il servizio (con il mezzo assegnato dalla Centrale) viene associato a lui
     if (
       missione &&
       !missione.archiviata &&
@@ -4500,25 +4563,34 @@ export default function App() {
       setMissione(missioneAggiornata);
       lastLocalDispatchAtRef.current = Date.now();
       realtime.dispatchMission(missioneAggiornata, true);
+      if (missione.mezzoAssegnato) {
+        aggiornaSessioneTurno({ ...nuovaSessione, mezzoScelto: missione.mezzoAssegnato });
+        aggiornaVolontari(
+          aggiornati.map(v => (v.id === volontario.id ? { ...v, mezzoAttivo: missione.mezzoAssegnato } : v))
+        );
+      }
       aggiungiNotifica(
-        `🎯 ASSEGNAZIONE ESCLUSIVA: ${nomeCompleto} è il primo dei volontari selezionati ad accedere! Il servizio ${missione.codice} è assegnato esclusivamente a lui fino al completamento.`,
+        `🎯 ASSEGNAZIONE ESCLUSIVA: ${nomeCompleto} è il primo dei volontari selezionati ad accedere! Il servizio ${missione.codice} (Mezzo: ${missione.mezzoAssegnato || 'Centrale'}) è assegnato esclusivamente a lui fino al completamento.`,
         'centrale'
       );
     }
 
-    const dettaglioMezzoLog = mezzo ? ` su ${mezzo}` : '';
-    const testoInizioNotif = `🟢 INIZIO TURNO: ${nomeCompleto} in turno${dettaglioMezzoLog} (${ruolo}) dalle ${orarioInizioTurno}`;
+    const testoNotif = isDiTurno
+      ? `🟢 DI TURNO (TIMBRATO): ${nomeCompleto} collegato e in turno (${ruolo}) dalle ${orarioInizioTurno}`
+      : `🔵 LOGIN VOLONTARIO: ${nomeCompleto} si è loggato all'app (${ruolo}) alle ${orarioAdesso} — non ancora di turno (nessun mezzo associato)`;
 
     const notifInizio = {
       id: `init-turno-${Date.now()}`,
-      orario: orarioInizioTurno,
-      testo: testoInizioNotif,
+      orario: orarioAdesso,
+      testo: testoNotif,
       tipo: 'mezzo' as const
     };
     setNotificheCentrale([notifInizio]);
 
     notificaDatoAllaCentrale(
-      `🟢 INIZIO TURNO: ${nomeCompleto} ha iniziato il servizio dalle ${orarioInizioTurno}${dettaglioMezzoLog} come ${ruolo}`,
+      isDiTurno
+        ? `🟢 ACCESSO IN TURNO: ${nomeCompleto} collegato con timbratura attiva dalle ${orarioInizioTurno} come ${ruolo}`
+        : `🔵 LOGIN VOLONTARIO: ${nomeCompleto} ha effettuato l'accesso all'app alle ${orarioAdesso} come ${ruolo} (in attesa di timbratura per entrare di turno, nessun mezzo associato)`,
       'generico'
     );
   };
@@ -4537,19 +4609,19 @@ export default function App() {
     });
   }, [checklistsCompilate, sessioneTurno.attivo, sessioneTurno.volontarioId, sessioneTurno.volontarioNome]);
 
-  // Verifica se il volontario loggato ha una timbratura aperta in corso
+  // Verifica se il volontario loggato ha una timbratura aperta in corso (unica condizione per essere "di turno")
   const haTimbraturaApertaVolontario = useMemo(() => {
     if (!sessioneTurno.attivo) return false;
-    const volNomeNorm = (sessioneTurno.volontarioNome || '').trim().toLowerCase();
-    return timbratureVolontari.some(
-      t =>
-        !t.orarioUscita &&
-        ((sessioneTurno.volontarioId && t.volontarioId === sessioneTurno.volontarioId) ||
-          (volNomeNorm && t.volontarioNome?.trim().toLowerCase() === volNomeNorm))
-    );
-  }, [timbratureVolontari, sessioneTurno.attivo, sessioneTurno.volontarioId, sessioneTurno.volontarioNome]);
+    const volTarget = volontarioLoggatoCorrente || {
+      id: sessioneTurno.volontarioId || '',
+      nome: sessioneTurno.volontarioNome || '',
+      cognome: ''
+    };
+    return Boolean(hasTimbraturaApertaPerVolontario(volTarget, timbratureVolontari));
+  }, [timbratureVolontari, sessioneTurno.attivo, sessioneTurno.volontarioId, sessioneTurno.volontarioNome, volontarioLoggatoCorrente]);
 
-  // Flusso guidato post-login (quando di turno): 1) Prima Timbratura -> 2) Poi Checklist
+  // Flusso guidato post-login: invita alla timbratura se ha un turno programmato e non ha timbrato.
+  // Non forza la checklist di un mezzo al login perché nessun mezzo è associato finché non avvia un servizio o lo riceve dalla Centrale.
   const handleAvviaFlussoTimbraturaPoiChecklist = useCallback(
     (vol: Volontario, mezzo: string, ruoloTurno: string, timbGiaAperta: boolean) => {
       const oggiStr = formatDateItaly();
@@ -4564,14 +4636,15 @@ export default function App() {
       setInvitoAvvioDismissedVolKey(null);
 
       if (!timbGiaAperta) {
-        setInAttesaChecklistDopoTimbratura({
-          mezzo: mezzo || '',
-          ruolo: ruoloTurno || vol.qualifica || 'Soccorritore'
-        });
+        setInAttesaChecklistDopoTimbratura(
+          mezzo
+            ? { mezzo, ruolo: ruoloTurno || vol.qualifica || 'Soccorritore' }
+            : null
+        );
         setModalTimbraturaVolontarioAperta(true);
-      } else if (!giaCompilataOggi) {
+      } else if (mezzo && !giaCompilataOggi) {
         setInAttesaChecklistDopoTimbratura({
-          mezzo: mezzo || '',
+          mezzo,
           ruolo: ruoloTurno || vol.qualifica || 'Soccorritore'
         });
         setModalChecklistPostTimbraturaAperta(true);
@@ -4582,7 +4655,7 @@ export default function App() {
     [checklistsCompilate]
   );
 
-  // Chi ha già effettuato il login in precedenza viene comunque invitato prima a timbrare e poi a compilare la checklist
+  // Chi ha effettuato il login e ha un turno programmato non ancora timbrato viene invitato a timbrare per entrare di turno
   useEffect(() => {
     if (!sessioneTurno.attivo || !sessioneTurno.volontarioId || !volontarioLoggatoCorrente) return;
     if (ruolo === 'admin' && layoutView === 'centrale') return;
@@ -4590,16 +4663,17 @@ export default function App() {
     if (invitoAutoTriggeredRef.current === sessionKey || invitoAvvioDismissedVolKey === sessionKey) return;
 
     const verifica = verificaVolontarioInTurnoAdesso(volontarioLoggatoCorrente, turniSedi, timbratureVolontari);
-    const mezzoTurno = sessioneTurno.mezzoScelto || verifica.dettaglioTurno?.mezzoAssegnato || '';
     const ruoloTurnoEff = sessioneTurno.qualificaTurno || verifica.dettaglioTurno?.ruoloAssegnato || volontarioLoggatoCorrente.qualifica || 'Soccorritore';
 
-    if (!haTimbraturaApertaVolontario) {
+    if (!haTimbraturaApertaVolontario && verifica.haTurnoProgrammato) {
       invitoAutoTriggeredRef.current = sessionKey;
-      setInAttesaChecklistDopoTimbratura({ mezzo: mezzoTurno, ruolo: ruoloTurnoEff });
+      setInAttesaChecklistDopoTimbratura(
+        sessioneTurno.mezzoScelto ? { mezzo: sessioneTurno.mezzoScelto, ruolo: ruoloTurnoEff } : null
+      );
       setModalTimbraturaVolontarioAperta(true);
-    } else if (verifica.isDiTurno && !checklistCompilataOggiVolontario) {
+    } else if (haTimbraturaApertaVolontario && sessioneTurno.mezzoScelto && !checklistCompilataOggiVolontario) {
       invitoAutoTriggeredRef.current = sessionKey;
-      setInAttesaChecklistDopoTimbratura({ mezzo: mezzoTurno, ruolo: ruoloTurnoEff });
+      setInAttesaChecklistDopoTimbratura({ mezzo: sessioneTurno.mezzoScelto, ruolo: ruoloTurnoEff });
       setModalChecklistPostTimbraturaAperta(true);
     }
   }, [
@@ -4618,7 +4692,7 @@ export default function App() {
     invitoAvvioDismissedVolKey
   ]);
 
-  // Effetto di sincronizzazione automatica: se una missione con destinatari specifici è attiva e un volontario destinatario è già in turno
+  // Effetto di sincronizzazione automatica: se una missione con destinatari specifici è attiva e un volontario destinatario è loggato
   useEffect(() => {
     if (
       missione &&
@@ -4640,12 +4714,20 @@ export default function App() {
       setMissione(missioneAggiornata);
       lastLocalDispatchAtRef.current = Date.now();
       realtime.dispatchMission(missioneAggiornata, true);
+      if (missione.mezzoAssegnato) {
+        aggiornaSessioneTurno({ ...sessioneTurnoRef.current, mezzoScelto: missione.mezzoAssegnato });
+        aggiornaVolontari(
+          volontariRef.current.map(v =>
+            v.id === sessioneTurno.volontarioId ? { ...v, mezzoAttivo: missione.mezzoAssegnato } : v
+          )
+        );
+      }
       aggiungiNotifica(
-        `🎯 ASSEGNAZIONE ESCLUSIVA: ${nomeAssegnato} ha effettuato l'accesso ed è il primo tra i destinatari incaricati! Servizio ${missione.codice} assegnato esclusivamente a lui fino al completamento.`,
+        `🎯 ASSEGNAZIONE ESCLUSIVA: ${nomeAssegnato} ha effettuato l'accesso ed è il primo tra i destinatari incaricati! Servizio ${missione.codice} (Mezzo: ${missione.mezzoAssegnato || 'Centrale'}) assegnato esclusivamente a lui fino al completamento.`,
         'centrale'
       );
     }
-  }, [missione, sessioneTurno.attivo, sessioneTurno.volontarioId, sessioneTurno.volontarioNome]);
+  }, [missione, sessioneTurno.attivo, sessioneTurno.volontarioId, sessioneTurno.volontarioNome, aggiornaVolontari]);
 
   const handleLogoutVolontario = (forzato: boolean | unknown = false) => {
     const isForzato = forzato === true;
@@ -4741,9 +4823,15 @@ export default function App() {
     }
 
     if (sessioneCorrente.volontarioId) {
-      const aggiornati = volontari.map(v =>
+      const aggiornati = volontariRef.current.map(v =>
         v.id === sessioneCorrente.volontarioId
-          ? { ...v, inTurno: false, mezzoAttivo: undefined, ruoloTurno: undefined }
+          ? {
+              ...v,
+              loggato: utenteCentraleRef.current?.id === v.id ? true : false,
+              inTurno: Boolean(hasTimbraturaApertaPerVolontario(v, timbratureVolontariRef.current)),
+              mezzoAttivo: '',
+              ruoloTurno: ''
+            }
           : v
       );
       aggiornaVolontari(aggiornati);
@@ -4751,7 +4839,7 @@ export default function App() {
 
     // Invia la notifica alla centrale che la conserva nel suo registro storico
     notificaDatoAllaCentrale(
-      `🔴 FINE TURNO (ESCI): ${nomeUscita} ha terminato il servizio alle ${orarioFineTurno}${mezzoUscita ? ` su ${mezzoUscita}` : ''}. Terminale disconnesso.`,
+      `🔴 LOGOUT VOLONTARIO: ${nomeUscita} si è disconnesso dall'app alle ${orarioFineTurno}${mezzoUscita ? ` (ultimo mezzo: ${mezzoUscita})` : ''}. Terminale disconnesso.`,
       'generico'
     );
 
@@ -5356,6 +5444,7 @@ export default function App() {
       setTempi({});
       setIsBloccatoPrivacy(false);
       setCountdown30Minuti(null);
+      pulisciMezzoAssociatoPostServizio();
     }
 
     // 4. Ricalcolo progressivo automatico:
@@ -6245,6 +6334,7 @@ export default function App() {
     try { localStorage.removeItem('CROCE_ORO_COUNTDOWN_30_MIN'); } catch {}
 
     realtime.send('CLEAR_MISSION');
+    pulisciMezzoAssociatoPostServizio();
 
     aggiungiNotifica(`✅ Servizio ${missione.codice} completato (${tot} KM)! Terminale liberato e pronto per il nuovo obiettivo assegnato dalla Centrale.`, 'mezzo');
   };
@@ -6270,7 +6360,8 @@ export default function App() {
     setIsBloccatoPrivacy(false);
     setPrivacyCountdown(null);
     realtime.clearMission();
-    aggiungiNotifica("⏱️ Countdown 30 minuti azzerato dal volontario. Mezzo subito disponibile per nuova missione.", "mezzo");
+    pulisciMezzoAssociatoPostServizio();
+    aggiungiNotifica("⏱️ Countdown 30 minuti azzerato dal volontario. Terminale subito disponibile per nuova missione.", "mezzo");
   };
 
   // Salvataggio KM inseriti tassativamente dal Volontario (da modale rientro o da promemoria waiting screen)
@@ -6498,7 +6589,8 @@ export default function App() {
           setCoordinateSulPosto(null);
           setCoordinateDestinazione(null);
           realtime.clearMission();
-          aggiungiNotifica("⏱️ Countdown 30 minuti completato. Mezzo disponibile per nuova missione.", "mezzo");
+          pulisciMezzoAssociatoPostServizio();
+          aggiungiNotifica("⏱️ Countdown 30 minuti completato. Terminale disponibile per nuova missione.", "mezzo");
           return null;
         }
         return { ...prev, secondiRimanenti: rem };
@@ -7855,6 +7947,7 @@ export default function App() {
       try {
         localStorage.setItem('CROCE_ORO_UTENTE_CENTRALE', JSON.stringify(adminData));
       } catch {}
+      aggiornaStatoLoginCentrale('vol-admin', true);
       setProfiloScelto('admin');
       setRuolo('admin');
       setAdminSection('dashboard');
@@ -7905,6 +7998,7 @@ export default function App() {
           localStorage.setItem('CROCE_ORO_UTENTE_CENTRALE', JSON.stringify(opData));
           localStorage.removeItem('CROCE_ORO_OPERATORE_IN_ATTIVAZIONE');
         } catch {}
+        aggiornaStatoLoginCentrale(op.id, true);
         setAccountInAttivazione(null);
         setProfiloScelto('admin');
         setRuolo('admin');
@@ -7946,8 +8040,12 @@ export default function App() {
   };
 
   const handleDisconnettiProfilo = (silenzioso = false) => {
+    const prevOpId = utenteCentraleRef.current?.id;
     setProfiloScelto(null);
     setUtenteCentrale(null);
+    if (prevOpId || ruoloRef.current === 'admin') {
+      aggiornaStatoLoginCentrale(prevOpId, false);
+    }
     try {
       localStorage.removeItem('CROCE_ORO_PROFILO_SCELTO');
       localStorage.removeItem('CROCE_ORO_UTENTE_CENTRALE');
@@ -8022,6 +8120,7 @@ export default function App() {
             macroCategorieAbilitate: volontarioLoggatoCorrente.macroCategorieAbilitate || []
           };
           setUtenteCentrale(opData);
+          aggiornaStatoLoginCentrale(volontarioLoggatoCorrente.id, true);
           setRuolo('admin');
           setProfiloScelto('admin');
           setAdminSection('dashboard');
@@ -8068,6 +8167,7 @@ export default function App() {
             localStorage.setItem('CROCE_ORO_UTENTE_CENTRALE', JSON.stringify(opDataAgg));
           } catch {}
         }
+        aggiornaStatoLoginCentrale(utenteCentrale.id, true);
         setRuolo('admin');
         setProfiloScelto('admin');
         setAdminSection('dashboard');
@@ -8098,6 +8198,7 @@ export default function App() {
     if (pin === '4451') {
       const adminData = { nome: 'Amministratore', cognome: 'Centrale', pin: '4451', isAdmin: true };
       setUtenteCentrale(adminData);
+      aggiornaStatoLoginCentrale('vol-admin', true);
       try {
         localStorage.setItem('CROCE_ORO_UTENTE_CENTRALE', JSON.stringify(adminData));
         localStorage.setItem('CROCE_ORO_PROFILO_SCELTO', 'admin');
@@ -8140,6 +8241,7 @@ export default function App() {
           macroCategorieAbilitate: op.macroCategorieAbilitate || []
         };
         setUtenteCentrale(opData);
+        aggiornaStatoLoginCentrale(op.id, true);
         try {
           localStorage.setItem('CROCE_ORO_UTENTE_CENTRALE', JSON.stringify(opData));
           localStorage.setItem('CROCE_ORO_PROFILO_SCELTO', 'admin');
@@ -8655,6 +8757,12 @@ export default function App() {
   // Avvio autonomo di un Servizio d'Istituto o di Protezione Civile da parte del Volontario
   const handleAvviaServizioAutonomo = (dati: DatiNuovoServizioAutonomo) => {
     try {
+      const mezzoEffettivo = (dati.mezzo || sessioneTurno.mezzoScelto || '').trim();
+      if (!mezzoEffettivo) {
+        aggiungiNotifica('⚠️ Seleziona un mezzo prima di avviare il servizio autonomo!', 'allarme');
+        return;
+      }
+
       const itNow = getItalianDateParts();
       const currentYear = itNow.year;
       const prefix = dati.ambito === "PROTEZIONE CIVILE" ? "PC-AUT" : "IST-AUT";
@@ -8669,7 +8777,6 @@ export default function App() {
         : (volontari.find(v => v.id === sessioneTurno.volontarioId)?.nome || 'Volontario');
       const volId = sessioneTurno.volontarioId;
 
-      const mezzoEffettivo = dati.mezzo || sessioneTurno.mezzoScelto || 'T4606';
       const prevKmFine = getUltimiKmMezzo(mezzoEffettivo);
       const kmPrecomp = dati.kmInizio?.trim() || (prevKmFine !== null ? String(prevKmFine) : '');
 
@@ -8705,6 +8812,22 @@ export default function App() {
       try { localStorage.removeItem('CROCE_ORO_COUNTDOWN_30_MIN'); } catch {}
       setKmInizio(kmPrecomp);
       setKmFine('');
+
+      // Associa il mezzo scelto dal volontario durante il servizio autonomo
+      if (sessioneTurnoRef.current.attivo) {
+        const sessioneConMezzo: SessioneTurno = {
+          ...sessioneTurnoRef.current,
+          mezzoScelto: mezzoEffettivo
+        };
+        aggiornaSessioneTurno(sessioneConMezzo);
+        realtime.updateShift(sessioneConMezzo);
+      }
+      if (volId) {
+        const aggiornatiVol = volontariRef.current.map(v =>
+          v.id === volId ? { ...v, mezzoAttivo: mezzoEffettivo } : v
+        );
+        aggiornaVolontari(aggiornatiVol);
+      }
 
       // Notifica alla centrale e broadcast via WebSocket
       lastLocalDispatchAtRef.current = Date.now();
@@ -9299,6 +9422,9 @@ KM TOTALI: ${kmTot} KM`;
             localStorage.setItem('CROCE_ORO_TIMBRATURE', JSON.stringify(s.timbrature));
           } catch {}
         }
+        if (Array.isArray(s.timbrature)) {
+          syncInTurnoConTimbratureRef.current(s.timbrature.length > 0 ? s.timbrature : timbratureVolontariRef.current, false);
+        }
         if (s.activeMission) {
           if (isBlockedOrGhostMission(s.activeMission, s.codiciEliminati)) {
             setMissione(null);
@@ -9613,6 +9739,9 @@ KM TOTALI: ${kmTot} KM`;
           try {
             localStorage.setItem('CROCE_ORO_TIMBRATURE', JSON.stringify(s.timbrature));
           } catch {}
+        }
+        if (Array.isArray(s.timbrature)) {
+          syncInTurnoConTimbratureRef.current(s.timbrature.length > 0 ? s.timbrature : timbratureVolontariRef.current, false);
         }
         if (s.bacheca && Array.isArray(s.bacheca) && s.bacheca.length > 0) {
           const bachecaNorm = normalizzaComunicazioniBacheca(s.bacheca);
@@ -9943,6 +10072,19 @@ KM TOTALI: ${kmTot} KM`;
           payload.mission.kmInizio !== undefined && String(payload.mission.kmInizio).trim() !== ''
             ? String(payload.mission.kmInizio)
             : (prevKmFine !== null ? String(prevKmFine) : '');
+
+        // Se un volontario è loggato su questo terminale ed è destinatario del servizio, associa il mezzo assegnato dalla Centrale
+        if (mezzoMissione && sessioneTurnoRef.current.attivo && sessioneTurnoRef.current.volontarioId) {
+          const destIds: string[] = Array.isArray(payload.mission.destinatariVolontariIds) ? payload.mission.destinatariVolontariIds : [];
+          const myId = sessioneTurnoRef.current.volontarioId;
+          const matchesTarget =
+            payload.mission.volontarioAssegnatoEsclusivoId === myId ||
+            destIds.length === 0 ||
+            destIds.includes(myId);
+          if (matchesTarget && sessioneTurnoRef.current.mezzoScelto !== mezzoMissione) {
+            aggiornaSessioneTurno({ ...sessioneTurnoRef.current, mezzoScelto: mezzoMissione });
+          }
+        }
 
         if (!isAlreadyHandled) {
           setKmInizio(kmIniziali);
@@ -10606,7 +10748,7 @@ KM TOTALI: ${kmTot} KM`;
             const descMezzoShift = payload.shift.mezzoScelto ? ` sul mezzo ${payload.shift.mezzoScelto}` : '';
             setUltimoEventoCentrale({
               id: `login-${Date.now()}`,
-              testo: `🟢 ACCESSO VOLONTARIO: ${payload.shift.volontarioNome} ha effettuato l'accesso all'app${descMezzoShift} (${payload.shift.qualificaTurno || 'Operativo'})`,
+              testo: `🔵 ACCESSO VOLONTARIO (LOGGATO): ${payload.shift.volontarioNome} si è loggato all'app${descMezzoShift} (${payload.shift.qualificaTurno || 'Operativo'})`,
               orario: payload.shift.orarioInizio || formatTimeItaly(),
               tipo: 'generico'
             });
@@ -10615,8 +10757,8 @@ KM TOTALI: ${kmTot} KM`;
               setUltimoEventoCentrale(null);
             }, 8000);
 
-            mostraNotificaNativa(`🟢 ACCESSO VOLONTARIO: ${payload.shift.volontarioNome}`, {
-              body: `Inizio turno${payload.shift.mezzoScelto ? ` su ${payload.shift.mezzoScelto}` : ''} (${payload.shift.qualificaTurno}) alle ore ${payload.shift.orarioInizio || formatTimeItaly()}`,
+            mostraNotificaNativa(`🔵 ACCESSO VOLONTARIO (LOGGATO): ${payload.shift.volontarioNome}`, {
+              body: `Login effettuato${payload.shift.mezzoScelto ? ` su ${payload.shift.mezzoScelto}` : ''} (${payload.shift.qualificaTurno}) alle ore ${payload.shift.orarioInizio || formatTimeItaly()}`,
               tag: `login-${payload.shift.volontarioId || Date.now()}`,
               vibrate: [200, 100, 200]
             });
@@ -11060,6 +11202,7 @@ KM TOTALI: ${kmTot} KM`;
             localStorage.removeItem('CROCE_ORO_LETTURA_CONFERMATA');
             localStorage.removeItem('CROCE_ORO_TEMPI');
           } catch {}
+          pulisciMezzoAssociatoPostServizio();
         }
         setDestinazioneAvvisata(false);
         arrestaSuoneria(false);
@@ -11399,6 +11542,7 @@ KM TOTALI: ${kmTot} KM`;
           try {
             localStorage.setItem('CROCE_ORO_TIMBRATURE', JSON.stringify(payload.timbrature));
           } catch {}
+          syncInTurnoConTimbratureRef.current(payload.timbrature, false);
         }
       }),
 
@@ -13126,9 +13270,9 @@ KM TOTALI: ${kmTot} KM`;
                         onApriCentroNotifiche={() => setModalCentroNotificheAperta(true)}
                         conteggioNotificheNonLette={conteggioNotificheNonLette}
                         onApriTimbratura={() => {
-                          if (!haTimbraturaApertaVolontario && !checklistCompilataOggiVolontario && !inAttesaChecklistDopoTimbratura) {
+                          if (!haTimbraturaApertaVolontario && !checklistCompilataOggiVolontario && !inAttesaChecklistDopoTimbratura && sessioneTurno.mezzoScelto) {
                             setInAttesaChecklistDopoTimbratura({
-                              mezzo: sessioneTurno.mezzoScelto || '',
+                              mezzo: sessioneTurno.mezzoScelto,
                               ruolo: sessioneTurno.qualificaTurno || 'Soccorritore'
                             });
                           }
@@ -15513,61 +15657,61 @@ KM TOTALI: ${kmTot} KM`;
                 </div>
               )}
 
-              {/* Monitor Stato Capo Turno in Servizio sul Mezzo */}
-              <div className="mb-4 bg-slate-950/80 border border-slate-800 rounded-xl p-2.5 px-3 flex flex-wrap items-center justify-between gap-2 text-xs">
-                <div className="flex items-center gap-2">
-                  <div className={`w-2.5 h-2.5 rounded-full ${sessioneTurno.attivo ? 'bg-emerald-400 animate-pulse' : 'bg-slate-600'}`} />
-                  <span className="text-slate-400 font-medium">
-                    Capo Turno in Servizio:
-                  </span>
-                  {sessioneTurno.attivo ? (
-                    <span className="font-bold text-emerald-400 flex flex-wrap items-center gap-1.5">
-                      <span className="flex items-center gap-1.5 text-emerald-300">
-                        <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 inline-block shadow-sm animate-pulse" />
-                        <span>{sessioneTurno.volontarioNome}</span>
+              {/* Monitor Stato Terminale Volontario / Di Turno (solo dopo timbratura) vs Loggato */}
+              {(() => {
+                const capoTimb = sessioneTurno.attivo
+                  ? timbratureVolontari.find(t =>
+                      (t.volontarioId === sessioneTurno.volontarioId ||
+                       (t.volontarioNome && sessioneTurno.volontarioNome && t.volontarioNome.trim().toLowerCase() === sessioneTurno.volontarioNome.trim().toLowerCase())) &&
+                      (!t.orarioUscita || t.orarioUscita.trim() === '')
+                    )
+                  : undefined;
+                const isDiTurnoTimbrato = Boolean(sessioneTurno.attivo && capoTimb);
+                return (
+                  <div className="mb-4 bg-slate-950/80 border border-slate-800 rounded-xl p-2.5 px-3 flex flex-wrap items-center justify-between gap-2 text-xs">
+                    <div className="flex items-center gap-2">
+                      <div className={`w-2.5 h-2.5 rounded-full ${isDiTurnoTimbrato ? 'bg-emerald-400 animate-pulse' : sessioneTurno.attivo ? 'bg-sky-400' : 'bg-slate-600'}`} />
+                      <span className="text-slate-400 font-medium">
+                        {isDiTurnoTimbrato ? 'Di Turno (Timbrato):' : 'Terminale Volontario:'}
                       </span>
-                      <span className="text-slate-300 font-semibold">({sessioneTurno.qualificaTurno})</span>
-                      {sessioneTurno.mezzoScelto && (
-                        <span className="text-amber-400 font-mono">• Mezzo: {sessioneTurno.mezzoScelto}</span>
-                      )}
-                      <span className="text-slate-500 font-normal">• Dalle {sessioneTurno.orarioInizio}</span>
-                      {(() => {
-                        const capoTimb = timbratureVolontari.find(t =>
-                          (t.volontarioId === sessioneTurno.volontarioId ||
-                           (t.volontarioNome && sessioneTurno.volontarioNome && t.volontarioNome.trim().toLowerCase() === sessioneTurno.volontarioNome.trim().toLowerCase())) &&
-                          (!t.orarioUscita || t.orarioUscita.trim() === '')
-                        );
-                        if (capoTimb) {
-                          return (
+                      {sessioneTurno.attivo ? (
+                        <span className={`font-bold flex flex-wrap items-center gap-1.5 ${isDiTurnoTimbrato ? 'text-emerald-400' : 'text-sky-300'}`}>
+                          <span className={`flex items-center gap-1.5 ${isDiTurnoTimbrato ? 'text-emerald-300' : 'text-sky-200'}`}>
+                            <span className={`w-2.5 h-2.5 rounded-full inline-block shadow-sm ${isDiTurnoTimbrato ? 'bg-emerald-400 animate-pulse' : 'bg-sky-400'}`} />
+                            <span>{sessioneTurno.volontarioNome}</span>
+                          </span>
+                          <span className="text-slate-300 font-semibold">({sessioneTurno.qualificaTurno})</span>
+                          {sessioneTurno.mezzoScelto && (
+                            <span className="text-amber-400 font-mono">• Mezzo: {sessioneTurno.mezzoScelto}</span>
+                          )}
+                          <span className="text-slate-500 font-normal">• Dalle {sessioneTurno.orarioInizio}</span>
+                          {capoTimb ? (
                             <span
-                              className="ml-1 inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 text-[10px] font-bold"
+                              className="ml-1 inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 text-[10px] font-bold"
                               title={`Timbratura di ingresso registrata alle ore ${capoTimb.orarioIngresso}${capoTimb.sede ? ` presso ${capoTimb.sede}` : ''}`}
                             >
-                              <Clock className="w-3 h-3 text-cyan-400" />
-                              <span>⏱️ Timbrato Ingresso: {capoTimb.orarioIngresso}</span>
+                              <Clock className="w-3 h-3 text-emerald-400" />
+                              <span>🟢 Di Turno • Timbrato: {capoTimb.orarioIngresso}</span>
                             </span>
-                          );
-                        }
-                        return (
-                          <span
-                            className="ml-1 inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[10px] font-bold animate-pulse"
-                            title="Attenzione: Il Capo Turno ha effettuato il login ma NON ha ancora registrato la timbratura di ingresso!"
-                          >
-                            <AlertTriangle className="w-3 h-3 text-amber-400" />
-                            <span>⚠️ Manca Timbratura Ingresso</span>
-                          </span>
-                        );
-                      })()}
-                    </span>
-                  ) : (
-                    <span className="text-slate-500 italic">
-                      Nessun volontario attualmente loggato in turno sul telefono di bordo
-                    </span>
-                  )}
-                </div>
-
-
-              </div>
+                          ) : (
+                            <span
+                              className="ml-1 inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-sky-500/20 text-sky-300 border border-sky-500/40 text-[10px] font-bold"
+                              title="Account loggato ma NON ancora di turno: manca la timbratura di ingresso."
+                            >
+                              <AlertTriangle className="w-3 h-3 text-amber-400" />
+                              <span>🔵 Loggato (Non di turno • Manca Timbratura)</span>
+                            </span>
+                          )}
+                        </span>
+                      ) : (
+                        <span className="text-slate-500 italic">
+                          Nessun volontario attualmente loggato sul terminale mobile
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })()}
 
               {/* CARD MISSIONE ATTIVA CON LINK DIRETTO AL NAVIGATORE E CONDIVISIONE (SOLO AMMINISTRATORE) */}
               {missione && (
@@ -17539,10 +17683,11 @@ KM TOTALI: ${kmTot} KM`;
                         const v = volontari.find(item => item.id === id);
                         if (!v) return null;
                         const nomeVol = `${v.nome} ${v.cognome}`.trim().toLowerCase();
-                        const timbAttiva = timbratureVolontari.find(t =>
+                        const timbChip = timbratureVolontari.find(t =>
                           (t.volontarioId === v.id || (t.volontarioNome && t.volontarioNome.trim().toLowerCase() === nomeVol)) &&
                           (!t.orarioUscita || t.orarioUscita.trim() === '')
                         );
+                        const isLogChip = Boolean(v.loggato || (sessioneTurno.attivo && sessioneTurno.volontarioId === v.id));
                         return (
                           <span
                             key={id}
@@ -17550,15 +17695,15 @@ KM TOTALI: ${kmTot} KM`;
                           >
                             <span>👤 {v.nome} {v.cognome}</span>
                             <span className="text-[9px] text-amber-300 font-normal">({v.qualifica})</span>
-                            {v.inTurno ? (
-                              <span className="text-[9px] px-1 py-0.2 rounded bg-emerald-500/30 text-emerald-300 font-bold">● Login</span>
+                            {isLogChip ? (
+                              <span className="text-[9px] px-1 py-0.2 rounded bg-sky-500/30 text-sky-300 font-bold">● Loggato</span>
                             ) : (
                               <span className="text-[9px] text-slate-400">No login</span>
                             )}
-                            {timbAttiva ? (
-                              <span className="text-[9px] px-1 py-0.2 rounded bg-cyan-500/30 text-cyan-200 font-mono">⏱️ {timbAttiva.orarioIngresso}</span>
+                            {timbChip ? (
+                              <span className="text-[9px] px-1 py-0.2 rounded bg-emerald-500/30 text-emerald-300 font-bold">⏱️ In Turno ({timbChip.orarioIngresso})</span>
                             ) : (
-                              <span className="text-[9px] text-amber-400/80 font-mono">⚠️ No timb.</span>
+                              <span className="text-[9px] text-amber-400/80 font-mono">⚠️ Non timbrato</span>
                             )}
                             <button
                               type="button"
@@ -17613,43 +17758,50 @@ KM TOTALI: ${kmTot} KM`;
                               <span className="text-[10px] text-slate-400 font-mono">({v.qualifica})</span>
                             </div>
                             <div className="flex items-center gap-1.5 shrink-0 text-[10px] flex-wrap justify-end">
-                              {/* Indicatore Stato Login */}
-                              {v.inTurno ? (
-                                <span className="px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-400 font-bold flex items-center gap-1">
-                                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                                  In Turno
-                                </span>
-                              ) : (
-                                <span className="px-1.5 py-0.5 rounded bg-slate-900 text-slate-500">
-                                  Non loggato
-                                </span>
-                              )}
+                              {/* Stato 1: In Turno SOLO se timbrato vs Loggato */}
+                              {(() => {
+                                const isLoggatoVol = Boolean(v.loggato || (sessioneTurno.attivo && sessioneTurno.volontarioId === v.id));
+                                const isTimbratoVol = Boolean(timbAttiva);
+                                return (
+                                  <>
+                                    {isLoggatoVol ? (
+                                      <span className="px-1.5 py-0.5 rounded bg-sky-500/20 text-sky-300 border border-sky-500/30 font-bold flex items-center gap-1">
+                                        <span className="w-1.5 h-1.5 rounded-full bg-sky-400" />
+                                        Loggato
+                                      </span>
+                                    ) : (
+                                      <span className="px-1.5 py-0.5 rounded bg-slate-900 text-slate-500">
+                                        Non loggato
+                                      </span>
+                                    )}
 
-                              {/* Indicatore Timbratura di Ingresso: Accanto al verde del login */}
-                              {timbAttiva ? (
-                                <span
-                                  className="px-1.5 py-0.5 rounded bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 font-bold flex items-center gap-1 text-[9.5px]"
-                                  title={`Timbratura di ingresso registrata alle ore ${timbAttiva.orarioIngresso}${timbAttiva.sede ? ` presso ${timbAttiva.sede}` : ''}`}
-                                >
-                                  <Clock className="w-2.5 h-2.5 text-cyan-400 shrink-0" />
-                                  <span>⏱️ Timbrato: {timbAttiva.orarioIngresso}</span>
-                                </span>
-                              ) : v.inTurno ? (
-                                <span
-                                  className="px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 font-bold flex items-center gap-1 text-[9.5px] animate-pulse"
-                                  title="Attenzione operatore: Il volontario ha effettuato il login ma NON ha ancora registrato la timbratura di ingresso!"
-                                >
-                                  <AlertTriangle className="w-2.5 h-2.5 text-amber-400 shrink-0" />
-                                  <span>⚠️ No Timbratura</span>
-                                </span>
-                              ) : (
-                                <span
-                                  className="px-1.5 py-0.5 rounded bg-slate-800/80 text-slate-500 border border-slate-800 text-[9px]"
-                                  title="Nessuna timbratura registrata"
-                                >
-                                  Non timbrato
-                                </span>
-                              )}
+                                    {isTimbratoVol && timbAttiva ? (
+                                      <span
+                                        className="px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 font-bold flex items-center gap-1 text-[9.5px]"
+                                        title={`In Turno — Timbratura di ingresso registrata alle ore ${timbAttiva.orarioIngresso}${timbAttiva.sede ? ` presso ${timbAttiva.sede}` : ''}`}
+                                      >
+                                        <Clock className="w-2.5 h-2.5 text-emerald-400 shrink-0" />
+                                        <span>🟢 In Turno ({timbAttiva.orarioIngresso})</span>
+                                      </span>
+                                    ) : isLoggatoVol ? (
+                                      <span
+                                        className="px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 font-bold flex items-center gap-1 text-[9.5px]"
+                                        title="Il volontario è loggato ma NON ha ancora effettuato la timbratura: non è di turno."
+                                      >
+                                        <AlertTriangle className="w-2.5 h-2.5 text-amber-400 shrink-0" />
+                                        <span>Non di turno (Manca Timbratura)</span>
+                                      </span>
+                                    ) : (
+                                      <span
+                                        className="px-1.5 py-0.5 rounded bg-slate-800/80 text-slate-500 border border-slate-800 text-[9px]"
+                                        title="Nessuna timbratura registrata"
+                                      >
+                                        Non timbrato
+                                      </span>
+                                    )}
+                                  </>
+                                );
+                              })()}
 
                               {isSelezionato && (
                                 <span className="font-bold text-amber-400">Incaricato ✓</span>
@@ -18032,7 +18184,11 @@ KM TOTALI: ${kmTot} KM`;
               statoMissione={
                 missione
                   ? (tempi.rientro ? 'RIENTRO / TERMINATA' : tempi.sulPosto ? 'SUL POSTO' : tempi.partenza ? 'IN VIAGGIO' : 'PRONTO')
-                  : (sessioneTurno.attivo ? `IN TURNO (${sessioneTurno.volontarioNome})` : 'DISPONIBILE / IN ATTESA')
+                  : (haTimbraturaApertaVolontario
+                      ? `DI TURNO (${sessioneTurno.volontarioNome})`
+                      : sessioneTurno.attivo
+                      ? `LOGGATO (${sessioneTurno.volontarioNome})`
+                      : 'DISPONIBILE / IN ATTESA')
               }
               onAggiornaPosizione={simulaSpostamentoGPS}
               onAggiornaCoordinate={(nuovaPos) => {
@@ -20177,7 +20333,7 @@ KM TOTALI: ${kmTot} KM`;
                     aggiornaSessioneTurno(sessioneAggiornata);
                     realtime.updateShift(sessioneAggiornata);
 
-                    if (!checklistCompilataOggiVolontario && inAttesaChecklistDopoTimbratura && timbratura.tipoAttivita !== 'corso') {
+                    if (!checklistCompilataOggiVolontario && inAttesaChecklistDopoTimbratura?.mezzo && timbratura.tipoAttivita !== 'corso') {
                       setModalTimbraturaVolontarioAperta(false);
                       setModalChecklistPostTimbraturaAperta(true);
                     }
@@ -21781,7 +21937,8 @@ KM TOTALI: ${kmTot} KM`;
             cognome: sessioneTurno.volontarioNome?.split(' ').slice(1).join(' ') || '',
             qualifica: (sessioneTurno.qualificaTurno as any) || 'Soccorritore',
             matricola: 'VOL',
-            inTurno: true,
+            inTurno: haTimbraturaApertaVolontario,
+            loggato: sessioneTurno.attivo,
             email: '',
             telefono: '',
             codiceFiscale: '',
@@ -21804,7 +21961,7 @@ KM TOTALI: ${kmTot} KM`;
         onClose={() => setModalNuovoServizioAutonomoAperta(false)}
         volontarioNome={sessioneTurno.volontarioNome || 'Volontario'}
         volontarioId={sessioneTurno.volontarioId}
-        mezzoPredefinito={sessioneTurno.mezzoScelto || 'T4606'}
+        mezzoPredefinito={sessioneTurno.mezzoScelto || ''}
         flottaMezzi={FLOTTA_COMPLETA}
         getKmInizialiSuggeriti={getUltimiKmMezzo}
         onConferma={handleAvviaServizioAutonomo}

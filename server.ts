@@ -134,6 +134,7 @@ export interface Volontario {
   dataInvioInvitoReset?: string;
   dataRegistrazione?: string;
   inTurno?: boolean;
+  loggato?: boolean;
   ultimoAccesso?: string;
   mezzoAttivo?: string;
   ruoloTurno?: string;
@@ -1024,6 +1025,39 @@ function loadPersistedState(): ServerState {
 }
 
 const state: ServerState = loadPersistedState();
+
+function hasTimbraturaApertaServer(vol: Partial<Volontario>, timbratureList: any[]): any | null {
+  if (!Array.isArray(timbratureList) || timbratureList.length === 0) return null;
+  const volId = (vol.id || '').trim();
+  const full1 = `${vol.nome || ''} ${vol.cognome || ''}`.replace(/\s+/g, ' ').trim().toLowerCase();
+  const full2 = `${vol.cognome || ''} ${vol.nome || ''}`.replace(/\s+/g, ' ').trim().toLowerCase();
+  return (
+    timbratureList.find(t => {
+      if (!t || (t.orarioUscita && String(t.orarioUscita).trim() !== '')) return false;
+      if (volId && t.volontarioId === volId) return true;
+      const tNome = (t.volontarioNome || '').replace(/\s+/g, ' ').trim().toLowerCase();
+      if (!tNome) return false;
+      return (full1 && tNome === full1) || (full2 && tNome === full2);
+    }) || null
+  );
+}
+
+function syncVolontariInTurnoWithTimbrature(): boolean {
+  if (!Array.isArray(state.volontari)) return false;
+  let changed = false;
+  state.volontari = state.volontari.map(v => {
+    const isDiTurno = Boolean(hasTimbraturaApertaServer(v, state.timbrature || []));
+    if (Boolean(v.inTurno) !== isDiTurno) {
+      changed = true;
+      return { ...v, inTurno: isDiTurno };
+    }
+    return v;
+  });
+  return changed;
+}
+
+// Allinea subito inTurno alle sole timbrature aperte (un account loggato non è di turno finché non timbra)
+syncVolontariInTurnoWithTimbrature();
 
 // Auto-ripulitura: se la missione presente in activeMission è già stata archiviata con KM completati,
 // azzera activeMission e i dati operativi temporanei così i terminali risultano liberi per nuovo servizio
@@ -3749,23 +3783,31 @@ async function startServer() {
             break;
           }
 
-          // 9. Aggiornamento Turno Volontario
+          // 9. Aggiornamento Sessione / Login Volontario (senza associare mezzo né mettere di turno senza timbratura)
           case 'UPDATE_SHIFT': {
             state.activeShift = data;
-            
-            // Aggiorna lo stato inTurno nella lista dei volontari
+
+            // Aggiorna stato loggato (e mantiene inTurno legato SOLO alla presenza di timbratura aperta)
             if (data.volontarioId) {
-              state.volontari = state.volontari.map(v => 
-                v.id === data.volontarioId ? { ...v, inTurno: !!data.attivo } : v
+              state.volontari = state.volontari.map(v =>
+                v.id === data.volontarioId
+                  ? {
+                      ...v,
+                      loggato: !!data.attivo,
+                      inTurno: Boolean(hasTimbraturaApertaServer(v, state.timbrature || [])),
+                      mezzoAttivo: data.attivo ? (data.mezzoScelto || '') : ''
+                    }
+                  : v
               );
             }
 
+            const mezzoTxt = data.mezzoScelto ? ` sul mezzo ${data.mezzoScelto}` : '';
             const notif: RadioNotification = {
               id: generateUniqueNotifId(),
               orario: formatTimeItaly(),
               testo: data.attivo
-                ? `🟢 ACCESSO VOLONTARIO: ${data.volontarioNome} ha effettuato l'accesso all'app sul mezzo ${data.mezzoScelto} (${data.qualificaTurno})`
-                : `🔴 FINE TURNO: ${data.volontarioNome || 'Volontario'} ha terminato il servizio su ${data.mezzoScelto || 'mezzo'}.`,
+                ? `🔵 ACCESSO VOLONTARIO (LOGGATO): ${data.volontarioNome} ha effettuato l'accesso all'app${mezzoTxt || ' (nessun mezzo associato)'} (${data.qualificaTurno || 'Operativo'})`
+                : `🔴 LOGOUT VOLONTARIO: ${data.volontarioNome || 'Volontario'} si è disconnesso dall'app${data.mezzoScelto ? ` (ultimo mezzo: ${data.mezzoScelto})` : ''}.`,
               tipo: 'mezzo'
             };
             state.notifiche.push(notif);
@@ -3780,8 +3822,8 @@ async function startServer() {
 
             if (data.attivo) {
               sendPushNotificationToRole('admin', {
-                title: `🟢 ACCESSO VOLONTARIO ALL'APP`,
-                body: `${data.volontarioNome} ha effettuato l'accesso all'app sul mezzo ${data.mezzoScelto} (${data.qualificaTurno}) alle ore ${formatTimeItaly()}`,
+                title: `🔵 ACCESSO VOLONTARIO ALL'APP`,
+                body: `${data.volontarioNome} ha effettuato l'accesso all'app${mezzoTxt || ' (in attesa di timbratura, nessun mezzo associato)'} (${data.qualificaTurno || 'Operativo'}) alle ore ${formatTimeItaly()}`,
                 tag: `login-volontario-${data.volontarioId || Date.now()}`,
                 urgenza: 'VERDE'
               });
@@ -4296,12 +4338,20 @@ async function startServer() {
           case 'UPDATE_TIMBRATURE': {
             if (Array.isArray(data.timbrature)) {
               state.timbrature = data.timbrature;
+              const volChanged = syncVolontariInTurnoWithTimbrature();
               persistState();
 
               broadcast({
                 type: 'TIMBRATURE_UPDATED',
                 timbrature: state.timbrature
               });
+              if (volChanged) {
+                broadcast({
+                  type: 'VOLONTARI_UPDATED',
+                  volontari: state.volontari,
+                  volontariEliminatiIds: state.volontariEliminatiIds
+                });
+              }
 
               console.log(`[Timbrature] Sincronizzate ${data.timbrature.length} timbrature volontari nel database persistito.`);
             }
@@ -6311,12 +6361,20 @@ async function startServer() {
         return res.status(400).json({ success: false, error: 'timbrature deve essere un array' });
       }
       state.timbrature = timbrature;
+      const volChanged = syncVolontariInTurnoWithTimbrature();
       persistState();
 
       broadcast({
         type: 'TIMBRATURE_UPDATED',
         timbrature: state.timbrature
       });
+      if (volChanged) {
+        broadcast({
+          type: 'VOLONTARI_UPDATED',
+          volontari: state.volontari,
+          volontariEliminatiIds: state.volontariEliminatiIds
+        });
+      }
 
       console.log(`[Timbrature] ${timbrature.length} timbrature salvate via REST API.`);
       res.json({ success: true, timbrature: state.timbrature });

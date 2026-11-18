@@ -35,7 +35,7 @@ import { ModalChecklistInizioTurnoGuidata } from './ModalChecklistInizioTurnoGui
 import { ChecklistTemplate, ChecklistCompilataTurno, deduciTipoMezzoDaNome } from '../types/checklistTypes';
 import { CHECKLIST_TEMPLATES_INIZIALI, trovaTemplatePerTipo } from '../data/checklistMockData';
 import { TurnoSedeOperativa, TimbraturaVolontario } from '../types/adminTypes';
-import { verificaVolontarioInTurnoAdesso, EsitoVerificaTurno } from '../utils/turnoVerifica';
+import { verificaVolontarioInTurnoAdesso, hasTimbraturaApertaPerVolontario, EsitoVerificaTurno } from '../utils/turnoVerifica';
 import { formatDateItaly, formatDateTimeItaly, getItalianDateParts } from '../utils/italianTime';
 
 export interface SessioneTurno {
@@ -355,58 +355,28 @@ export const SchermataTurnoVolontario: React.FC<SchermataTurnoVolontarioProps> =
       return;
     }
 
-    // Verifica obbligatorietà Checklist: deve effettuare la checklist se e solo se è di turno in quel momento e ha un mezzo assegnato
+    // Al login NON si associa alcun mezzo al volontario e NON è ancora di turno finché non effettua la timbratura.
+    // Il mezzo sarà scelto dal volontario all'avvio di un servizio autonomo o assegnato dalla Centrale in caso di servizio trasmesso.
     const verificaTurno = verificaVolontarioInTurnoAdesso(vol, turni, timbrature);
-    const mezzoAssegnatoTurno =
-      (missioneAttiva && !missioneAttiva.archiviata && !missioneAttiva.annullata && missioneAttiva.mezzoAssegnato)
-        ? missioneAttiva.mezzoAssegnato
-        : (verificaTurno.dettaglioTurno?.mezzoAssegnato || '');
+    const timbGiaAperta = Boolean(hasTimbraturaApertaPerVolontario(vol, timbrature));
 
-    if (mezzoAssegnatoTurno) {
-      const siglaAssegnata = estraiSiglaDaEtichetta(mezzoAssegnatoTurno);
-      if (mezziFuoriServizio[siglaAssegnata]) {
-        const fs = mezziFuoriServizio[siglaAssegnata];
-        setErrore(`⛔ MEZZO TEMPORANEAMENTE FUORI SERVIZIO: Il mezzo ${siglaAssegnata} è attualmente fuori servizio per ${MOTIVI_FUORI_SERVIZIO_LABELS[fs.motivo] || fs.motivo} (disposto da ${fs.operatore}). Contatta la Centrale prima di procedere.`);
-        return;
-      }
+    onLogin(vol, '', ruoloSelezionato);
+
+    if (!timbGiaAperta && verificaTurno.haTurnoProgrammato && onAvviaFlussoTimbraturaPoiChecklist) {
+      onAvviaFlussoTimbraturaPoiChecklist(vol, '', ruoloSelezionato, false);
     }
 
-    if (verificaTurno.isDiTurno) {
-      // È DI TURNO SUI TURNI IN APP (QUALSIASI TABELLONE): INVITA PRIMA A TIMBRARE E POI A COMPILARE LA CHECKLIST
-      const volNomeNorm = `${vol.nome} ${vol.cognome}`.trim().toLowerCase();
-      const timbGiaAperta = timbrature.some(t =>
-        !t.orarioUscita &&
-        ((vol.id && t.volontarioId === vol.id) ||
-         (t.volontarioNome && t.volontarioNome.trim().toLowerCase() === volNomeNorm))
-      );
-
-      onLogin(vol, mezzoAssegnatoTurno, ruoloSelezionato);
-      if (onAvviaFlussoTimbraturaPoiChecklist) {
-        onAvviaFlussoTimbraturaPoiChecklist(vol, mezzoAssegnatoTurno, ruoloSelezionato, timbGiaAperta);
-      } else if (mezzoAssegnatoTurno) {
-        setVolontarioInAttesaChecklist({
-          vol,
-          mezzo: mezzoAssegnatoTurno,
-          ruolo: ruoloSelezionato
-        });
-        setModaleChecklistAperta(true);
-      }
-      setPinInput('');
-      setErrore('');
-      if (onNotificaRadio) {
+    setPinInput('');
+    setErrore('');
+    if (onNotificaRadio) {
+      if (timbGiaAperta) {
         onNotificaRadio(
-          `🕒 ACCESSO IN TURNO: ${vol.nome} ${vol.cognome} è di turno (${verificaTurno.motivo}). Avviato percorso guidato: 1) Timbratura -> 2) Checklist.`,
+          `🟢 ACCESSO VOLONTARIO (IN TURNO - TIMBRATO): ${vol.nome} ${vol.cognome} (${ruoloSelezionato}) ha effettuato l'accesso (${verificaTurno.motivo}).`,
           'mezzo'
         );
-      }
-    } else {
-      // NON È DI TURNO: SALTA LA CHECKLIST COMPLETAMENTE
-      onLogin(vol, mezzoAssegnatoTurno, ruoloSelezionato);
-      setPinInput('');
-      setErrore('');
-      if (onNotificaRadio) {
+      } else {
         onNotificaRadio(
-          `ℹ️ ACCESSO VOLONTARIO (FUORI TURNO): ${vol.nome} ${vol.cognome} (${ruoloSelezionato}) ha effettuato l'accesso al terminale saltando la checklist.`,
+          `🔵 ACCESSO VOLONTARIO (LOGGATO): ${vol.nome} ${vol.cognome} (${ruoloSelezionato}) ha effettuato il login al terminale. Effettuerà la timbratura per risultare in turno (nessun mezzo associato).`,
           'sistema'
         );
       }
@@ -532,57 +502,51 @@ export const SchermataTurnoVolontario: React.FC<SchermataTurnoVolontarioProps> =
       setVolontarioDaFirmare(null);
       setFirmaVolontarioMancante(null);
 
-      // Verifica turno sui tabelloni: se di turno invita prima a timbratura e poi a checklist, se non è di turno salta la checklist
+      // Al login non si associa alcun mezzo al volontario; entra in turno solo quando effettua la timbratura
       const verificaTurno = verificaVolontarioInTurnoAdesso(vTarget, turni, timbrature);
-      const mezzoAssegnatoTurno =
-        (missioneAttiva && !missioneAttiva.archiviata && !missioneAttiva.annullata && missioneAttiva.mezzoAssegnato)
-          ? missioneAttiva.mezzoAssegnato
-          : (verificaTurno.dettaglioTurno?.mezzoAssegnato || '');
-      if (verificaTurno.isDiTurno) {
-        const volNomeNorm = `${vTarget.nome} ${vTarget.cognome}`.trim().toLowerCase();
-        const timbGiaAperta = timbrature.some(t =>
-          !t.orarioUscita &&
-          ((vTarget.id && t.volontarioId === vTarget.id) ||
-           (t.volontarioNome && t.volontarioNome.trim().toLowerCase() === volNomeNorm))
-        );
-        onLogin(vTarget, mezzoAssegnatoTurno, ruoloSelezionato);
-        if (onAvviaFlussoTimbraturaPoiChecklist) {
-          onAvviaFlussoTimbraturaPoiChecklist(vTarget, mezzoAssegnatoTurno, ruoloSelezionato, timbGiaAperta);
-        } else if (mezzoAssegnatoTurno) {
-          setVolontarioInAttesaChecklist({
-            vol: vTarget,
-            mezzo: mezzoAssegnatoTurno,
-            ruolo: ruoloSelezionato
-          });
-          setModaleChecklistAperta(true);
-        }
-      } else {
-        onLogin(vTarget, mezzoAssegnatoTurno, ruoloSelezionato);
+      const timbGiaAperta = Boolean(hasTimbraturaApertaPerVolontario(vTarget, timbrature));
+      onLogin(vTarget, '', ruoloSelezionato);
+      if (!timbGiaAperta && verificaTurno.haTurnoProgrammato && onAvviaFlussoTimbraturaPoiChecklist) {
+        onAvviaFlussoTimbraturaPoiChecklist(vTarget, '', ruoloSelezionato, false);
       }
       setPinInput('');
       setErrore('');
     }
   };
 
-  // Se la sessione è attiva, mostra il badge riassuntivo in testa al terminale + invito 1. Timbratura -> 2. Checklist
+  // Se la sessione è attiva, mostra il badge riassuntivo in testa al terminale:
+  // distingue chiaramente "LOGGATO" (senza timbratura) vs "DI TURNO" (con timbratura attiva)
   if (sessione.attivo) {
-    const mostraInvitoAvvio = (!timbraturaAttiva || !checklistCompilataOggi) && !invitoAvvioDismissed;
+    const mostraInvitoAvvio = !timbraturaAttiva && !invitoAvvioDismissed;
     return (
       <div className="flex flex-col">
-        <div className="bg-emerald-950/80 border-b border-emerald-500/40 px-3 py-2 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2 shadow-md">
+        <div className={`${
+          timbraturaAttiva ? 'bg-emerald-950/80 border-emerald-500/40' : 'bg-sky-950/80 border-sky-500/40'
+        } border-b px-3 py-2 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2 shadow-md`}>
           <div className="flex items-center gap-2 min-w-0">
-            <div className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse shrink-0" />
+            <div className={`w-2.5 h-2.5 rounded-full shrink-0 ${
+              timbraturaAttiva ? 'bg-emerald-400 animate-pulse' : 'bg-sky-400'
+            }`} />
             <div className="min-w-0">
-              <span className="font-bold text-white text-xs block truncate">
-                🟢 {sessione.volontarioNome} • <span className="text-emerald-300 font-semibold">{sessione.qualificaTurno}</span>
-              </span>
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="font-bold text-white text-xs truncate">
+                  {timbraturaAttiva ? '🟢' : '🔵'} {sessione.volontarioNome} • <span className={timbraturaAttiva ? 'text-emerald-300 font-semibold' : 'text-sky-300 font-semibold'}>{sessione.qualificaTurno}</span>
+                </span>
+                <span className={`text-[9px] font-black uppercase px-1.5 py-0.2 rounded-full border ${
+                  timbraturaAttiva
+                    ? 'bg-emerald-500/20 text-emerald-300 border-emerald-400/50'
+                    : 'bg-sky-500/20 text-sky-200 border-sky-400/50'
+                }`}>
+                  {timbraturaAttiva ? 'Di Turno (Timbrato)' : 'Loggato (Non di Turno)'}
+                </span>
+              </div>
               <span className="text-[10px] text-slate-300 block truncate">
                 {sessione.mezzoScelto ? (
                   <>
-                    Mezzo: <strong className="text-amber-400">{sessione.mezzoScelto}</strong> •{' '}
+                    Mezzo in servizio: <strong className="text-amber-400">{sessione.mezzoScelto}</strong> •{' '}
                   </>
                 ) : null}
-                Dalle {sessione.orarioInizio}
+                {timbraturaAttiva ? `In turno dalle ${sessione.orarioInizio}` : `Accesso dalle ${sessione.orarioInizio} • Timbra per entrare in turno`}
               </span>
             </div>
           </div>
@@ -600,7 +564,7 @@ export const SchermataTurnoVolontario: React.FC<SchermataTurnoVolontarioProps> =
                 title="Apri sezione Timbratura Presenza GPS & Ore di Servizio"
               >
                 <Paintbrush className={`w-3.5 h-3.5 ${timbraturaAttiva ? 'text-white' : 'text-slate-950'}`} />
-                <span>Timbratura</span>
+                <span>{timbraturaAttiva ? 'Timbrato (Uscita)' : 'Timbra Ingresso'}</span>
                 {timbraturaAttiva && (
                   <span className="w-2 h-2 rounded-full bg-emerald-200 animate-ping shrink-0" />
                 )}
@@ -658,18 +622,12 @@ export const SchermataTurnoVolontario: React.FC<SchermataTurnoVolontarioProps> =
               </button>
             )}
 
-            {(sessione.mezzoScelto || onApriChecklistInCorso) && (
+            {sessione.mezzoScelto && onApriChecklistInCorso && (
               <button
                 type="button"
-                onClick={() => {
-                  if (onApriChecklistInCorso) {
-                    onApriChecklistInCorso();
-                  } else {
-                    setModaleVisualizzaChecklistAperta(true);
-                  }
-                }}
+                onClick={() => onApriChecklistInCorso()}
                 className="px-2.5 py-1 rounded-lg bg-amber-600/90 hover:bg-amber-500 text-white font-bold text-[11px] flex items-center gap-1 shadow-sm transition-transform active:scale-95 cursor-pointer"
-                title="Consulta o ricompila la Checklist Inizio Turno"
+                title="Consulta o compila la Checklist Mezzo"
               >
                 <ClipboardCheck className="w-3.5 h-3.5 text-amber-200" />
                 <span className="hidden sm:inline">Checklist Mezzo</span>
@@ -679,15 +637,13 @@ export const SchermataTurnoVolontario: React.FC<SchermataTurnoVolontarioProps> =
           </div>
         </div>
 
-        {/* Invito guidato per chi ha già fatto il login: prima Timbratura e poi Checklist */}
+        {/* Invito rapido per chi è loggato ma non ha ancora timbrato l'ingresso */}
         {mostraInvitoAvvio && (
           <div className="bg-amber-500/15 border-b border-amber-500/40 px-3 py-2 flex flex-wrap items-center justify-between gap-2 text-[11px] text-amber-100">
             <div className="flex items-center gap-2 min-w-0">
               <Clock className="w-3.5 h-3.5 text-amber-400 shrink-0" />
               <span className="font-bold truncate">
-                {!timbraturaAttiva
-                  ? '1️⃣ Prima registra la Timbratura di ingresso, poi compila la Checklist'
-                  : '2️⃣ Timbratura registrata! Ora compila la Checklist di inizio turno'}
+                🔵 Sei loggato ma non ancora di turno: effettua la Timbratura di ingresso per entrare in turno
               </span>
             </div>
             <div className="flex items-center gap-1.5 shrink-0">
@@ -695,34 +651,11 @@ export const SchermataTurnoVolontario: React.FC<SchermataTurnoVolontarioProps> =
                 <button
                   type="button"
                   onClick={onApriTimbratura}
-                  className={`px-2 py-1 rounded-lg font-black text-[10px] uppercase flex items-center gap-1 cursor-pointer transition-all ${
-                    timbraturaAttiva
-                      ? 'bg-emerald-600/40 text-emerald-200 border border-emerald-400/50'
-                      : 'bg-amber-500 hover:bg-amber-400 text-slate-950 shadow'
-                  }`}
+                  className="px-2.5 py-1 rounded-lg font-black text-[10px] uppercase flex items-center gap-1 cursor-pointer transition-all bg-amber-500 hover:bg-amber-400 text-slate-950 shadow"
                 >
-                  <span>{timbraturaAttiva ? '✓ 1. Timbrato' : '1. Timbra Ora'}</span>
+                  <span>Timbra Ora</span>
                 </button>
               )}
-              <button
-                type="button"
-                onClick={() => {
-                  if (onApriChecklistInCorso) {
-                    onApriChecklistInCorso();
-                  } else {
-                    setModaleVisualizzaChecklistAperta(true);
-                  }
-                }}
-                className={`px-2 py-1 rounded-lg font-black text-[10px] uppercase flex items-center gap-1 cursor-pointer transition-all ${
-                  checklistCompilataOggi
-                    ? 'bg-emerald-600/40 text-emerald-200 border border-emerald-400/50'
-                    : timbraturaAttiva
-                    ? 'bg-amber-500 hover:bg-amber-400 text-slate-950 shadow'
-                    : 'bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-600'
-                }`}
-              >
-                <span>{checklistCompilataOggi ? '✓ 2. Checklist OK' : '2. Checklist'}</span>
-              </button>
               {onDismissInvitoAvvio && (
                 <button
                   type="button"
@@ -744,14 +677,14 @@ export const SchermataTurnoVolontario: React.FC<SchermataTurnoVolontarioProps> =
   return (
     <div className="p-4 sm:p-5 flex flex-col flex-1 justify-center space-y-4 max-w-sm mx-auto w-full text-slate-800">
       
-      {/* Header Inizio Turno con Logo Ufficiale Croce Oro */}
+      {/* Header Accesso Account Volontario con Logo Ufficiale Croce Oro */}
       <div className="text-center space-y-1">
         <CroceOroLogo size="xl" className="w-20 h-20 sm:w-24 sm:h-24 mx-auto mb-2 shadow-lg shadow-amber-500/10" />
         <h3 className="text-base font-black text-[#1d1a60] uppercase tracking-wide">
-          Accesso Inizio Turno
+          Accesso Terminale Volontario
         </h3>
         <p className="text-xs text-slate-500">
-          Seleziona il tuo nome e inserisci il tuo PIN a 4 cifre per iniziare il servizio di soccorso
+          Seleziona il tuo nome e inserisci il tuo PIN a 4 cifre per effettuare il login (entrerai in turno dopo la timbratura)
         </p>
       </div>
 
@@ -846,25 +779,44 @@ export const SchermataTurnoVolontario: React.FC<SchermataTurnoVolontarioProps> =
           ))}
         </select>
         
-        {/* Badge Stato Turno Attuale del Volontario selezionato (Verifica Obbligatorietà Checklist) */}
+        {/* Badge Stato Turno / Timbratura del Volontario selezionato */}
         {statoTurnoVolontario.isDiTurno ? (
           <div className="p-2.5 rounded-2xl bg-emerald-50 border border-emerald-400/60 text-emerald-950 text-xs flex items-center justify-between gap-2 shadow-sm animate-in fade-in duration-200">
             <div className="flex items-center gap-2 min-w-0">
               <div className="w-7 h-7 rounded-full bg-emerald-500/20 text-emerald-700 flex items-center justify-center font-black shrink-0">
-                <ClipboardCheck className="w-4 h-4 text-emerald-600 animate-pulse" />
+                <CheckCircle2 className="w-4 h-4 text-emerald-600" />
               </div>
               <div className="min-w-0">
                 <div className="text-[11px] font-black uppercase tracking-wide text-emerald-800 flex items-center gap-1.5">
                   <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping shrink-0" />
-                  <span>Di Turno in Questo Momento</span>
+                  <span>Di Turno (Timbratura Attiva)</span>
                 </div>
                 <p className="text-[10px] text-emerald-900 truncate">
                   {statoTurnoVolontario.motivo}
                 </p>
               </div>
             </div>
-            <span className="px-2 py-0.5 rounded-full bg-emerald-600 text-white font-black text-[9px] uppercase tracking-wider shrink-0 shadow-sm" title="All'accesso dovrai prima effettuare la timbratura e poi compilare la checklist">
-              1° Timbratura • 2° Checklist
+            <span className="px-2 py-0.5 rounded-full bg-emerald-600 text-white font-black text-[9px] uppercase tracking-wider shrink-0 shadow-sm">
+              Timbrato
+            </span>
+          </div>
+        ) : statoTurnoVolontario.haTurnoProgrammato ? (
+          <div className="p-2.5 rounded-2xl bg-amber-50 border border-amber-300 text-amber-950 text-xs flex items-center justify-between gap-2 shadow-sm">
+            <div className="flex items-center gap-2 min-w-0">
+              <div className="w-7 h-7 rounded-full bg-amber-500/20 text-amber-700 flex items-center justify-center font-black shrink-0">
+                <Clock className="w-4 h-4 text-amber-600" />
+              </div>
+              <div className="min-w-0">
+                <div className="text-[11px] font-black uppercase tracking-wide text-amber-900">
+                  Turno Programmato (Da Timbrare)
+                </div>
+                <p className="text-[10px] text-amber-800 truncate">
+                  {statoTurnoVolontario.motivo}
+                </p>
+              </div>
+            </div>
+            <span className="px-2 py-0.5 rounded-full bg-amber-500 text-slate-950 font-black text-[9px] uppercase tracking-wider shrink-0">
+              Solo Login
             </span>
           </div>
         ) : (
@@ -875,15 +827,15 @@ export const SchermataTurnoVolontario: React.FC<SchermataTurnoVolontarioProps> =
               </div>
               <div className="min-w-0">
                 <div className="text-[10.5px] font-bold text-slate-700">
-                  Fuori Turno Programmato Adesso
+                  Non di Turno • Solo Login
                 </div>
                 <p className="text-[9.5px] text-slate-500 truncate">
-                  Accesso diretto al terminale • Salta la checklist
+                  Nessun mezzo associato • Timbra per entrare in turno
                 </p>
               </div>
             </div>
             <span className="px-2 py-0.5 rounded-full bg-slate-200 text-slate-600 font-bold text-[9px] uppercase tracking-wider shrink-0">
-              Salta Checklist
+              Non Timbrato
             </span>
           </div>
         )}

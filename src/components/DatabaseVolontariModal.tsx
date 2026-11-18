@@ -172,6 +172,7 @@ export interface Volontario {
   dataInvioInvitoReset?: string; // Data e ora invio email con PIN provvisorio e link
   dataRegistrazione: string;
   ultimoAccesso?: string;
+  loggato?: boolean;
   inTurno: boolean;
   mezzoAttivo?: string;
   ruoloTurno?: string;
@@ -2648,7 +2649,8 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
     reader.readAsText(file);
   };
 
-  const inTurnoCount = volontari.filter((v) => v.inTurno).length;
+  const inTurnoCount = volontari.filter((v) => Boolean(getTimbraturaAttiva(v))).length;
+  const loggatiCount = volontari.filter((v) => Boolean(v.loggato)).length;
 
   return (
     <div className="fixed inset-0 bg-black/85 backdrop-blur-md z-50 flex flex-col items-center justify-start sm:justify-center p-1 sm:p-2.5 overflow-y-auto">
@@ -2667,9 +2669,14 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
                 <h3 className="text-sm sm:text-base font-black uppercase tracking-wide text-white">
                   {titoloDbVolontari} • Profili &amp; Gestione PIN
                 </h3>
-                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full border bg-emerald-500/20 text-emerald-400 border-emerald-500/40">
+                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full border bg-emerald-500/20 text-emerald-400 border-emerald-500/40" title="Account con timbratura di ingresso attiva">
                   {inTurnoCount} In Turno
                 </span>
+                {loggatiCount > 0 && (
+                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full border bg-sky-500/20 text-sky-300 border-sky-500/40" title="Account attualmente loggati nell'app">
+                    {loggatiCount} Loggat{loggatiCount === 1 ? 'o' : 'i'}
+                  </span>
+                )}
                 <span className="text-[10px] font-bold px-2 py-0.5 rounded-full border bg-amber-500/20 text-amber-300 border-amber-500/40">
                   {volontari.length} Totali
                 </span>
@@ -4028,51 +4035,73 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
 
                           {/* Stato */}
                           <div className="shrink-0 text-right">
-                            {isOperatore ? (
-                              !v.approvato ? (
-                                <span className="text-[9px] font-black px-2 py-0.5 rounded bg-amber-400 text-slate-950 animate-pulse">
-                                  In Attivazione
-                                </span>
-                              ) : (
-                                <span className="text-[9px] font-bold text-emerald-400">
-                                  ● Abilitato
-                                </span>
-                              )
-                            ) : v.inTurno ? (
-                              <div className="flex items-center gap-1.5 flex-wrap justify-end">
-                                <span className="text-[9px] font-black px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 flex items-center gap-1">
-                                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                                  IN TURNO
-                                </span>
-                                {(() => {
-                                  const timbAttiva = getTimbraturaAttiva(v);
-                                  if (timbAttiva) {
-                                    return (
-                                      <span
-                                        className="text-[9px] font-bold px-2 py-0.5 rounded-full bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 flex items-center gap-1"
-                                        title={`Timbratura di ingresso registrata alle ${timbAttiva.orarioIngresso}${timbAttiva.sede ? ` (${timbAttiva.sede})` : ''}`}
-                                      >
-                                        <Clock className="w-2.5 h-2.5 text-cyan-400" />
-                                        ⏱️ {timbAttiva.orarioIngresso}
-                                      </span>
-                                    );
-                                  }
-                                  return (
-                                    <span
-                                      className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30 flex items-center gap-1 animate-pulse"
-                                      title="Volontario loggato ma senza timbratura di ingresso registrata"
-                                    >
-                                      <AlertTriangle className="w-2.5 h-2.5 text-amber-400" />
-                                      No Timbratura
+                            {(() => {
+                              const timbAttiva = getTimbraturaAttiva(v);
+                              const isDiTurno = Boolean(timbAttiva);
+                              const isLoggato = Boolean(v.loggato);
+
+                              if (isOperatore && !v.approvato) {
+                                return (
+                                  <span className="text-[9px] font-black px-2 py-0.5 rounded bg-amber-400 text-slate-950 animate-pulse">
+                                    In Attivazione
+                                  </span>
+                                );
+                              }
+
+                              if (isDiTurno && timbAttiva) {
+                                return (
+                                  <div className="flex items-center gap-1.5 flex-wrap justify-end">
+                                    <span className="text-[9px] font-black px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 flex items-center gap-1">
+                                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                                      IN TURNO
                                     </span>
-                                  );
-                                })()}
-                              </div>
-                            ) : (
-                              <span className="text-[9px] text-slate-500">
-                                Fuori Turno
-                              </span>
-                            )}
+                                    <span
+                                      className="text-[9px] font-bold px-2 py-0.5 rounded-full bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 flex items-center gap-1"
+                                      title={`Timbratura di ingresso registrata alle ${timbAttiva.orarioIngresso}${timbAttiva.sede ? ` (${timbAttiva.sede})` : ''}`}
+                                    >
+                                      <Clock className="w-2.5 h-2.5 text-cyan-400" />
+                                      ⏱️ {timbAttiva.orarioIngresso}
+                                    </span>
+                                    {isLoggato && (
+                                      <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-sky-500/20 text-sky-300 border border-sky-500/40">
+                                        ● Loggato
+                                      </span>
+                                    )}
+                                  </div>
+                                );
+                              }
+
+                              if (isLoggato) {
+                                return (
+                                  <div className="flex items-center gap-1.5 flex-wrap justify-end">
+                                    <span className="text-[9px] font-black px-2 py-0.5 rounded-full bg-sky-500/20 text-sky-300 border border-sky-500/40 flex items-center gap-1">
+                                      <span className="w-1.5 h-1.5 rounded-full bg-sky-400" />
+                                      LOGGATO
+                                    </span>
+                                    <span
+                                      className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/30"
+                                      title="Account loggato ma non ancora di turno: non ha effettuato la timbratura"
+                                    >
+                                      Non timbrato
+                                    </span>
+                                  </div>
+                                );
+                              }
+
+                              if (isOperatore) {
+                                return (
+                                  <span className="text-[9px] font-bold text-emerald-400">
+                                    ● Abilitato
+                                  </span>
+                                );
+                              }
+
+                              return (
+                                <span className="text-[9px] text-slate-500">
+                                  Fuori Turno
+                                </span>
+                              );
+                            })()}
                           </div>
                         </div>
 
@@ -4612,46 +4641,68 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
 
                             {/* Stato Turno Attivo */}
                             <td className="py-4.5 sm:py-5 px-2 w-[10%] min-w-[90px] align-middle">
-                              {v.inTurno ? (
-                                <div>
-                                  <div className="flex items-center gap-1.5 flex-wrap">
-                                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 font-bold text-[10px]">
-                                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                                      IN TURNO
-                                    </span>
-                                    {(() => {
-                                      const timbAttiva = getTimbraturaAttiva(v);
-                                      if (timbAttiva) {
-                                        return (
-                                          <span
-                                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 font-bold text-[9px]"
-                                            title={`Timbratura di ingresso alle ore ${timbAttiva.orarioIngresso} presso ${timbAttiva.sede || 'Sede'}`}
-                                          >
-                                            <Clock className="w-2.5 h-2.5 text-cyan-400" />
-                                            ⏱️ {timbAttiva.orarioIngresso}
-                                          </span>
-                                        );
-                                      }
-                                      return (
-                                        <span
-                                          className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30 font-bold text-[9px] animate-pulse"
-                                          title="Volontario loggato ma senza timbratura di ingresso registrata"
-                                        >
-                                          <AlertTriangle className="w-2.5 h-2.5 text-amber-400" />
-                                          No Timbratura
+                              {(() => {
+                                const timbAttiva = getTimbraturaAttiva(v);
+                                const isDiTurno = Boolean(timbAttiva);
+                                const isLoggato = Boolean(v.loggato);
+                                if (isDiTurno && timbAttiva) {
+                                  return (
+                                    <div>
+                                      <div className="flex items-center gap-1.5 flex-wrap">
+                                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 font-bold text-[10px]">
+                                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                                          IN TURNO
                                         </span>
-                                      );
-                                    })()}
-                                  </div>
-                                  <div className="text-[10px] text-slate-400 mt-0.5 font-medium">
-                                    Mezzo: <strong className="text-white">{v.mezzoAttivo || 'Assegnato'}</strong>
-                                  </div>
-                                </div>
-                              ) : (
-                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-slate-800 text-slate-400 text-[10px]">
-                                  Fuori Servizio
-                                </span>
-                              )}
+                                        <span
+                                          className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 font-bold text-[9px]"
+                                          title={`Timbratura di ingresso alle ore ${timbAttiva.orarioIngresso} presso ${timbAttiva.sede || 'Sede'}`}
+                                        >
+                                          <Clock className="w-2.5 h-2.5 text-cyan-400" />
+                                          ⏱️ {timbAttiva.orarioIngresso}
+                                        </span>
+                                        {isLoggato && (
+                                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-sky-500/20 text-sky-300 border border-sky-500/40 font-bold text-[9px]">
+                                            ● Loggato
+                                          </span>
+                                        )}
+                                      </div>
+                                      {v.mezzoAttivo && (
+                                        <div className="text-[10px] text-slate-400 mt-0.5 font-medium">
+                                          Mezzo: <strong className="text-white">{v.mezzoAttivo}</strong>
+                                        </div>
+                                      )}
+                                    </div>
+                                  );
+                                }
+                                if (isLoggato) {
+                                  return (
+                                    <div>
+                                      <div className="flex items-center gap-1.5 flex-wrap">
+                                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-sky-500/20 text-sky-300 border border-sky-500/40 font-bold text-[10px]">
+                                          <span className="w-1.5 h-1.5 rounded-full bg-sky-400" />
+                                          LOGGATO
+                                        </span>
+                                        <span
+                                          className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/30 font-bold text-[9px]"
+                                          title="Account loggato ma non di turno (in attesa di timbratura)"
+                                        >
+                                          Non timbrato
+                                        </span>
+                                      </div>
+                                      {v.mezzoAttivo && (
+                                        <div className="text-[10px] text-slate-400 mt-0.5 font-medium">
+                                          Mezzo: <strong className="text-white">{v.mezzoAttivo}</strong>
+                                        </div>
+                                      )}
+                                    </div>
+                                  );
+                                }
+                                return (
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-slate-800 text-slate-400 text-[10px]">
+                                    Fuori Servizio
+                                  </span>
+                                );
+                              })()}
                               {(v.bloccatoPerTentativi || (v.tentativiErrati && v.tentativiErrati >= 3)) && (
                                 <div className="mt-1">
                                   <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-red-500/20 text-red-300 border border-red-500/50 font-black text-[9px] animate-pulse">
