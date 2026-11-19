@@ -410,6 +410,7 @@ export interface ServerState {
   altreEntrateUscite?: any[];
   costiGestione?: any[];
   costiServizio?: any[];
+  sollecitoFirmaPin?: any;
   loggedSessions?: Record<string, { loggato: boolean; updatedAt: number; volontarioNome?: string; mezzoScelto?: string; orarioInizio?: string }>;
   catalogoMansioni?: any[];
   categorieMansioni?: any[];
@@ -4727,6 +4728,18 @@ async function startServer() {
             break;
           }
 
+          case 'SYNC_SOLLECITO_FIRMA_PIN': {
+            if (data?.sollecitoFirmaPin && typeof data.sollecitoFirmaPin === 'object') {
+              state.sollecitoFirmaPin = data.sollecitoFirmaPin;
+              persistState();
+              broadcast({
+                type: 'SOLLECITO_FIRMA_PIN_UPDATED',
+                sollecitoFirmaPin: state.sollecitoFirmaPin
+              });
+            }
+            break;
+          }
+
           case 'UPDATE_COSTI_SERVIZIO': {
             if (Array.isArray(data?.costiServizio)) {
               state.costiServizio = data.costiServizio;
@@ -7921,6 +7934,290 @@ async function startServer() {
     } catch (err: any) {
       console.error('[Invito PIN] Errore endpoint:', err);
       return res.status(500).json({ success: false, error: err?.message || 'Errore elaborazione' });
+    }
+  });
+
+  // ENDPOINT: Invio massivo notifica in-app + email a tutti gli account senza firma caricata in app
+  app.post('/api/invia-sollecito-firma-pin', async (req, res) => {
+    try {
+      const operatoreNome = String(req.body?.operatoreNome || 'Amministratore Centrale').trim();
+      const listaSorgente: any[] =
+        Array.isArray(req.body?.volontari) && req.body.volontari.length > 0
+          ? req.body.volontari
+          : (Array.isArray(state.volontari) ? state.volontari : []);
+
+      const isRootAdmin = (v: any): boolean => {
+        if (!v) return true;
+        const id = String(v.id || '').trim();
+        const pin = String(v.pin || '').trim();
+        const nome = String(v.nome || '').toLowerCase();
+        const cognome = String(v.cognome || '').toLowerCase();
+        return id === 'vol-admin' || id === 'admin-centrale-root' || pin === '4451' || nome.includes('amministratore') || cognome.includes('amministratore');
+      };
+
+      const isFirmaMancanteServer = (v: any): boolean => {
+        if (!v || isRootAdmin(v)) return false;
+        return typeof v.firmaBase64 !== 'string' || v.firmaBase64.trim().length < 20;
+      };
+
+      const isEmailReale = (rawEmail: any): boolean => {
+        const email = String(rawEmail || '').trim().toLowerCase();
+        if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) return false;
+        const placeholderPatterns = [
+          'nomail@',
+          '@nomail.',
+          'nessuna@',
+          '@nessuna.',
+          'nessuno@',
+          'nonpresente',
+          'nondisponibile',
+          'example.',
+          'test@test',
+          'prova@prova',
+          'fake@',
+          'nd@nd.'
+        ];
+        return !placeholderPatterns.some(p => email.includes(p));
+      };
+
+      const targetsSenzaFirma = listaSorgente.filter((v: any) => isFirmaMancanteServer(v));
+      const accountConFirmaMaPin0000 = listaSorgente
+        .filter((v: any) => !isRootAdmin(v) && !isFirmaMancanteServer(v) && String(v.pin || '').trim() === '0000')
+        .map((v: any) => ({
+          id: String(v.id || ''),
+          nome: `${v.nome || ''} ${v.cognome || ''}`.trim(),
+          email: String(v.email || '').trim()
+        }));
+
+      const MITTENTE_UFFICIALE = 'CROCE ORO MASSA CARRARA OdV - Sistemi Automatizzati';
+      const EMAIL_MITTENTE_UFFICIALE = 'sistemiautomatizzati@croceoro.org';
+
+      const smtpHost = process.env.SMTP_HOST || 'mail.tophost.it';
+      const smtpPass = process.env.SMTP_PASS || 'Applicazione26!';
+      const smtpPort = Number(process.env.SMTP_PORT) || 587;
+      const isSecure = smtpPort === 465;
+
+      const candidateUsers = Array.from(new Set([
+        'croceoro.org10175',
+        'croceoro.org',
+        'sistemiautomatizzati@croceoro.org',
+        process.env.SMTP_USER
+      ].filter(Boolean) as string[]));
+
+      let transporter: any = null;
+      let smtpInitError: string | null = null;
+
+      for (const candidate of candidateUsers) {
+        try {
+          const t = nodemailer.createTransport({
+            host: smtpHost,
+            port: smtpPort,
+            secure: isSecure,
+            auth: {
+              user: candidate,
+              pass: smtpPass
+            },
+            tls: {
+              rejectUnauthorized: false
+            }
+          });
+          await t.verify();
+          transporter = t;
+          break;
+        } catch (e: any) {
+          smtpInitError = e?.message || 'Errore verifica SMTP';
+        }
+      }
+
+      const emailsInviate: Array<{ id: string; nome: string; email: string; pinEmergenza: boolean; messageId?: string }> = [];
+      const emailsSaltate: Array<{ id: string; nome: string; email: string; motivo: string; pinEmergenza: boolean }> = [];
+      const erroriSmtp: Array<{ id: string; nome: string; email: string; errore: string }> = [];
+
+      for (const vol of targetsSenzaFirma) {
+        const nomeCompleto = `${vol.nome || ''} ${vol.cognome || ''}`.trim() || 'Volontario';
+        const emailDest = String(vol.email || '').trim();
+        const hasPin0000 = String(vol.pin || '').trim() === '0000';
+
+        if (!isEmailReale(emailDest)) {
+          emailsSaltate.push({
+            id: String(vol.id || ''),
+            nome: nomeCompleto,
+            email: emailDest || '(nessuna email)',
+            motivo: !emailDest ? 'Indirizzo email assente' : 'Indirizzo email segnaposto/non valido',
+            pinEmergenza: hasPin0000
+          });
+          continue;
+        }
+
+        const oggetto = hasPin0000
+          ? `[Croce Oro Massa Carrara] AZIONE OBBLIGATORIA: Caricamento Firma sull'App e Cambio PIN 0000`
+          : `[Croce Oro Massa Carrara] AZIONE OBBLIGATORIA: Caricamento Firma Digitale sull'App`;
+
+        const testoEmail =
+          `Gentile ${nomeCompleto},\n\n` +
+          `ti informiamo che sul tuo profilo operativo dell'App Croce Oro Massa Carrara OdV non risulta ancora caricata la tua FIRMA DIGITALE.\n\n` +
+          `COSA DEVI FARE SUBITO:\n` +
+          `1) Se NON hai ancora effettuato l'accesso all'App: apri l'App ed effettua il LOGIN con il tuo account.\n` +
+          `2) Se HAI GIÀ effettuato l'accesso sull'App: esci e rientra effettuando subito LOGOUT e poi nuovamente LOGIN.\n\n` +
+          `Appena effettuerai il login, il sistema ti guiderà obbligatoriamente a:\n` +
+          `- Caricare o disegnare la tua firma digitale autografa sull'App (obbligatoria per accedere e per tutti i fogli di viaggio / verbali).\n` +
+          (hasPin0000
+            ? `- Sostituire obbligatoriamente il tuo attuale PIN di emergenza (0000) con un nuovo PIN personale a 4 cifre.\n\n`
+            : `- Inoltre, per chi utilizza ancora il PIN di emergenza 0000, al login sarà richiesto obbligatoriamente di cambiarlo con un nuovo PIN personale a 4 cifre.\n\n`) +
+          `Grazie per la collaborazione.\n` +
+          `Croce Oro Massa Carrara OdV - Centrale Operativa & Sistemi Automatizzati`;
+
+        const boxPinHtml = hasPin0000
+          ? `
+            <div style="background-color: #fef2f2; border: 2px solid #dc2626; border-radius: 10px; padding: 16px; margin: 18px 0;">
+              <p style="margin: 0 0 6px 0; font-size: 13px; font-weight: 900; color: #991b1b; text-transform: uppercase;">
+                🔐 Obbligo Cambio PIN di Emergenza (0000)
+              </p>
+              <p style="margin: 0; font-size: 13px; color: #7f1d1d; line-height: 1.55;">
+                Sul tuo profilo risulta ancora attivo il <strong>PIN di emergenza 0000</strong>. Al momento del login ti verrà richiesto obbligatoriamente di impostare un <strong>nuovo PIN personale a 4 cifre</strong> diverso da 0000.
+              </p>
+            </div>`
+          : `
+            <div style="background-color: #f8fafc; border-left: 4px solid #64748b; border-radius: 6px; padding: 12px 14px; margin: 18px 0; font-size: 12px; color: #475569;">
+              🔐 <strong>Nota sicurezza PIN:</strong> per chi ha ancora il PIN di emergenza <strong>0000</strong>, al login sarà obbligatorio sostituirlo subito con un nuovo PIN personale a 4 cifre.
+            </div>`;
+
+        const htmlEmail = `
+          <div style="font-family: Arial, 'Helvetica Neue', Helvetica, sans-serif; color: #1e293b; max-width: 600px; margin: 0 auto; line-height: 1.6; border: 1px solid #e2e8f0; border-radius: 12px; overflow: hidden; background-color: #ffffff;">
+            <div style="background-color: #1d1a60; color: #fbbf24; padding: 22px 20px; text-align: center;">
+              <h1 style="margin: 0; font-size: 21px; font-weight: 800; letter-spacing: 0.4px; color: #fbbf24;">CROCE ORO MASSA CARRARA OdV</h1>
+              <p style="margin: 6px 0 0; font-size: 12px; color: #e2e8f0;">Centrale Operativa &bull; Comunicazione Obbligatoria Account App</p>
+            </div>
+            <div style="padding: 26px 24px;">
+              <h2 style="margin-top: 0; font-size: 17px; color: #1d1a60; font-weight: 800;">
+                ✍️ Caricamento Firma Digitale Obbligatorio sull'App
+              </h2>
+              <p style="font-size: 14px; color: #334155;">Gentile <strong>${nomeCompleto}</strong>,</p>
+              <p style="font-size: 14px; color: #334155;">
+                ad oggi sul tuo profilo nell&apos;App della <strong>Croce Oro Massa Carrara OdV</strong> non risulta ancora caricata la tua <strong>firma digitale</strong>.
+              </p>
+              <div style="background-color: #fffbeb; border: 2px solid #f59e0b; border-radius: 10px; padding: 16px; margin: 18px 0;">
+                <p style="margin: 0 0 8px 0; font-size: 13px; font-weight: 900; color: #92400e; text-transform: uppercase;">
+                  📲 Procedura richiesta subito
+                </p>
+                <ul style="margin: 0; padding-left: 18px; font-size: 13px; color: #78350f; line-height: 1.6;">
+                  <li style="margin-bottom: 6px;"><strong>Se non hai ancora fatto accesso all&apos;App:</strong> apri l&apos;App ed effettua il <strong>Login</strong>.</li>
+                  <li style="margin-bottom: 6px;"><strong>Se hai già fatto accesso sull&apos;App:</strong> esci e rientra facendo subito <strong>Logout</strong> e poi nuovamente <strong>Login</strong>.</li>
+                  <li><strong>Al login</strong> il sistema ti chiederà <strong>obbligatoriamente</strong> di caricare una foto/scansione della tua firma oppure di disegnarla direttamente sullo schermo.</li>
+                </ul>
+              </div>
+              ${boxPinHtml}
+              <p style="font-size: 13px; color: #475569; margin-bottom: 0;">
+                Grazie per la collaborazione.<br>
+                <strong>Centrale Operativa - Croce Oro Massa Carrara OdV</strong>
+              </p>
+            </div>
+            <div style="background-color: #f1f5f9; padding: 14px 20px; font-size: 11px; color: #64748b; text-align: center; border-top: 1px solid #e2e8f0;">
+              <p style="margin: 0; font-weight: bold;">Croce Oro Massa Carrara OdV &bull; Sistemi Automatizzati</p>
+              <p style="margin: 4px 0 0; color: #94a3b8;">Email automatica inviata da sistemiautomatizzati@croceoro.org</p>
+            </div>
+          </div>
+        `;
+
+        if (!transporter) {
+          erroriSmtp.push({
+            id: String(vol.id || ''),
+            nome: nomeCompleto,
+            email: emailDest,
+            errore: smtpInitError || 'Server SMTP non connesso'
+          });
+          continue;
+        }
+
+        try {
+          const info = await transporter.sendMail({
+            from: {
+              name: MITTENTE_UFFICIALE,
+              address: EMAIL_MITTENTE_UFFICIALE
+            },
+            sender: EMAIL_MITTENTE_UFFICIALE,
+            replyTo: EMAIL_MITTENTE_UFFICIALE,
+            envelope: {
+              from: EMAIL_MITTENTE_UFFICIALE,
+              to: [emailDest]
+            },
+            to: emailDest,
+            subject: oggetto,
+            text: testoEmail,
+            html: htmlEmail
+          });
+          emailsInviate.push({
+            id: String(vol.id || ''),
+            nome: nomeCompleto,
+            email: emailDest,
+            pinEmergenza: hasPin0000,
+            messageId: info?.messageId
+          });
+          console.log(`[Sollecito Firma/PIN] Email inviata a ${nomeCompleto} <${emailDest}> (MsgID: ${info?.messageId})`);
+        } catch (errSend: any) {
+          erroriSmtp.push({
+            id: String(vol.id || ''),
+            nome: nomeCompleto,
+            email: emailDest,
+            errore: errSend?.message || 'Errore invio SMTP'
+          });
+          console.error(`[Sollecito Firma/PIN] Errore SMTP per ${emailDest}:`, errSend?.message);
+        }
+      }
+
+      const now = new Date();
+      const campaign = {
+        id: `sollecito-firma-pin-${Date.now()}`,
+        createdAt: Date.now(),
+        dataOra: `${formatDateItaly(now)} ${formatTimeItaly(now)}`,
+        inviatoDa: operatoreNome,
+        titolo: '✍️ Firma Digitale Obbligatoria & Controllo PIN',
+        messaggio:
+          'Sul tuo profilo non risulta ancora caricata la firma digitale. Se hai già effettuato l\'accesso in App, esci subito facendo LOGOUT e rientra facendo LOGIN (oppure fai accesso se non l\'hai ancora fatto): al login dovrai obbligatoriamente caricare la tua firma e cambiare il PIN se hai ancora 0000.',
+        targetIds: targetsSenzaFirma.map((v: any) => String(v.id)),
+        includiTuttiSenzaFirma: true,
+        totaleDestinatari: targetsSenzaFirma.length,
+        emailsInviateCount: emailsInviate.length
+      };
+
+      state.sollecitoFirmaPin = campaign;
+      persistState();
+      broadcast({
+        type: 'SOLLECITO_FIRMA_PIN_UPDATED',
+        sollecitoFirmaPin: campaign
+      });
+
+      const notificaRadio: RadioNotification = {
+        id: generateUniqueNotifId(),
+        orario: formatTimeItaly(),
+        testo: `📢 SOLLECITO FIRMA & PIN: Inviata notifica in-app a ${targetsSenzaFirma.length} account senza firma e ${emailsInviate.length} email ufficiali (${emailsSaltate.length} email assenti/segnaposto).`,
+        tipo: 'sistema'
+      };
+      state.notifiche.push(notificaRadio);
+      if (state.notifiche.length > 50) state.notifiche.shift();
+      broadcast({
+        type: 'NOTIFICATION_BROADCAST',
+        notification: notificaRadio
+      });
+
+      return res.json({
+        success: true,
+        campaign,
+        totaleSenzaFirma: targetsSenzaFirma.length,
+        destinatariSenzaFirma: targetsSenzaFirma.map((v: any) => ({
+          id: String(v.id || ''),
+          nome: `${v.nome || ''} ${v.cognome || ''}`.trim(),
+          email: String(v.email || '').trim(),
+          pinEmergenza: String(v.pin || '').trim() === '0000'
+        })),
+        accountConFirmaMaPin0000,
+        emailsInviate,
+        emailsSaltate,
+        erroriSmtp
+      });
+    } catch (err: any) {
+      console.error('[Sollecito Firma/PIN] Errore endpoint:', err);
+      return res.status(500).json({ success: false, error: err?.message || 'Errore elaborazione sollecito' });
     }
   });
 

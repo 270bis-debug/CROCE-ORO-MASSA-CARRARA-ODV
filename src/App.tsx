@@ -105,6 +105,13 @@ import { ModalSetupPermessiIniziali } from './components/ModalSetupPermessiInizi
 import { PWAInstallButton } from './components/PWAInstallButton';
 import { BannerAggiornamentoPWA } from './components/BannerAggiornamentoPWA';
 import { ModalFirmaOperatore } from './components/ModalFirmaOperatore';
+import {
+  ModalObbligoFirmaEPin,
+  isFirmaMancante,
+  isPinEmergenza,
+  richiedeAdeguamentoLogin,
+  RisultatoObbligoFirmaEPin
+} from './components/ModalObbligoFirmaEPin';
 import { ModalAnteprimaMultipla } from './components/ModalAnteprimaMultipla';
 import { attivaServiceWorkerEPush, mostraNotificaNativa } from './services/pushManager';
 import { soundEngine } from './services/soundEngine';
@@ -224,7 +231,8 @@ import {
   PresaVisioneConsegna,
   ProprietarioImmobileData,
   MovimentoAltreEntrateUscite,
-  VoceCostoGestione
+  VoceCostoGestione,
+  SollecitoFirmaPinCampaign
 } from './types/adminTypes';
 import { CONTATTI_INIZIALI } from './data/contattiMockData';
 import {
@@ -1498,6 +1506,31 @@ export default function App() {
     } catch {}
     realtime.syncCostiGestione(nuovi);
   };
+
+  // 6e. Campagna attiva di sollecito caricamento firma digitale + cambio PIN 0000
+  const DEFAULT_SOLLECITO_FIRMA_PIN: SollecitoFirmaPinCampaign = {
+    id: 'sollecito-firma-pin-2026-11-19',
+    createdAt: 1795075200000,
+    dataOra: '19/11/2026',
+    inviatoDa: 'Amministratore Centrale',
+    titolo: '✍️ Firma Digitale Obbligatoria & Controllo PIN',
+    messaggio:
+      "Sul tuo profilo non risulta ancora caricata la firma digitale. Se hai già effettuato l'accesso in App, esci subito facendo LOGOUT e rientra facendo LOGIN (oppure fai accesso se non l'hai ancora fatto): al login dovrai obbligatoriamente caricare la tua firma e cambiare il PIN se hai ancora 0000.",
+    targetIds: [],
+    includiTuttiSenzaFirma: true,
+    totaleDestinatari: 0
+  };
+  const [sollecitoFirmaPin, setSollecitoFirmaPin] = useState<SollecitoFirmaPinCampaign | null>(() => {
+    try {
+      const saved = localStorage.getItem('CROCE_ORO_SOLLECITO_FIRMA_PIN');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed && typeof parsed === 'object' && parsed.id) return parsed;
+      }
+    } catch {}
+    return DEFAULT_SOLLECITO_FIRMA_PIN;
+  });
+  const [obbligoAdeguamentoCentrale, setObbligoAdeguamentoCentrale] = useState<Volontario | null>(null);
 
   // 7. Corsi di Formazione (epura eventuali corsi demo/precaricati legacy)
   const rimuoviCorsiLegacy = (lista: CorsoFormazione[] | any): CorsoFormazione[] => {
@@ -4553,6 +4586,53 @@ export default function App() {
       qualifica: currentVol.qualifica,
     };
   }, [utenteCentrale, volontari, isCentraleAdmin]);
+
+  // Consegna notifica in-app agli account loggati che non hanno ancora caricato la propria firma sull'app
+  useEffect(() => {
+    if (!sollecitoFirmaPin || !sollecitoFirmaPin.id) return;
+    const activeVol: Volontario | null =
+      volontarioLoggatoCorrente ||
+      (utenteCentraleLive?.id &&
+      utenteCentraleLive.id !== 'admin-centrale-root' &&
+      utenteCentraleLive.id !== 'vol-admin'
+        ? volontari.find((v) => v.id === utenteCentraleLive.id) || null
+        : null);
+    if (!activeVol) return;
+    if (!isFirmaMancante(activeVol)) return;
+    const isTargeted =
+      sollecitoFirmaPin.includiTuttiSenzaFirma ||
+      (Array.isArray(sollecitoFirmaPin.targetIds) && sollecitoFirmaPin.targetIds.includes(activeVol.id));
+    if (!isTargeted) return;
+
+    const dedupKey = `sollecito-firma-${sollecitoFirmaPin.id}-${activeVol.id}`;
+    const alreadyProcessed =
+      processedNotifKeysRef.current.has(dedupKey) ||
+      notificheRicevuteAccountRef.current.some((n) => n.dedupKey === dedupKey);
+    if (alreadyProcessed) return;
+
+    const hasPin0000 = isPinEmergenza(activeVol);
+    const titoloNotif = hasPin0000
+      ? '✍️ Firma Obbligatoria & Cambio PIN 0000'
+      : (sollecitoFirmaPin.titolo || '✍️ Firma Digitale Obbligatoria');
+    const messaggioNotif = hasPin0000
+      ? `Ciao ${activeVol.nome}, sul tuo profilo manca ancora la firma digitale e risulta attivo il PIN di emergenza 0000. Fai subito LOGOUT e poi nuovamente LOGIN sull'App: al rientro dovrai obbligatoriamente caricare la tua firma e impostare un nuovo PIN personale a 4 cifre.`
+      : `Ciao ${activeVol.nome}, sul tuo profilo non risulta ancora caricata la firma digitale. Fai subito LOGOUT e poi nuovamente LOGIN sull'App (oppure accedi se non lo hai ancora fatto): al rientro ti verrà richiesto obbligatoriamente di caricare la tua firma.`;
+
+    riceviERegistraNotifica({
+      categoria: 'sistema',
+      titolo: titoloNotif,
+      messaggio: messaggioNotif,
+      priorita: 'Urgente',
+      dedupKey
+    });
+
+    mostraNotificaNativa(titoloNotif, {
+      body: messaggioNotif,
+      tag: dedupKey,
+      renotify: false,
+      silent: false
+    });
+  }, [sollecitoFirmaPin, volontarioLoggatoCorrente, utenteCentraleLive?.id, volontari]);
 
   // Calcolo delle macro categorie autorizzate per la sessione corrente (include DB interi + singole sottosezioni abilitate)
   const sezioniAbilitateUtente = useMemo<AdminSectionId[]>(() => {
@@ -8335,6 +8415,9 @@ export default function App() {
             }
           })
           .catch(() => {});
+        if (richiedeAdeguamentoLogin(op)) {
+          setObbligoAdeguamentoCentrale(op);
+        }
         attivaServiceWorkerEPush('admin');
         return true;
       } else {
@@ -8452,6 +8535,9 @@ export default function App() {
             `ACCESSO AVANZATO DIRETTO: ${volontarioLoggatoCorrente.nome} ${volontarioLoggatoCorrente.cognome} abilitato senza rieffettuare il login.`,
             'centrale'
           );
+          if (richiedeAdeguamentoLogin(volontarioLoggatoCorrente)) {
+            setObbligoAdeguamentoCentrale(volontarioLoggatoCorrente);
+          }
           return;
         }
         return;
@@ -8597,6 +8683,9 @@ export default function App() {
                 : `ACCESSO: Profilo Centrale sbloccato dall'Operatore ${op.nome} ${op.cognome}.`),
           "centrale"
         );
+        if (richiedeAdeguamentoLogin(op)) {
+          setObbligoAdeguamentoCentrale(op);
+        }
         return;
       } else {
         setPassError(true);
@@ -9976,6 +10065,13 @@ KM TOTALI: ${kmTot} KM`;
           setCostiGestione(s.costiGestione);
           try { localStorage.setItem('CROCE_ORO_COSTI_GESTIONE', JSON.stringify(s.costiGestione)); } catch {}
         }
+        if (s.sollecitoFirmaPin && typeof s.sollecitoFirmaPin === 'object' && s.sollecitoFirmaPin.id) {
+          setSollecitoFirmaPin((prev) => {
+            if (prev && Number(prev.createdAt || 0) > Number(s.sollecitoFirmaPin.createdAt || 0)) return prev;
+            try { localStorage.setItem('CROCE_ORO_SOLLECITO_FIRMA_PIN', JSON.stringify(s.sollecitoFirmaPin)); } catch {}
+            return s.sollecitoFirmaPin;
+          });
+        }
         if (Array.isArray(s.mezziFlotta) && s.mezziFlotta.length > 0) {
           const ordinati = [...s.mezziFlotta].sort((a, b) => (a.sigla || '').localeCompare(b.sigla || '', 'it', { numeric: true, sensitivity: 'base' }));
           setMezziFlotta(ordinati);
@@ -10385,6 +10481,16 @@ KM TOTALI: ${kmTot} KM`;
           }
         } else if (s.ringing && !s.ringing.active && (isPhoneRingingRef.current || soundEngine.getIsRinging())) {
           arrestaSuoneria(false);
+        }
+        if (s.sollecitoFirmaPin && typeof s.sollecitoFirmaPin === 'object' && s.sollecitoFirmaPin.id) {
+          setSollecitoFirmaPin((prev) => {
+            if (prev && Number(prev.createdAt || 0) >= Number(s.sollecitoFirmaPin.createdAt || 0) && prev.id === s.sollecitoFirmaPin.id) {
+              return prev;
+            }
+            if (prev && Number(prev.createdAt || 0) > Number(s.sollecitoFirmaPin.createdAt || 0)) return prev;
+            try { localStorage.setItem('CROCE_ORO_SOLLECITO_FIRMA_PIN', JSON.stringify(s.sollecitoFirmaPin)); } catch {}
+            return s.sollecitoFirmaPin;
+          });
         }
       }),
 
@@ -12117,6 +12223,14 @@ KM TOTALI: ${kmTot} KM`;
           setCostiGestione(payload.costiGestione);
           try {
             localStorage.setItem('CROCE_ORO_COSTI_GESTIONE', JSON.stringify(payload.costiGestione));
+          } catch {}
+        }
+      }),
+      realtime.on('SOLLECITO_FIRMA_PIN_UPDATED', (payload: any) => {
+        if (payload?.sollecitoFirmaPin && typeof payload.sollecitoFirmaPin === 'object' && payload.sollecitoFirmaPin.id) {
+          setSollecitoFirmaPin(payload.sollecitoFirmaPin);
+          try {
+            localStorage.setItem('CROCE_ORO_SOLLECITO_FIRMA_PIN', JSON.stringify(payload.sollecitoFirmaPin));
           } catch {}
         }
       }),
@@ -18023,38 +18137,52 @@ KM TOTALI: ${kmTot} KM`;
                         );
                         const isLogChip = isVolontarioLoggatoLive(v);
                         return (
-                          <span
+                          <div
                             key={id}
-                            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-500/20 text-amber-200 border border-amber-500/40 text-[11px] font-bold"
+                            className="w-full sm:w-auto flex flex-col sm:flex-row sm:items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-amber-500/20 text-amber-200 border border-amber-500/40 text-[11px] font-bold"
                           >
-                            <span>👤 {v.nome} {v.cognome}</span>
-                            <span className="text-[9px] text-amber-300 font-normal">({v.qualifica})</span>
-                            {isLogChip ? (
-                              <span className="text-[9px] px-1 py-0.2 rounded bg-sky-500/30 text-sky-300 font-bold">● Loggato</span>
-                            ) : (
-                              <span className="text-[9px] text-slate-400">No login</span>
-                            )}
-                            {timbChip ? (
-                              <span className="text-[9px] px-1 py-0.2 rounded bg-emerald-500/30 text-emerald-300 font-bold">⏱️ In Turno ({timbChip.orarioIngresso})</span>
-                            ) : (
-                              <span className="text-[9px] text-amber-400/80 font-mono">⚠️ Non timbrato</span>
-                            )}
-                            <button
-                              type="button"
-                              onClick={() => handleToggleDestinatarioVolontario(id)}
-                              className="ml-1 text-amber-400 hover:text-red-400 font-bold cursor-pointer"
-                              title="Rimuovi"
-                            >
-                              ✕
-                            </button>
-                          </span>
+                            <div className="flex items-center justify-between gap-2 min-w-0">
+                              <div className="flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5 min-w-0">
+                                <span className="text-amber-100 leading-tight">👤 {v.nome} {v.cognome}</span>
+                                <span className="text-[9.5px] text-amber-300/90 font-normal leading-tight">({v.qualifica})</span>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => handleToggleDestinatarioVolontario(id)}
+                                className="sm:hidden shrink-0 px-1.5 py-0.5 text-amber-300 hover:text-red-400 font-bold cursor-pointer"
+                                title="Rimuovi"
+                              >
+                                ✕
+                              </button>
+                            </div>
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              {isLogChip ? (
+                                <span className="text-[9.5px] px-1.5 py-0.5 rounded bg-sky-500/30 text-sky-200 font-bold whitespace-nowrap">● Loggato</span>
+                              ) : (
+                                <span className="text-[9.5px] px-1.5 py-0.5 rounded bg-slate-900/70 text-slate-400 whitespace-nowrap">Non loggato</span>
+                              )}
+                              {timbChip ? (
+                                <span className="text-[9.5px] px-1.5 py-0.5 rounded bg-emerald-500/30 text-emerald-200 font-bold whitespace-nowrap">⏱️ In Turno ({timbChip.orarioIngresso})</span>
+                              ) : (
+                                <span className="text-[9.5px] px-1.5 py-0.5 rounded bg-amber-950/60 text-amber-300 font-mono whitespace-nowrap">⚠️ Non timbrato</span>
+                              )}
+                              <button
+                                type="button"
+                                onClick={() => handleToggleDestinatarioVolontario(id)}
+                                className="hidden sm:inline-flex ml-0.5 text-amber-400 hover:text-red-400 font-bold cursor-pointer"
+                                title="Rimuovi"
+                              >
+                                ✕
+                              </button>
+                            </div>
+                          </div>
                         );
                       })}
                     </div>
                   )}
 
                   {/* Lista di selezione dei volontari registrati */}
-                  <div className="max-h-36 overflow-y-auto space-y-1 pr-1 pt-1 border-t border-slate-800">
+                  <div className="max-h-64 sm:max-h-52 overflow-y-auto space-y-1.5 pr-1 pt-1.5 border-t border-slate-800">
                     {volontari.length === 0 ? (
                       <div className="text-[11px] text-slate-500 italic py-1">Nessun volontario registrato a sistema</div>
                     ) : (
@@ -18066,13 +18194,15 @@ KM TOTALI: ${kmTot} KM`;
                           (t.volontarioId === v.id || (t.volontarioNome && t.volontarioNome.trim().toLowerCase() === nomeVol)) &&
                           (!t.orarioUscita || t.orarioUscita.trim() === '')
                         );
+                        const isLoggatoVol = isVolontarioLoggatoLive(v);
+                        const isTimbratoVol = Boolean(timbAttiva);
                         return (
                           <div
                             key={v.id}
                             onClick={() => {
                               if (!isDisabled) handleToggleDestinatarioVolontario(v.id);
                             }}
-                            className={`flex items-center justify-between p-1.5 rounded-lg text-xs cursor-pointer transition-colors ${
+                            className={`flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1.5 sm:gap-2 p-2 rounded-lg text-xs cursor-pointer transition-colors ${
                               isSelezionato
                                 ? 'bg-amber-500/15 border border-amber-500/50 text-white'
                                 : isDisabled
@@ -18080,65 +18210,62 @@ KM TOTALI: ${kmTot} KM`;
                                 : 'bg-slate-950/60 hover:bg-slate-800 text-slate-300 border border-slate-800/80'
                             }`}
                           >
-                            <div className="flex items-center gap-2 min-w-0">
+                            <div className="flex items-start sm:items-center gap-2 min-w-0 flex-1">
                               <input
                                 type="checkbox"
                                 checked={isSelezionato}
                                 disabled={isDisabled}
                                 readOnly
-                                className="rounded text-amber-500 focus:ring-amber-500 pointer-events-none"
+                                className="mt-0.5 sm:mt-0 shrink-0 rounded text-amber-500 focus:ring-amber-500 pointer-events-none"
                               />
-                              <span className="font-semibold truncate">{v.nome} {v.cognome}</span>
-                              <span className="text-[10px] text-slate-400 font-mono">({v.qualifica})</span>
+                              <div className="flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5 min-w-0 flex-1">
+                                <span className="font-bold text-slate-100 leading-tight break-words">
+                                  {v.nome} {v.cognome}
+                                </span>
+                                <span className="text-[10px] text-slate-400 font-mono leading-tight">
+                                  ({v.qualifica})
+                                </span>
+                              </div>
                             </div>
-                            <div className="flex items-center gap-1.5 shrink-0 text-[10px] flex-wrap justify-end">
-                              {/* Stato 1: In Turno SOLO se timbrato vs Loggato */}
-                              {(() => {
-                                const isLoggatoVol = isVolontarioLoggatoLive(v);
-                                const isTimbratoVol = Boolean(timbAttiva);
-                                return (
-                                  <>
-                                    {isLoggatoVol ? (
-                                      <span className="px-1.5 py-0.5 rounded bg-sky-500/20 text-sky-300 border border-sky-500/30 font-bold flex items-center gap-1">
-                                        <span className="w-1.5 h-1.5 rounded-full bg-sky-400" />
-                                        Loggato
-                                      </span>
-                                    ) : (
-                                      <span className="px-1.5 py-0.5 rounded bg-slate-900 text-slate-500">
-                                        Non loggato
-                                      </span>
-                                    )}
+                            <div className="flex flex-wrap items-center gap-1.5 pl-6 sm:pl-0 sm:shrink-0 sm:justify-end text-[10px]">
+                              {isLoggatoVol ? (
+                                <span className="px-1.5 py-0.5 rounded bg-sky-500/20 text-sky-300 border border-sky-500/30 font-bold inline-flex items-center gap-1 whitespace-nowrap">
+                                  <span className="w-1.5 h-1.5 rounded-full bg-sky-400 shrink-0" />
+                                  Loggato
+                                </span>
+                              ) : (
+                                <span className="px-1.5 py-0.5 rounded bg-slate-900 text-slate-500 whitespace-nowrap">
+                                  Non loggato
+                                </span>
+                              )}
 
-                                    {isTimbratoVol && timbAttiva ? (
-                                      <span
-                                        className="px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 font-bold flex items-center gap-1 text-[9.5px]"
-                                        title={`In Turno — Timbratura di ingresso registrata alle ore ${timbAttiva.orarioIngresso}${timbAttiva.sede ? ` presso ${timbAttiva.sede}` : ''}`}
-                                      >
-                                        <Clock className="w-2.5 h-2.5 text-emerald-400 shrink-0" />
-                                        <span>🟢 In Turno ({timbAttiva.orarioIngresso})</span>
-                                      </span>
-                                    ) : isLoggatoVol ? (
-                                      <span
-                                        className="px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 font-bold flex items-center gap-1 text-[9.5px]"
-                                        title="Il volontario è loggato ma NON ha ancora effettuato la timbratura: non è di turno."
-                                      >
-                                        <AlertTriangle className="w-2.5 h-2.5 text-amber-400 shrink-0" />
-                                        <span>Non di turno (Manca Timbratura)</span>
-                                      </span>
-                                    ) : (
-                                      <span
-                                        className="px-1.5 py-0.5 rounded bg-slate-800/80 text-slate-500 border border-slate-800 text-[9px]"
-                                        title="Nessuna timbratura registrata"
-                                      >
-                                        Non timbrato
-                                      </span>
-                                    )}
-                                  </>
-                                );
-                              })()}
+                              {isTimbratoVol && timbAttiva ? (
+                                <span
+                                  className="px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 font-bold inline-flex items-center gap-1 text-[9.5px] whitespace-nowrap"
+                                  title={`In Turno — Timbratura di ingresso registrata alle ore ${timbAttiva.orarioIngresso}${timbAttiva.sede ? ` presso ${timbAttiva.sede}` : ''}`}
+                                >
+                                  <Clock className="w-2.5 h-2.5 text-emerald-400 shrink-0" />
+                                  <span>🟢 In Turno ({timbAttiva.orarioIngresso})</span>
+                                </span>
+                              ) : isLoggatoVol ? (
+                                <span
+                                  className="px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 font-bold inline-flex items-center gap-1 text-[9.5px] whitespace-nowrap"
+                                  title="Il volontario è loggato ma NON ha ancora effettuato la timbratura: non è di turno."
+                                >
+                                  <AlertTriangle className="w-2.5 h-2.5 text-amber-400 shrink-0" />
+                                  <span>Non di turno (Manca Timbratura)</span>
+                                </span>
+                              ) : (
+                                <span
+                                  className="px-1.5 py-0.5 rounded bg-slate-800/80 text-slate-500 border border-slate-800 text-[9px] whitespace-nowrap"
+                                  title="Nessuna timbratura registrata"
+                                >
+                                  Non timbrato
+                                </span>
+                              )}
 
                               {isSelezionato && (
-                                <span className="font-bold text-amber-400">Incaricato ✓</span>
+                                <span className="font-bold text-amber-400 whitespace-nowrap">Incaricato ✓</span>
                               )}
                             </div>
                           </div>
@@ -22322,6 +22449,59 @@ KM TOTALI: ${kmTot} KM`;
         }
         onNotificaRadio={aggiungiNotifica}
       />
+
+      {/* MODALE OBBLIGATORIA FIRMA DIGITALE & CAMBIO PIN 0000 (CENTRALE / ACCESSO AVANZATO) */}
+      {obbligoAdeguamentoCentrale && (
+        <ModalObbligoFirmaEPin
+          volontario={obbligoAdeguamentoCentrale}
+          contesto="centrale"
+          onCompleta={(risultato: RisultatoObbligoFirmaEPin) => {
+            const target = obbligoAdeguamentoCentrale;
+            const aggiornato: Volontario = {
+              ...target,
+              ...(risultato.firmaBase64 ? { firmaBase64: risultato.firmaBase64 } : {}),
+              ...(risultato.nuovoPin
+                ? {
+                    pin: risultato.nuovoPin,
+                    pinProvvisorio: false,
+                    richiedeResetPassword: false,
+                    tentativiErrati: 0
+                  }
+                : {})
+            };
+            const nextVolontari = volontariRef.current.map((v) =>
+              v.id === aggiornato.id ? { ...v, ...aggiornato } : v
+            );
+            aggiornaVolontari(nextVolontari);
+            setUtenteCentrale((prev) => {
+              if (!prev || prev.id !== aggiornato.id) return prev;
+              const updatedOp = {
+                ...prev,
+                ...(risultato.firmaBase64 ? { firmaBase64: risultato.firmaBase64 } : {}),
+                ...(risultato.nuovoPin ? { pin: risultato.nuovoPin } : {})
+              };
+              try {
+                localStorage.setItem('CROCE_ORO_UTENTE_CENTRALE', JSON.stringify(updatedOp));
+              } catch {}
+              return updatedOp;
+            });
+            const azioni: string[] = [];
+            if (risultato.firmaBase64) azioni.push('firma digitale caricata');
+            if (risultato.nuovoPin) azioni.push('PIN di emergenza 0000 sostituito');
+            if (azioni.length > 0) {
+              aggiungiNotifica(
+                `✅ ADEGUAMENTO PROFILO: ${aggiornato.nome} ${aggiornato.cognome} ha completato l'adeguamento obbligatorio al login (${azioni.join(' e ')}).`,
+                'sistema'
+              );
+            }
+            setObbligoAdeguamentoCentrale(null);
+          }}
+          onAnnullaEdEsci={() => {
+            setObbligoAdeguamentoCentrale(null);
+            handleDisconnettiProfilo(true);
+          }}
+        />
+      )}
 
       {/* BANNER NOTIFICA AGGIORNAMENTO DISPONIBILE */}
       <BannerAggiornamentoPWA />

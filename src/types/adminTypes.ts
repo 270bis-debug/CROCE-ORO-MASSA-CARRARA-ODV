@@ -683,6 +683,19 @@ export interface NotificaRicevutaAccount {
   };
 }
 
+export interface SollecitoFirmaPinCampaign {
+  id: string;
+  createdAt: number;
+  dataOra: string;
+  inviatoDa: string;
+  titolo: string;
+  messaggio: string;
+  targetIds: string[];
+  includiTuttiSenzaFirma: boolean;
+  totaleDestinatari: number;
+  emailsInviateCount?: number;
+}
+
 // ---------------------------------------------------------------------------
 // 11. GIORNALE DI BORDO & BROGLIACCIO DI CENTRALE OPERATIVA
 // ---------------------------------------------------------------------------

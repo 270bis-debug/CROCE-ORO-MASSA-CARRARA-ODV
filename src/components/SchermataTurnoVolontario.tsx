@@ -31,6 +31,11 @@ import {
 } from '../data/suggerimentiMezzi';
 import { SignaturePad } from './SignaturePad';
 import { UploadFirmaTrasparente } from './UploadFirmaTrasparente';
+import {
+  ModalObbligoFirmaEPin,
+  richiedeAdeguamentoLogin,
+  RisultatoObbligoFirmaEPin
+} from './ModalObbligoFirmaEPin';
 import { ModalChecklistInizioTurnoGuidata } from './ModalChecklistInizioTurnoGuidata';
 import { ChecklistTemplate, ChecklistCompilataTurno, deduciTipoMezzoDaNome } from '../types/checklistTypes';
 import { CHECKLIST_TEMPLATES_INIZIALI, trovaTemplatePerTipo } from '../data/checklistMockData';
@@ -145,11 +150,9 @@ export const SchermataTurnoVolontario: React.FC<SchermataTurnoVolontarioProps> =
   const [nuovaFirma, setNuovaFirma] = useState<string | null>(null);
   const [erroreNuovo, setErroreNuovo] = useState('');
 
-  // Modale Firma Mancante (per chi accede senza firma registrata sul device)
+  // Modale Obbligo Firma Digitale & Cambio PIN 0000 al login
   const [modaleFirmaMancanteAperta, setModaleFirmaMancanteAperta] = useState(false);
-  const [firmaVolontarioMancante, setFirmaVolontarioMancante] = useState<string | null>(null);
   const [volontarioDaFirmare, setVolontarioDaFirmare] = useState<Volontario | null>(null);
-  const [erroreFirmaMancante, setErroreFirmaMancante] = useState('');
 
   // Modale Reset PIN / Password
   const [modaleResetAperta, setModaleResetAperta] = useState(false);
@@ -349,11 +352,9 @@ export const SchermataTurnoVolontario: React.FC<SchermataTurnoVolontarioProps> =
       onAggiornaVolontari(aggiornati);
     }
 
-    // Obbligo tassativo Firma Digitale: finché non firma sul device non può entrare in turno
-    if (!vol.firmaBase64) {
+    // Obbligo tassativo Firma Digitale & Cambio PIN di emergenza (0000): finché non completa non può entrare
+    if (richiedeAdeguamentoLogin(vol)) {
       setVolontarioDaFirmare(vol);
-      setFirmaVolontarioMancante(null);
-      setErroreFirmaMancante('');
       setModaleFirmaMancanteAperta(true);
       return;
     }
@@ -482,39 +483,52 @@ export const SchermataTurnoVolontario: React.FC<SchermataTurnoVolontarioProps> =
     setErrore('');
   };
 
-  const salvaFirmaMancanteEdEntra = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!firmaVolontarioMancante || !firmaVolontarioMancante.trim()) {
-      setErroreFirmaMancante("Firma obbligatoria sullo schermo: traccia la tua firma con il dito o pennino per completare l'accesso. Finché non completi la firma non puoi entrare.");
-      return;
+  const completaAdeguamentoEdEntra = (risultato: RisultatoObbligoFirmaEPin) => {
+    if (!volontarioDaFirmare) return;
+
+    const aggiornato: Volontario = {
+      ...volontarioDaFirmare,
+      ...(risultato.firmaBase64 ? { firmaBase64: risultato.firmaBase64 } : {}),
+      ...(risultato.nuovoPin
+        ? {
+            pin: risultato.nuovoPin,
+            pinProvvisorio: false,
+            richiedeResetPassword: false,
+            tentativiErrati: 0
+          }
+        : {})
+    };
+
+    if (onAggiornaVolontari) {
+      const aggiornati = volontari.map(v => (v.id === aggiornato.id ? aggiornato : v));
+      onAggiornaVolontari(aggiornati);
     }
 
-    if (volontarioDaFirmare) {
-      const aggiornato: Volontario = {
-        ...volontarioDaFirmare,
-        firmaBase64: firmaVolontarioMancante
-      };
+    setModaleFirmaMancanteAperta(false);
+    const vTarget = aggiornato;
+    setVolontarioDaFirmare(null);
 
-      if (onAggiornaVolontari) {
-        const aggiornati = volontari.map(v => v.id === aggiornato.id ? aggiornato : v);
-        onAggiornaVolontari(aggiornati);
+    if (onNotificaRadio) {
+      const azioni: string[] = [];
+      if (risultato.firmaBase64) azioni.push('firma digitale caricata');
+      if (risultato.nuovoPin) azioni.push('PIN di emergenza 0000 sostituito');
+      if (azioni.length > 0) {
+        onNotificaRadio(
+          `✅ ADEGUAMENTO PROFILO: ${vTarget.nome} ${vTarget.cognome} ha completato l'adeguamento obbligatorio al login (${azioni.join(' e ')}).`,
+          'sistema'
+        );
       }
-
-      setModaleFirmaMancanteAperta(false);
-      const vTarget = aggiornato;
-      setVolontarioDaFirmare(null);
-      setFirmaVolontarioMancante(null);
-
-      // Al login non si associa alcun mezzo al volontario; entra in turno solo quando effettua la timbratura
-      const verificaTurno = verificaVolontarioInTurnoAdesso(vTarget, turni, timbrature);
-      const timbGiaAperta = Boolean(hasTimbraturaApertaPerVolontario(vTarget, timbrature));
-      onLogin(vTarget, '', ruoloSelezionato);
-      if (!timbGiaAperta && verificaTurno.haTurnoProgrammato && onAvviaFlussoTimbraturaPoiChecklist) {
-        onAvviaFlussoTimbraturaPoiChecklist(vTarget, '', ruoloSelezionato, false);
-      }
-      setPinInput('');
-      setErrore('');
     }
+
+    // Al login non si associa alcun mezzo al volontario; entra in turno solo quando effettua la timbratura
+    const verificaTurno = verificaVolontarioInTurnoAdesso(vTarget, turni, timbrature);
+    const timbGiaAperta = Boolean(hasTimbraturaApertaPerVolontario(vTarget, timbrature));
+    onLogin(vTarget, '', ruoloSelezionato);
+    if (!timbGiaAperta && verificaTurno.haTurnoProgrammato && onAvviaFlussoTimbraturaPoiChecklist) {
+      onAvviaFlussoTimbraturaPoiChecklist(vTarget, '', ruoloSelezionato, false);
+    }
+    setPinInput('');
+    setErrore('');
   };
 
   // Se la sessione è attiva, mostra il badge riassuntivo in testa al terminale:
@@ -1230,72 +1244,18 @@ export const SchermataTurnoVolontario: React.FC<SchermataTurnoVolontarioProps> =
         </div>
       )}
 
-      {/* SOTTO-MODALE FIRMA MANCANTE PER VOLONTARIO ESISTENTE */}
+      {/* SOTTO-MODALE OBBLIGO FIRMA DIGITALE & CAMBIO PIN 0000 AL LOGIN */}
       {modaleFirmaMancanteAperta && volontarioDaFirmare && (
-        <div className="fixed inset-0 bg-black/85 z-60 flex items-center justify-center p-4">
-          <form
-            onSubmit={salvaFirmaMancanteEdEntra}
-            className="bg-slate-900 border-2 border-amber-500/70 rounded-3xl max-w-md w-full p-5 space-y-3.5 shadow-2xl text-white max-h-[90vh] overflow-y-auto"
-          >
-            <div className="flex items-center justify-between border-b border-slate-800 pb-2">
-              <h4 className="text-sm font-bold text-amber-400 flex items-center gap-1.5 uppercase">
-                <PenTool className="w-4 h-4 text-amber-400" />
-                Firma Digitale Obbligatoria per Entrare
-              </h4>
-              <button
-                type="button"
-                onClick={() => {
-                  setModaleFirmaMancanteAperta(false);
-                  setVolontarioDaFirmare(null);
-                  setFirmaVolontarioMancante(null);
-                }}
-                className="text-slate-400 hover:text-white cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            <div className="p-2.5 rounded-xl bg-amber-500/15 border border-amber-500/40 text-amber-200 text-xs">
-              Ciao <strong className="text-amber-300">{volontarioDaFirmare.nome} {volontarioDaFirmare.cognome}</strong>! Per iniziare il turno e accedere al terminale di bordo, devi obbligatoriamente creare la tua firma autografa direttamente sullo schermo. Verrà apposta in automatico su tutti i fogli di viaggio e verbali PDF generati.
-            </div>
-
-            {erroreFirmaMancante && (
-              <div className="p-2.5 rounded-xl bg-red-500/20 border border-red-500/40 text-red-300 text-xs font-bold text-center">
-                {erroreFirmaMancante}
-              </div>
-            )}
-
-            <UploadFirmaTrasparente
-              label="Firma Digitale Autografa (Carica Immagine o Disegna)"
-              sottotitolo="Carica una foto/scansione della firma (il bianco verrà rimosso automaticamente rendendola trasparente) oppure disegnala sul display."
-              valoreIniziale={firmaVolontarioMancante}
-              onFirmaCambiata={(dataUrl) => {
-                setFirmaVolontarioMancante(dataUrl);
-                if (dataUrl) setErroreFirmaMancante('');
-              }}
-            />
-
-            <div className="pt-2 flex items-center gap-2">
-              <button
-                type="submit"
-                className="flex-1 py-2.5 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 font-black text-xs uppercase cursor-pointer shadow-lg active:scale-95 transition-all"
-              >
-                Conferma Firma & Inizia Turno
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setModaleFirmaMancanteAperta(false);
-                  setVolontarioDaFirmare(null);
-                  setFirmaVolontarioMancante(null);
-                }}
-                className="py-2.5 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold cursor-pointer"
-              >
-                Annulla
-              </button>
-            </div>
-          </form>
-        </div>
+        <ModalObbligoFirmaEPin
+          volontario={volontarioDaFirmare}
+          contesto="volontario"
+          onCompleta={completaAdeguamentoEdEntra}
+          onAnnullaEdEsci={() => {
+            setModaleFirmaMancanteAperta(false);
+            setVolontarioDaFirmare(null);
+            setPinInput('');
+          }}
+        />
       )}
 
       {/* MODALE RESET PASSWORD / PIN */}

@@ -522,6 +522,14 @@ class RealtimeService {
       const mergedVols = mergeVolontariListsSafe(currentVols, cloudVols, deletedIds);
       this.cloudState.volontariEliminatiIds = deletedIds;
       this.cloudState.volontari = mergedVols;
+      if (payload.sollecitoFirmaPin && typeof payload.sollecitoFirmaPin === 'object') {
+        const curTs = Number(this.cloudState.sollecitoFirmaPin?.createdAt || 0);
+        const incTs = Number(payload.sollecitoFirmaPin.createdAt || 0);
+        if (incTs >= curTs) {
+          this.cloudState.sollecitoFirmaPin = payload.sollecitoFirmaPin;
+          this.emit('SOLLECITO_FIRMA_PIN_UPDATED', { sollecitoFirmaPin: payload.sollecitoFirmaPin });
+        }
+      }
       this.lastVolontariRefreshAt = Date.now();
       this.pushVolontariToExpressIfNeeded(mergedVols, deletedIds);
       this.emit('VOLONTARI_UPDATED', {
@@ -995,6 +1003,7 @@ class RealtimeService {
         return {
           volontari: Array.isArray(this.cloudState.volontari) ? this.cloudState.volontari : [],
           volontariEliminatiIds: normalizeDeletedIds(this.cloudState.volontariEliminatiIds),
+          ...(this.cloudState.sollecitoFirmaPin ? { sollecitoFirmaPin: this.cloudState.sollecitoFirmaPin } : {}),
         };
       case 'servizi':
         return {
@@ -1578,6 +1587,11 @@ class RealtimeService {
               this.cloudState.nomiDatabase = payload.nomiDatabase;
               if (payload.updatedAt) this.cloudState.nomiDatabaseUpdatedAt = payload.updatedAt;
               applicaNomiDatabaseDaSync(payload.nomiDatabase, payload.updatedAt);
+            } else if (payload.type === 'SOLLECITO_FIRMA_PIN_UPDATED' && payload.sollecitoFirmaPin) {
+              this.cloudState.sollecitoFirmaPin = payload.sollecitoFirmaPin;
+              if (this.firebaseSession.isAuthorized && this.shardLoadedFromCloud['volontari']) {
+                this.scheduleShardWrite('volontari', { sollecitoFirmaPin: payload.sollecitoFirmaPin });
+              }
             } else if (payload.type === 'MEZZI_FLOTTA_UPDATED' && Array.isArray(payload.mezziFlotta)) {
               this.cloudState.mezziFlotta = payload.mezziFlotta;
               if (payload.updatedAt) this.cloudState.mezziFlottaUpdatedAt = payload.updatedAt;
@@ -2335,6 +2349,15 @@ class RealtimeService {
           this.scheduleShardWrite('volontari', {
             volontari: merged,
             volontariEliminatiIds: deletedIds,
+          });
+        }
+        break;
+      }
+      case 'SYNC_SOLLECITO_FIRMA_PIN': {
+        if (data?.sollecitoFirmaPin && typeof data.sollecitoFirmaPin === 'object') {
+          this.cloudState.sollecitoFirmaPin = data.sollecitoFirmaPin;
+          this.scheduleShardWrite('volontari', {
+            sollecitoFirmaPin: data.sollecitoFirmaPin,
           });
         }
         break;
@@ -3839,6 +3862,12 @@ class RealtimeService {
         }).catch(() => {});
       } catch {}
     }
+  }
+
+  public syncSollecitoFirmaPin(sollecitoFirmaPin: any) {
+    if (!sollecitoFirmaPin) return;
+    this.cloudState.sollecitoFirmaPin = sollecitoFirmaPin;
+    this.send('SYNC_SOLLECITO_FIRMA_PIN', { sollecitoFirmaPin });
   }
 }
 

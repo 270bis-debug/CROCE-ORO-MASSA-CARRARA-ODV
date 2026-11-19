@@ -47,6 +47,7 @@ import {
   Upload
 } from 'lucide-react';
 import { DatabaseVolontariModal, DatabaseVolontariModalInitialAction, Volontario, SEDI_TURNI_DISPONIBILI } from '../DatabaseVolontariModal';
+import { isFirmaMancante, isPinEmergenza } from '../ModalObbligoFirmaEPin';
 import {
   TimbraturaVolontario,
   LuogoTimbratura,
@@ -194,6 +195,82 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
     labelConferma?: string;
     onConfirm: () => void;
   } | null>(null);
+
+  // Stato invio sollecito massivo Firma Digitale & Cambio PIN 0000
+  const [invioSollecitoFirmaInCorso, setInvioSollecitoFirmaInCorso] = useState(false);
+  const [esitoSollecitoFirma, setEsitoSollecitoFirma] = useState<{
+    ok: boolean;
+    testo: string;
+    dettaglio?: string;
+  } | null>(null);
+
+  const volontariSenzaFirmaCount = React.useMemo(
+    () => volontari.filter((v) => isFirmaMancante(v)).length,
+    [volontari]
+  );
+
+  const volontariConPinEmergenzaCount = React.useMemo(
+    () => volontari.filter((v) => isPinEmergenza(v)).length,
+    [volontari]
+  );
+
+  const eseguiInvioSollecitoFirmaEPin = async () => {
+    setInvioSollecitoFirmaInCorso(true);
+    setEsitoSollecitoFirma(null);
+    try {
+      const resp = await fetch(`${realtime.getApiBaseUrl()}/api/invia-sollecito-firma-pin`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          volontari,
+          operatoreNome: operatoreCorrente || 'Amministratore Centrale'
+        })
+      });
+      const data = await resp.json();
+      if (!resp.ok || !data?.success) {
+        throw new Error(data?.error || 'Errore durante invio sollecito');
+      }
+      if (data.campaign) {
+        realtime.syncSollecitoFirmaPin(data.campaign);
+      }
+      const inviate = Array.isArray(data.emailsInviate) ? data.emailsInviate.length : 0;
+      const saltate = Array.isArray(data.emailsSaltate) ? data.emailsSaltate.length : 0;
+      const errori = Array.isArray(data.erroriSmtp) ? data.erroriSmtp.length : 0;
+      const tot = Number(data.totaleSenzaFirma || 0);
+      setEsitoSollecitoFirma({
+        ok: errori === 0,
+        testo: `Sollecito inviato: notifica in-app attiva per ${tot} account senza firma • ${inviate} email inviate${saltate > 0 ? ` • ${saltate} senza email valida` : ''}${errori > 0 ? ` • ${errori} errori SMTP` : ''}.`,
+        dettaglio:
+          saltate > 0
+            ? `Email non inviate per indirizzo assente/segnaposto: ${(data.emailsSaltate || []).map((x: any) => `${x.nome} (${x.email})`).join(', ')}`
+            : undefined
+      });
+      onNotificaRadio?.(
+        `📢 SOLLECITO FIRMA & PIN: Inviata notifica in-app a ${tot} account senza firma e ${inviate} email ufficiali.`,
+        'sistema'
+      );
+    } catch (err: any) {
+      setEsitoSollecitoFirma({
+        ok: false,
+        testo: `Errore durante l'invio del sollecito: ${err?.message || 'impossibile contattare il server'}`
+      });
+    } finally {
+      setInvioSollecitoFirmaInCorso(false);
+    }
+  };
+
+  const richiediConfermaSollecitoFirmaEPin = () => {
+    setConfermaAzioneModal({
+      titolo: 'Invia Sollecito Firma & Cambio PIN 0000',
+      messaggio:
+        `Verrà inviata subito una notifica in-app e una email a tutti i ${volontariSenzaFirmaCount} account che non hanno ancora caricato la firma digitale, chiedendo di fare accesso (oppure Logout + Login se già loggati). Al login saranno obbligati a caricare la firma e a cambiare il PIN se hanno ancora 0000 (${volontariConPinEmergenzaCount} profili attuali con PIN 0000). Procedere?`,
+      labelConferma: 'Invia Notifica & Email Ora',
+      onConfirm: () => {
+        setConfermaAzioneModal(null);
+        eseguiInvioSollecitoFirmaEPin();
+      }
+    });
+  };
 
   useEffect(() => {
     const onMansioniSync = () => {
@@ -1568,6 +1645,23 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
                 </label>
               )}
 
+              {isEffettivoAdmin && (
+                <button
+                  type="button"
+                  disabled={invioSollecitoFirmaInCorso || volontariSenzaFirmaCount === 0}
+                  onClick={richiediConfermaSollecitoFirmaEPin}
+                  className="px-3 py-2 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 disabled:opacity-50 text-amber-300 border border-amber-500/50 font-bold text-xs flex items-center gap-1.5 cursor-pointer active:scale-95 transition-all"
+                  title="Invia notifica in-app ed email a tutti gli account senza firma caricata (con obbligo firma + cambio PIN 0000 al login)"
+                >
+                  <Mail className="w-3.5 h-3.5 text-amber-400" />
+                  <span>
+                    {invioSollecitoFirmaInCorso
+                      ? 'Invio Sollecito...'
+                      : `Sollecita Firma & PIN (${volontariSenzaFirmaCount})`}
+                  </span>
+                </button>
+              )}
+
               <button
                 type="button"
                 onClick={apriNuovoVolontarioDiretto}
@@ -1578,6 +1672,30 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
               </button>
             </div>
           </div>
+
+          {esitoSollecitoFirma && (
+            <div
+              className={`rounded-xl px-4 py-3 border text-xs flex items-start justify-between gap-3 ${
+                esitoSollecitoFirma.ok
+                  ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-200'
+                  : 'bg-amber-500/15 border-amber-500/40 text-amber-200'
+              }`}
+            >
+              <div className="space-y-1">
+                <p className="font-bold">{esitoSollecitoFirma.testo}</p>
+                {esitoSollecitoFirma.dettaglio && (
+                  <p className="text-[11px] opacity-90">{esitoSollecitoFirma.dettaglio}</p>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={() => setEsitoSollecitoFirma(null)}
+                className="text-slate-300 hover:text-white cursor-pointer shrink-0"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          )}
 
           {/* Tabella Elenco Volontari */}
           <div className="bg-slate-950 rounded-2xl border border-slate-800 overflow-hidden shadow-xl">
