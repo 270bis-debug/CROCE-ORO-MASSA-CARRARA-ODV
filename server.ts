@@ -407,7 +407,10 @@ export interface ServerState {
   corsiFormazione?: any[];
   noteDiDebito?: any[];
   tessereAssociative?: any[];
+  altreEntrateUscite?: any[];
+  costiGestione?: any[];
   costiServizio?: any[];
+  loggedSessions?: Record<string, { loggato: boolean; updatedAt: number; volontarioNome?: string; mezzoScelto?: string; orarioInizio?: string }>;
   catalogoMansioni?: any[];
   categorieMansioni?: any[];
   mansioniConfigUpdatedAt?: number;
@@ -889,7 +892,10 @@ function loadPersistedState(): ServerState {
           corsiFormazione: filterLegacyCorsiServer(parsed.corsiFormazione),
           noteDiDebito: Array.isArray(parsed.noteDiDebito) ? parsed.noteDiDebito : undefined,
           tessereAssociative: Array.isArray(parsed.tessereAssociative) ? parsed.tessereAssociative : undefined,
+          altreEntrateUscite: Array.isArray(parsed.altreEntrateUscite) ? parsed.altreEntrateUscite : undefined,
+          costiGestione: Array.isArray(parsed.costiGestione) ? parsed.costiGestione : undefined,
           costiServizio: Array.isArray(parsed.costiServizio) ? parsed.costiServizio : undefined,
+          loggedSessions: parsed.loggedSessions && typeof parsed.loggedSessions === 'object' ? parsed.loggedSessions : {},
           catalogoMansioni: Array.isArray(parsed.catalogoMansioni) ? parsed.catalogoMansioni : undefined,
           categorieMansioni: Array.isArray(parsed.categorieMansioni) ? parsed.categorieMansioni : undefined,
           mansioniConfigUpdatedAt: typeof parsed.mansioniConfigUpdatedAt === 'number' ? parsed.mansioniConfigUpdatedAt : undefined,
@@ -1259,8 +1265,10 @@ async function startServer() {
         }
       }
     });
+    // Usa ADPCM 24kHz Super-Wideband HD di default (compatibile al 100% con iOS, Android, Desktop e relay Firestore)
+    // Attiva Opus 48kHz solo quando almeno 2 client WS sono connessi sullo stesso server e tutti confermano supporto Opus
     const nextMode: 'opus-48k' | 'adpcm-24k' =
-      connected > 0 && knownCaps === connected && allSupportOpus ? 'opus-48k' : 'adpcm-24k';
+      connected >= 2 && knownCaps === connected && allSupportOpus ? 'opus-48k' : 'adpcm-24k';
     if (state.radioPtt.codecMode !== nextMode) {
       state.radioPtt.codecMode = nextMode;
       if (shouldBroadcast) {
@@ -3798,14 +3806,25 @@ async function startServer() {
             break;
           }
 
-          // 9. Aggiornamento Sessione / Login Volontario (senza associare mezzo né mettere di turno senza timbratura)
+          // 9. Aggiornamento Sessione / Login Volontario (tracciamento multi-account simultaneo)
           case 'UPDATE_SHIFT': {
             state.activeShift = data;
+            if (!state.loggedSessions || typeof state.loggedSessions !== 'object') {
+              state.loggedSessions = {};
+            }
 
             // Aggiorna stato loggato (e mantiene inTurno legato SOLO alla presenza di timbratura aperta)
             if (data.volontarioId) {
+              const targetVolId = String(data.volontarioId).trim();
+              state.loggedSessions[targetVolId] = {
+                loggato: !!data.attivo,
+                updatedAt: Date.now(),
+                volontarioNome: data.volontarioNome || undefined,
+                mezzoScelto: data.attivo ? (data.mezzoScelto || '') : '',
+                orarioInizio: data.orarioInizio || undefined
+              };
               state.volontari = state.volontari.map(v =>
-                v.id === data.volontarioId
+                v.id === targetVolId
                   ? {
                       ...v,
                       loggato: !!data.attivo,
@@ -3831,6 +3850,7 @@ async function startServer() {
             broadcast({
               type: 'SHIFT_UPDATED',
               shift: state.activeShift,
+              loggedSessions: state.loggedSessions,
               volontari: state.volontari,
               notification: notif
             });
@@ -4678,6 +4698,30 @@ async function startServer() {
               broadcast({
                 type: 'TESSERE_UPDATED',
                 tessereAssociative: state.tessereAssociative
+              });
+            }
+            break;
+          }
+
+          case 'UPDATE_ALTRE_ENTRATE_USCITE': {
+            if (Array.isArray(data?.altreEntrateUscite)) {
+              state.altreEntrateUscite = data.altreEntrateUscite;
+              persistState();
+              broadcast({
+                type: 'ALTRE_ENTRATE_USCITE_UPDATED',
+                altreEntrateUscite: state.altreEntrateUscite
+              });
+            }
+            break;
+          }
+
+          case 'UPDATE_COSTI_GESTIONE': {
+            if (Array.isArray(data?.costiGestione)) {
+              state.costiGestione = data.costiGestione;
+              persistState();
+              broadcast({
+                type: 'COSTI_GESTIONE_UPDATED',
+                costiGestione: state.costiGestione
               });
             }
             break;

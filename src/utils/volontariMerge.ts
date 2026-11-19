@@ -32,6 +32,19 @@ export function normalizeDeletedIds(ids?: any[]): string[] {
 function mergeSingleVolontario<T extends Record<string, any>>(base: T, incoming: T): T {
   const merged: Record<string, any> = { ...base };
   for (const [key, val] of Object.entries(incoming)) {
+    if (key === 'sottosezioniAbilitate') {
+      if (val && typeof val === 'object' && !Array.isArray(val)) {
+        merged.sottosezioniAbilitate = { ...val };
+      } else {
+        // Permette di rimuovere restrizioni parziali (es. riattivazione di tutte le sottosezioni di un DB)
+        merged.sottosezioniAbilitate = {};
+      }
+      continue;
+    }
+    if (key === 'macroCategorieAbilitate' && Array.isArray(val)) {
+      merged.macroCategorieAbilitate = [...val];
+      continue;
+    }
     if (val === undefined || val === null) {
       // Non sovrascrivere allegati o campi valorizzati localmente con null/undefined
       // (es. quando Firestore alleggerisce blob base64 pesanti per rimanere sotto 1 MiB)

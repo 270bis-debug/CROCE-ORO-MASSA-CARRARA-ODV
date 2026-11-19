@@ -4794,7 +4794,7 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
             return {
               ...v,
               macroCategorieAbilitate: nuovi,
-              sottosezioniAbilitate: Object.keys(nextSubsMap).length > 0 ? nextSubsMap : undefined,
+              sottosezioniAbilitate: nextSubsMap,
             };
           });
 
@@ -4823,17 +4823,18 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
           const nuovi = rimuovi
             ? attuali.filter((c) => c !== catId)
             : [...attuali, catId];
-          const nextSubs = vol.sottosezioniAbilitate ? { ...vol.sottosezioniAbilitate } : undefined;
-          if (rimuovi && nextSubs) {
-            delete nextSubs[catId];
-          }
+          const nextSubs: Record<string, string[]> = vol.sottosezioniAbilitate
+            ? { ...vol.sottosezioniAbilitate }
+            : {};
+          // Sia in revoca sia in riattivazione completa del DB rimuove eventuali restrizioni parziali pregresse su quel DB
+          delete nextSubs[catId];
 
           const aggiornati = volontari.map((v) =>
             v.id === vol.id
               ? {
                   ...v,
                   macroCategorieAbilitate: nuovi,
-                  sottosezioniAbilitate: nextSubs && Object.keys(nextSubs).length > 0 ? nextSubs : undefined,
+                  sottosezioniAbilitate: nextSubs,
                 }
               : v
           );
@@ -4855,10 +4856,15 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
             ? [...(vol.macroCategorieAbilitate as MacroCategoriaId[])]
             : [];
           const dbWasOn = attualiDb.includes(catId);
-          const prevSubs = vol.sottosezioniAbilitate ? { ...vol.sottosezioniAbilitate } : {};
+          const prevSubs: Record<string, string[]> = vol.sottosezioniAbilitate
+            ? { ...vol.sottosezioniAbilitate }
+            : {};
+          const rawExistingSubs = Array.isArray(prevSubs[catId])
+            ? prevSubs[catId].filter((id) => allDeleg.includes(id))
+            : null;
           const currentSubs = dbWasOn
-            ? (Array.isArray(prevSubs[catId]) ? prevSubs[catId] : allDeleg)
-            : [];
+            ? (rawExistingSubs !== null ? rawExistingSubs : allDeleg)
+            : (rawExistingSubs !== null ? rawExistingSubs : []);
 
           const nextSubsList = currentSubs.includes(subId)
             ? currentSubs.filter((id) => id !== subId)
@@ -4882,7 +4888,7 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
               ? {
                   ...v,
                   macroCategorieAbilitate: nextDbList,
-                  sottosezioniAbilitate: Object.keys(prevSubs).length > 0 ? prevSubs : undefined,
+                  sottosezioniAbilitate: prevSubs,
                 }
               : v
           );

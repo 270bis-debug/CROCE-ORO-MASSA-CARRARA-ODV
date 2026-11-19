@@ -271,6 +271,36 @@ export interface NotaDiDebito {
   note?: string;
 }
 
+export interface MovimentoAltreEntrateUscite {
+  id: string;
+  data: string; // YYYY-MM-DD
+  tipo: 'entrata' | 'uscita';
+  descrizione: string;
+  categoria?: string;
+  importo: number;
+  metodoPagamento: string;
+  riferimentoDocumento?: string;
+  controparte?: string;
+  note?: string;
+  operatoreRegistrazione?: string;
+  createdAt?: number;
+}
+
+export interface VoceCostoGestione {
+  id: string;
+  data: string; // YYYY-MM-DD
+  tipo: 'uscita' | 'entrata'; // Default 'uscita' (costo), opzionale 'entrata' (rimborso/storno/contributo)
+  descrizione: string;
+  categoria: string; // es. Utenze, Affitto/Sede, Assicurazioni, Carburante, Manutenzione, Cancelleria, Consulenze, Altro
+  importo: number;
+  metodoPagamento: string;
+  fornitore?: string;
+  numeroDocumento?: string;
+  note?: string;
+  operatoreRegistrazione?: string;
+  createdAt?: number;
+}
+
 // ---------------------------------------------------------------------------
 // 4. MACRO CATEGORIA 5: DATABASE FORMAZIONE / CORSI
 // ---------------------------------------------------------------------------
@@ -515,6 +545,7 @@ export interface CandidaturaTurno {
 
 export interface TurnoSedeOperativa {
   id: string;
+  serieId?: string; // Identificativo condiviso tra i turni creati come serie ripetuta
   sedeId: string;
   sedeNome: string;
   nomeTurno?: string; // Campo libero per nome/tipo turno personalizzato

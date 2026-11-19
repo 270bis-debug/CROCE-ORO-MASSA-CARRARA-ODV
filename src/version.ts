@@ -5,5 +5,5 @@
  * in package.json, in public/sw.js, in public/manifest.json e index.html.
  * Usa 'npm run bump' per incrementare automaticamente.
  */
-export const APP_VERSION = '4.7.0';
+export const APP_VERSION = '4.8.0';
 export const APP_VERSION_LABEL = `v ${APP_VERSION}`;

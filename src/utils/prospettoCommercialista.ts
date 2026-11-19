@@ -1,4 +1,10 @@
-import { TesseraAssociativa, NotaDiDebito, InterventoManutenzione } from '../types/adminTypes';
+import {
+  TesseraAssociativa,
+  NotaDiDebito,
+  InterventoManutenzione,
+  MovimentoAltreEntrateUscite,
+  VoceCostoGestione
+} from '../types/adminTypes';
 import { RifornimentoCarburante } from '../types/consumiTypes';
 import { formatDateItaly, formatTimeItaly } from './italianTime';
 
@@ -17,12 +23,20 @@ export interface RigaProspettoMensile {
   totaleTessere: number; // in euro
   conteggioNoteDebito: number;
   totaleNoteDebito: number; // in euro
+  conteggioAltreEntrate: number;
+  totaleAltreEntrate: number; // in euro (da Altre Entrate/Uscite)
+  conteggioCostiGestioneEntrate: number;
+  totaleCostiGestioneEntrate: number; // in euro (rimborsi/entrate da Costi di Gestione)
   totaleEntrate: number; // somma entrate mese
   // USCITE
   conteggioManutenzioni: number;
   totaleManutenzioni: number; // in euro
   conteggioRifornimenti: number;
   totaleCarburante: number; // in euro
+  conteggioAltreUscite: number;
+  totaleAltreUscite: number; // in euro (da Altre Entrate/Uscite)
+  conteggioCostiGestioneUscite: number;
+  totaleCostiGestioneUscite: number; // in euro (costi da Costi di Gestione)
   totaleUscite: number; // somma uscite mese
   // SALDO
   saldoNetto: number; // entrate - uscite
@@ -38,11 +52,19 @@ export interface ProspettoAnnualeCommercialista {
     conteggioTessere: number;
     totaleNoteDebito: number;
     conteggioNoteDebito: number;
+    totaleAltreEntrate: number;
+    conteggioAltreEntrate: number;
+    totaleCostiGestioneEntrate: number;
+    conteggioCostiGestioneEntrate: number;
     totaleEntrate: number;
     totaleManutenzioni: number;
     conteggioManutenzioni: number;
     totaleCarburante: number;
     conteggioRifornimenti: number;
+    totaleAltreUscite: number;
+    conteggioAltreUscite: number;
+    totaleCostiGestioneUscite: number;
+    conteggioCostiGestioneUscite: number;
     totaleUscite: number;
     saldoNettoEsercizio: number;
   };
@@ -57,7 +79,9 @@ export function calcolaProspettoCommercialista(
   tessere: TesseraAssociativa[] = [],
   noteDiDebito: NotaDiDebito[] = [],
   manutenzioni: InterventoManutenzione[] = [],
-  rifornimenti: RifornimentoCarburante[] = []
+  rifornimenti: RifornimentoCarburante[] = [],
+  altreEntrateUscite: MovimentoAltreEntrateUscite[] = [],
+  costiGestione: VoceCostoGestione[] = []
 ): ProspettoAnnualeCommercialista {
   const mesi: RigaProspettoMensile[] = [];
 
@@ -100,7 +124,7 @@ export function calcolaProspettoCommercialista(
     let conteggioTess = 0;
     let sommaTess = 0;
     tessere.forEach((t) => {
-      const dataT = t.dataEmissione || '';
+      const dataT = extractIsoDate(t.dataEmissione || '');
       if (dataT.startsWith(meseStr) && t.stato !== 'Annullata') {
         conteggioTess++;
         sommaTess += (t.quotaVersata || 0);
@@ -111,32 +135,71 @@ export function calcolaProspettoCommercialista(
     let conteggioNote = 0;
     let sommaNote = 0;
     noteDiDebito.forEach((nd) => {
-      const dataN = nd.dataEmissione || '';
+      const dataN = extractIsoDate(nd.dataEmissione || '');
       if (dataN.startsWith(meseStr) && nd.stato !== 'Annullata') {
         conteggioNote++;
         sommaNote += (nd.importoTotale || 0);
       }
     });
 
-    // Totale Entrate del Mese
-    const totaleEntrateMese = Math.round((sommaDon + sommaTess + sommaNote) * 100) / 100;
+    // 4. Altre Entrate / Uscite (manuali)
+    let conteggioAltreEnt = 0;
+    let sommaAltreEnt = 0;
+    let conteggioAltreUsc = 0;
+    let sommaAltreUsc = 0;
+    (altreEntrateUscite || []).forEach((mov) => {
+      const dataMov = extractIsoDate(mov.data || '');
+      const imp = Number(mov.importo) || 0;
+      if (dataMov.startsWith(meseStr) && imp > 0) {
+        if (mov.tipo === 'entrata') {
+          conteggioAltreEnt++;
+          sommaAltreEnt += imp;
+        } else {
+          conteggioAltreUsc++;
+          sommaAltreUsc += imp;
+        }
+      }
+    });
 
-    // 4. Uscite: Manutenzioni Flotta
+    // 5. Costi di Gestione (manuali: uscite + eventuali entrate/rimborsi)
+    let conteggioGestUsc = 0;
+    let sommaGestUsc = 0;
+    let conteggioGestEnt = 0;
+    let sommaGestEnt = 0;
+    (costiGestione || []).forEach((voce) => {
+      const dataV = extractIsoDate(voce.data || '');
+      const imp = Number(voce.importo) || 0;
+      if (dataV.startsWith(meseStr) && imp > 0) {
+        if (voce.tipo === 'entrata') {
+          conteggioGestEnt++;
+          sommaGestEnt += imp;
+        } else {
+          conteggioGestUsc++;
+          sommaGestUsc += imp;
+        }
+      }
+    });
+
+    // Totale Entrate del Mese
+    const totaleEntrateMese =
+      Math.round((sommaDon + sommaTess + sommaNote + sommaAltreEnt + sommaGestEnt) * 100) / 100;
+
+    // 6. Uscite: Manutenzioni Flotta
     let conteggioManut = 0;
     let sommaManut = 0;
     manutenzioni.forEach((man) => {
-      const dataM = man.dataIntervento || '';
+      const dataM = extractIsoDate(man.dataIntervento || '');
       if (dataM.startsWith(meseStr)) {
         conteggioManut++;
         sommaManut += (man.costoTotale || 0);
       }
     });
 
-    // 5. Uscite: Carburante Flotta
+    // 7. Uscite: Carburante Flotta
     let conteggioRif = 0;
     let sommaRif = 0;
     rifornimenti.forEach((r) => {
-      const dataR = r.data || '';
+      const dataR = extractIsoDate(r.data || '');
       if (dataR.startsWith(meseStr)) {
         conteggioRif++;
         sommaRif += (r.costoTotale || 0);
@@ -144,7 +207,8 @@ export function calcolaProspettoCommercialista(
     });
 
     // Totale Uscite del Mese
-    const totaleUsciteMese = Math.round((sommaManut + sommaRif) * 100) / 100;
+    const totaleUsciteMese =
+      Math.round((sommaManut + sommaRif + sommaAltreUsc + sommaGestUsc) * 100) / 100;
     const saldoNettoMese = Math.round((totaleEntrateMese - totaleUsciteMese) * 100) / 100;
 
     mesi.push({
@@ -156,11 +220,19 @@ export function calcolaProspettoCommercialista(
       totaleTessere: Math.round(sommaTess * 100) / 100,
       conteggioNoteDebito: conteggioNote,
       totaleNoteDebito: Math.round(sommaNote * 100) / 100,
+      conteggioAltreEntrate: conteggioAltreEnt,
+      totaleAltreEntrate: Math.round(sommaAltreEnt * 100) / 100,
+      conteggioCostiGestioneEntrate: conteggioGestEnt,
+      totaleCostiGestioneEntrate: Math.round(sommaGestEnt * 100) / 100,
       totaleEntrate: totaleEntrateMese,
       conteggioManutenzioni: conteggioManut,
       totaleManutenzioni: Math.round(sommaManut * 100) / 100,
       conteggioRifornimenti: conteggioRif,
       totaleCarburante: Math.round(sommaRif * 100) / 100,
+      conteggioAltreUscite: conteggioAltreUsc,
+      totaleAltreUscite: Math.round(sommaAltreUsc * 100) / 100,
+      conteggioCostiGestioneUscite: conteggioGestUsc,
+      totaleCostiGestioneUscite: Math.round(sommaGestUsc * 100) / 100,
       totaleUscite: totaleUsciteMese,
       saldoNetto: saldoNettoMese
     });
@@ -173,12 +245,20 @@ export function calcolaProspettoCommercialista(
   const conteggioTessere = mesi.reduce((acc, m) => acc + m.conteggioTessere, 0);
   const totaleNoteDebito = Math.round(mesi.reduce((acc, m) => acc + m.totaleNoteDebito, 0) * 100) / 100;
   const conteggioNoteDebito = mesi.reduce((acc, m) => acc + m.conteggioNoteDebito, 0);
+  const totaleAltreEntrate = Math.round(mesi.reduce((acc, m) => acc + m.totaleAltreEntrate, 0) * 100) / 100;
+  const conteggioAltreEntrate = mesi.reduce((acc, m) => acc + m.conteggioAltreEntrate, 0);
+  const totaleCostiGestioneEntrate = Math.round(mesi.reduce((acc, m) => acc + m.totaleCostiGestioneEntrate, 0) * 100) / 100;
+  const conteggioCostiGestioneEntrate = mesi.reduce((acc, m) => acc + m.conteggioCostiGestioneEntrate, 0);
   const totaleEntrate = Math.round(mesi.reduce((acc, m) => acc + m.totaleEntrate, 0) * 100) / 100;
 
   const totaleManutenzioni = Math.round(mesi.reduce((acc, m) => acc + m.totaleManutenzioni, 0) * 100) / 100;
   const conteggioManutenzioni = mesi.reduce((acc, m) => acc + m.conteggioManutenzioni, 0);
   const totaleCarburante = Math.round(mesi.reduce((acc, m) => acc + m.totaleCarburante, 0) * 100) / 100;
   const conteggioRifornimenti = mesi.reduce((acc, m) => acc + m.conteggioRifornimenti, 0);
+  const totaleAltreUscite = Math.round(mesi.reduce((acc, m) => acc + m.totaleAltreUscite, 0) * 100) / 100;
+  const conteggioAltreUscite = mesi.reduce((acc, m) => acc + m.conteggioAltreUscite, 0);
+  const totaleCostiGestioneUscite = Math.round(mesi.reduce((acc, m) => acc + m.totaleCostiGestioneUscite, 0) * 100) / 100;
+  const conteggioCostiGestioneUscite = mesi.reduce((acc, m) => acc + m.conteggioCostiGestioneUscite, 0);
   const totaleUscite = Math.round(mesi.reduce((acc, m) => acc + m.totaleUscite, 0) * 100) / 100;
 
   const saldoNettoEsercizio = Math.round((totaleEntrate - totaleUscite) * 100) / 100;
@@ -193,11 +273,19 @@ export function calcolaProspettoCommercialista(
       conteggioTessere,
       totaleNoteDebito,
       conteggioNoteDebito,
+      totaleAltreEntrate,
+      conteggioAltreEntrate,
+      totaleCostiGestioneEntrate,
+      conteggioCostiGestioneEntrate,
       totaleEntrate,
       totaleManutenzioni,
       conteggioManutenzioni,
       totaleCarburante,
       conteggioRifornimenti,
+      totaleAltreUscite,
+      conteggioAltreUscite,
+      totaleCostiGestioneUscite,
+      conteggioCostiGestioneUscite,
       totaleUscite,
       saldoNettoEsercizio
     }
@@ -218,11 +306,19 @@ export function scaricaProspettoCommercialistaCSV(
     'Tesseramento Soci (€)',
     'N. Note Debito',
     'Note di Debito / Rimborsi (€)',
+    'N. Altre Entrate',
+    'Altre Entrate (€)',
+    'N. Entrate Gestione',
+    'Entrate Costi Gestione (€)',
     'TOTALE ENTRATE (€)',
     'N. Manutenzioni',
     'Manutenzione Mezzi (€)',
     'N. Rifornimenti',
     'Carburante Flotta (€)',
+    'N. Altre Uscite',
+    'Altre Uscite (€)',
+    'N. Costi Gestione',
+    'Costi di Gestione (€)',
     'TOTALE USCITE (€)',
     'SALDO NETTO (€)'
   ];
@@ -235,11 +331,19 @@ export function scaricaProspettoCommercialistaCSV(
     m.totaleTessere.toFixed(2).replace('.', ','),
     m.conteggioNoteDebito,
     m.totaleNoteDebito.toFixed(2).replace('.', ','),
+    m.conteggioAltreEntrate,
+    m.totaleAltreEntrate.toFixed(2).replace('.', ','),
+    m.conteggioCostiGestioneEntrate,
+    m.totaleCostiGestioneEntrate.toFixed(2).replace('.', ','),
     m.totaleEntrate.toFixed(2).replace('.', ','),
     m.conteggioManutenzioni,
     m.totaleManutenzioni.toFixed(2).replace('.', ','),
     m.conteggioRifornimenti,
     m.totaleCarburante.toFixed(2).replace('.', ','),
+    m.conteggioAltreUscite,
+    m.totaleAltreUscite.toFixed(2).replace('.', ','),
+    m.conteggioCostiGestioneUscite,
+    m.totaleCostiGestioneUscite.toFixed(2).replace('.', ','),
     m.totaleUscite.toFixed(2).replace('.', ','),
     m.saldoNetto.toFixed(2).replace('.', ',')
   ]);
@@ -253,11 +357,19 @@ export function scaricaProspettoCommercialistaCSV(
     prospetto.totali.totaleTessere.toFixed(2).replace('.', ','),
     prospetto.totali.conteggioNoteDebito,
     prospetto.totali.totaleNoteDebito.toFixed(2).replace('.', ','),
+    prospetto.totali.conteggioAltreEntrate,
+    prospetto.totali.totaleAltreEntrate.toFixed(2).replace('.', ','),
+    prospetto.totali.conteggioCostiGestioneEntrate,
+    prospetto.totali.totaleCostiGestioneEntrate.toFixed(2).replace('.', ','),
     prospetto.totali.totaleEntrate.toFixed(2).replace('.', ','),
     prospetto.totali.conteggioManutenzioni,
     prospetto.totali.totaleManutenzioni.toFixed(2).replace('.', ','),
     prospetto.totali.conteggioRifornimenti,
     prospetto.totali.totaleCarburante.toFixed(2).replace('.', ','),
+    prospetto.totali.conteggioAltreUscite,
+    prospetto.totali.totaleAltreUscite.toFixed(2).replace('.', ','),
+    prospetto.totali.conteggioCostiGestioneUscite,
+    prospetto.totali.totaleCostiGestioneUscite.toFixed(2).replace('.', ','),
     prospetto.totali.totaleUscite.toFixed(2).replace('.', ','),
     prospetto.totali.saldoNettoEsercizio.toFixed(2).replace('.', ',')
   ];

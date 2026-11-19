@@ -184,6 +184,20 @@ class RealtimeService {
 
   // Cache unificata dello stato cloud tra tutti gli shard / server
   private cloudState: Record<string, any> = {};
+  private pttCloudChunkBuffer: Array<{
+    speakerId: string;
+    speakerName?: string;
+    role?: string;
+    channelId: string;
+    isEmergency: boolean;
+    codec: string;
+    payloadBase64: string;
+    sampleRate: number;
+    seq: number;
+  }> = [];
+  private pttCloudFlushTimer: any = null;
+  private lastProcessedCloudBurstId: string = '';
+  private seenWsAudioSeqBySpeaker: Map<string, number> = new Map();
   private localRadioClientMeta: {
     opus: boolean;
     volontarioId: string;
@@ -455,7 +469,15 @@ class RealtimeService {
   private computeVolontariSig(list: any[]): string {
     if (!Array.isArray(list)) return '';
     return list
-      .map((v) => `${v?.id || ''}:${v?.pin || ''}:${v?.approvato ? 1 : 0}:${v?.profiloCentrale ? 1 : 0}:${(v?.macroCategorieAbilitate || []).join(',')}`)
+      .map((v) => {
+        const subs = v?.sottosezioniAbilitate && typeof v.sottosezioniAbilitate === 'object'
+          ? Object.entries(v.sottosezioniAbilitate)
+              .sort(([a], [b]) => a.localeCompare(b))
+              .map(([k, arr]) => `${k}=${Array.isArray(arr) ? [...arr].sort().join('.') : ''}`)
+              .join(';')
+          : '';
+        return `${v?.id || ''}:${v?.pin || ''}:${v?.approvato ? 1 : 0}:${v?.profiloCentrale ? 1 : 0}:${v?.loggato ? 1 : 0}:${v?.inTurno ? 1 : 0}:${(v?.macroCategorieAbilitate || []).join(',')}:${subs}`;
+      })
       .sort()
       .join('|');
   }
@@ -702,8 +724,17 @@ class RealtimeService {
       if (Array.isArray(payload.tessereAssociative)) {
         this.emit('TESSERE_UPDATED', { tessereAssociative: payload.tessereAssociative });
       }
+      if (Array.isArray(payload.altreEntrateUscite)) {
+        this.emit('ALTRE_ENTRATE_USCITE_UPDATED', { altreEntrateUscite: payload.altreEntrateUscite });
+      }
+      if (Array.isArray(payload.costiGestione)) {
+        this.emit('COSTI_GESTIONE_UPDATED', { costiGestione: payload.costiGestione });
+      }
     }
     if (shardId === 'mission') {
+      const prevActiveSpeaker = this.cloudState.radioPtt?.activeSpeaker || null;
+      const prevEmergency = this.cloudState.radioEmergency || null;
+
       if (isRemoteLiveDelta) {
         if (payload.activeMission && (!prevMission || payload.activeMission.codice !== prevMission.codice)) {
           this.emit('MISSION_DISPATCHED', {
@@ -728,6 +759,38 @@ class RealtimeService {
           this.emit('RING_STOPPED', {});
         }
       }
+      if (payload.loggedSessions && typeof payload.loggedSessions === 'object') {
+        const mergedSessions: Record<string, any> = {
+          ...(this.cloudState.loggedSessions || {}),
+        };
+        for (const [volId, info] of Object.entries<any>(payload.loggedSessions)) {
+          if (!volId || !info || typeof info !== 'object') continue;
+          const prevInfo = mergedSessions[volId];
+          if (!prevInfo || Number(info.updatedAt || 0) >= Number(prevInfo.updatedAt || 0)) {
+            mergedSessions[volId] = info;
+          }
+        }
+        this.cloudState.loggedSessions = mergedSessions;
+        if (Array.isArray(this.cloudState.volontari) && this.cloudState.volontari.length > 0) {
+          let changedLog = false;
+          const nextVols = this.cloudState.volontari.map((v: any) => {
+            const sess = mergedSessions[v?.id];
+            if (sess && Boolean(v.loggato) !== Boolean(sess.loggato)) {
+              changedLog = true;
+              return { ...v, loggato: Boolean(sess.loggato) };
+            }
+            return v;
+          });
+          if (changedLog) {
+            this.cloudState.volontari = nextVols;
+            this.emit('VOLONTARI_UPDATED', {
+              volontari: nextVols,
+              volontariEliminatiIds: normalizeDeletedIds(this.cloudState.volontariEliminatiIds),
+            });
+          }
+        }
+        this.emit('LOGGED_SESSIONS_UPDATED', { loggedSessions: mergedSessions });
+      }
       if (payload.activeShift) {
         const shiftChanged =
           !prevShift ||
@@ -746,21 +809,88 @@ class RealtimeService {
       if (payload.gpsPosition) {
         this.emit('GPS_UPDATED', { position: payload.gpsPosition });
       }
-      if ('radioPttEnabled' in payload) {
-        const nextEnabled = Boolean(payload.radioPttEnabled);
+      if ('radioPttEnabled' in payload || 'radioPttActiveSpeaker' in payload) {
+        const nextEnabled =
+          'radioPttEnabled' in payload
+            ? Boolean(payload.radioPttEnabled)
+            : Boolean(this.cloudState.radioPtt?.enabled ?? this.cloudState.radioPttEnabled);
+        const rawSpeaker = 'radioPttActiveSpeaker' in payload ? payload.radioPttActiveSpeaker : prevActiveSpeaker;
+        const isFreshSpeaker =
+          rawSpeaker &&
+          typeof rawSpeaker === 'object' &&
+          (!rawSpeaker.startedAt || Date.now() - Number(rawSpeaker.lastChunkAt || rawSpeaker.startedAt) < 15000);
+        const nextSpeaker = isFreshSpeaker ? rawSpeaker : null;
+
         this.cloudState.radioPtt = {
           ...(this.cloudState.radioPtt || { enabled: false, activeSpeaker: null }),
           enabled: nextEnabled,
-          toggledBy: payload.radioPttToggledBy,
-          toggledAt: payload.radioPttToggledAt,
-          activeSpeaker: nextEnabled ? (this.cloudState.radioPtt?.activeSpeaker || null) : null,
+          toggledBy: payload.radioPttToggledBy ?? this.cloudState.radioPtt?.toggledBy,
+          toggledAt: payload.radioPttToggledAt ?? this.cloudState.radioPtt?.toggledAt,
+          codecMode: 'adpcm-24k',
+          activeSpeaker: (nextEnabled || nextSpeaker?.isEmergency) ? nextSpeaker : null,
         };
         if (isRemoteLiveDelta && nextEnabled !== prevPttEnabled) {
           this.emit('RADIO_PTT_STATE', { radioPtt: this.cloudState.radioPtt });
         }
+        const prevSpkId = prevActiveSpeaker?.speakerId || null;
+        const nextSpkId = this.cloudState.radioPtt.activeSpeaker?.speakerId || null;
+        if (isRemoteLiveDelta && prevSpkId !== nextSpkId) {
+          this.emit('PTT_SPEAKER_CHANGED', {
+            channelId: this.cloudState.radioPtt.activeSpeaker?.channelId || prevActiveSpeaker?.channelId || 'general',
+            radioPtt: this.cloudState.radioPtt,
+          });
+        }
       }
-      if (payload.radioEmergency && isRemoteLiveDelta) {
-        this.emit('RADIO_EMERGENCY_STATE', { radioEmergency: payload.radioEmergency });
+      if (payload.radioEmergency && typeof payload.radioEmergency === 'object') {
+        const emTs = Number(payload.radioEmergency.triggeredAt || 0);
+        const emFresh = !payload.radioEmergency.active || !emTs || Date.now() - emTs < 120000;
+        const normalizedEm = emFresh
+          ? payload.radioEmergency
+          : { active: false, triggeredBy: payload.radioEmergency.triggeredBy, triggeredAt: emTs, message: '' };
+        this.cloudState.radioEmergency = normalizedEm;
+        const emChanged =
+          Boolean(normalizedEm.active) !== Boolean(prevEmergency?.active) ||
+          Number(normalizedEm.triggeredAt || 0) !== Number(prevEmergency?.triggeredAt || 0);
+        if (isRemoteLiveDelta && emChanged) {
+          this.emit('RADIO_EMERGENCY_STATE', {
+            radioEmergency: normalizedEm,
+            radioPtt: this.cloudState.radioPtt,
+          });
+        }
+      }
+      // Relay audio PTT/Emergenza via Firestore per device su account/istanze diversi senza WebSocket condiviso
+      if (isRemoteLiveDelta && payload.radioAudioBurst && typeof payload.radioAudioBurst === 'object') {
+        const burst = payload.radioAudioBurst;
+        const burstId = String(burst.burstId || '');
+        const burstTs = Number(burst.ts || 0);
+        const isFreshBurst = burstId && burstId !== this.lastProcessedCloudBurstId && (!burstTs || Date.now() - burstTs < 6000);
+        if (isFreshBurst && Array.isArray(burst.chunks) && burst.chunks.length > 0) {
+          this.lastProcessedCloudBurstId = burstId;
+          for (const ch of burst.chunks) {
+            if (!ch || !ch.payloadBase64) continue;
+            const spkId = String(ch.speakerId || '');
+            const seqNum = Number(ch.seq || 0);
+            const lastWsSeq = spkId ? (this.seenWsAudioSeqBySpeaker.get(spkId) || 0) : 0;
+            if (seqNum > 0 && seqNum <= lastWsSeq) {
+              continue; // Già ricevuto via WebSocket diretto: evita duplicazione
+            }
+            if (spkId && seqNum > lastWsSeq) {
+              this.seenWsAudioSeqBySpeaker.set(spkId, seqNum);
+            }
+            this.emit('PTT_AUDIO_CHUNK', {
+              channelId: ch.channelId || 'general',
+              groupId: ch.channelId && ch.channelId !== 'general' && ch.channelId !== 'emergency' ? ch.channelId : undefined,
+              speakerId: spkId,
+              speakerName: ch.speakerName || '',
+              role: ch.role || 'volontario',
+              isEmergency: Boolean(ch.isEmergency || ch.channelId === 'emergency'),
+              codec: ch.codec || 'adpcm24',
+              payloadBase64: ch.payloadBase64,
+              sampleRate: Number(ch.sampleRate) || 24000,
+              seq: seqNum,
+            });
+          }
+        }
       }
     }
 
@@ -851,10 +981,14 @@ class RealtimeService {
           ringing: this.cloudState.ringing || { active: false, source: '', soundType: 'telefono', timestamp: 0 },
           gpsPosition: this.cloudState.gpsPosition || null,
           activeShift: this.cloudState.activeShift || { attivo: false },
+          loggedSessions: this.cloudState.loggedSessions || {},
           notifiche: sanitizedNotifiche.filter(Boolean),
           radioPttEnabled: Boolean(this.cloudState.radioPtt?.enabled ?? this.cloudState.radioPttEnabled),
           radioPttToggledBy: this.cloudState.radioPtt?.toggledBy || this.cloudState.radioPttToggledBy || null,
           radioPttToggledAt: this.cloudState.radioPtt?.toggledAt || this.cloudState.radioPttToggledAt || 0,
+          radioPttActiveSpeaker: this.cloudState.radioPtt?.activeSpeaker || null,
+          radioEmergency: this.cloudState.radioEmergency || { active: false },
+          radioAudioBurst: this.cloudState.radioAudioBurst || null,
         };
       }
       case 'volontari':
@@ -869,6 +1003,8 @@ class RealtimeService {
           corsiFormazione: stripLegacyCorsi(this.cloudState.corsiFormazione),
           noteDiDebito: Array.isArray(this.cloudState.noteDiDebito) ? this.cloudState.noteDiDebito : [],
           tessereAssociative: Array.isArray(this.cloudState.tessereAssociative) ? this.cloudState.tessereAssociative : [],
+          ...(Array.isArray(this.cloudState.altreEntrateUscite) ? { altreEntrateUscite: this.cloudState.altreEntrateUscite } : {}),
+          ...(Array.isArray(this.cloudState.costiGestione) ? { costiGestione: this.cloudState.costiGestione } : {}),
         };
       case 'turni':
         return {
@@ -1420,13 +1556,18 @@ class RealtimeService {
               this.cloudState.volontariEliminatiIds = deletedIds;
               this.cloudState.volontari = mergedVols;
               if (this.firebaseSession.isAuthorized && this.shardLoadedFromCloud['volontari']) {
-                const cloudIdSet = new Set(currentVols.map((v: any) => v?.id).filter(Boolean));
-                if (mergedVols.some((v: any) => v?.id && !cloudIdSet.has(v.id))) {
+                if (this.computeVolontariSig(mergedVols) !== this.computeVolontariSig(currentVols)) {
                   this.scheduleShardWrite('volontari', { volontari: mergedVols, volontariEliminatiIds: deletedIds });
                 }
               }
               this.emit('VOLONTARI_UPDATED', { ...payload, volontari: mergedVols, volontariEliminatiIds: deletedIds });
               return;
+            }
+            if (payload.type === 'PTT_AUDIO_CHUNK' && payload.speakerId && Number(payload.seq || 0) > 0) {
+              const prevSeq = this.seenWsAudioSeqBySpeaker.get(String(payload.speakerId)) || 0;
+              if (Number(payload.seq) > prevSeq) {
+                this.seenWsAudioSeqBySpeaker.set(String(payload.speakerId), Number(payload.seq));
+              }
             }
             if (payload.type === 'MANSIONI_CONFIG_UPDATED') {
               this.cloudState.catalogoMansioni = payload.catalogoMansioni ?? this.cloudState.catalogoMansioni;
@@ -1839,13 +1980,71 @@ class RealtimeService {
       case 'TRIGGER_RADIO_EMERGENCY': {
         if (data?.role === 'admin') {
           const nextActive = data?.active !== false;
+          const nextEm = {
+            active: nextActive,
+            triggeredBy: String(data?.operatorName || 'Operatore Centrale'),
+            triggeredAt: Date.now(),
+            message: nextActive ? String(data?.message || 'ALLERTA EMERGENZA RADIO CENTRALE') : '',
+          };
+          const nextRadioPtt = {
+            ...(this.cloudState.radioPtt || { enabled: false, activeSpeaker: null }),
+            activeSpeaker: nextActive ? (this.cloudState.radioPtt?.activeSpeaker || null) : null,
+          };
           this.scheduleShardWrite('mission', {
-            radioEmergency: {
-              active: nextActive,
-              triggeredBy: String(data?.operatorName || 'Operatore Centrale'),
-              triggeredAt: Date.now(),
-              message: nextActive ? String(data?.message || 'ALLERTA EMERGENZA RADIO CENTRALE') : '',
-            },
+            radioEmergency: nextEm,
+            radioPtt: nextRadioPtt,
+            ...(!nextActive ? { radioAudioBurst: null } : {}),
+          });
+        }
+        break;
+      }
+      case 'PTT_START': {
+        const chId = String(data?.channelId || 'general');
+        const isEmerg = Boolean(data?.isEmergency || chId === 'emergency');
+        const spk = {
+          speakerId: String(data?.speakerId || ''),
+          speakerName: String(data?.speakerName || (data?.role === 'admin' ? 'Centrale Operativa' : 'Volontario')),
+          role: data?.role === 'admin' ? 'admin' : 'volontario',
+          isCentralePriority: data?.role === 'admin',
+          channelId: isEmerg ? 'emergency' : chId,
+          isEmergency: isEmerg,
+          startedAt: Date.now(),
+          lastChunkAt: Date.now(),
+        };
+        const nextRadioPtt = {
+          ...(this.cloudState.radioPtt || { enabled: false, activeSpeaker: null }),
+          activeSpeaker: spk,
+        };
+        this.scheduleShardWrite('mission', {
+          radioPtt: nextRadioPtt,
+          ...(isEmerg
+            ? {
+                radioEmergency: {
+                  active: true,
+                  triggeredBy: spk.speakerName,
+                  triggeredAt: Date.now(),
+                  message: `TRASMISSIONE VOCALE EMERGENZA IN CORSO (${spk.speakerName})`,
+                },
+              }
+            : {}),
+        });
+        break;
+      }
+      case 'PTT_STOP': {
+        this.pttCloudChunkBuffer = [];
+        if (this.pttCloudFlushTimer) {
+          clearTimeout(this.pttCloudFlushTimer);
+          this.pttCloudFlushTimer = null;
+        }
+        const currSpk = this.cloudState.radioPtt?.activeSpeaker;
+        if (!currSpk || currSpk.speakerId === data?.speakerId) {
+          const nextRadioPtt = {
+            ...(this.cloudState.radioPtt || { enabled: false, activeSpeaker: null }),
+            activeSpeaker: null,
+          };
+          this.scheduleShardWrite('mission', {
+            radioPtt: nextRadioPtt,
+            radioAudioBurst: null,
           });
         }
         break;
@@ -1853,9 +2052,32 @@ class RealtimeService {
       case 'UPDATE_GPS':
         this.scheduleShardWrite('mission', { gpsPosition: data });
         break;
-      case 'UPDATE_SHIFT':
-        this.scheduleShardWrite('mission', { activeShift: data });
+      case 'UPDATE_SHIFT': {
+        const nextLoggedSessions: Record<string, any> = {
+          ...(this.cloudState.loggedSessions || {}),
+        };
+        const volId = data?.volontarioId ? String(data.volontarioId).trim() : '';
+        if (volId) {
+          nextLoggedSessions[volId] = {
+            loggato: Boolean(data?.attivo),
+            updatedAt: Date.now(),
+            volontarioNome: data?.volontarioNome || undefined,
+            mezzoScelto: data?.attivo ? (data?.mezzoScelto || '') : '',
+            orarioInizio: data?.orarioInizio || undefined,
+          };
+          if (Array.isArray(this.cloudState.volontari) && this.cloudState.volontari.length > 0) {
+            const nextVols = this.cloudState.volontari.map((v: any) =>
+              v?.id === volId ? { ...v, loggato: Boolean(data?.attivo) } : v
+            );
+            this.scheduleShardWrite('volontari', { volontari: nextVols });
+          }
+        }
+        this.scheduleShardWrite('mission', {
+          activeShift: data,
+          loggedSessions: nextLoggedSessions,
+        });
         break;
+      }
       case 'ATTESA_DESTINAZIONE_ARRIVO_SUL_POSTO':
         if (this.cloudState.activeMission) {
           this.scheduleShardWrite('mission', {
@@ -2250,6 +2472,16 @@ class RealtimeService {
           this.scheduleShardWrite('servizi', { tessereAssociative: data.tessereAssociative });
         }
         break;
+      case 'UPDATE_ALTRE_ENTRATE_USCITE':
+        if (Array.isArray(data?.altreEntrateUscite)) {
+          this.scheduleShardWrite('servizi', { altreEntrateUscite: data.altreEntrateUscite });
+        }
+        break;
+      case 'UPDATE_COSTI_GESTIONE':
+        if (Array.isArray(data?.costiGestione)) {
+          this.scheduleShardWrite('servizi', { costiGestione: data.costiGestione });
+        }
+        break;
       case 'UPDATE_COSTI_SERVIZIO':
         if (Array.isArray(data?.costiServizio)) {
           this.scheduleShardWrite('config', { costiServizio: data.costiServizio });
@@ -2315,17 +2547,47 @@ class RealtimeService {
   public send(type: string, data: any = {}) {
     const payload = JSON.stringify({ type, data });
 
-    // Streaming audio PCM in diretta ad alta frequenza: solo WebSocket, nessun salvataggio Firestore o polling HTTP
+    // Streaming audio HD in diretta: invio WebSocket immediato + relay compresso su Firestore ogni ~220ms
+    // così funziona contemporaneamente su device loggati con account diversi anche senza WebSocket condiviso
     if (type === 'PTT_AUDIO_CHUNK') {
+      let sentViaWs = false;
       if (this.ws && this.ws.readyState === WebSocket.OPEN) {
         try {
           this.ws.send(payload);
-          return true;
-        } catch {
-          return false;
+          sentViaWs = true;
+        } catch {}
+      }
+      if (this.firebaseSession.isAuthorized && this.shardLoadedFromCloud['mission'] && data?.payloadBase64) {
+        this.pttCloudChunkBuffer.push({
+          speakerId: String(data.speakerId || ''),
+          speakerName: data.speakerName ? String(data.speakerName) : undefined,
+          role: data.role ? String(data.role) : this.localRadioClientMeta.role,
+          channelId: String(data.channelId || 'general'),
+          isEmergency: Boolean(data.isEmergency || data.channelId === 'emergency'),
+          codec: String(data.codec || 'adpcm24'),
+          payloadBase64: String(data.payloadBase64),
+          sampleRate: Number(data.sampleRate) || 24000,
+          seq: Number(data.seq) || 0,
+        });
+        if (this.pttCloudChunkBuffer.length > 10) {
+          this.pttCloudChunkBuffer = this.pttCloudChunkBuffer.slice(-10);
+        }
+        if (!this.pttCloudFlushTimer) {
+          this.pttCloudFlushTimer = setTimeout(() => {
+            this.pttCloudFlushTimer = null;
+            if (this.pttCloudChunkBuffer.length === 0) return;
+            const batch = this.pttCloudChunkBuffer.splice(0, 8);
+            const burstId = `b-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+            this.cloudState.radioAudioBurst = {
+              burstId,
+              ts: Date.now(),
+              chunks: batch,
+            };
+            this.flushShardToFirestore('mission').catch(() => {});
+          }, 220);
         }
       }
-      return false;
+      return sentViaWs || this.firestoreActive;
     }
 
     let sentWs = false;
@@ -3518,6 +3780,14 @@ class RealtimeService {
 
   public syncTessere(tessereAssociative: any[]) {
     this.send('UPDATE_TESSERE', { tessereAssociative });
+  }
+
+  public syncAltreEntrateUscite(altreEntrateUscite: any[]) {
+    this.send('UPDATE_ALTRE_ENTRATE_USCITE', { altreEntrateUscite });
+  }
+
+  public syncCostiGestione(costiGestione: any[]) {
+    this.send('UPDATE_COSTI_GESTIONE', { costiGestione });
   }
 
   public syncCostiServizio(costiServizio: any[]) {

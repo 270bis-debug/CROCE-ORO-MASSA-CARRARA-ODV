@@ -123,6 +123,10 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
   const [formOsservatoreId, setFormOsservatoreId] = useState('');
   const [formNote, setFormNote] = useState('');
   const [mostraPannelloCandidature, setMostraPannelloCandidature] = useState(true);
+  const [modificaModalitaSerie, setModificaModalitaSerie] = useState<'singolo' | 'serie_futura'>('singolo');
+  const [turnoAzioneModal, setTurnoAzioneModal] = useState<TurnoSedeOperativa | null>(null);
+  const [azioneMezzoScope, setAzioneMezzoScope] = useState<'singolo' | 'serie_futura' | null>(null);
+  const [mezzoNuovoScelto, setMezzoNuovoScelto] = useState<string>('');
 
   // Elenco mezzi operativi (esclude tutti i mezzi in manutenzione, fuori servizio o in sanificazione)
   const { mezziOperativi, sigleInManutenzione } = useMemo(() => {
@@ -750,7 +754,7 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
   const handleConfermaTurniRipetuti = (e: React.FormEvent) => {
     e.preventDefault();
     if (dateRipetutePreview.length === 0) {
-      alert('Nessun giorno valido corrisponde ai criteri selezionati nel periodo.');
+      mostraAvviso('⚠️ Nessun giorno valido corrisponde ai criteri selezionati nel periodo.');
       return;
     }
 
@@ -773,8 +777,14 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
       ? ripMezzo.trim()
       : undefined;
 
+    const serieIdCondiviso =
+      dateRipetutePreview.length > 1
+        ? `serie-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+        : undefined;
+
     const nuoviTurniGenerati: TurnoSedeOperativa[] = dateRipetutePreview.map((dStr, idx) => ({
       id: `turno-${Date.now()}-${idx}-${Math.random().toString(36).substr(2, 5)}`,
+      serieId: serieIdCondiviso,
       sedeId: sedeObj?.id || 'sede-massa-lejare',
       sedeNome: sedeObj?.nome || 'Sede Operativa Massa',
       nomeTurno: ripNomeTurno.trim() || undefined,
@@ -803,6 +813,29 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
     );
     mostraAvviso(`✓ Generati con successo ${nuoviTurniGenerati.length} turni ripetuti fino al ${ripDataFine}.`);
     setModaleTurniRipetutiAperta(false);
+  };
+
+  // Individua tutti i turni appartenenti alla stessa serie (tramite serieId esplicito o fallback compatibile per turni ripetuti precedenti)
+  const trovaTurniSerie = (turno: TurnoSedeOperativa, lista: TurnoSedeOperativa[]): TurnoSedeOperativa[] => {
+    if (turno.serieId) {
+      return lista
+        .filter((t) => t.serieId === turno.serieId)
+        .sort((a, b) => a.data.localeCompare(b.data));
+    }
+    const nomeNorm = (turno.nomeTurno || '').trim().toLowerCase();
+    const simili = lista.filter(
+      (t) =>
+        t.sedeId === turno.sedeId &&
+        t.fasciaOraria === turno.fasciaOraria &&
+        t.orarioInizio === turno.orarioInizio &&
+        t.orarioFine === turno.orarioFine &&
+        (t.nomeTurno || '').trim().toLowerCase() === nomeNorm
+    );
+    const dateDistinte = new Set(simili.map((t) => t.data));
+    if (dateDistinte.size >= 2) {
+      return simili.sort((a, b) => a.data.localeCompare(b.data));
+    }
+    return [turno];
   };
 
   // Navigazione giorno precedente / successivo
@@ -886,14 +919,23 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
       : undefined;
 
     if (turnoInModifica) {
+      const targetIds = new Set<string>([turnoInModifica.id]);
+      if (modificaModalitaSerie === 'serie_futura') {
+        const serieFutura = trovaTurniSerie(turnoInModifica, turni).filter(
+          (t) => t.data >= turnoInModifica.data
+        );
+        serieFutura.forEach((t) => targetIds.add(t.id));
+      }
+
       const aggiornati = turni.map((t) => {
-        if (t.id === turnoInModifica.id) {
+        if (targetIds.has(t.id)) {
           return {
             ...t,
             sedeId: sedeObj?.id || t.sedeId,
             sedeNome: sedeObj?.nome || t.sedeNome,
             nomeTurno: formNomeTurno.trim() || undefined,
-            data: formData,
+            // Nella modifica della serie futura conserva la data propria di ciascun turno futuro
+            data: modificaModalitaSerie === 'serie_futura' && t.id !== turnoInModifica.id ? t.data : formData,
             fasciaOraria: formFascia,
             orarioInizio: formInizio,
             orarioFine: formFine,
@@ -916,12 +958,20 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
       if (!isAdmin) {
         inviaNotificaModificaAdmin(
           'turni',
-          'Modifica turno programmato',
-          `Modificato turno per sede "${sedeObj?.nome || 'Sede'}" del ${formData} (${formInizio}-${formFine})`,
+          modificaModalitaSerie === 'serie_futura'
+            ? `Modifica serie futura (${targetIds.size} turni)`
+            : 'Modifica turno programmato',
+          modificaModalitaSerie === 'serie_futura'
+            ? `Modificati ${targetIds.size} turni della serie per sede "${sedeObj?.nome || 'Sede'}" dal ${turnoInModifica.data} (${formInizio}-${formFine})`
+            : `Modificato turno per sede "${sedeObj?.nome || 'Sede'}" del ${formData} (${formInizio}-${formFine})`,
           operatoreCorrente
         );
       }
-      mostraAvviso(`Turno aggiornato con successo.`);
+      mostraAvviso(
+        modificaModalitaSerie === 'serie_futura'
+          ? `✓ Aggiornati ${targetIds.size} turni della serie futura con successo.`
+          : `Turno aggiornato con successo.`
+      );
     } else {
       const nuovo: TurnoSedeOperativa = {
         id: `turno-${Date.now()}`,
@@ -958,18 +1008,92 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
     }
     setModaleTurnoAperta(false);
     setTurnoInModifica(null);
+    setModificaModalitaSerie('singolo');
   };
 
-  // Elimina Turno
+  // Elimina / Gestisci Turno (apre modale dedicata con 6 opzioni se il turno fa parte di una serie)
   const handleEliminaTurno = (id: string) => {
     if (!isAdmin) {
-      alert("⛔ Operazione non autorizzata: solo l'Amministratore può eliminare turni dal calendario.");
+      mostraAvviso("⛔ Operazione non autorizzata: solo l'Amministratore può eliminare turni dal calendario.");
       return;
     }
-    if (!confirm('Sei sicuro di voler eliminare questo turno programmato dal calendario?')) return;
-    const filtrati = turni.filter((t) => t.id !== id);
+    const target = turni.find((t) => t.id === id);
+    if (!target) return;
+    setTurnoAzioneModal(target);
+    setAzioneMezzoScope(null);
+    setMezzoNuovoScelto(target.mezzoAssegnato || getDefaultMezzoOperativo());
+  };
+
+  const eseguiEliminaSingoloTurno = (turno: TurnoSedeOperativa) => {
+    const filtrati = turni.filter((t) => t.id !== turno.id);
     onAggiornaTurni(filtrati);
-    mostraAvviso(`Turno rimosso dal calendario.`);
+    setTurnoAzioneModal(null);
+    setAzioneMezzoScope(null);
+    mostraAvviso(`Turno del ${formatDateItaly(turno.data)} rimosso dal calendario.`);
+  };
+
+  const eseguiEliminaSerieFutura = (turno: TurnoSedeOperativa) => {
+    const serieFutura = trovaTurniSerie(turno, turni).filter((t) => t.data >= turno.data);
+    const idsDaEliminare = new Set(serieFutura.map((t) => t.id));
+    const filtrati = turni.filter((t) => !idsDaEliminare.has(t.id));
+    onAggiornaTurni(filtrati);
+    onNotificaRadio?.(
+      `🗑️ SERIE TURNI RIMOSSA: Eliminati ${idsDaEliminare.size} turni futuri dal ${formatDateItaly(turno.data)} (${turno.sedeNome}).`,
+      'sistema'
+    );
+    setTurnoAzioneModal(null);
+    setAzioneMezzoScope(null);
+    mostraAvviso(`✓ Eliminati ${idsDaEliminare.size} turni futuri della serie a partire dal ${formatDateItaly(turno.data)}.`);
+  };
+
+  const avviaModificaDaModalSerie = (turno: TurnoSedeOperativa, scope: 'singolo' | 'serie_futura') => {
+    setTurnoAzioneModal(null);
+    setAzioneMezzoScope(null);
+    setModificaModalitaSerie(scope);
+    setTurnoInModifica(turno);
+    setFormSedeId(turno.sedeId);
+    setFormData(turno.data);
+    setFormNomeTurno(turno.nomeTurno || '');
+    setFormFascia(turno.fasciaOraria);
+    setFormInizio(turno.orarioInizio);
+    setFormFine(turno.orarioFine);
+    setFormMezzo(turno.mezzoAssegnato || '');
+    setFormAutistaId(turno.autista?.id || '');
+    setFormCapoId(turno.caposervizio?.id || '');
+    setFormSoccorritore2Id(turno.soccorritore2?.id || '');
+    setFormTerzoSoccorritoreId(turno.terzoSoccorritore?.id || '');
+    setFormCentraleId(turno.operatoreCentrale?.id || '');
+    setFormCentralinistaId(turno.centralinista?.id || '');
+    setFormOsservatoreId(turno.osservatore?.id || '');
+    setFormNote(turno.note || '');
+    setModaleTurnoAperta(true);
+  };
+
+  const eseguiCambioMezzoSerie = (
+    turno: TurnoSedeOperativa,
+    scope: 'singolo' | 'serie_futura',
+    nuovoMezzo: string
+  ) => {
+    const mezzoPulito = nuovoMezzo.trim();
+    const mezzoValido =
+      mezzoPulito && !sigleInManutenzione.has(mezzoPulito.toUpperCase()) ? mezzoPulito : undefined;
+    const targetIds = new Set<string>([turno.id]);
+    if (scope === 'serie_futura') {
+      trovaTurniSerie(turno, turni)
+        .filter((t) => t.data >= turno.data)
+        .forEach((t) => targetIds.add(t.id));
+    }
+    const aggiornati = turni.map((t) =>
+      targetIds.has(t.id) ? { ...t, mezzoAssegnato: mezzoValido } : t
+    );
+    onAggiornaTurni(aggiornati);
+    setTurnoAzioneModal(null);
+    setAzioneMezzoScope(null);
+    mostraAvviso(
+      scope === 'serie_futura'
+        ? `✓ Mezzo aggiornato a "${mezzoValido || 'Nessun mezzo'}" su ${targetIds.size} turni futuri della serie.`
+        : `✓ Mezzo aggiornato a "${mezzoValido || 'Nessun mezzo'}" per il turno del ${formatDateItaly(turno.data)}.`
+    );
   };
 
   // Assegnazione rapida
@@ -1604,6 +1728,7 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
                   <button
                     type="button"
                     onClick={() => {
+                      setModificaModalitaSerie('singolo');
                       setTurnoInModifica(t);
                       setFormSedeId(t.sedeId);
                       setFormData(t.data);
@@ -1651,13 +1776,27 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
               <div className="flex items-center gap-2">
                 <Calendar className="w-5 h-5 text-teal-400" />
-                <h3 className="text-base font-black text-white uppercase">
-                  {turnoInModifica ? 'Modifica Turno Operativo' : 'Programma Nuovo Turno Sede'}
-                </h3>
+                <div>
+                  <h3 className="text-base font-black text-white uppercase">
+                    {turnoInModifica
+                      ? (modificaModalitaSerie === 'serie_futura'
+                          ? 'Modifica Serie di Turni Futuri'
+                          : 'Modifica Turno Operativo')
+                      : 'Programma Nuovo Turno Sede'}
+                  </h3>
+                  {turnoInModifica && modificaModalitaSerie === 'serie_futura' && (
+                    <p className="text-[11px] text-amber-300 font-bold">
+                      Le modifiche saranno applicate a tutti i turni futuri della serie a partire dal {formatDateItaly(turnoInModifica.data)} (mantenendo le date originali).
+                    </p>
+                  )}
+                </div>
               </div>
               <button
                 type="button"
-                onClick={() => setModaleTurnoAperta(false)}
+                onClick={() => {
+                  setModaleTurnoAperta(false);
+                  setModificaModalitaSerie('singolo');
+                }}
                 className="p-1.5 rounded-full hover:bg-slate-800 text-slate-400 hover:text-white"
               >
                 <X className="w-5 h-5" />
@@ -1970,7 +2109,10 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
               <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-800">
                 <button
                   type="button"
-                  onClick={() => setModaleTurnoAperta(false)}
+                  onClick={() => {
+                    setModaleTurnoAperta(false);
+                    setModificaModalitaSerie('singolo');
+                  }}
                   className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold"
                 >
                   Annulla
@@ -1980,13 +2122,223 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
                   className="px-4 py-2 rounded-xl bg-teal-600 hover:bg-teal-500 text-white font-black uppercase flex items-center gap-1.5 shadow-lg active:scale-95"
                 >
                   <Save className="w-4 h-4" />
-                  <span>Salva Turno</span>
+                  <span>{modificaModalitaSerie === 'serie_futura' ? 'Salva Serie Futura' : 'Salva Turno'}</span>
                 </button>
               </div>
             </form>
           </div>
         </div>
       )}
+
+      {/* MODALE CANCELLAZIONE / GESTIONE SERIE TURNI (6 OPZIONI) */}
+      {turnoAzioneModal && (() => {
+        const serieCompleta = trovaTurniSerie(turnoAzioneModal, turni);
+        const turniFuturiSerie = serieCompleta.filter((t) => t.data >= turnoAzioneModal.data);
+        const isSerie = serieCompleta.length > 1;
+        return (
+          <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in">
+            <div className="bg-slate-900 border-2 border-red-500/50 rounded-3xl max-w-lg w-full p-5 shadow-2xl text-slate-200 space-y-4 max-h-[90vh] overflow-y-auto">
+              <div className="flex items-start justify-between gap-3 border-b border-slate-800 pb-3">
+                <div className="flex items-center gap-2.5">
+                  <div className="p-2 rounded-xl bg-red-500/20 border border-red-500/40 text-red-400">
+                    <Trash2 className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="text-base font-black text-white uppercase">
+                      {isSerie ? 'Gestione Cancellazione Serie Turni' : 'Conferma Eliminazione Turno'}
+                    </h3>
+                    <p className="text-[11px] text-slate-400">
+                      {turnoAzioneModal.sedeNome} • {formatDateItaly(turnoAzioneModal.data)} ({turnoAzioneModal.orarioInizio}-{turnoAzioneModal.orarioFine})
+                      {turnoAzioneModal.mezzoAssegnato ? ` • Mezzo ${turnoAzioneModal.mezzoAssegnato}` : ''}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setTurnoAzioneModal(null);
+                    setAzioneMezzoScope(null);
+                  }}
+                  className="p-1.5 rounded-full hover:bg-slate-800 text-slate-400 hover:text-white cursor-pointer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              {isSerie ? (
+                <>
+                  <div className="p-3 rounded-xl bg-amber-950/40 border border-amber-500/40 text-xs text-amber-200 flex items-start gap-2">
+                    <Repeat className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                    <div>
+                      Questo turno fa parte di una <strong>serie di {serieCompleta.length} turni</strong> ({turniFuturiSerie.length} turni a partire dal {formatDateItaly(turnoAzioneModal.data)}). Scegli quale operazione eseguire:
+                    </div>
+                  </div>
+
+                  {azioneMezzoScope ? (
+                    <div className="p-4 rounded-2xl bg-slate-950 border border-cyan-500/40 space-y-3">
+                      <div className="text-xs font-black uppercase text-cyan-300 flex items-center gap-2">
+                        <Car className="w-4 h-4" />
+                        <span>
+                          {azioneMezzoScope === 'serie_futura'
+                            ? `Cambia Mezzo su tutta la serie futura (${turniFuturiSerie.length} turni)`
+                            : `Cambia Mezzo solo per il turno del ${formatDateItaly(turnoAzioneModal.data)}`}
+                        </span>
+                      </div>
+                      <select
+                        value={mezzoNuovoScelto}
+                        onChange={(e) => setMezzoNuovoScelto(e.target.value)}
+                        className="w-full p-2.5 rounded-xl bg-slate-900 border border-slate-700 text-white text-xs font-bold"
+                      >
+                        <option value="">-- Nessun Mezzo Assegnato --</option>
+                        {mezziOperativi.map((m) => (
+                          <option key={m.sigla} value={m.sigla}>
+                            {m.sigla} — {m.modello} ({m.tipo || 'Operativo'})
+                          </option>
+                        ))}
+                      </select>
+                      <div className="flex items-center justify-end gap-2 pt-1">
+                        <button
+                          type="button"
+                          onClick={() => setAzioneMezzoScope(null)}
+                          className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold cursor-pointer"
+                        >
+                          Indietro
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => eseguiCambioMezzoSerie(turnoAzioneModal, azioneMezzoScope, mezzoNuovoScelto)}
+                          className="px-4 py-2 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-black uppercase cursor-pointer flex items-center gap-1.5"
+                        >
+                          <Check className="w-4 h-4" />
+                          <span>Conferma Cambio Mezzo</span>
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="space-y-2 text-xs">
+                      <button
+                        type="button"
+                        onClick={() => eseguiEliminaSingoloTurno(turnoAzioneModal)}
+                        className="w-full text-left p-3 rounded-xl bg-red-950/60 hover:bg-red-900/70 border border-red-500/40 text-red-100 font-bold flex items-center justify-between gap-2 transition-colors cursor-pointer"
+                      >
+                        <span className="flex items-center gap-2">
+                          <Trash2 className="w-4 h-4 text-red-400 shrink-0" />
+                          <span>1. Elimina il singolo turno ({formatDateItaly(turnoAzioneModal.data)})</span>
+                        </span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => eseguiEliminaSerieFutura(turnoAzioneModal)}
+                        className="w-full text-left p-3 rounded-xl bg-red-900/50 hover:bg-red-800/70 border border-red-500/60 text-red-100 font-black flex items-center justify-between gap-2 transition-colors cursor-pointer"
+                      >
+                        <span className="flex items-center gap-2">
+                          <Layers className="w-4 h-4 text-red-300 shrink-0" />
+                          <span>2. Elimina tutta la serie di turni futuri ({turniFuturiSerie.length} turni)</span>
+                        </span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => avviaModificaDaModalSerie(turnoAzioneModal, 'singolo')}
+                        className="w-full text-left p-3 rounded-xl bg-slate-800/80 hover:bg-slate-700 border border-slate-600 text-white font-bold flex items-center justify-between gap-2 transition-colors cursor-pointer"
+                      >
+                        <span className="flex items-center gap-2">
+                          <Edit2 className="w-4 h-4 text-teal-400 shrink-0" />
+                          <span>3. Modifica il singolo turno</span>
+                        </span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => avviaModificaDaModalSerie(turnoAzioneModal, 'serie_futura')}
+                        className="w-full text-left p-3 rounded-xl bg-teal-950/60 hover:bg-teal-900/70 border border-teal-500/40 text-teal-100 font-bold flex items-center justify-between gap-2 transition-colors cursor-pointer"
+                      >
+                        <span className="flex items-center gap-2">
+                          <Repeat className="w-4 h-4 text-teal-300 shrink-0" />
+                          <span>4. Modifica tutta la serie di turni futuri ({turniFuturiSerie.length} turni)</span>
+                        </span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setMezzoNuovoScelto(turnoAzioneModal.mezzoAssegnato || getDefaultMezzoOperativo());
+                          setAzioneMezzoScope('singolo');
+                        }}
+                        className="w-full text-left p-3 rounded-xl bg-cyan-950/50 hover:bg-cyan-900/60 border border-cyan-500/40 text-cyan-100 font-bold flex items-center justify-between gap-2 transition-colors cursor-pointer"
+                      >
+                        <span className="flex items-center gap-2">
+                          <Car className="w-4 h-4 text-cyan-400 shrink-0" />
+                          <span>5. Modifica il mezzo assegnato per il singolo turno</span>
+                        </span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setMezzoNuovoScelto(turnoAzioneModal.mezzoAssegnato || getDefaultMezzoOperativo());
+                          setAzioneMezzoScope('serie_futura');
+                        }}
+                        className="w-full text-left p-3 rounded-xl bg-cyan-900/40 hover:bg-cyan-800/60 border border-cyan-400/50 text-cyan-100 font-bold flex items-center justify-between gap-2 transition-colors cursor-pointer"
+                      >
+                        <span className="flex items-center gap-2">
+                          <Car className="w-4 h-4 text-cyan-300 shrink-0" />
+                          <span>6. Modifica il mezzo assegnato per tutta la serie di turni futuri ({turniFuturiSerie.length} turni)</span>
+                        </span>
+                      </button>
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div className="space-y-4">
+                  <p className="text-xs text-slate-300">
+                    Sei sicuro di voler eliminare questo turno programmato dal calendario?
+                  </p>
+                  <div className="flex flex-wrap items-center justify-end gap-2 pt-2 border-t border-slate-800">
+                    <button
+                      type="button"
+                      onClick={() => setTurnoAzioneModal(null)}
+                      className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold cursor-pointer"
+                    >
+                      Annulla
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => avviaModificaDaModalSerie(turnoAzioneModal, 'singolo')}
+                      className="px-4 py-2 rounded-xl bg-teal-700 hover:bg-teal-600 text-white text-xs font-bold cursor-pointer"
+                    >
+                      Modifica Turno
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => eseguiEliminaSingoloTurno(turnoAzioneModal)}
+                      className="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-500 text-white text-xs font-black uppercase cursor-pointer"
+                    >
+                      Elimina Turno
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {isSerie && !azioneMezzoScope && (
+                <div className="flex justify-end pt-2 border-t border-slate-800">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setTurnoAzioneModal(null);
+                      setAzioneMezzoScope(null);
+                    }}
+                    className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold cursor-pointer"
+                  >
+                    Annulla
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })()}
 
       {/* MODALE TABELLONE SETTIMANALE */}
       {mostraTabelloneSettimanaleModal && (

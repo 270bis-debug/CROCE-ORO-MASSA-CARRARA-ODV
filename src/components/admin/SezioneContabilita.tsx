@@ -47,7 +47,9 @@ import {
   SedeAssociativaCompleta,
   TariffaCostoServizio,
   VoceNotaDiDebito,
-  ProprietarioImmobileData
+  ProprietarioImmobileData,
+  MovimentoAltreEntrateUscite,
+  VoceCostoGestione
 } from '../../types/adminTypes';
 import { TARIFFE_COSTI_SERVIZIO_INIZIALI } from '../../data/adminMockData';
 import { DICITURA_ESENZIONE_BOLLO } from '../../data/tesseramento';
@@ -81,6 +83,10 @@ interface SezioneContabilitaProps {
   onAggiornaNoteDiDebito: (note: NotaDiDebito[]) => void;
   costiServizio?: TariffaCostoServizio[];
   onAggiornaCostiServizio?: (tariffe: TariffaCostoServizio[]) => void;
+  altreEntrateUscite?: MovimentoAltreEntrateUscite[];
+  onAggiornaAltreEntrateUscite?: (voci: MovimentoAltreEntrateUscite[]) => void;
+  costiGestione?: VoceCostoGestione[];
+  onAggiornaCostiGestione?: (voci: VoceCostoGestione[]) => void;
   operatoreCorrente?: string;
   isAdmin?: boolean;
   onNotificaRadio?: (testo: string, tipo?: 'centrale' | 'mezzo' | 'sistema' | 'allarme') => void;
@@ -102,6 +108,10 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
   onAggiornaNoteDiDebito,
   costiServizio: costiServizioProp,
   onAggiornaCostiServizio,
+  altreEntrateUscite: altreEntrateUsciteProp,
+  onAggiornaAltreEntrateUscite,
+  costiGestione: costiGestioneProp,
+  onAggiornaCostiGestione,
   operatoreCorrente = 'Amministratore',
   isAdmin = true,
   onNotificaRadio,
@@ -114,12 +124,12 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
   allowedSubtabs = null
 }) => {
   const nomiSubCustom = useNomiSottosezioniCustom();
-  const [sottoTab, setSottoTab] = useState<'donazioni' | 'tesseramento' | 'noteDebito' | 'commercialista' | 'costiServizio' | 'contiCorrenti'>('donazioni');
+  const [sottoTab, setSottoTab] = useState<'donazioni' | 'tesseramento' | 'noteDebito' | 'commercialista' | 'costiServizio' | 'contiCorrenti' | 'altreEntrateUscite' | 'costiGestione'>('donazioni');
   const canShowSubtab = (id: string) => !allowedSubtabs || allowedSubtabs.includes(id);
 
   useEffect(() => {
     if (!canShowSubtab(sottoTab)) {
-      const ordine = ['donazioni', 'tesseramento', 'noteDebito', 'commercialista', 'costiServizio', 'contiCorrenti'] as const;
+      const ordine = ['donazioni', 'tesseramento', 'noteDebito', 'commercialista', 'costiServizio', 'contiCorrenti', 'altreEntrateUscite', 'costiGestione'] as const;
       const prima = ordine.find((t) => canShowSubtab(t));
       if (prima) setSottoTab(prima);
     }
@@ -266,7 +276,7 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
   const [formDonazioneImporto, setFormDonazioneImporto] = useState('');
   const [formDonazioneMetodo, setFormDonazioneMetodo] = useState<string>('Contanti');
   const [formDonazioneRicevuta, setFormDonazioneRicevuta] = useState('');
-  const [formDonazioneMezzo, setFormDonazioneMezzo] = useState('T4606');
+  const [formDonazioneCfPiva, setFormDonazioneCfPiva] = useState('');
   const [formDonazioneNote, setFormDonazioneNote] = useState('');
   const [donazioniExtra, setDonazioniExtra] = useState<any[]>(() => {
     try {
@@ -276,6 +286,90 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
       return [];
     }
   });
+
+  // Stato Altre Entrate / Uscite (Sotto-sezione 7)
+  const [altreEntrateUsciteLocali, setAltreEntrateUsciteLocali] = useState<MovimentoAltreEntrateUscite[]>(() => {
+    try {
+      const saved = localStorage.getItem('croceoro_altre_entrate_uscite_v1');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+  const listaAltreEntrateUscite: MovimentoAltreEntrateUscite[] = React.useMemo(
+    () => (altreEntrateUsciteProp !== undefined ? altreEntrateUsciteProp : altreEntrateUsciteLocali),
+    [altreEntrateUsciteProp, altreEntrateUsciteLocali]
+  );
+  const salvaAltreEntrateUscite = (nuove: MovimentoAltreEntrateUscite[]) => {
+    setAltreEntrateUsciteLocali(nuove);
+    try {
+      localStorage.setItem('croceoro_altre_entrate_uscite_v1', JSON.stringify(nuove));
+    } catch {}
+    onAggiornaAltreEntrateUscite?.(nuove);
+  };
+  const [filtroAltreTipo, setFiltroAltreTipo] = useState<'tutti' | 'entrata' | 'uscita'>('tutti');
+  const [filtroAltreMese, setFiltroAltreMese] = useState<string>('');
+  const [ricercaAltre, setRicercaAltre] = useState<string>('');
+  const [editingAltraId, setEditingAltraId] = useState<string | null>(null);
+  const [formAltraData, setFormAltraData] = useState<string>(() => formatISODateItaly());
+  const [formAltraTipo, setFormAltraTipo] = useState<'entrata' | 'uscita'>('entrata');
+  const [formAltraDescrizione, setFormAltraDescrizione] = useState<string>('');
+  const [formAltraCategoria, setFormAltraCategoria] = useState<string>('Contributo / Rimborso');
+  const [formAltraImporto, setFormAltraImporto] = useState<string>('');
+  const [formAltraMetodo, setFormAltraMetodo] = useState<string>('Contanti');
+  const [formAltraControparte, setFormAltraControparte] = useState<string>('');
+  const [formAltraRifDoc, setFormAltraRifDoc] = useState<string>('');
+  const [formAltraNote, setFormAltraNote] = useState<string>('');
+  const [confermaEliminaAltraId, setConfermaEliminaAltraId] = useState<string | null>(null);
+
+  // Stato Costi di Gestione (Sotto-sezione 8)
+  const CATEGORIE_COSTI_GESTIONE = [
+    'Utenze (Luce, Gas, Acqua)',
+    'Affitto & Spese Sede',
+    'Assicurazioni & Polizze',
+    'Telefonia, Internet & Software',
+    'Cancelleria & Materiale Ufficio',
+    'Consulenze & Commercialista',
+    'Materiale Sanitario & DPI',
+    'Pulizie & Manutenzione Sede',
+    'Tasse, Bolli & Imposte',
+    'Spese Bancarie & POS',
+    'Altro Costo di Gestione'
+  ];
+  const [costiGestioneLocali, setCostiGestioneLocali] = useState<VoceCostoGestione[]>(() => {
+    try {
+      const saved = localStorage.getItem('croceoro_costi_gestione_v1');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+  const listaCostiGestione: VoceCostoGestione[] = React.useMemo(
+    () => (costiGestioneProp !== undefined ? costiGestioneProp : costiGestioneLocali),
+    [costiGestioneProp, costiGestioneLocali]
+  );
+  const salvaCostiGestione = (nuove: VoceCostoGestione[]) => {
+    setCostiGestioneLocali(nuove);
+    try {
+      localStorage.setItem('croceoro_costi_gestione_v1', JSON.stringify(nuove));
+    } catch {}
+    onAggiornaCostiGestione?.(nuove);
+  };
+  const [filtroGestioneTipo, setFiltroGestioneTipo] = useState<'tutti' | 'uscita' | 'entrata'>('tutti');
+  const [filtroGestioneCategoria, setFiltroGestioneCategoria] = useState<string>('tutte');
+  const [filtroGestioneMese, setFiltroGestioneMese] = useState<string>('');
+  const [ricercaGestione, setRicercaGestione] = useState<string>('');
+  const [editingGestioneId, setEditingGestioneId] = useState<string | null>(null);
+  const [formGestioneData, setFormGestioneData] = useState<string>(() => formatISODateItaly());
+  const [formGestioneTipo, setFormGestioneTipo] = useState<'uscita' | 'entrata'>('uscita');
+  const [formGestioneDescrizione, setFormGestioneDescrizione] = useState<string>('');
+  const [formGestioneCategoria, setFormGestioneCategoria] = useState<string>('Utenze (Luce, Gas, Acqua)');
+  const [formGestioneImporto, setFormGestioneImporto] = useState<string>('');
+  const [formGestioneMetodo, setFormGestioneMetodo] = useState<string>(defaultMetodoNota);
+  const [formGestioneFornitore, setFormGestioneFornitore] = useState<string>('');
+  const [formGestioneNumDoc, setFormGestioneNumDoc] = useState<string>('');
+  const [formGestioneNote, setFormGestioneNote] = useState<string>('');
+  const [confermaEliminaGestioneId, setConfermaEliminaGestioneId] = useState<string | null>(null);
 
   // Chiusura accessibile dei modali con tasto ESC
   useEffect(() => {
@@ -339,11 +433,15 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
 
   const estraiNomeDonatore = (s: any): string => {
     if (!s) return 'Richiedente Privato';
+    const donAltro = s.datiDestinazione?.donazione?.tipoDonatore === 'altro' && s.datiDestinazione?.donazione?.donatoreAltro
+      ? `${s.datiDestinazione.donazione.donatoreAltro.nome || ''} ${s.datiDestinazione.donazione.donatoreAltro.cognome || ''}`.trim()
+      : '';
     const propDest = s.datiDestinazione?.proprietario
       ? `${s.datiDestinazione.proprietario.nome || ''} ${s.datiDestinazione.proprietario.cognome || ''}`.trim()
       : '';
     return (
       s.donatore ||
+      donAltro ||
       s.paziente ||
       s.richiedente ||
       propDest ||
@@ -351,6 +449,25 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
       s.chiamante ||
       'Richiedente Privato'
     );
+  };
+
+  const estraiCfPivaDonatore = (s: any): string => {
+    if (!s) return '';
+    const isAltroDonatore = s.datiDestinazione?.donazione?.tipoDonatore === 'altro';
+    const cfAltro = (s.datiDestinazione?.donazione?.donatoreAltro?.codiceFiscale || '').trim();
+    const cfPropDest = (s.datiDestinazione?.proprietario?.codiceFiscale || '').trim();
+    const cfPropCentrale = (s.datiProprietarioCentrale?.codiceFiscale || '').trim();
+    const cfPropImmobile = (s.proprietarioImmobile?.codiceFiscale || '').trim();
+    const cfDiretto = (
+      s.codiceFiscaleDonatore ||
+      s.partitaIvaCodiceFiscale ||
+      s.donazione?.codiceFiscale ||
+      s.codiceFiscale ||
+      ''
+    ).trim();
+    if (cfDiretto) return cfDiretto.toUpperCase();
+    if (isAltroDonatore && cfAltro) return cfAltro.toUpperCase();
+    return (cfAltro || cfPropDest || cfPropCentrale || cfPropImmobile || '').toUpperCase();
   };
 
   const serviziArchivioOrdinatiPerDonazione = React.useMemo(() => {
@@ -368,7 +485,8 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
         s.paziente,
         s.indirizzoIntervento,
         s.destinazione,
-        s.volontarioNome
+        s.volontarioNome,
+        estraiCfPivaDonatore(s)
       ]
         .filter(Boolean)
         .join(' ')
@@ -388,7 +506,7 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
       setFormDonazioneCodice('');
       setFormDonazioneData(formatISODateItaly());
       setFormDonazionePaziente('');
-      setFormDonazioneMezzo('T4606');
+      setFormDonazioneCfPiva('');
       setFormDonazioneNote('');
       return;
     }
@@ -397,19 +515,10 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
 
     setFormDonazioneCodice(srv.codice || servizioId);
     setFormDonazioneData(toISODateOnly(srv.dataInizioServizioSpecifico || srv.data || srv.dataServizio));
-    const propNome = srv.datiDestinazione?.proprietario
-      ? `${srv.datiDestinazione.proprietario.nome || ''} ${srv.datiDestinazione.proprietario.cognome || ''}`.trim()
-      : '';
-    const donatoreSuggerito =
-      srv.donatore ||
-      srv.paziente ||
-      srv.richiedente ||
-      propNome ||
-      srv.proprietarioImmobile?.nomeCognome ||
-      srv.chiamante ||
-      '';
-    setFormDonazionePaziente(donatoreSuggerito);
-    setFormDonazioneMezzo(srv.mezzo || 'T4606');
+    const donatoreSuggerito = estraiNomeDonatore(srv);
+    setFormDonazionePaziente(donatoreSuggerito === 'Richiedente Privato' ? '' : donatoreSuggerito);
+    // Ripesca in automatico il C.F. / P.Iva compilato dal volontario nella sezione donazione o sul servizio (resta editabile)
+    setFormDonazioneCfPiva(estraiCfPivaDonatore(srv));
 
     const tratta = [srv.indirizzoIntervento, srv.destinazione].filter(Boolean).join(' -> ');
     const tipo = srv.tipoServizio || srv.ambito || 'Servizio Operativo';
@@ -487,7 +596,7 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
       'Importo (€)',
       'Metodo Donazione',
       'Paziente / Donatore',
-      'Mezzo',
+      'C.F. / P.Iva',
       'N. Ricevuta Fiscale',
       'Volontario / Operatore',
       'Note / Destinazione'
@@ -504,12 +613,12 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
         (s.ricevutaDonazione ? 'Ricevuta Fiscale' : 'Contanti');
       const paziente = estraiNomeDonatore(s).replace(/"/g, '""');
       const codice = (s.codice || '').replace(/"/g, '""');
-      const mezzo = (s.mezzo || 'N/D').replace(/"/g, '""');
+      const cfPiva = estraiCfPivaDonatore(s).replace(/"/g, '""');
       const ricevuta = (s.ricevutaDonazione || 'Art. 82 D.Lgs 117/2017').replace(/"/g, '""');
       const volontario = (s.volontarioNome || 'Equipaggio').replace(/"/g, '""');
       const note = (s.noteDonazione || s.destinazione || s.indirizzoIntervento || s.luogoIntervento || s.note || '').replace(/"/g, '""').replace(/[\r\n]+/g, ' ');
 
-      return `"${s.dataDonazione || s.data || ''}";"${codice}";"${imp.toFixed(2)}";"${metodo}";"${paziente}";"${mezzo}";"${ricevuta}";"${volontario}";"${note}"`;
+      return `"${s.dataDonazione || s.data || ''}";"${codice}";"${imp.toFixed(2)}";"${metodo}";"${paziente}";"${cfPiva}";"${ricevuta}";"${volontario}";"${note}"`;
     });
 
     const csvContent = '\uFEFF' + [headers.join(';'), ...righe].join('\r\n');
@@ -572,6 +681,8 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
         }
       };
 
+      const cfPivaPulito = formDonazioneCfPiva.trim().toUpperCase();
+      const prevDonDest = baseDatiDest.donazione || {};
       const servizioAggiornato = {
         ...servizioArchivioCollegato,
         donazioneLibera: importoNumerico.toFixed(2),
@@ -580,6 +691,8 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
         metodoPagamento: formDonazioneMetodo,
         ricevutaDonazione: numRicevuta,
         donatore: donatoreNome,
+        codiceFiscaleDonatore: cfPivaPulito || undefined,
+        partitaIvaCodiceFiscale: cfPivaPulito || servizioArchivioCollegato.partitaIvaCodiceFiscale || undefined,
         paziente: servizioArchivioCollegato.paziente || donatoreNome,
         noteDonazione,
         dataDonazione,
@@ -587,16 +700,29 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
           importo: importoNumerico,
           somma: importoNumerico,
           modalita: formDonazioneMetodo,
+          codiceFiscale: cfPivaPulito || undefined,
           note: noteDonazione,
           ricevente: operatoreCorrente
         },
         datiDestinazione: {
           ...baseDatiDest,
+          proprietario: {
+            ...(baseDatiDest.proprietario || {}),
+            ...(cfPivaPulito && prevDonDest.tipoDonatore !== 'altro' ? { codiceFiscale: cfPivaPulito } : {})
+          },
           donazione: {
-            ...(baseDatiDest.donazione || {}),
+            ...prevDonDest,
             ricevuta: true,
             somma: importoNumerico,
-            metodo: metodoBreve
+            metodo: metodoBreve,
+            ...(prevDonDest.tipoDonatore === 'altro' && cfPivaPulito
+              ? {
+                  donatoreAltro: {
+                    ...(prevDonDest.donatoreAltro || {}),
+                    codiceFiscale: cfPivaPulito
+                  }
+                }
+              : {})
           }
         }
       };
@@ -634,6 +760,7 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
       return;
     }
 
+    const cfPivaPulito = formDonazioneCfPiva.trim().toUpperCase();
     const nuovaDonazione = {
       id: `don-${Date.now()}`,
       servizioCollegatoId: servizioArchivioCollegato ? (servizioArchivioCollegato.id || servizioArchivioCollegato.codice) : undefined,
@@ -643,12 +770,14 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
       dataDonazione,
       paziente: donatoreNome,
       donatore: donatoreNome,
+      codiceFiscaleDonatore: cfPivaPulito || undefined,
+      partitaIvaCodiceFiscale: cfPivaPulito || undefined,
       donazioneLibera: importoNumerico.toFixed(2),
       importoDonazione: importoNumerico.toFixed(2),
       metodoDonazione: formDonazioneMetodo,
       metodoPagamento: formDonazioneMetodo,
       ricevutaDonazione: numRicevuta,
-      mezzo: formDonazioneMezzo.trim() || servizioArchivioCollegato?.mezzo || 'T4606',
+      mezzo: servizioArchivioCollegato?.mezzo || 'N/D',
       indirizzoIntervento: servizioArchivioCollegato?.indirizzoIntervento,
       destinazione: servizioArchivioCollegato
         ? [servizioArchivioCollegato.indirizzoIntervento, servizioArchivioCollegato.destinazione].filter(Boolean).join(' -> ') || noteDonazione
@@ -1244,7 +1373,7 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
     .filter((n) => n.stato === 'Emessa' || n.stato === 'Sollecitata')
     .reduce((acc, curr) => acc + curr.importoTotale, 0);
 
-  // Prospetto Annuale e Mensile per il Commercialista
+  // Prospetto Annuale e Mensile per il Commercialista (include Altre Entrate/Uscite e Costi di Gestione)
   const prospettoCommercialista: ProspettoAnnualeCommercialista = React.useMemo(() => {
     return calcolaProspettoCommercialista(
       annoProspetto,
@@ -1252,9 +1381,156 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
       tessereComplete,
       noteDiDebito,
       manutenzioni,
-      rifornimentiCarburante
+      rifornimentiCarburante,
+      listaAltreEntrateUscite,
+      listaCostiGestione
     );
-  }, [annoProspetto, tuttiServiziDonazioni, tessereComplete, noteDiDebito, manutenzioni, rifornimentiCarburante]);
+  }, [
+    annoProspetto,
+    tuttiServiziDonazioni,
+    tessereComplete,
+    noteDiDebito,
+    manutenzioni,
+    rifornimentiCarburante,
+    listaAltreEntrateUscite,
+    listaCostiGestione
+  ]);
+
+  // Handler CRUD Altre Entrate / Uscite (Sotto-sezione 7)
+  const resetFormAltreEntrateUscite = () => {
+    setEditingAltraId(null);
+    setFormAltraData(formatISODateItaly());
+    setFormAltraTipo('entrata');
+    setFormAltraDescrizione('');
+    setFormAltraCategoria('Contributo / Rimborso');
+    setFormAltraImporto('');
+    setFormAltraMetodo('Contanti');
+    setFormAltraControparte('');
+    setFormAltraRifDoc('');
+    setFormAltraNote('');
+  };
+
+  const handleSalvaAltraEntrataUscita = (e: React.FormEvent) => {
+    e.preventDefault();
+    const imp = parseFloat((formAltraImporto || '').replace(',', '.'));
+    if (!formAltraDescrizione.trim() || isNaN(imp) || imp <= 0) {
+      mostraAvviso('Inserisci una descrizione valida e un importo superiore a € 0,00.');
+      return;
+    }
+    const nuovaVoce: MovimentoAltreEntrateUscite = {
+      id: editingAltraId || `aeu-${Date.now()}`,
+      data: formAltraData || formatISODateItaly(),
+      tipo: formAltraTipo,
+      descrizione: formAltraDescrizione.trim(),
+      categoria: formAltraCategoria.trim() || 'Generale',
+      importo: Math.round(imp * 100) / 100,
+      metodoPagamento: formAltraMetodo || 'Contanti',
+      controparte: formAltraControparte.trim() || undefined,
+      riferimentoDocumento: formAltraRifDoc.trim() || undefined,
+      note: formAltraNote.trim() || undefined,
+      operatoreRegistrazione: operatoreCorrente,
+      createdAt: Date.now()
+    };
+    const aggiornate = editingAltraId
+      ? listaAltreEntrateUscite.map((v) => (v.id === editingAltraId ? nuovaVoce : v))
+      : [nuovaVoce, ...listaAltreEntrateUscite];
+    salvaAltreEntrateUscite(aggiornate);
+    mostraAvviso(
+      editingAltraId
+        ? `Voce "${nuovaVoce.descrizione}" aggiornata e riflessa nel Prospetto Commercialista.`
+        : `${nuovaVoce.tipo === 'entrata' ? 'Entrata' : 'Uscita'} di € ${nuovaVoce.importo.toFixed(2)} registrata e inclusa nel Prospetto Commercialista.`
+    );
+    onNotificaRadio?.(
+      `💶 ALTRE ENTRATE/USCITE: ${nuovaVoce.tipo === 'entrata' ? '+' : '-'}€ ${nuovaVoce.importo.toFixed(2)} — ${nuovaVoce.descrizione} (${operatoreCorrente})`,
+      'sistema'
+    );
+    if (!isAdmin) {
+      inviaNotificaModificaAdmin(
+        'contabilita',
+        editingAltraId ? 'Modifica Altre Entrate/Uscite' : 'Nuova voce Altre Entrate/Uscite',
+        `${nuovaVoce.tipo.toUpperCase()} € ${nuovaVoce.importo.toFixed(2)} — ${nuovaVoce.descrizione}`,
+        operatoreCorrente
+      );
+    }
+    resetFormAltreEntrateUscite();
+  };
+
+  const handleEliminaAltraEntrataUscita = (id: string) => {
+    const voce = listaAltreEntrateUscite.find((v) => v.id === id);
+    const aggiornate = listaAltreEntrateUscite.filter((v) => v.id !== id);
+    salvaAltreEntrateUscite(aggiornate);
+    setConfermaEliminaAltraId(null);
+    if (editingAltraId === id) resetFormAltreEntrateUscite();
+    mostraAvviso(`Voce "${voce?.descrizione || ''}" eliminata da Altre Entrate/Uscite.`);
+  };
+
+  // Handler CRUD Costi di Gestione (Sotto-sezione 8)
+  const resetFormCostiGestione = () => {
+    setEditingGestioneId(null);
+    setFormGestioneData(formatISODateItaly());
+    setFormGestioneTipo('uscita');
+    setFormGestioneDescrizione('');
+    setFormGestioneCategoria('Utenze (Luce, Gas, Acqua)');
+    setFormGestioneImporto('');
+    setFormGestioneMetodo(defaultMetodoNota);
+    setFormGestioneFornitore('');
+    setFormGestioneNumDoc('');
+    setFormGestioneNote('');
+  };
+
+  const handleSalvaCostoGestione = (e: React.FormEvent) => {
+    e.preventDefault();
+    const imp = parseFloat((formGestioneImporto || '').replace(',', '.'));
+    if (!formGestioneDescrizione.trim() || isNaN(imp) || imp <= 0) {
+      mostraAvviso('Inserisci una descrizione valida e un importo superiore a € 0,00.');
+      return;
+    }
+    const nuovaVoce: VoceCostoGestione = {
+      id: editingGestioneId || `cgest-${Date.now()}`,
+      data: formGestioneData || formatISODateItaly(),
+      tipo: formGestioneTipo,
+      descrizione: formGestioneDescrizione.trim(),
+      categoria: formGestioneCategoria || 'Altro Costo di Gestione',
+      importo: Math.round(imp * 100) / 100,
+      metodoPagamento: formGestioneMetodo || defaultMetodoNota,
+      fornitore: formGestioneFornitore.trim() || undefined,
+      numeroDocumento: formGestioneNumDoc.trim() || undefined,
+      note: formGestioneNote.trim() || undefined,
+      operatoreRegistrazione: operatoreCorrente,
+      createdAt: Date.now()
+    };
+    const aggiornate = editingGestioneId
+      ? listaCostiGestione.map((v) => (v.id === editingGestioneId ? nuovaVoce : v))
+      : [nuovaVoce, ...listaCostiGestione];
+    salvaCostiGestione(aggiornate);
+    mostraAvviso(
+      editingGestioneId
+        ? `Costo di gestione "${nuovaVoce.descrizione}" aggiornato e riflesso nel Prospetto Commercialista.`
+        : `${nuovaVoce.tipo === 'uscita' ? 'Costo di gestione' : 'Rimborso/Entrata gestione'} di € ${nuovaVoce.importo.toFixed(2)} registrato e incluso nel Prospetto Commercialista.`
+    );
+    onNotificaRadio?.(
+      `🏢 COSTI DI GESTIONE: ${nuovaVoce.tipo === 'entrata' ? '+' : '-'}€ ${nuovaVoce.importo.toFixed(2)} — ${nuovaVoce.descrizione} (${nuovaVoce.categoria})`,
+      'sistema'
+    );
+    if (!isAdmin) {
+      inviaNotificaModificaAdmin(
+        'contabilita',
+        editingGestioneId ? 'Modifica Costi di Gestione' : 'Nuova voce Costi di Gestione',
+        `${nuovaVoce.tipo.toUpperCase()} € ${nuovaVoce.importo.toFixed(2)} — ${nuovaVoce.descrizione} (${nuovaVoce.categoria})`,
+        operatoreCorrente
+      );
+    }
+    resetFormCostiGestione();
+  };
+
+  const handleEliminaCostoGestione = (id: string) => {
+    const voce = listaCostiGestione.find((v) => v.id === id);
+    const aggiornate = listaCostiGestione.filter((v) => v.id !== id);
+    salvaCostiGestione(aggiornate);
+    setConfermaEliminaGestioneId(null);
+    if (editingGestioneId === id) resetFormCostiGestione();
+    mostraAvviso(`Voce "${voce?.descrizione || ''}" eliminata da Costi di Gestione.`);
+  };
 
   return (
     <div className="w-full max-w-7xl mx-auto space-y-5 animate-in fade-in duration-200">
@@ -1380,6 +1656,36 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
           <span>6. {getTitoloSottosezione('contabilita', 'contiCorrenti', 'Coordinate Bancarie & Postali', nomiSubCustom)} ({2 + metodiPagamentoCustom.filter((m) => m.attivo).length})</span>
         </button>
         )}
+
+        {canShowSubtab('altreEntrateUscite') && (
+        <button
+          type="button"
+          onClick={() => setSottoTab('altreEntrateUscite')}
+          className={`px-4 py-2.5 rounded-xl text-xs font-black uppercase flex items-center gap-2 transition-all cursor-pointer shrink-0 ${
+            sottoTab === 'altreEntrateUscite'
+              ? 'bg-purple-600 text-white shadow-lg shadow-purple-600/30 border border-purple-400 font-black'
+              : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
+          }`}
+        >
+          <TrendingUp className="w-4 h-4 text-cyan-400" />
+          <span>7. {getTitoloSottosezione('contabilita', 'altreEntrateUscite', 'Altre Entrate / Uscite', nomiSubCustom)} ({listaAltreEntrateUscite.length})</span>
+        </button>
+        )}
+
+        {canShowSubtab('costiGestione') && (
+        <button
+          type="button"
+          onClick={() => setSottoTab('costiGestione')}
+          className={`px-4 py-2.5 rounded-xl text-xs font-black uppercase flex items-center gap-2 transition-all cursor-pointer shrink-0 ${
+            sottoTab === 'costiGestione'
+              ? 'bg-purple-600 text-white shadow-lg shadow-purple-600/30 border border-purple-400 font-black'
+              : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
+          }`}
+        >
+          <Building2 className="w-4 h-4 text-rose-400" />
+          <span>8. {getTitoloSottosezione('contabilita', 'costiGestione', 'Costi di Gestione', nomiSubCustom)} ({listaCostiGestione.length})</span>
+        </button>
+        )}
       </div>
 
       {/* ===================================================================== */}
@@ -1470,7 +1776,7 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
                   setFormDonazionePaziente('');
                   setFormDonazioneMetodo('Contanti');
                   setFormDonazioneRicevuta(`DON-${getCurrentYearItaly()}/${String(serviziConDonazioni.length + 1).padStart(3, '0')}`);
-                  setFormDonazioneMezzo('T4606');
+                  setFormDonazioneCfPiva('');
                   setFormDonazioneNote('');
                   setFormDonazioneData(formatISODateItaly());
                   setModaleNuovaDonazioneAperta(true);
@@ -1492,7 +1798,7 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
                   <tr className="bg-slate-900/90 text-slate-400 uppercase text-[10px] font-black border-b border-slate-800">
                     <th className="py-3 px-4">Codice & Data</th>
                     <th className="py-3 px-4">Paziente / Donatore</th>
-                    <th className="py-3 px-4">Mezzo & Tratta</th>
+                    <th className="py-3 px-4">C.F. / P.Iva & Dettaglio</th>
                     <th className="py-3 px-4 font-mono">Importo Donazione</th>
                     <th className="py-3 px-4">Ricevuta Fiscale</th>
                     <th className="py-3 px-4 text-right">Riepilogo</th>
@@ -1509,6 +1815,7 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
                     serviziConDonazioni.map((s) => {
                       const imp = estraiImportoDonazione(s);
                       const nomeDonatore = estraiNomeDonatore(s);
+                      const cfPivaDon = estraiCfPivaDonatore(s);
                       const isCollegatoArchivio = Boolean(
                         s.servizioCollegato ||
                         s.servizioCollegatoId ||
@@ -1543,7 +1850,9 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
                             <div className="text-[11px] text-slate-400">{s.tipoServizio || s.ambito || 'Trasporto Sanitario'}</div>
                           </td>
                           <td className="py-3 px-4">
-                            <div className="text-slate-300 font-bold">{s.mezzo || 'T4606'}</div>
+                            <div className="text-cyan-300 font-mono font-bold text-[11px]">
+                              {cfPivaDon || <span className="text-slate-500 font-sans font-normal italic">C.F. / P.Iva non indicato</span>}
+                            </div>
                             <div className="text-[11px] text-slate-400 truncate max-w-xs">
                               {s.destinazione || s.indirizzoIntervento || s.luogoIntervento || s.noteDonazione}
                             </div>
@@ -2170,26 +2479,30 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
               <table className="w-full text-left border-collapse text-xs">
                 <thead>
                   <tr className="bg-slate-900/95 text-slate-400 uppercase text-[10px] font-black border-b border-slate-800">
-                    <th className="py-3 px-4">Mese ({annoProspetto})</th>
-                    <th className="py-3 px-4 font-mono text-pink-400">Donazioni (€)</th>
-                    <th className="py-3 px-4 font-mono text-blue-400">Tesseramento (€)</th>
-                    <th className="py-3 px-4 font-mono text-purple-400">Note Debito (€)</th>
-                    <th className="py-3 px-4 font-mono text-emerald-400 font-black">Tot. Entrate (€)</th>
-                    <th className="py-3 px-4 font-mono text-slate-300">Manutenzioni (€)</th>
-                    <th className="py-3 px-4 font-mono text-amber-400">Carburante (€)</th>
-                    <th className="py-3 px-4 font-mono text-rose-400 font-black">Tot. Uscite (€)</th>
-                    <th className="py-3 px-4 font-mono text-center">Saldo Netto (€)</th>
-                    <th className="py-3 px-4 text-right">Dettagli</th>
+                    <th className="py-3 px-3">Mese ({annoProspetto})</th>
+                    <th className="py-3 px-3 font-mono text-pink-400">Donazioni</th>
+                    <th className="py-3 px-3 font-mono text-blue-400">Tessere</th>
+                    <th className="py-3 px-3 font-mono text-purple-400">Note Debito</th>
+                    <th className="py-3 px-3 font-mono text-cyan-400">Altre Entrate</th>
+                    <th className="py-3 px-3 font-mono text-emerald-400 font-black">Tot. Entrate</th>
+                    <th className="py-3 px-3 font-mono text-slate-300">Manutenz.</th>
+                    <th className="py-3 px-3 font-mono text-amber-400">Carburante</th>
+                    <th className="py-3 px-3 font-mono text-orange-400">Altre Uscite</th>
+                    <th className="py-3 px-3 font-mono text-rose-300">Costi Gestione</th>
+                    <th className="py-3 px-3 font-mono text-rose-400 font-black">Tot. Uscite</th>
+                    <th className="py-3 px-3 font-mono text-center">Saldo Netto</th>
+                    <th className="py-3 px-3 text-right">Dettagli</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-800/60">
                   {prospettoCommercialista.mesi.map((m) => {
                     const isPositivo = m.saldoNetto >= 0;
                     const haMovimenti = m.totaleEntrate > 0 || m.totaleUscite > 0;
+                    const altreEntrateTotMese = m.totaleAltreEntrate + m.totaleCostiGestioneEntrate;
+                    const altreEntrateCntMese = m.conteggioAltreEntrate + m.conteggioCostiGestioneEntrate;
                     return (
                       <tr key={m.meseNumero} className="hover:bg-slate-900/50 transition-colors">
-                        {/* Nome Mese */}
-                        <td className="py-3 px-4 font-black text-white">
+                        <td className="py-3 px-3 font-black text-white">
                           <div className="flex items-center gap-1.5">
                             <span className="w-5 h-5 rounded-full bg-slate-900 border border-slate-800 text-[10px] flex items-center justify-center font-mono text-slate-400">
                               {m.meseNumero}
@@ -2197,49 +2510,45 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
                             <span>{m.nomeMese}</span>
                           </div>
                         </td>
-
-                        {/* Donazioni */}
-                        <td className="py-3 px-4 font-mono">
+                        <td className="py-3 px-3 font-mono">
                           <div className="font-bold text-pink-300">€ {m.totaleDonazioni.toFixed(2)}</div>
-                          <div className="text-[10px] text-slate-500">{m.conteggioDonazioni} donazioni</div>
+                          <div className="text-[10px] text-slate-500">{m.conteggioDonazioni} don.</div>
                         </td>
-
-                        {/* Tesseramento Soci */}
-                        <td className="py-3 px-4 font-mono">
+                        <td className="py-3 px-3 font-mono">
                           <div className="font-bold text-blue-300">€ {m.totaleTessere.toFixed(2)}</div>
-                          <div className="text-[10px] text-slate-500">{m.conteggioTessere} tessere</div>
+                          <div className="text-[10px] text-slate-500">{m.conteggioTessere} tess.</div>
                         </td>
-
-                        {/* Note di Debito */}
-                        <td className="py-3 px-4 font-mono">
+                        <td className="py-3 px-3 font-mono">
                           <div className="font-bold text-purple-300">€ {m.totaleNoteDebito.toFixed(2)}</div>
-                          <div className="text-[10px] text-slate-500">{m.conteggioNoteDebito} fatture</div>
+                          <div className="text-[10px] text-slate-500">{m.conteggioNoteDebito} note</div>
                         </td>
-
-                        {/* TOTALE ENTRATE */}
-                        <td className="py-3 px-4 font-mono font-black text-emerald-400 text-sm bg-emerald-950/10">
+                        <td className="py-3 px-3 font-mono">
+                          <div className="font-bold text-cyan-300">€ {altreEntrateTotMese.toFixed(2)}</div>
+                          <div className="text-[10px] text-slate-500">{altreEntrateCntMese} voci</div>
+                        </td>
+                        <td className="py-3 px-3 font-mono font-black text-emerald-400 text-sm bg-emerald-950/10">
                           € {m.totaleEntrate.toFixed(2)}
                         </td>
-
-                        {/* Manutenzioni */}
-                        <td className="py-3 px-4 font-mono text-slate-300">
+                        <td className="py-3 px-3 font-mono text-slate-300">
                           <div>€ {m.totaleManutenzioni.toFixed(2)}</div>
-                          <div className="text-[10px] text-slate-500">{m.conteggioManutenzioni} interventi</div>
+                          <div className="text-[10px] text-slate-500">{m.conteggioManutenzioni} int.</div>
                         </td>
-
-                        {/* Carburante */}
-                        <td className="py-3 px-4 font-mono text-amber-300">
+                        <td className="py-3 px-3 font-mono text-amber-300">
                           <div>€ {m.totaleCarburante.toFixed(2)}</div>
                           <div className="text-[10px] text-slate-500">{m.conteggioRifornimenti} pieni</div>
                         </td>
-
-                        {/* TOTALE USCITE */}
-                        <td className="py-3 px-4 font-mono font-black text-rose-400 text-sm bg-rose-950/10">
+                        <td className="py-3 px-3 font-mono text-orange-300">
+                          <div>€ {m.totaleAltreUscite.toFixed(2)}</div>
+                          <div className="text-[10px] text-slate-500">{m.conteggioAltreUscite} voci</div>
+                        </td>
+                        <td className="py-3 px-3 font-mono text-rose-300">
+                          <div>€ {m.totaleCostiGestioneUscite.toFixed(2)}</div>
+                          <div className="text-[10px] text-slate-500">{m.conteggioCostiGestioneUscite} costi</div>
+                        </td>
+                        <td className="py-3 px-3 font-mono font-black text-rose-400 text-sm bg-rose-950/10">
                           € {m.totaleUscite.toFixed(2)}
                         </td>
-
-                        {/* SALDO NETTO MENSILE */}
-                        <td className="py-3 px-4 font-mono text-center">
+                        <td className="py-3 px-3 font-mono text-center">
                           <span className={`inline-block px-2.5 py-0.5 rounded-full font-black text-xs ${
                             !haMovimenti
                               ? 'bg-slate-900 text-slate-500'
@@ -2250,9 +2559,7 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
                             {isPositivo ? '+' : ''}€ {m.saldoNetto.toFixed(2)}
                           </span>
                         </td>
-
-                        {/* Azioni */}
-                        <td className="py-3 px-4 text-right">
+                        <td className="py-3 px-3 text-right">
                           <button
                             type="button"
                             disabled={!haMovimenti}
@@ -2269,31 +2576,40 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
                 {/* RIGA TOTALI ANNUALI */}
                 <tfoot>
                   <tr className="bg-slate-900 border-t-2 border-slate-700 font-black text-xs">
-                    <td className="py-4 px-4 text-white uppercase tracking-wider">
-                      TOTALE ESERCIZIO {annoProspetto}
+                    <td className="py-4 px-3 text-white uppercase tracking-wider">
+                      TOTALE {annoProspetto}
                     </td>
-                    <td className="py-4 px-4 font-mono text-pink-400">
+                    <td className="py-4 px-3 font-mono text-pink-400">
                       € {prospettoCommercialista.totali.totaleDonazioni.toFixed(2)}
                     </td>
-                    <td className="py-4 px-4 font-mono text-blue-400">
+                    <td className="py-4 px-3 font-mono text-blue-400">
                       € {prospettoCommercialista.totali.totaleTessere.toFixed(2)}
                     </td>
-                    <td className="py-4 px-4 font-mono text-purple-400">
+                    <td className="py-4 px-3 font-mono text-purple-400">
                       € {prospettoCommercialista.totali.totaleNoteDebito.toFixed(2)}
                     </td>
-                    <td className="py-4 px-4 font-mono text-emerald-400 text-base bg-emerald-950/30">
+                    <td className="py-4 px-3 font-mono text-cyan-400">
+                      € {(prospettoCommercialista.totali.totaleAltreEntrate + prospettoCommercialista.totali.totaleCostiGestioneEntrate).toFixed(2)}
+                    </td>
+                    <td className="py-4 px-3 font-mono text-emerald-400 text-base bg-emerald-950/30">
                       € {prospettoCommercialista.totali.totaleEntrate.toFixed(2)}
                     </td>
-                    <td className="py-4 px-4 font-mono text-slate-300">
+                    <td className="py-4 px-3 font-mono text-slate-300">
                       € {prospettoCommercialista.totali.totaleManutenzioni.toFixed(2)}
                     </td>
-                    <td className="py-4 px-4 font-mono text-amber-400">
+                    <td className="py-4 px-3 font-mono text-amber-400">
                       € {prospettoCommercialista.totali.totaleCarburante.toFixed(2)}
                     </td>
-                    <td className="py-4 px-4 font-mono text-rose-400 text-base bg-rose-950/30">
+                    <td className="py-4 px-3 font-mono text-orange-400">
+                      € {prospettoCommercialista.totali.totaleAltreUscite.toFixed(2)}
+                    </td>
+                    <td className="py-4 px-3 font-mono text-rose-300">
+                      € {prospettoCommercialista.totali.totaleCostiGestioneUscite.toFixed(2)}
+                    </td>
+                    <td className="py-4 px-3 font-mono text-rose-400 text-base bg-rose-950/30">
                       € {prospettoCommercialista.totali.totaleUscite.toFixed(2)}
                     </td>
-                    <td className="py-4 px-4 font-mono text-center">
+                    <td className="py-4 px-3 font-mono text-center">
                       <span className={`inline-block px-3 py-1 rounded-xl font-black text-sm shadow ${
                         prospettoCommercialista.totali.saldoNettoEsercizio >= 0
                           ? 'bg-emerald-500 text-slate-950 font-black'
@@ -2302,7 +2618,7 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
                         {prospettoCommercialista.totali.saldoNettoEsercizio >= 0 ? '+' : ''}€ {prospettoCommercialista.totali.saldoNettoEsercizio.toFixed(2)}
                       </span>
                     </td>
-                    <td className="py-4 px-4 text-right text-slate-500 font-mono text-[10px]">
+                    <td className="py-4 px-3 text-right text-slate-500 font-mono text-[10px]">
                       Chiusura RUNTS
                     </td>
                   </tr>
@@ -2425,6 +2741,34 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
                 </h4>
                 <div className="text-slate-400 text-[11px]">
                   Gasolio e additivi acquistati con carte carburante elettroniche aziendali per i mezzi in turno.
+                </div>
+              </div>
+
+              <div className="bg-slate-950 p-3.5 rounded-xl border border-cyan-500/30 space-y-2">
+                <h4 className="font-black text-white uppercase text-[11px] flex items-center justify-between gap-2 flex-wrap">
+                  <span>💶 Altre Entrate / Uscite (Inserimento Manuale)</span>
+                  <span className="font-mono flex items-center gap-3">
+                    <span className="text-cyan-400">+€ {meseDettaglioSelezionato.totaleAltreEntrate.toFixed(2)} ({meseDettaglioSelezionato.conteggioAltreEntrate})</span>
+                    <span className="text-orange-400">-€ {meseDettaglioSelezionato.totaleAltreUscite.toFixed(2)} ({meseDettaglioSelezionato.conteggioAltreUscite})</span>
+                  </span>
+                </h4>
+                <div className="text-slate-400 text-[11px]">
+                  Movimenti contabili manuali registrati nella sottosezione Altre Entrate/Uscite per {meseDettaglioSelezionato.nomeMese} {annoProspetto}.
+                </div>
+              </div>
+
+              <div className="bg-slate-950 p-3.5 rounded-xl border border-rose-500/30 space-y-2">
+                <h4 className="font-black text-white uppercase text-[11px] flex items-center justify-between gap-2 flex-wrap">
+                  <span>🏢 Costi di Gestione (Sede, Utenze, Assicurazioni, Ecc.)</span>
+                  <span className="font-mono flex items-center gap-3">
+                    <span className="text-rose-400">-€ {meseDettaglioSelezionato.totaleCostiGestioneUscite.toFixed(2)} ({meseDettaglioSelezionato.conteggioCostiGestioneUscite})</span>
+                    {meseDettaglioSelezionato.totaleCostiGestioneEntrate > 0 && (
+                      <span className="text-emerald-400">+€ {meseDettaglioSelezionato.totaleCostiGestioneEntrate.toFixed(2)} ({meseDettaglioSelezionato.conteggioCostiGestioneEntrate})</span>
+                    )}
+                  </span>
+                </h4>
+                <div className="text-slate-400 text-[11px]">
+                  Spese e rimborsi operativi di gestione registrati nella sottosezione Costi di Gestione per {meseDettaglioSelezionato.nomeMese} {annoProspetto}.
                 </div>
               </div>
             </div>
@@ -2912,6 +3256,726 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
           />
         </div>
       )}
+
+      {/* ===================================================================== */}
+      {/* 7. SOTTO-TAB: ALTRE ENTRATE / USCITE                                  */}
+      {/* ===================================================================== */}
+      {sottoTab === 'altreEntrateUscite' && (() => {
+        const vociFiltrate = listaAltreEntrateUscite
+          .filter((v) => {
+            if (filtroAltreTipo !== 'tutti' && v.tipo !== filtroAltreTipo) return false;
+            if (filtroAltreMese && !String(v.data || '').startsWith(filtroAltreMese)) return false;
+            if (ricercaAltre.trim()) {
+              const q = ricercaAltre.trim().toLowerCase();
+              const hay = [v.descrizione, v.categoria, v.controparte, v.riferimentoDocumento, v.metodoPagamento, v.note, v.data]
+                .filter(Boolean)
+                .join(' ')
+                .toLowerCase();
+              if (!hay.includes(q)) return false;
+            }
+            return true;
+          })
+          .sort((a, b) => String(b.data || '').localeCompare(String(a.data || '')));
+
+        const totEntrateAltre = vociFiltrate.filter((v) => v.tipo === 'entrata').reduce((s, v) => s + (Number(v.importo) || 0), 0);
+        const totUsciteAltre = vociFiltrate.filter((v) => v.tipo === 'uscita').reduce((s, v) => s + (Number(v.importo) || 0), 0);
+        const saldoAltre = totEntrateAltre - totUsciteAltre;
+
+        return (
+          <div className="space-y-4 animate-in fade-in">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <div className="bg-slate-950 p-4 rounded-2xl border border-emerald-500/30">
+                <span className="text-[10px] uppercase font-bold text-slate-400">Totale Altre Entrate</span>
+                <div className="text-xl font-black text-emerald-400 font-mono mt-0.5">+€ {totEntrateAltre.toFixed(2)}</div>
+                <span className="text-[10px] text-slate-500">Incluse nel Prospetto Mensile Commercialista</span>
+              </div>
+              <div className="bg-slate-950 p-4 rounded-2xl border border-rose-500/30">
+                <span className="text-[10px] uppercase font-bold text-slate-400">Totale Altre Uscite</span>
+                <div className="text-xl font-black text-rose-400 font-mono mt-0.5">-€ {totUsciteAltre.toFixed(2)}</div>
+                <span className="text-[10px] text-slate-500">Incluse nel Prospetto Mensile Commercialista</span>
+              </div>
+              <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800">
+                <span className="text-[10px] uppercase font-bold text-slate-400">Saldo Netto Sezione</span>
+                <div className={`text-xl font-black font-mono mt-0.5 ${saldoAltre >= 0 ? 'text-cyan-300' : 'text-rose-400'}`}>
+                  {saldoAltre >= 0 ? '+' : ''}€ {saldoAltre.toFixed(2)}
+                </div>
+                <span className="text-[10px] text-slate-500">{vociFiltrate.length} movimenti visualizzati</span>
+              </div>
+            </div>
+
+            {/* Form Inserimento / Modifica Manuale */}
+            <form onSubmit={handleSalvaAltraEntrataUscita} className="bg-slate-950 p-4 sm:p-5 rounded-2xl border border-cyan-500/40 space-y-3.5 text-xs">
+              <div className="flex items-center justify-between flex-wrap gap-2 border-b border-slate-800 pb-2.5">
+                <div className="flex items-center gap-2">
+                  <TrendingUp className="w-4 h-4 text-cyan-400" />
+                  <h3 className="text-sm font-black text-white uppercase">
+                    {editingAltraId ? 'Modifica Voce — Altre Entrate / Uscite' : 'Nuova Voce — Altre Entrate / Uscite'}
+                  </h3>
+                </div>
+                {editingAltraId && (
+                  <button
+                    type="button"
+                    onClick={resetFormAltreEntrateUscite}
+                    className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-[11px] cursor-pointer"
+                  >
+                    Annulla Modifica
+                  </button>
+                )}
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">Tipologia *</label>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => setFormAltraTipo('entrata')}
+                      className={`py-2 rounded-xl font-black text-[11px] uppercase border cursor-pointer transition-all ${
+                        formAltraTipo === 'entrata'
+                          ? 'bg-emerald-600 text-white border-emerald-400'
+                          : 'bg-slate-900 text-slate-400 border-slate-700 hover:text-white'
+                      }`}
+                    >
+                      + Entrata
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setFormAltraTipo('uscita')}
+                      className={`py-2 rounded-xl font-black text-[11px] uppercase border cursor-pointer transition-all ${
+                        formAltraTipo === 'uscita'
+                          ? 'bg-rose-600 text-white border-rose-400'
+                          : 'bg-slate-900 text-slate-400 border-slate-700 hover:text-white'
+                      }`}
+                    >
+                      - Uscita
+                    </button>
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">Data *</label>
+                  <input
+                    type="date"
+                    required
+                    value={formAltraData}
+                    onChange={(e) => setFormAltraData(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white focus:outline-none focus:border-cyan-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">Importo (€) *</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0.01"
+                    required
+                    placeholder="0.00"
+                    value={formAltraImporto}
+                    onChange={(e) => setFormAltraImporto(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white font-mono font-bold focus:outline-none focus:border-cyan-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">Categoria</label>
+                  <input
+                    type="text"
+                    placeholder="es. 5x1000, Contributo, Rimborso..."
+                    value={formAltraCategoria}
+                    onChange={(e) => setFormAltraCategoria(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white focus:outline-none focus:border-cyan-500"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div className="sm:col-span-2">
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">Descrizione Voce *</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="es. Contributo Comune, Rimborso spese evento, Acquisto attrezzatura straordinaria..."
+                    value={formAltraDescrizione}
+                    onChange={(e) => setFormAltraDescrizione(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white focus:outline-none focus:border-cyan-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">Metodo Pagamento / Incasso</label>
+                  <select
+                    value={formAltraMetodo}
+                    onChange={(e) => setFormAltraMetodo(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white focus:outline-none focus:border-cyan-500"
+                  >
+                    <option value="Contanti">Contanti (Cassa Sede)</option>
+                    <option value="POS / Carta">POS / Carta di Credito</option>
+                    <option value={defaultMetodoNota}>Bonifico Bancario ({bancaCreditAgricole})</option>
+                    <option value={`Bonifico Postale - ${bancaPoste} (IBAN: ${ibanPoste})`}>Conto Postale ({bancaPoste})</option>
+                    {metodiPagamentoCustom.filter((m) => m.attivo).map((m) => {
+                      const label = formattaEtichettaMetodoPagamento(m);
+                      return <option key={m.id} value={label}>{label}</option>;
+                    })}
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">Soggetto / Controparte (Opzionale)</label>
+                  <input
+                    type="text"
+                    placeholder="Ente, azienda o nominativo"
+                    value={formAltraControparte}
+                    onChange={(e) => setFormAltraControparte(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white focus:outline-none focus:border-cyan-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">Rif. Documento / Ricevuta</label>
+                  <input
+                    type="text"
+                    placeholder="es. Fatt. 12/2026 o Delibera..."
+                    value={formAltraRifDoc}
+                    onChange={(e) => setFormAltraRifDoc(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white font-mono focus:outline-none focus:border-cyan-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">Note</label>
+                  <input
+                    type="text"
+                    placeholder="Eventuali annotazioni contabili..."
+                    value={formAltraNote}
+                    onChange={(e) => setFormAltraNote(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white focus:outline-none focus:border-cyan-500"
+                  />
+                </div>
+              </div>
+
+              <div className="flex justify-end">
+                <button
+                  type="submit"
+                  className="px-4 py-2 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white font-black uppercase text-xs flex items-center gap-1.5 shadow-md cursor-pointer"
+                >
+                  <Save className="w-4 h-4" />
+                  <span>{editingAltraId ? 'Salva Modifiche' : 'Registra Movimento'}</span>
+                </button>
+              </div>
+            </form>
+
+            {/* Filtri e Tabella Altre Entrate / Uscite */}
+            <div className="bg-slate-950 p-3.5 rounded-2xl border border-slate-800 flex flex-wrap items-center gap-2.5 text-xs">
+              <div className="relative flex-1 min-w-[200px]">
+                <Search className="w-3.5 h-3.5 absolute left-3 top-2.5 text-slate-400" />
+                <input
+                  type="text"
+                  value={ricercaAltre}
+                  onChange={(e) => setRicercaAltre(e.target.value)}
+                  placeholder="Cerca descrizione, categoria, controparte..."
+                  className="w-full pl-9 pr-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white focus:outline-none focus:border-cyan-500"
+                />
+              </div>
+              <input
+                type="month"
+                value={filtroAltreMese}
+                onChange={(e) => setFiltroAltreMese(e.target.value)}
+                className="px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white text-xs"
+              />
+              <select
+                value={filtroAltreTipo}
+                onChange={(e) => setFiltroAltreTipo(e.target.value as any)}
+                className="px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white text-xs"
+              >
+                <option value="tutti">Tutte (Entrate & Uscite)</option>
+                <option value="entrata">Solo Entrate</option>
+                <option value="uscita">Solo Uscite</option>
+              </select>
+              {(filtroAltreMese || filtroAltreTipo !== 'tutti' || ricercaAltre) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setFiltroAltreMese('');
+                    setFiltroAltreTipo('tutti');
+                    setRicercaAltre('');
+                  }}
+                  className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold cursor-pointer"
+                >
+                  Azzera Filtri
+                </button>
+              )}
+            </div>
+
+            <div className="bg-slate-950 rounded-2xl border border-slate-800 overflow-hidden shadow-xl">
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse text-xs">
+                  <thead>
+                    <tr className="bg-slate-900/90 text-slate-400 uppercase text-[10px] font-black border-b border-slate-800">
+                      <th className="py-3 px-4">Data & Tipo</th>
+                      <th className="py-3 px-4">Descrizione & Categoria</th>
+                      <th className="py-3 px-4">Controparte / Doc</th>
+                      <th className="py-3 px-4">Metodo</th>
+                      <th className="py-3 px-4 font-mono">Importo</th>
+                      <th className="py-3 px-4 text-right">Azioni</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800/60">
+                    {vociFiltrate.length === 0 ? (
+                      <tr>
+                        <td colSpan={6} className="py-8 text-center text-slate-500">
+                          Nessuna voce registrata in Altre Entrate / Uscite. Usa il modulo sopra per inserire entrate o uscite manuali.
+                        </td>
+                      </tr>
+                    ) : (
+                      vociFiltrate.map((v) => (
+                        <tr key={v.id} className="hover:bg-slate-900/50 transition-colors">
+                          <td className="py-3 px-4">
+                            <div className="font-mono font-bold text-white">{v.data}</div>
+                            <span className={`inline-block mt-1 px-2 py-0.5 rounded text-[10px] font-black uppercase ${
+                              v.tipo === 'entrata'
+                                ? 'bg-emerald-950 text-emerald-300 border border-emerald-500/40'
+                                : 'bg-rose-950 text-rose-300 border border-rose-500/40'
+                            }`}>
+                              {v.tipo === 'entrata' ? '+ Entrata' : '- Uscita'}
+                            </span>
+                          </td>
+                          <td className="py-3 px-4">
+                            <div className="font-bold text-white">{v.descrizione}</div>
+                            <div className="text-[11px] text-cyan-300">{v.categoria || 'Generale'}</div>
+                            {v.note && <div className="text-[10px] text-slate-400 mt-0.5">{v.note}</div>}
+                          </td>
+                          <td className="py-3 px-4">
+                            <div className="text-slate-200">{v.controparte || '-'}</div>
+                            {v.riferimentoDocumento && <div className="text-[10px] text-slate-400 font-mono">Doc: {v.riferimentoDocumento}</div>}
+                          </td>
+                          <td className="py-3 px-4 text-slate-300 max-w-[180px] truncate">{v.metodoPagamento}</td>
+                          <td className={`py-3 px-4 font-mono font-black text-sm ${v.tipo === 'entrata' ? 'text-emerald-400' : 'text-rose-400'}`}>
+                            {v.tipo === 'entrata' ? '+' : '-'}€ {Number(v.importo || 0).toFixed(2)}
+                          </td>
+                          <td className="py-3 px-4 text-right">
+                            <div className="flex items-center justify-end gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setEditingAltraId(v.id);
+                                  setFormAltraData(v.data);
+                                  setFormAltraTipo(v.tipo);
+                                  setFormAltraDescrizione(v.descrizione);
+                                  setFormAltraCategoria(v.categoria || '');
+                                  setFormAltraImporto(String(v.importo));
+                                  setFormAltraMetodo(v.metodoPagamento || 'Contanti');
+                                  setFormAltraControparte(v.controparte || '');
+                                  setFormAltraRifDoc(v.riferimentoDocumento || '');
+                                  setFormAltraNote(v.note || '');
+                                }}
+                                className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-amber-300 cursor-pointer"
+                                title="Modifica voce"
+                              >
+                                <Edit3 className="w-3.5 h-3.5" />
+                              </button>
+                              {confermaEliminaAltraId === v.id ? (
+                                <div className="flex items-center gap-1">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleEliminaAltraEntrataUscita(v.id)}
+                                    className="px-2 py-1 rounded-lg bg-rose-600 text-white text-[10px] font-black cursor-pointer"
+                                  >
+                                    Conferma
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => setConfermaEliminaAltraId(null)}
+                                    className="px-2 py-1 rounded-lg bg-slate-800 text-slate-300 text-[10px] font-bold cursor-pointer"
+                                  >
+                                    No
+                                  </button>
+                                </div>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() => setConfermaEliminaAltraId(v.id)}
+                                  className="p-1.5 rounded-lg bg-slate-800 hover:bg-rose-950 text-rose-400 cursor-pointer"
+                                  title="Elimina voce"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* ===================================================================== */}
+      {/* 8. SOTTO-TAB: COSTI DI GESTIONE                                       */}
+      {/* ===================================================================== */}
+      {sottoTab === 'costiGestione' && (() => {
+        const vociFiltrate = listaCostiGestione
+          .filter((v) => {
+            if (filtroGestioneTipo !== 'tutti' && v.tipo !== filtroGestioneTipo) return false;
+            if (filtroGestioneCategoria !== 'tutte' && v.categoria !== filtroGestioneCategoria) return false;
+            if (filtroGestioneMese && !String(v.data || '').startsWith(filtroGestioneMese)) return false;
+            if (ricercaGestione.trim()) {
+              const q = ricercaGestione.trim().toLowerCase();
+              const hay = [v.descrizione, v.categoria, v.fornitore, v.numeroDocumento, v.metodoPagamento, v.note, v.data]
+                .filter(Boolean)
+                .join(' ')
+                .toLowerCase();
+              if (!hay.includes(q)) return false;
+            }
+            return true;
+          })
+          .sort((a, b) => String(b.data || '').localeCompare(String(a.data || '')));
+
+        const totUsciteGestione = vociFiltrate.filter((v) => v.tipo !== 'entrata').reduce((s, v) => s + (Number(v.importo) || 0), 0);
+        const totEntrateGestione = vociFiltrate.filter((v) => v.tipo === 'entrata').reduce((s, v) => s + (Number(v.importo) || 0), 0);
+        const nettoGestione = totEntrateGestione - totUsciteGestione;
+
+        return (
+          <div className="space-y-4 animate-in fade-in">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <div className="bg-slate-950 p-4 rounded-2xl border border-rose-500/30">
+                <span className="text-[10px] uppercase font-bold text-slate-400">Totale Costi di Gestione (Uscite)</span>
+                <div className="text-xl font-black text-rose-400 font-mono mt-0.5">-€ {totUsciteGestione.toFixed(2)}</div>
+                <span className="text-[10px] text-slate-500">Inclusi nel Prospetto Mensile Commercialista</span>
+              </div>
+              <div className="bg-slate-950 p-4 rounded-2xl border border-emerald-500/30">
+                <span className="text-[10px] uppercase font-bold text-slate-400">Rimborsi / Storni / Entrate Gestione</span>
+                <div className="text-xl font-black text-emerald-400 font-mono mt-0.5">+€ {totEntrateGestione.toFixed(2)}</div>
+                <span className="text-[10px] text-slate-500">Inclusi nel Prospetto Mensile Commercialista</span>
+              </div>
+              <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800">
+                <span className="text-[10px] uppercase font-bold text-slate-400">Impatto Netto Gestione</span>
+                <div className={`text-xl font-black font-mono mt-0.5 ${nettoGestione >= 0 ? 'text-emerald-300' : 'text-rose-300'}`}>
+                  {nettoGestione >= 0 ? '+' : ''}€ {nettoGestione.toFixed(2)}
+                </div>
+                <span className="text-[10px] text-slate-500">{vociFiltrate.length} voci visualizzate</span>
+              </div>
+            </div>
+
+            {/* Form Inserimento / Modifica Manuale Costo di Gestione */}
+            <form onSubmit={handleSalvaCostoGestione} className="bg-slate-950 p-4 sm:p-5 rounded-2xl border border-rose-500/40 space-y-3.5 text-xs">
+              <div className="flex items-center justify-between flex-wrap gap-2 border-b border-slate-800 pb-2.5">
+                <div className="flex items-center gap-2">
+                  <Building2 className="w-4 h-4 text-rose-400" />
+                  <h3 className="text-sm font-black text-white uppercase">
+                    {editingGestioneId ? 'Modifica Voce — Costi di Gestione' : 'Nuova Voce — Costi di Gestione'}
+                  </h3>
+                </div>
+                {editingGestioneId && (
+                  <button
+                    type="button"
+                    onClick={resetFormCostiGestione}
+                    className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-[11px] cursor-pointer"
+                  >
+                    Annulla Modifica
+                  </button>
+                )}
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">Tipologia *</label>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => setFormGestioneTipo('uscita')}
+                      className={`py-2 rounded-xl font-black text-[11px] uppercase border cursor-pointer transition-all ${
+                        formGestioneTipo === 'uscita'
+                          ? 'bg-rose-600 text-white border-rose-400'
+                          : 'bg-slate-900 text-slate-400 border-slate-700 hover:text-white'
+                      }`}
+                    >
+                      - Costo
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setFormGestioneTipo('entrata')}
+                      className={`py-2 rounded-xl font-black text-[11px] uppercase border cursor-pointer transition-all ${
+                        formGestioneTipo === 'entrata'
+                          ? 'bg-emerald-600 text-white border-emerald-400'
+                          : 'bg-slate-900 text-slate-400 border-slate-700 hover:text-white'
+                      }`}
+                    >
+                      + Entrata
+                    </button>
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">Data *</label>
+                  <input
+                    type="date"
+                    required
+                    value={formGestioneData}
+                    onChange={(e) => setFormGestioneData(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white focus:outline-none focus:border-rose-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">Importo (€) *</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0.01"
+                    required
+                    placeholder="0.00"
+                    value={formGestioneImporto}
+                    onChange={(e) => setFormGestioneImporto(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white font-mono font-bold focus:outline-none focus:border-rose-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">Categoria Costo *</label>
+                  <select
+                    value={formGestioneCategoria}
+                    onChange={(e) => setFormGestioneCategoria(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white focus:outline-none focus:border-rose-500"
+                  >
+                    {CATEGORIE_COSTI_GESTIONE.map((cat) => (
+                      <option key={cat} value={cat}>{cat}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div className="sm:col-span-2">
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">Descrizione *</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="es. Bolletta energia elettrica sede Massa, Polizza RC Volontari, Canone POS..."
+                    value={formGestioneDescrizione}
+                    onChange={(e) => setFormGestioneDescrizione(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white focus:outline-none focus:border-rose-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">Metodo di Pagamento</label>
+                  <select
+                    value={formGestioneMetodo}
+                    onChange={(e) => setFormGestioneMetodo(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white focus:outline-none focus:border-rose-500"
+                  >
+                    <option value={defaultMetodoNota}>Bonifico Bancario ({bancaCreditAgricole})</option>
+                    <option value={`Bonifico Postale - ${bancaPoste} (IBAN: ${ibanPoste})`}>Conto Postale ({bancaPoste})</option>
+                    <option value="Contanti">Contanti (Cassa Sede)</option>
+                    <option value="POS / Carta">Carta / Addebito SDD</option>
+                    {metodiPagamentoCustom.filter((m) => m.attivo).map((m) => {
+                      const label = formattaEtichettaMetodoPagamento(m);
+                      return <option key={m.id} value={label}>{label}</option>;
+                    })}
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">Fornitore / Ente (Opzionale)</label>
+                  <input
+                    type="text"
+                    placeholder="es. Enel, TIM, UnipolSai..."
+                    value={formGestioneFornitore}
+                    onChange={(e) => setFormGestioneFornitore(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white focus:outline-none focus:border-rose-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">N. Fattura / Documento</label>
+                  <input
+                    type="text"
+                    placeholder="es. FT-2026-045"
+                    value={formGestioneNumDoc}
+                    onChange={(e) => setFormGestioneNumDoc(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white font-mono focus:outline-none focus:border-rose-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">Note</label>
+                  <input
+                    type="text"
+                    placeholder="Dettagli o periodo di riferimento..."
+                    value={formGestioneNote}
+                    onChange={(e) => setFormGestioneNote(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white focus:outline-none focus:border-rose-500"
+                  />
+                </div>
+              </div>
+
+              <div className="flex justify-end">
+                <button
+                  type="submit"
+                  className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-black uppercase text-xs flex items-center gap-1.5 shadow-md cursor-pointer"
+                >
+                  <Save className="w-4 h-4" />
+                  <span>{editingGestioneId ? 'Salva Modifiche' : 'Registra Costo di Gestione'}</span>
+                </button>
+              </div>
+            </form>
+
+            {/* Filtri e Tabella Costi di Gestione */}
+            <div className="bg-slate-950 p-3.5 rounded-2xl border border-slate-800 flex flex-wrap items-center gap-2.5 text-xs">
+              <div className="relative flex-1 min-w-[200px]">
+                <Search className="w-3.5 h-3.5 absolute left-3 top-2.5 text-slate-400" />
+                <input
+                  type="text"
+                  value={ricercaGestione}
+                  onChange={(e) => setRicercaGestione(e.target.value)}
+                  placeholder="Cerca descrizione, fornitore, documento..."
+                  className="w-full pl-9 pr-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white focus:outline-none focus:border-rose-500"
+                />
+              </div>
+              <input
+                type="month"
+                value={filtroGestioneMese}
+                onChange={(e) => setFiltroGestioneMese(e.target.value)}
+                className="px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white text-xs"
+              />
+              <select
+                value={filtroGestioneCategoria}
+                onChange={(e) => setFiltroGestioneCategoria(e.target.value)}
+                className="px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white text-xs"
+              >
+                <option value="tutte">Tutte le Categorie</option>
+                {CATEGORIE_COSTI_GESTIONE.map((cat) => (
+                  <option key={cat} value={cat}>{cat}</option>
+                ))}
+              </select>
+              <select
+                value={filtroGestioneTipo}
+                onChange={(e) => setFiltroGestioneTipo(e.target.value as any)}
+                className="px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white text-xs"
+              >
+                <option value="tutti">Costi & Rimborsi</option>
+                <option value="uscita">Solo Costi (Uscite)</option>
+                <option value="entrata">Solo Entrate / Rimborsi</option>
+              </select>
+              {(filtroGestioneMese || filtroGestioneCategoria !== 'tutte' || filtroGestioneTipo !== 'tutti' || ricercaGestione) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setFiltroGestioneMese('');
+                    setFiltroGestioneCategoria('tutte');
+                    setFiltroGestioneTipo('tutti');
+                    setRicercaGestione('');
+                  }}
+                  className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold cursor-pointer"
+                >
+                  Azzera Filtri
+                </button>
+              )}
+            </div>
+
+            <div className="bg-slate-950 rounded-2xl border border-slate-800 overflow-hidden shadow-xl">
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse text-xs">
+                  <thead>
+                    <tr className="bg-slate-900/90 text-slate-400 uppercase text-[10px] font-black border-b border-slate-800">
+                      <th className="py-3 px-4">Data & Tipo</th>
+                      <th className="py-3 px-4">Descrizione & Categoria</th>
+                      <th className="py-3 px-4">Fornitore / Fattura</th>
+                      <th className="py-3 px-4">Metodo</th>
+                      <th className="py-3 px-4 font-mono">Importo</th>
+                      <th className="py-3 px-4 text-right">Azioni</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800/60">
+                    {vociFiltrate.length === 0 ? (
+                      <tr>
+                        <td colSpan={6} className="py-8 text-center text-slate-500">
+                          Nessuna voce registrata in Costi di Gestione. Usa il modulo sopra per inserire i costi associativi.
+                        </td>
+                      </tr>
+                    ) : (
+                      vociFiltrate.map((v) => (
+                        <tr key={v.id} className="hover:bg-slate-900/50 transition-colors">
+                          <td className="py-3 px-4">
+                            <div className="font-mono font-bold text-white">{v.data}</div>
+                            <span className={`inline-block mt-1 px-2 py-0.5 rounded text-[10px] font-black uppercase ${
+                              v.tipo === 'entrata'
+                                ? 'bg-emerald-950 text-emerald-300 border border-emerald-500/40'
+                                : 'bg-rose-950 text-rose-300 border border-rose-500/40'
+                            }`}>
+                              {v.tipo === 'entrata' ? '+ Entrata' : '- Costo'}
+                            </span>
+                          </td>
+                          <td className="py-3 px-4">
+                            <div className="font-bold text-white">{v.descrizione}</div>
+                            <div className="text-[11px] text-rose-300">{v.categoria}</div>
+                            {v.note && <div className="text-[10px] text-slate-400 mt-0.5">{v.note}</div>}
+                          </td>
+                          <td className="py-3 px-4">
+                            <div className="text-slate-200">{v.fornitore || '-'}</div>
+                            {v.numeroDocumento && <div className="text-[10px] text-slate-400 font-mono">Doc: {v.numeroDocumento}</div>}
+                          </td>
+                          <td className="py-3 px-4 text-slate-300 max-w-[180px] truncate">{v.metodoPagamento}</td>
+                          <td className={`py-3 px-4 font-mono font-black text-sm ${v.tipo === 'entrata' ? 'text-emerald-400' : 'text-rose-400'}`}>
+                            {v.tipo === 'entrata' ? '+' : '-'}€ {Number(v.importo || 0).toFixed(2)}
+                          </td>
+                          <td className="py-3 px-4 text-right">
+                            <div className="flex items-center justify-end gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setEditingGestioneId(v.id);
+                                  setFormGestioneData(v.data);
+                                  setFormGestioneTipo(v.tipo || 'uscita');
+                                  setFormGestioneDescrizione(v.descrizione);
+                                  setFormGestioneCategoria(v.categoria || 'Altro Costo di Gestione');
+                                  setFormGestioneImporto(String(v.importo));
+                                  setFormGestioneMetodo(v.metodoPagamento || defaultMetodoNota);
+                                  setFormGestioneFornitore(v.fornitore || '');
+                                  setFormGestioneNumDoc(v.numeroDocumento || '');
+                                  setFormGestioneNote(v.note || '');
+                                }}
+                                className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-amber-300 cursor-pointer"
+                                title="Modifica voce"
+                              >
+                                <Edit3 className="w-3.5 h-3.5" />
+                              </button>
+                              {confermaEliminaGestioneId === v.id ? (
+                                <div className="flex items-center gap-1">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleEliminaCostoGestione(v.id)}
+                                    className="px-2 py-1 rounded-lg bg-rose-600 text-white text-[10px] font-black cursor-pointer"
+                                  >
+                                    Conferma
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => setConfermaEliminaGestioneId(null)}
+                                    className="px-2 py-1 rounded-lg bg-slate-800 text-slate-300 text-[10px] font-bold cursor-pointer"
+                                  >
+                                    No
+                                  </button>
+                                </div>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() => setConfermaEliminaGestioneId(v.id)}
+                                  className="p-1.5 rounded-lg bg-slate-800 hover:bg-rose-950 text-rose-400 cursor-pointer"
+                                  title="Elimina voce"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
       {modaleNuovaDonazioneAperta && (
         <div
           className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-2 sm:p-4 backdrop-blur-sm animate-in fade-in overflow-y-auto"
@@ -3072,15 +4136,18 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
                 </div>
 
                 <div>
-                  <label className="block text-[11px] font-bold text-slate-400 uppercase mb-1">
-                    Mezzo Operativo
+                  <label className="block text-[11px] font-bold text-slate-400 uppercase mb-1 flex items-center justify-between gap-1">
+                    <span>C.F. / P.Iva</span>
+                    {servizioCollegatoSelezionato && estraiCfPivaDonatore(servizioCollegatoSelezionato) && (
+                      <span className="text-[9px] text-emerald-400 font-semibold normal-case">Compilato dal servizio</span>
+                    )}
                   </label>
                   <input
                     type="text"
-                    placeholder="es. T4606 Ambulanza"
-                    value={formDonazioneMezzo}
-                    onChange={(e) => setFormDonazioneMezzo(e.target.value)}
-                    className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white font-mono focus:outline-none focus:border-purple-500"
+                    placeholder="es. RSSMRA80A01F023X o P.Iva"
+                    value={formDonazioneCfPiva}
+                    onChange={(e) => setFormDonazioneCfPiva(e.target.value.toUpperCase())}
+                    className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white font-mono uppercase focus:outline-none focus:border-purple-500"
                   />
                 </div>
               </div>

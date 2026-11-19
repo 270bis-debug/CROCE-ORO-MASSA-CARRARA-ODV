@@ -932,10 +932,11 @@ export function isResponsabileParcoMezzi(
 ): boolean {
   if (!v) return false;
   const catalogoEffettivo = catalogo || getMansioniCatalogo();
-  if (volontarioHaMansione(v, 'mansione-resp-automezzi', catalogoEffettivo)) {
+  const vCast = v as Partial<Volontario>;
+  if (volontarioHaMansione(vCast, 'mansione-resp-automezzi', catalogoEffettivo)) {
     return true;
   }
-  const text = `${getMansioniVolontario(v).join(' ')} ${v.qualifica || ''} ${v.caricaConsiglioDirettivo || ''}`.toLowerCase();
+  const text = `${getMansioniVolontario(vCast).join(' ')} ${v.qualifica || ''} ${v.caricaConsiglioDirettivo || ''}`.toLowerCase();
   return (
     text.includes('responsabile parco automezzi') ||
     text.includes('responsabile mezzi') ||

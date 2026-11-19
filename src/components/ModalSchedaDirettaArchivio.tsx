@@ -283,51 +283,72 @@ export const ModalSchedaDirettaArchivio: React.FC<ModalSchedaDirettaArchivioProp
   const [svuotaFormCentrale, setSvuotaFormCentrale] = useState<boolean>(false);
   const [errore, setErrore] = useState<string | null>(null);
 
+  const wasOpenRef = React.useRef<boolean>(false);
+  const lastMezzoForKmRef = React.useRef<string>('');
+  const initialDataRef = React.useRef(initialData);
+  const flottaMezziRef = React.useRef(flottaMezzi);
+  const getKmInizialiSuggeritiRef = React.useRef(getKmInizialiSuggeriti);
+  initialDataRef.current = initialData;
+  flottaMezziRef.current = flottaMezzi;
+  getKmInizialiSuggeritiRef.current = getKmInizialiSuggeriti;
+
   useEffect(() => {
-    if (!isOpen) return;
+    if (!isOpen) {
+      wasOpenRef.current = false;
+      return;
+    }
+    if (wasOpenRef.current) {
+      return;
+    }
+    wasOpenRef.current = true;
+
+    const init = initialDataRef.current;
+    const flottaNow = flottaMezziRef.current;
+    const getKmNow = getKmInizialiSuggeritiRef.current;
     const dIso = formatISODateItaly();
     const oStr = formatTimeItaly(undefined, false);
 
-    setUrgenza(initialData?.urgenza || 'VERDE');
+    setUrgenza(init?.urgenza || 'VERDE');
     setDataIso(dIso);
     setOraChiamata(oStr);
-    setDataInizioServizioSpecifico(initialData?.dataInizioServizioSpecifico || dIso);
-    setOraInizioServizioSpecifico(initialData?.oraInizioServizioSpecifico || '');
-    setDataArrivoRichiestaServizio(initialData?.dataArrivoRichiestaServizio || dIso);
-    setOraArrivoRichiestaServizio(initialData?.oraArrivoRichiestaServizio || oStr);
-    const mInit = initialData?.mezzo || flottaMezzi[0] || 'T4606';
+    setDataInizioServizioSpecifico(init?.dataInizioServizioSpecifico || dIso);
+    setOraInizioServizioSpecifico(init?.oraInizioServizioSpecifico || '');
+    setDataArrivoRichiestaServizio(init?.dataArrivoRichiestaServizio || dIso);
+    setOraArrivoRichiestaServizio(init?.oraArrivoRichiestaServizio || oStr);
+    const mInit = init?.mezzo || flottaNow[0] || 'T4606';
+    lastMezzoForKmRef.current = mInit;
     setMezzo(mInit);
     setCodiceModificatoManualmente(false);
-    setChiamante(initialData?.chiamante || '');
-    setTelefono(initialData?.telefono || '');
-    setIndirizzo(initialData?.indirizzo || '');
-    setDestinazione(initialData?.destinazione || '');
-    setIsVetPartenza(Boolean(initialData?.isStrutturaVeterinariaPartenza));
-    setIsVetDestinazione(Boolean(initialData?.isStrutturaVeterinaria));
+    setChiamante(init?.chiamante || '');
+    setTelefono(init?.telefono || '');
+    setIndirizzo(init?.indirizzo || '');
+    setDestinazione(init?.destinazione || '');
+    setIsVetPartenza(Boolean(init?.isStrutturaVeterinariaPartenza));
+    setIsVetDestinazione(Boolean(init?.isStrutturaVeterinaria));
 
-    const initAmbito = initialData?.ambito || 'SERVIZIO VETERINARIO';
+    const initAmbito = init?.ambito || 'SERVIZIO VETERINARIO';
     setAmbito(initAmbito);
-    setSottoAmbitoVet(initialData?.sottoAmbitoVet || TIPOLOGIE_SERVIZIO_VETERINARIO[0] || 'SOCCORSO VETERINARIO');
+    setSottoAmbitoVet(init?.sottoAmbitoVet || TIPOLOGIE_SERVIZIO_VETERINARIO[0] || 'SOCCORSO VETERINARIO');
     if (initAmbito === 'PROTEZIONE CIVILE') {
-      setTipologiaServizio(initialData?.tipologiaServizio || TIPOLOGIE_PROTEZIONE_CIVILE[0]);
+      setTipologiaServizio(init?.tipologiaServizio || TIPOLOGIE_PROTEZIONE_CIVILE[0]);
     } else if (initAmbito === "SERVIZIO D'ISTITUTO") {
-      setTipologiaServizio(initialData?.tipologiaServizio || TIPOLOGIE_SERVIZIO_ISTITUTO[0]);
+      setTipologiaServizio(init?.tipologiaServizio || TIPOLOGIE_SERVIZIO_ISTITUTO[0]);
     } else {
       setTipologiaServizio(TIPOLOGIE_PROTEZIONE_CIVILE[0]);
     }
 
-    setSoupRt(initialData?.numeroSegreteriaSoupRt || '');
-    setAllertaMeteo(initialData?.allertaMeteo || 'Nessuna');
-    setTipoAnimale(initialData?.tipoAnimale || 'Cane');
-    setTipoAnimaleAltro(initialData?.tipoAnimaleAltro || '');
-    setNonDiProprieta(Boolean(initialData?.nonDiProprieta));
+    setSoupRt(init?.numeroSegreteriaSoupRt || '');
+    setAllertaMeteo(init?.allertaMeteo || 'Nessuna');
+    setTipoAnimale(init?.tipoAnimale || 'Cane');
+    setTipoAnimaleAltro(init?.tipoAnimaleAltro || '');
+    setNonDiProprieta(Boolean(init?.nonDiProprieta));
     setMicrochip('');
-    setPropImmobileNomeCognome(initialData?.proprietarioImmobile?.nomeCognome || '');
-    setPropImmobileCF(initialData?.proprietarioImmobile?.codiceFiscale || '');
-    setPropImmobileIndirizzo(initialData?.proprietarioImmobile?.indirizzoResidenza || '');
-    setSpecifiche(initialData?.specifiche || '');
-    setSintesi(initialData?.sintesi || '');
-    setNoteCritiche(initialData?.noteCritiche || '');
+    setPropImmobileNomeCognome(init?.proprietarioImmobile?.nomeCognome || '');
+    setPropImmobileCF(init?.proprietarioImmobile?.codiceFiscale || '');
+    setPropImmobileIndirizzo(init?.proprietarioImmobile?.indirizzoResidenza || '');
+    setSpecifiche(init?.specifiche || '');
+    setSintesi(init?.sintesi || '');
+    setNoteCritiche(init?.noteCritiche || '');
     setEquipaggioRighe([
       { idRiga: `eq-${Date.now()}-1`, volontarioId: '', nomeLibero: '', ruolo: RUOLI_EQUIPAGGIO_DIRETTA[0] }
     ]);
@@ -337,23 +358,25 @@ export const ModalSchedaDirettaArchivio: React.FC<ModalSchedaDirettaArchivioProp
     setOraArrivoDest('');
     setOraFineMissione('');
     setOraRientro('');
-    const kmSuggeriti = initialData?.kmInizio || (getKmInizialiSuggeriti?.(mInit) !== null && getKmInizialiSuggeriti?.(mInit) !== undefined ? String(getKmInizialiSuggeriti(mInit)) : '');
+    const kmSuggeriti = init?.kmInizio || (getKmNow?.(mInit) !== null && getKmNow?.(mInit) !== undefined ? String(getKmNow(mInit)) : '');
     setKmInizio(kmSuggeriti);
-    setKmInizioModificato(Boolean(initialData?.kmInizio));
+    setKmInizioModificato(Boolean(init?.kmInizio));
     setKmFine('');
-    setSvuotaFormCentrale(Boolean(initialData?.resetFormCentrale));
+    setSvuotaFormCentrale(Boolean(init?.resetFormCentrale));
     setErrore(null);
-  }, [isOpen, initialData, flottaMezzi, getKmInizialiSuggeriti]);
+  }, [isOpen]);
 
   useEffect(() => {
     if (!isOpen || kmInizioModificato) return;
+    if (lastMezzoForKmRef.current === mezzo) return;
+    lastMezzoForKmRef.current = mezzo;
     if (mezzo === 'N/D') {
       setKmInizio('');
       return;
     }
-    const sug = getKmInizialiSuggeriti?.(mezzo);
+    const sug = getKmInizialiSuggeritiRef.current?.(mezzo);
     setKmInizio(sug !== null && sug !== undefined ? String(sug) : '');
-  }, [isOpen, mezzo, kmInizioModificato, getKmInizialiSuggeriti]);
+  }, [isOpen, mezzo, kmInizioModificato]);
 
   const annoScelto = useMemo(() => {
     const y = parseInt((dataIso || '').slice(0, 4), 10);

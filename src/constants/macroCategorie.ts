@@ -144,6 +144,8 @@ export const SOTTOSEZIONI_PER_DATABASE: Record<MacroCategoriaId, InfoSottosezion
     { id: 'commercialista', numero: '4', titoloDefault: 'Prospetto Commercialista' },
     { id: 'costiServizio', numero: '5', titoloDefault: 'Costi di Servizio & Preventivi' },
     { id: 'contiCorrenti', numero: '6', titoloDefault: 'Coordinate Bancarie & Postali' },
+    { id: 'altreEntrateUscite', numero: '7', titoloDefault: 'Altre Entrate / Uscite' },
+    { id: 'costiGestione', numero: '8', titoloDefault: 'Costi di Gestione' },
   ],
   formazione: [
     { id: 'corsi', numero: '1', titoloDefault: 'Catalogo Corsi & Piano Formativo' },
@@ -192,37 +194,59 @@ export function getSottosezioniDelegabili(dbId: MacroCategoriaId): InfoSottosezi
  * (es. Amministratore, oppure database abilitato senza restrizioni granulari pregresse).
  * Ritorna `string[]` se sono state configurate sottosezioni specifiche.
  */
+export function isQualificaOperatoreCentrale(qualifica?: string): boolean {
+  if (!qualifica) return false;
+  const q = qualifica.trim().toLowerCase();
+  return q === 'operatore centrale' || q.includes('operatore di centrale') || q.includes('operatore centrale');
+}
+
 export function getAllowedSubtabsForDatabase(
   utente: {
     isAdmin?: boolean;
     pin?: string;
     profiloCentrale?: boolean;
     qualifica?: string;
+    caricaConsiglioDirettivo?: string;
     macroCategorieAbilitate?: string[];
     sottosezioniAbilitate?: Record<string, string[]>;
   } | null | undefined,
   dbId: MacroCategoriaId
 ): string[] | null {
   if (!utente) return [];
-  if (utente.isAdmin || utente.pin === '4451') return null;
+  if (
+    utente.isAdmin ||
+    utente.pin === '4451' ||
+    (utente.caricaConsiglioDirettivo && utente.caricaConsiglioDirettivo.toLowerCase().includes('presidente'))
+  ) {
+    return null;
+  }
 
   const macro = Array.isArray(utente.macroCategorieAbilitate)
     ? utente.macroCategorieAbilitate
     : [];
+  const subsConfig = utente.sottosezioniAbilitate?.[dbId];
+  const hasExplicitSubs = Array.isArray(subsConfig) && subsConfig.length > 0;
+  const hasAnyExplicitSubs = Boolean(
+    utente.sottosezioniAbilitate &&
+    Object.values(utente.sottosezioniAbilitate).some((arr) => Array.isArray(arr) && arr.length > 0)
+  );
   const hasDefaultCentrale =
-    macro.length === 0 && (utente.profiloCentrale || utente.qualifica === 'Operatore Centrale');
+    macro.length === 0 &&
+    !hasAnyExplicitSubs &&
+    (utente.profiloCentrale || isQualificaOperatoreCentrale(utente.qualifica));
 
-  const dbAbilitato = macro.includes(dbId) || (dbId === 'centrale' && hasDefaultCentrale);
+  const dbAbilitato = macro.includes(dbId) || hasExplicitSubs || (dbId === 'centrale' && hasDefaultCentrale);
   if (!dbAbilitato) return [];
 
-  const subsConfig = utente.sottosezioniAbilitate?.[dbId];
   if (subsConfig === undefined) {
     // Retrocompatibilità: DB abilitato senza restrizione di sottosezione => tutte le sottosezioni delegabili consentite
     return null;
   }
   if (!Array.isArray(subsConfig)) return null;
   const valide = new Set(getSottosezioniDelegabili(dbId).map((s) => s.id));
-  return subsConfig.filter((id) => valide.has(id));
+  const filtered = subsConfig.filter((id) => valide.has(id));
+  if (filtered.length >= valide.size) return null;
+  return filtered;
 }
 
 export function isSottosezioneAbilitataPerUtente(

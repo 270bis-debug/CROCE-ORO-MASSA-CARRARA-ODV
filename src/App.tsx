@@ -150,6 +150,7 @@ import { ModalRilevazioneMicrochipObiettivo } from './components/ModalRilevazion
 import { LISTA_ANIMALI_DIFFUSI, TipoAnimaleDiffuso, DatiProprietarioCentrale, FotoDocumentoIdentita } from './data/animali';
 import { AdminPortalDashboard, AdminSectionId } from './components/admin/AdminPortalDashboard';
 import {
+  MacroCategoriaId,
   TUTTE_LE_MACRO_CATEGORIE,
   getNomiDatabaseCustom,
   getNomiDatabaseSyncPayload,
@@ -157,6 +158,7 @@ import {
   applicaNomiDatabaseDaSync,
   getAllowedSubtabsForDatabase,
   getTitoloSottosezione,
+  isQualificaOperatoreCentrale,
 } from './constants/macroCategorie';
 import { useNomiSottosezioniCustom } from './hooks/useNomiDatabase';
 import {
@@ -220,7 +222,9 @@ import {
   CategoriaNotificaAccount,
   VoceGiornaleBordo,
   PresaVisioneConsegna,
-  ProprietarioImmobileData
+  ProprietarioImmobileData,
+  MovimentoAltreEntrateUscite,
+  VoceCostoGestione
 } from './types/adminTypes';
 import { CONTATTI_INIZIALI } from './data/contattiMockData';
 import {
@@ -1072,6 +1076,8 @@ export default function App() {
     firmaBase64?: string;
     macroCategorieAbilitate?: string[];
     sottosezioniAbilitate?: Record<string, string[]>;
+    profiloCentrale?: boolean;
+    qualifica?: string;
   } | null>(() => {
     try {
       const saved = localStorage.getItem('CROCE_ORO_UTENTE_CENTRALE');
@@ -1079,6 +1085,28 @@ export default function App() {
     } catch {}
     return null;
   });
+
+  // Stato multi-account di tutti gli utenti attualmente loggati su qualsiasi dispositivo (sincronizzato live via Firestore/WS)
+  const [loggedSessions, setLoggedSessions] = useState<
+    Record<string, { loggato: boolean; updatedAt?: number; volontarioNome?: string; mezzoScelto?: string }>
+  >({});
+
+  // Sblocca automaticamente il motore audio Radio VHF/Emergenza al primo gesto utente sulla pagina,
+  // così anche dispositivi loggati con account diversi che non hanno mai aperto il pannello radio
+  // riproducono immediatamente voce radio ed emergenza.
+  useEffect(() => {
+    const unlockOnGesture = () => {
+      vhfRadioEngine.unlockAudio().catch(() => {});
+    };
+    window.addEventListener('pointerdown', unlockOnGesture, { passive: true });
+    window.addEventListener('touchstart', unlockOnGesture, { passive: true });
+    window.addEventListener('keydown', unlockOnGesture, { passive: true });
+    return () => {
+      window.removeEventListener('pointerdown', unlockOnGesture);
+      window.removeEventListener('touchstart', unlockOnGesture);
+      window.removeEventListener('keydown', unlockOnGesture);
+    };
+  }, []);
 
   // Account Operatore Centrale in attesa di approvazione dell'amministratore (su questo device)
   const [accountInAttivazione, setAccountInAttivazione] = useState<Volontario | null>(() => {
@@ -1433,6 +1461,44 @@ export default function App() {
     realtime.syncCostiServizio(nuovi);
   };
 
+  // 6c. Altre Entrate / Uscite (Database Contabilità -> Sottosezione 7)
+  const [altreEntrateUscite, setAltreEntrateUscite] = useState<MovimentoAltreEntrateUscite[]>(() => {
+    try {
+      const saved = localStorage.getItem('CROCE_ORO_ALTRE_ENTRATE_USCITE');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) return parsed;
+      }
+    } catch {}
+    return [];
+  });
+  const handleAggiornaAltreEntrateUscite = (nuove: MovimentoAltreEntrateUscite[]) => {
+    setAltreEntrateUscite(nuove);
+    try {
+      localStorage.setItem('CROCE_ORO_ALTRE_ENTRATE_USCITE', JSON.stringify(nuove));
+    } catch {}
+    realtime.syncAltreEntrateUscite(nuove);
+  };
+
+  // 6d. Costi di Gestione (Database Contabilità -> Sottosezione 8)
+  const [costiGestione, setCostiGestione] = useState<VoceCostoGestione[]>(() => {
+    try {
+      const saved = localStorage.getItem('CROCE_ORO_COSTI_GESTIONE');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) return parsed;
+      }
+    } catch {}
+    return [];
+  });
+  const handleAggiornaCostiGestione = (nuovi: VoceCostoGestione[]) => {
+    setCostiGestione(nuovi);
+    try {
+      localStorage.setItem('CROCE_ORO_COSTI_GESTIONE', JSON.stringify(nuovi));
+    } catch {}
+    realtime.syncCostiGestione(nuovi);
+  };
+
   // 7. Corsi di Formazione (epura eventuali corsi demo/precaricati legacy)
   const rimuoviCorsiLegacy = (lista: CorsoFormazione[] | any): CorsoFormazione[] => {
     if (!Array.isArray(lista)) return [];
@@ -1620,7 +1686,7 @@ export default function App() {
       // 3. Propaga su Corsi di Formazione
       let corsiMod = false;
       const mappaNomiSedeById = new Map<string, string>();
-      nuoveSedi.forEach((ns) => {
+      sediNorm.forEach((ns) => {
         if (ns?.id && ns?.nome) mappaNomiSedeById.set(ns.id, ns.nome);
       });
       const corsiAgg = (corsiFormazioneRef.current || []).map((c) => {
@@ -4424,11 +4490,31 @@ export default function App() {
     realtime.deleteVolontario(id, remaining, nextDeleted);
   }, []);
 
-  // Volontario attualmente loggato su questo terminale
+  // Volontario attualmente loggato su questo terminale (fallback anche per nome/cognome in caso di riallineamento ID)
   const volontarioLoggatoCorrente = useMemo(() => {
-    if (!sessioneTurno.attivo || !sessioneTurno.volontarioId) return null;
-    return volontari.find(v => v.id === sessioneTurno.volontarioId) || null;
-  }, [sessioneTurno.attivo, sessioneTurno.volontarioId, volontari]);
+    if (!sessioneTurno.attivo) return null;
+    if (sessioneTurno.volontarioId) {
+      const byId = volontari.find(v => v.id === sessioneTurno.volontarioId);
+      if (byId) return byId;
+    }
+    if (sessioneTurno.volontarioNome) {
+      const targetNome = sessioneTurno.volontarioNome.trim().toLowerCase();
+      const byName = volontari.find(
+        v => `${v.nome} ${v.cognome}`.trim().toLowerCase() === targetNome
+      );
+      if (byName) return byName;
+    }
+    return null;
+  }, [sessioneTurno.attivo, sessioneTurno.volontarioId, sessioneTurno.volontarioNome, volontari]);
+
+  // Verifica centralizzata se un volontario è attualmente loggato su qualsiasi terminale
+  const isVolontarioLoggatoLive = useCallback((v: Volontario): boolean => {
+    const sessCloud = loggedSessions[v.id];
+    if (sessCloud?.loggato === true) return true;
+    if (sessioneTurno.attivo && sessioneTurno.volontarioId === v.id) return true;
+    if (utenteCentrale?.id && utenteCentrale.id === v.id) return true;
+    return Boolean(v.loggato);
+  }, [loggedSessions, sessioneTurno.attivo, sessioneTurno.volontarioId, utenteCentrale?.id]);
 
   // Corsi e Formazione destinati alla sezione del volontario attualmente loggato
   const corsiPerVolontarioLoggato = useMemo(() => {
@@ -4468,17 +4554,25 @@ export default function App() {
     };
   }, [utenteCentrale, volontari, isCentraleAdmin]);
 
-  // Calcolo delle macro categorie autorizzate per la sessione corrente
+  // Calcolo delle macro categorie autorizzate per la sessione corrente (include DB interi + singole sottosezioni abilitate)
   const sezioniAbilitateUtente = useMemo<AdminSectionId[]>(() => {
     if (isCentraleAdmin) {
       return TUTTE_LE_MACRO_CATEGORIE as AdminSectionId[];
     }
     const list = (utenteCentraleLive?.macroCategorieAbilitate || []) as MacroCategoriaId[];
+    const subsMap = utenteCentraleLive?.sottosezioniAbilitate || {};
+    const dbDaSottosezioni = (Object.keys(subsMap) as MacroCategoriaId[]).filter(
+      (dbId) =>
+        TUTTE_LE_MACRO_CATEGORIE.includes(dbId) &&
+        Array.isArray(subsMap[dbId]) &&
+        subsMap[dbId].length > 0
+    );
+    const combinedSet = new Set<MacroCategoriaId>([...list, ...dbDaSottosezioni]);
     const volLive = utenteCentraleLive as (typeof utenteCentraleLive & { profiloCentrale?: boolean; qualifica?: string }) | null;
     const base: MacroCategoriaId[] =
-      list.length === 0 && (volLive?.profiloCentrale || volLive?.qualifica === 'Operatore Centrale')
+      combinedSet.size === 0 && (volLive?.profiloCentrale || isQualificaOperatoreCentrale(volLive?.qualifica))
         ? (['centrale'] as MacroCategoriaId[])
-        : list;
+        : Array.from(combinedSet);
 
     return base.filter((secId) => {
       const subs = getAllowedSubtabsForDatabase(utenteCentraleLive, secId);
@@ -4681,6 +4775,17 @@ export default function App() {
         localStorage.removeItem('CROCE_ORO_UTENTE_CENTRALE');
       } catch {}
     }
+    // Riporta sempre sul canale radio Generale al cambio account per evitare isolamento su gruppi non autorizzati
+    setSelectedRadioChannelId('general');
+    setLoggedSessions((prev) => ({
+      ...prev,
+      [volontario.id]: {
+        loggato: true,
+        updatedAt: Date.now(),
+        volontarioNome: nomeCompleto,
+        mezzoScelto: '',
+      },
+    }));
     realtime.updateShift(nuovaSessione);
     if (posizioneVolontario) {
       realtime.updateGps(posizioneVolontario);
@@ -4999,8 +5104,23 @@ export default function App() {
       'generico'
     );
 
+    if (sessioneCorrente.volontarioId) {
+      setLoggedSessions((prev) => ({
+        ...prev,
+        [sessioneCorrente.volontarioId!]: {
+          loggato: false,
+          updatedAt: Date.now(),
+          volontarioNome: nomeUscita,
+          mezzoScelto: '',
+        },
+      }));
+    }
     aggiornaSessioneTurno({ attivo: false });
-    realtime.updateShift({ attivo: false });
+    realtime.updateShift({
+      attivo: false,
+      volontarioId: sessioneCorrente.volontarioId,
+      volontarioNome: nomeUscita,
+    });
     invitoAutoTriggeredRef.current = null;
     setInvitoAvvioDismissedVolKey(null);
     setInAttesaChecklistDopoTimbratura(null);
@@ -7782,7 +7902,7 @@ export default function App() {
             );
           },
           {
-            preferOpus: stateNow.codecMode === 'opus-48k',
+            preferOpus: stateNow.codecMode === 'opus-48k' && realtime.getConnectionInfo().websocketActive,
             onError: (errMsg) => {
               mostraFeedbackPtt(errMsg);
               handleStopEmergencyTx();
@@ -7899,7 +8019,7 @@ export default function App() {
         );
       },
       {
-        preferOpus: stateNow.codecMode === 'opus-48k',
+        preferOpus: stateNow.codecMode === 'opus-48k' && realtime.getConnectionInfo().websocketActive,
         onError: (errMsg) => {
           localPttTransmittingIdRef.current = null;
           setLocalPttTransmittingId(null);
@@ -8145,9 +8265,21 @@ export default function App() {
       return true;
     }
 
-    // 2. Controllo tra i profili registrati nel database volontari (inclusi Presidente, Operatori e Volontari Delegati a macro categorie)
+    // 2. Controllo tra i profili registrati nel database volontari (inclusi Presidente, Operatori di Centrale e Volontari abilitati a DB o singole sottosezioni)
+    const haSottosezioniAbilitate = (v?: Volontario | null): boolean =>
+      Boolean(
+        v?.sottosezioniAbilitate &&
+        Object.values(v.sottosezioniAbilitate).some((arr) => Array.isArray(arr) && arr.length > 0)
+      );
     const op = volontari.find(
-      v => (v.profiloCentrale || v.qualifica === 'Operatore Centrale' || (v.caricaConsiglioDirettivo && v.caricaConsiglioDirettivo.toLowerCase().includes('presidente')) || (v.macroCategorieAbilitate && v.macroCategorieAbilitate.length > 0)) && v.pin === pin
+      v =>
+        (
+          v.profiloCentrale ||
+          isQualificaOperatoreCentrale(v.qualifica) ||
+          (v.caricaConsiglioDirettivo && v.caricaConsiglioDirettivo.toLowerCase().includes('presidente')) ||
+          (v.macroCategorieAbilitate && v.macroCategorieAbilitate.length > 0) ||
+          haSottosezioniAbilitate(v)
+        ) && v.pin === pin
     );
 
     if (op) {
@@ -8155,9 +8287,9 @@ export default function App() {
         (op.caricaConsiglioDirettivo && op.caricaConsiglioDirettivo.toLowerCase().includes('presidente')) ||
         (op.qualifica && op.qualifica.toLowerCase().includes('presidente'))
       );
-      const haMacro = Boolean(op.macroCategorieAbilitate && op.macroCategorieAbilitate.length > 0);
+      const haMacro = Boolean((op.macroCategorieAbilitate && op.macroCategorieAbilitate.length > 0) || haSottosezioniAbilitate(op));
 
-      if (op.approvato || isPres || haMacro) {
+      if (op.approvato !== false || isPres || haMacro) {
         const opData = {
           id: op.id,
           nome: op.nome,
@@ -8167,7 +8299,10 @@ export default function App() {
           isAdmin: isPres ? true : false, // Amministratore e Presidente godono degli stessi identici privilegi
           caricaConsiglioDirettivo: op.caricaConsiglioDirettivo,
           firmaBase64: op.firmaBase64,
-          macroCategorieAbilitate: op.macroCategorieAbilitate || []
+          macroCategorieAbilitate: op.macroCategorieAbilitate || [],
+          sottosezioniAbilitate: op.sottosezioniAbilitate,
+          profiloCentrale: op.profiloCentrale,
+          qualifica: op.qualifica
         };
         setUtenteCentrale(opData);
         try {
@@ -8262,7 +8397,7 @@ export default function App() {
     );
   };
 
-  // Verifica se un volontario dispone di accesso autorizzato a Centrale o Database (Macro Categorie)
+  // Verifica se un volontario dispone di accesso autorizzato a uno o più Database o anche a una singola sottosezione
   const haAccessoCentraleODatabase = (v?: Volontario | null): boolean => {
     if (!v) return false;
     if (v.bloccatoPerTentativi || (v.tentativiErrati && v.tentativiErrati >= 3)) return false;
@@ -8271,11 +8406,15 @@ export default function App() {
       (v.qualifica && v.qualifica.toLowerCase().includes('presidente'))
     );
     const haMacro = Boolean(v.macroCategorieAbilitate && v.macroCategorieAbilitate.length > 0);
-    const isOpCentrale = Boolean(v.profiloCentrale || v.qualifica === 'Operatore Centrale');
-    return isPres || haMacro || (isOpCentrale && Boolean(v.approvato));
+    const haSottosezioni = Boolean(
+      v.sottosezioniAbilitate &&
+      Object.values(v.sottosezioniAbilitate).some((arr) => Array.isArray(arr) && arr.length > 0)
+    );
+    const isOpCentrale = Boolean(v.profiloCentrale || isQualificaOperatoreCentrale(v.qualifica));
+    return isPres || haMacro || haSottosezioni || (isOpCentrale && v.approvato !== false);
   };
 
-  // Switch ruolo intelligente: se il volontario ha già effettuato il login ed ha accesso a database/centrale, passa senza richiedere nuovamente il PIN
+  // Switch ruolo intelligente: chi ha accesso ad almeno un database o sottosezione entra in Accesso Avanzato senza rieffettuare il login
   const handleCambiaRuolo = () => {
     if (ruolo === 'volontario') {
       if (volontarioLoggatoCorrente) {
@@ -8293,7 +8432,10 @@ export default function App() {
             isAdmin: isPres,
             caricaConsiglioDirettivo: volontarioLoggatoCorrente.caricaConsiglioDirettivo,
             firmaBase64: volontarioLoggatoCorrente.firmaBase64,
-            macroCategorieAbilitate: volontarioLoggatoCorrente.macroCategorieAbilitate || []
+            macroCategorieAbilitate: volontarioLoggatoCorrente.macroCategorieAbilitate || [],
+            sottosezioniAbilitate: volontarioLoggatoCorrente.sottosezioniAbilitate,
+            profiloCentrale: volontarioLoggatoCorrente.profiloCentrale,
+            qualifica: volontarioLoggatoCorrente.qualifica
           };
           setUtenteCentrale(opData);
           aggiornaStatoLoginCentrale(volontarioLoggatoCorrente.id, true);
@@ -8307,12 +8449,11 @@ export default function App() {
             localStorage.setItem('CROCE_ORO_ADMIN_SECTION', 'dashboard');
           } catch {}
           aggiungiNotifica(
-            `ACCESSO DIRETTO CENTRALE: ${volontarioLoggatoCorrente.nome} ${volontarioLoggatoCorrente.cognome} abilitato senza reinserimento PIN.`,
+            `ACCESSO AVANZATO DIRETTO: ${volontarioLoggatoCorrente.nome} ${volontarioLoggatoCorrente.cognome} abilitato senza rieffettuare il login.`,
             'centrale'
           );
           return;
         }
-        setModalAdminPass(true);
         return;
       }
 
@@ -8336,7 +8477,10 @@ export default function App() {
             isAdmin: isPres,
             caricaConsiglioDirettivo: volAgg.caricaConsiglioDirettivo,
             firmaBase64: volAgg.firmaBase64,
-            macroCategorieAbilitate: volAgg.macroCategorieAbilitate || []
+            macroCategorieAbilitate: volAgg.macroCategorieAbilitate || [],
+            sottosezioniAbilitate: volAgg.sottosezioniAbilitate,
+            profiloCentrale: volAgg.profiloCentrale,
+            qualifica: volAgg.qualifica
           };
           setUtenteCentrale(opDataAgg);
           try {
@@ -8352,7 +8496,7 @@ export default function App() {
           localStorage.setItem('CROCE_ORO_PROFILO_SCELTO', 'admin');
           localStorage.setItem('CROCE_ORO_ADMIN_SECTION', 'dashboard');
         } catch {}
-        aggiungiNotifica("Ritorno diretto a Centrale / Portale Database (PIN già verificato).", "centrale");
+        aggiungiNotifica("Ritorno diretto ad Accesso Avanzato (Database e Sottosezioni Abilitate).", "centrale");
         return;
       }
 
@@ -8393,8 +8537,20 @@ export default function App() {
       return;
     }
 
+    const haSottosezioniOp = (v?: Volontario | null): boolean =>
+      Boolean(
+        v?.sottosezioniAbilitate &&
+        Object.values(v.sottosezioniAbilitate).some((arr) => Array.isArray(arr) && arr.length > 0)
+      );
     const op = volontari.find(
-      v => (v.profiloCentrale || v.qualifica === 'Operatore Centrale' || (v.caricaConsiglioDirettivo && v.caricaConsiglioDirettivo.toLowerCase().includes('presidente')) || (v.macroCategorieAbilitate && v.macroCategorieAbilitate.length > 0)) && v.pin === pin
+      v =>
+        (
+          v.profiloCentrale ||
+          isQualificaOperatoreCentrale(v.qualifica) ||
+          (v.caricaConsiglioDirettivo && v.caricaConsiglioDirettivo.toLowerCase().includes('presidente')) ||
+          (v.macroCategorieAbilitate && v.macroCategorieAbilitate.length > 0) ||
+          haSottosezioniOp(v)
+        ) && v.pin === pin
     );
 
     if (op) {
@@ -8402,9 +8558,9 @@ export default function App() {
         (op.caricaConsiglioDirettivo && op.caricaConsiglioDirettivo.toLowerCase().includes('presidente')) ||
         (op.qualifica && op.qualifica.toLowerCase().includes('presidente'))
       );
-      const haMacro = Boolean(op.macroCategorieAbilitate && op.macroCategorieAbilitate.length > 0);
+      const haMacro = Boolean((op.macroCategorieAbilitate && op.macroCategorieAbilitate.length > 0) || haSottosezioniOp(op));
 
-      if (op.approvato || isPres || haMacro) {
+      if (op.approvato !== false || isPres || haMacro) {
         const opData = {
           id: op.id,
           nome: op.nome,
@@ -8414,7 +8570,10 @@ export default function App() {
           isAdmin: isPres ? true : false,
           caricaConsiglioDirettivo: op.caricaConsiglioDirettivo,
           firmaBase64: op.firmaBase64,
-          macroCategorieAbilitate: op.macroCategorieAbilitate || []
+          macroCategorieAbilitate: op.macroCategorieAbilitate || [],
+          sottosezioniAbilitate: op.sottosezioniAbilitate,
+          profiloCentrale: op.profiloCentrale,
+          qualifica: op.qualifica
         };
         setUtenteCentrale(opData);
         aggiornaStatoLoginCentrale(op.id, true);
@@ -9565,6 +9724,9 @@ KM TOTALI: ${kmTot} KM`;
       realtime.on('INIT_SYNC', (payload: any) => {
         const s = payload.state;
         if (!s) return;
+        if (s.loggedSessions && typeof s.loggedSessions === 'object') {
+          setLoggedSessions(s.loggedSessions);
+        }
         if ((s.volontari && Array.isArray(s.volontari) && s.volontari.length > 0) || Array.isArray(s.volontariEliminatiIds)) {
           applicaVolontari(Array.isArray(s.volontari) ? s.volontari : [], s.volontariEliminatiIds);
         }
@@ -9806,6 +9968,14 @@ KM TOTALI: ${kmTot} KM`;
           setCostiServizio(s.costiServizio);
           try { localStorage.setItem('CROCE_ORO_COSTI_SERVIZIO', JSON.stringify(s.costiServizio)); } catch {}
         }
+        if (Array.isArray(s.altreEntrateUscite)) {
+          setAltreEntrateUscite(s.altreEntrateUscite);
+          try { localStorage.setItem('CROCE_ORO_ALTRE_ENTRATE_USCITE', JSON.stringify(s.altreEntrateUscite)); } catch {}
+        }
+        if (Array.isArray(s.costiGestione)) {
+          setCostiGestione(s.costiGestione);
+          try { localStorage.setItem('CROCE_ORO_COSTI_GESTIONE', JSON.stringify(s.costiGestione)); } catch {}
+        }
         if (Array.isArray(s.mezziFlotta) && s.mezziFlotta.length > 0) {
           const ordinati = [...s.mezziFlotta].sort((a, b) => (a.sigla || '').localeCompare(b.sigla || '', 'it', { numeric: true, sensitivity: 'base' }));
           setMezziFlotta(ordinati);
@@ -9873,6 +10043,9 @@ KM TOTALI: ${kmTot} KM`;
         }
         if (s.radioEmergency && typeof s.radioEmergency === 'object') {
           setRadioEmergency(s.radioEmergency);
+        }
+        if (s.loggedSessions && typeof s.loggedSessions === 'object') {
+          setLoggedSessions(s.loggedSessions);
         }
         if ((s.volontari && Array.isArray(s.volontari) && s.volontari.length > 0) || Array.isArray(s.volontariEliminatiIds)) {
           applicaVolontari(Array.isArray(s.volontari) ? s.volontari : [], s.volontariEliminatiIds);
@@ -9999,6 +10172,14 @@ KM TOTALI: ${kmTot} KM`;
         if (Array.isArray(s.costiServizio) && s.costiServizio.length > 0) {
           setCostiServizio(s.costiServizio);
           try { localStorage.setItem('CROCE_ORO_COSTI_SERVIZIO', JSON.stringify(s.costiServizio)); } catch {}
+        }
+        if (Array.isArray(s.altreEntrateUscite)) {
+          setAltreEntrateUscite(s.altreEntrateUscite);
+          try { localStorage.setItem('CROCE_ORO_ALTRE_ENTRATE_USCITE', JSON.stringify(s.altreEntrateUscite)); } catch {}
+        }
+        if (Array.isArray(s.costiGestione)) {
+          setCostiGestione(s.costiGestione);
+          try { localStorage.setItem('CROCE_ORO_COSTI_GESTIONE', JSON.stringify(s.costiGestione)); } catch {}
         }
         if (Array.isArray(s.mezziFlotta) && s.mezziFlotta.length > 0) {
           const ordinati = [...s.mezziFlotta].sort((a, b) => (a.sigla || '').localeCompare(b.sigla || '', 'it', { numeric: true, sensitivity: 'base' }));
@@ -10713,6 +10894,7 @@ KM TOTALI: ${kmTot} KM`;
               requireInteraction: true
             });
           } else if (!nextEm.active && prevActive) {
+            lastRemoteEmergencyTriggerRef.current = 0;
             vhfRadioEngine.stopEmergencyAnnouncement();
           }
         }
@@ -10907,6 +11089,19 @@ KM TOTALI: ${kmTot} KM`;
           }
           return payload.shift;
         });
+        if (payload.loggedSessions && typeof payload.loggedSessions === 'object') {
+          setLoggedSessions(payload.loggedSessions);
+        } else if (payload.shift?.volontarioId) {
+          setLoggedSessions((prev) => ({
+            ...prev,
+            [payload.shift.volontarioId]: {
+              loggato: Boolean(payload.shift.attivo),
+              updatedAt: Date.now(),
+              volontarioNome: payload.shift.volontarioNome || prev[payload.shift.volontarioId]?.volontarioNome,
+              mezzoScelto: payload.shift.mezzoScelto || '',
+            },
+          }));
+        }
         if (payload.volontari && Array.isArray(payload.volontari)) {
           applicaVolontari(payload.volontari);
         }
@@ -11909,6 +12104,27 @@ KM TOTALI: ${kmTot} KM`;
           } catch {}
         }
       }),
+      realtime.on('ALTRE_ENTRATE_USCITE_UPDATED', (payload: any) => {
+        if (Array.isArray(payload?.altreEntrateUscite)) {
+          setAltreEntrateUscite(payload.altreEntrateUscite);
+          try {
+            localStorage.setItem('CROCE_ORO_ALTRE_ENTRATE_USCITE', JSON.stringify(payload.altreEntrateUscite));
+          } catch {}
+        }
+      }),
+      realtime.on('COSTI_GESTIONE_UPDATED', (payload: any) => {
+        if (Array.isArray(payload?.costiGestione)) {
+          setCostiGestione(payload.costiGestione);
+          try {
+            localStorage.setItem('CROCE_ORO_COSTI_GESTIONE', JSON.stringify(payload.costiGestione));
+          } catch {}
+        }
+      }),
+      realtime.on('LOGGED_SESSIONS_UPDATED', (payload: any) => {
+        if (payload?.loggedSessions && typeof payload.loggedSessions === 'object') {
+          setLoggedSessions(payload.loggedSessions);
+        }
+      }),
       realtime.on('MAGAZZINO_VESTIARIO_UPDATED', (payload: any) => {
         if (Array.isArray(payload?.magazzinoVestiario)) {
           setMagazzinoVestiario(payload.magazzinoVestiario);
@@ -12014,6 +12230,8 @@ KM TOTALI: ${kmTot} KM`;
           noteDiDebito: readLS('CROCE_ORO_NOTE_DEBITO', NOTE_DI_DEBITO_INIZIALI),
           tessereAssociative: readLS('CROCE_ORO_TESSERE', TESSERE_INIZIALI),
           costiServizio: readLS('CROCE_ORO_COSTI_SERVIZIO', TARIFFE_COSTI_SERVIZIO_INIZIALI),
+          altreEntrateUscite: readLS('CROCE_ORO_ALTRE_ENTRATE_USCITE', []),
+          costiGestione: readLS('CROCE_ORO_COSTI_GESTIONE', []),
           mezziFlotta: readLS('CROCE_ORO_MEZZI_FLOTTA', MEZZI_FLOTTA_INIZIALI),
           catalogoMansioni: getMansioniCatalogo(),
           categorieMansioni: getCategorieMansioni(),
@@ -12826,14 +13044,26 @@ KM TOTALI: ${kmTot} KM`;
                   : 'Volontario'}
               </span>
             </div>
-            <button
-              onClick={handleCambiaRuolo}
-              className="text-[11px] px-2.5 py-1 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-black transition-all shadow-sm active:scale-95 border border-amber-700"
-              style={{ backgroundColor: '#f59e0b', color: '#020617', borderColor: '#b45309' }}
-              title={ruolo === 'admin' ? 'Passa ad Accesso Volontario' : 'Accedi alla Centrale / Database'}
-            >
-              {ruolo === 'admin' ? 'Accesso Volontario' : 'Accedi Centrale'}
-            </button>
+            {(ruolo === 'admin' || (() => {
+              if (volontarioLoggatoCorrente) {
+                return haAccessoCentraleODatabase(volontarioLoggatoCorrente);
+              }
+              if (utenteCentrale) {
+                if (utenteCentrale.isAdmin || utenteCentrale.pin === '4451') return true;
+                const volMatch = utenteCentrale.id ? volontari.find(v => v.id === utenteCentrale.id) : null;
+                return haAccessoCentraleODatabase(volMatch);
+              }
+              return false;
+            })()) && (
+              <button
+                onClick={handleCambiaRuolo}
+                className="text-[11px] px-2.5 py-1 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-black transition-all shadow-sm active:scale-95 border border-amber-700 cursor-pointer"
+                style={{ backgroundColor: '#f59e0b', color: '#020617', borderColor: '#b45309' }}
+                title={ruolo === 'admin' ? 'Passa ad Accesso Volontario' : 'Accesso Avanzato — Database e Sottosezioni Abilitate'}
+              >
+                {ruolo === 'admin' ? 'Accesso Volontario' : 'Accesso Avanzato'}
+              </button>
+            )}
             {ruolo === 'admin' && (() => {
               const centraleOpIdBtn = utenteCentrale?.id || 'admin-centrale-root';
               const centraleOpNomeBtn = utenteCentrale?.nome
@@ -13058,6 +13288,10 @@ KM TOTALI: ${kmTot} KM`;
             onAggiornaNoteDiDebito={handleAggiornaNoteDiDebito}
             costiServizio={costiServizio}
             onAggiornaCostiServizio={handleAggiornaCostiServizio}
+            altreEntrateUscite={altreEntrateUscite}
+            onAggiornaAltreEntrateUscite={handleAggiornaAltreEntrateUscite}
+            costiGestione={costiGestione}
+            onAggiornaCostiGestione={handleAggiornaCostiGestione}
             operatoreCorrente={utenteCentrale?.nome ? `${utenteCentrale.nome} ${utenteCentrale.cognome || ''}` : 'Amministratore'}
             isAdmin={isCentraleAdmin}
             onNotificaRadio={aggiungiNotifica}
@@ -17787,7 +18021,7 @@ KM TOTALI: ${kmTot} KM`;
                           (t.volontarioId === v.id || (t.volontarioNome && t.volontarioNome.trim().toLowerCase() === nomeVol)) &&
                           (!t.orarioUscita || t.orarioUscita.trim() === '')
                         );
-                        const isLogChip = Boolean(v.loggato || (sessioneTurno.attivo && sessioneTurno.volontarioId === v.id));
+                        const isLogChip = isVolontarioLoggatoLive(v);
                         return (
                           <span
                             key={id}
@@ -17860,7 +18094,7 @@ KM TOTALI: ${kmTot} KM`;
                             <div className="flex items-center gap-1.5 shrink-0 text-[10px] flex-wrap justify-end">
                               {/* Stato 1: In Turno SOLO se timbrato vs Loggato */}
                               {(() => {
-                                const isLoggatoVol = Boolean(v.loggato || (sessioneTurno.attivo && sessioneTurno.volontarioId === v.id));
+                                const isLoggatoVol = isVolontarioLoggatoLive(v);
                                 const isTimbratoVol = Boolean(timbAttiva);
                                 return (
                                   <>
