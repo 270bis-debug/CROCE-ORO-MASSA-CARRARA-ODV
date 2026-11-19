@@ -411,12 +411,50 @@ export interface PartecipanteCorso {
   tipoAttestato?: 'partecipazione' | 'idoneita';
   numeroAttestato?: string; // es. "GEV-099" per Seminario PSV, "AUT-PART-001" per Seminario Autisti
   dataRilascioAttestato?: string;
+  luogoRilascioAttestato?: string; // es. "Massa", "Carrara"
   scadenzaBrevetto?: string; // es. +2 anni per BLSD
   // Timbrature GPS presenza per singola lezione
   timbratureLezioni?: TimbraturaLezioneGPS[];
   // Timbrature generali o prima lezione
   timbraturaEntrata?: DatiTimbraturaGPSCorso | string;
   timbraturaUscita?: DatiTimbraturaGPSCorso | string;
+}
+
+export interface PosizioneCampoPdfPrestampato {
+  xPercent: number; // 0..100 da sinistra
+  yPercent: number; // 0..100 dall'alto
+  fontSize: number; // pt (es. 10..36)
+  align: 'left' | 'center' | 'right';
+  bold: boolean;
+  uppercase?: boolean;
+  colorHex?: string; // es. '#000000' o '#1d1a60'
+  prefisso?: string; // es. 'MATRICOLA: ' oppure ''
+  sfondoBianco?: boolean; // opzionale: rettangolo bianco dietro al testo se il prestampato ha un segnaposto
+}
+
+export interface ModelloAttestatoCategoria {
+  tipologia: TipologiaCorso;
+  attivo: boolean; // true = usa il PDF prestampato caricato per questa categoria
+  fileName?: string;
+  fileSize?: number;
+  pdfSlug?: string; // chiave file sul server (es. 'seminario-psv')
+  hasPdfFile?: boolean; // true se esiste un file PDF caricato
+  pdfBase64Inline?: string; // opzionale se il PDF è compatto (<350KB) per fallback/cloud
+  updatedAt: number;
+  updatedBy?: string;
+  // Numerazione progressiva matricola per categoria
+  prefissoMatricola: string; // es. 'GEV-', 'AUT-PART-', 'BLSD-', ecc. (modificabile, anche vuoto)
+  cifrePadding: number; // es. 3 -> 001, 099, 100
+  prossimoProgressivo: number; // si incrementa automaticamente di +1 ad ogni rilascio; sempre modificabile manualmente
+  progressivoImpostatoManualmente?: boolean; // se true rispetta rigorosamente prossimoProgressivo senza ricalcoli max
+  ultimoNumeroEmesso?: string; // es. 'GEV-099'
+  // Luogo e formato data di rilascio
+  luogoRilascioDefault?: string; // se vuoto usa la città prevalente del corso
+  formatoDataLuogo?: 'con_li' | 'virgola'; // 'Massa, lì 19/11/2026' vs 'Massa, 19/11/2026'
+  // Posizionamento dei 3 e soli campi compilati sul prestampato
+  campoNomeCognome: PosizioneCampoPdfPrestampato;
+  campoDataLuogo: PosizioneCampoPdfPrestampato;
+  campoMatricola: PosizioneCampoPdfPrestampato;
 }
 
 // ---------------------------------------------------------------------------

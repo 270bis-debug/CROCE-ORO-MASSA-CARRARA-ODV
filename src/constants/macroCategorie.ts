@@ -151,6 +151,7 @@ export const SOTTOSEZIONI_PER_DATABASE: Record<MacroCategoriaId, InfoSottosezion
     { id: 'corsi', numero: '1', titoloDefault: 'Catalogo Corsi & Piano Formativo' },
     { id: 'iscritti', numero: '2', titoloDefault: 'Iscrizioni & Registro Presenze' },
     { id: 'scadenziario', numero: '3', titoloDefault: 'Scadenziario Brevetti & Attestati' },
+    { id: 'modelli_pdf', numero: '4', titoloDefault: 'Modelli PDF Prestampati & Matricole' },
   ],
   magazzino: [
     { id: 'vestiario', numero: '1', titoloDefault: 'Magazzino Vestiario & DPI' },

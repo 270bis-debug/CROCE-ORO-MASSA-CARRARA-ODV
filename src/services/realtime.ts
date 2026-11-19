@@ -32,7 +32,8 @@ import {
   segnaCandidaturaTurnoApplicataFirestore,
 } from './firebase';
 import { formatDateTimeItaly, formatTimeItaly } from '../utils/italianTime';
-import { mergeVolontariListsSafe, normalizeDeletedIds } from '../utils/volontariMerge';
+import { mergeLoggedSessionsSafe, mergeVolontariListsSafe, normalizeDeletedIds } from '../utils/volontariMerge';
+import { mergeNotificheBachecaRecenti, NotificaBachecaRecord } from '../utils/bachecaCorsi';
 import {
   normalizzaListaSediAssociative,
   normalizzaListaLuoghiTimbratura,
@@ -52,6 +53,11 @@ import { applicaTipologieMezzoDaSync, getTipologieMezzoUpdatedAt } from '../util
 import { applicaMetodiPagamentoDaSync } from '../utils/metodiPagamentoStore';
 import { applicaRegolaNotificaScadenzeDaSync } from '../utils/avvisiManutenzioneMezzi';
 import { applicaRubricaNumeriUtiliDaSync, getRubricaNumeriUtiliUpdatedAt } from '../utils/rubricaNumeriUtiliStore';
+import {
+  applicaModelliAttestatiDaSync,
+  getModelliAttestatiUpdatedAt,
+  sanitizzaModelliPerCloud
+} from '../utils/modelliAttestatiStore';
 
 const stripLegacyCorsi = (list: any): any[] => {
   if (!Array.isArray(list)) return [];
@@ -476,7 +482,8 @@ class RealtimeService {
               .map(([k, arr]) => `${k}=${Array.isArray(arr) ? [...arr].sort().join('.') : ''}`)
               .join(';')
           : '';
-        return `${v?.id || ''}:${v?.pin || ''}:${v?.approvato ? 1 : 0}:${v?.profiloCentrale ? 1 : 0}:${v?.loggato ? 1 : 0}:${v?.inTurno ? 1 : 0}:${(v?.macroCategorieAbilitate || []).join(',')}:${subs}`;
+        const firmaLen = typeof v?.firmaBase64 === 'string' ? v.firmaBase64.length : 0;
+        return `${v?.id || ''}:${v?.pin || ''}:${v?.approvato ? 1 : 0}:${v?.profiloCentrale ? 1 : 0}:${v?.loggato ? 1 : 0}:${v?.loggatoUpdatedAt || 0}:${firmaLen}:${v?.inTurno ? 1 : 0}:${(v?.macroCategorieAbilitate || []).join(',')}:${subs}`;
       })
       .sort()
       .join('|');
@@ -519,7 +526,18 @@ class RealtimeService {
       ]);
       const cloudVols = Array.isArray(payload.volontari) ? payload.volontari : [];
       const currentVols = Array.isArray(this.cloudState.volontari) ? this.cloudState.volontari : [];
-      const mergedVols = mergeVolontariListsSafe(currentVols, cloudVols, deletedIds);
+      const sessionsMap = this.cloudState.loggedSessions && typeof this.cloudState.loggedSessions === 'object'
+        ? this.cloudState.loggedSessions
+        : {};
+      const mergedVols = mergeVolontariListsSafe(currentVols, cloudVols, deletedIds).map((v: any) => {
+        const sess = v?.id ? sessionsMap[v.id] : undefined;
+        if (sess && Number(sess.updatedAt || 0) >= Number(v.loggatoUpdatedAt || 0)) {
+          if (Boolean(v.loggato) !== Boolean(sess.loggato) || Number(v.loggatoUpdatedAt || 0) < Number(sess.updatedAt || 0)) {
+            return { ...v, loggato: Boolean(sess.loggato), loggatoUpdatedAt: Number(sess.updatedAt || Date.now()) };
+          }
+        }
+        return v;
+      });
       this.cloudState.volontariEliminatiIds = deletedIds;
       this.cloudState.volontari = mergedVols;
       if (payload.sollecitoFirmaPin && typeof payload.sollecitoFirmaPin === 'object') {
@@ -555,10 +573,24 @@ class RealtimeService {
       }
     }
     if (shardId === 'bacheca') {
+      if (Array.isArray(payload.notificheBachecaRecenti)) {
+        this.cloudState.notificheBachecaRecenti = mergeNotificheBachecaRecenti(
+          this.cloudState.notificheBachecaRecenti,
+          payload.notificheBachecaRecenti
+        );
+      }
       if (Array.isArray(payload.bacheca)) {
         const bachecaNorm = normalizzaComunicazioniBacheca(payload.bacheca);
         this.cloudState.bacheca = bachecaNorm;
-        this.emit('BACHECA_UPDATED', { bacheca: bachecaNorm });
+        this.emit('BACHECA_UPDATED', {
+          bacheca: bachecaNorm,
+          notificheBachecaRecenti: this.cloudState.notificheBachecaRecenti || [],
+        });
+      } else if (Array.isArray(payload.notificheBachecaRecenti)) {
+        this.emit('BACHECA_UPDATED', {
+          bacheca: Array.isArray(this.cloudState.bacheca) ? this.cloudState.bacheca : [],
+          notificheBachecaRecenti: this.cloudState.notificheBachecaRecenti || [],
+        });
       }
       if (Array.isArray(payload.giornaleBordo)) {
         this.emit('GIORNALE_BORDO_UPDATED', { giornaleBordo: payload.giornaleBordo });
@@ -700,6 +732,17 @@ class RealtimeService {
           updatedAt: payload.rubricaNumeriUtiliUpdatedAt,
         });
       }
+      if (payload.modelliAttestatiCategoria && typeof payload.modelliAttestatiCategoria === 'object' && !Array.isArray(payload.modelliAttestatiCategoria)) {
+        this.cloudState.modelliAttestatiCategoria = payload.modelliAttestatiCategoria;
+        if (payload.modelliAttestatiUpdatedAt) {
+          this.cloudState.modelliAttestatiUpdatedAt = payload.modelliAttestatiUpdatedAt;
+        }
+        applicaModelliAttestatiDaSync(payload.modelliAttestatiCategoria, payload.modelliAttestatiUpdatedAt);
+        this.emit('MODELLI_ATTESTATI_UPDATED', {
+          modelliAttestatiCategoria: payload.modelliAttestatiCategoria,
+          updatedAt: payload.modelliAttestatiUpdatedAt,
+        });
+      }
       if (typeof payload.publicAppUrl === 'string' && payload.publicAppUrl.trim() && !isProtectedAiStudioHost(payload.publicAppUrl)) {
         const saved = saveConfiguredPublicUrlLocal(payload.publicAppUrl);
         this.cloudState.publicAppUrl = saved;
@@ -768,24 +811,17 @@ class RealtimeService {
         }
       }
       if (payload.loggedSessions && typeof payload.loggedSessions === 'object') {
-        const mergedSessions: Record<string, any> = {
-          ...(this.cloudState.loggedSessions || {}),
-        };
-        for (const [volId, info] of Object.entries<any>(payload.loggedSessions)) {
-          if (!volId || !info || typeof info !== 'object') continue;
-          const prevInfo = mergedSessions[volId];
-          if (!prevInfo || Number(info.updatedAt || 0) >= Number(prevInfo.updatedAt || 0)) {
-            mergedSessions[volId] = info;
-          }
-        }
+        const mergedSessions = mergeLoggedSessionsSafe(this.cloudState.loggedSessions, payload.loggedSessions);
         this.cloudState.loggedSessions = mergedSessions;
         if (Array.isArray(this.cloudState.volontari) && this.cloudState.volontari.length > 0) {
           let changedLog = false;
           const nextVols = this.cloudState.volontari.map((v: any) => {
-            const sess = mergedSessions[v?.id];
-            if (sess && Boolean(v.loggato) !== Boolean(sess.loggato)) {
-              changedLog = true;
-              return { ...v, loggato: Boolean(sess.loggato) };
+            const sess = v?.id ? mergedSessions[v.id] : undefined;
+            if (sess && Number(sess.updatedAt || 0) >= Number(v.loggatoUpdatedAt || 0)) {
+              if (Boolean(v.loggato) !== Boolean(sess.loggato)) {
+                changedLog = true;
+                return { ...v, loggato: Boolean(sess.loggato), loggatoUpdatedAt: Number(sess.updatedAt || Date.now()) };
+              }
             }
             return v;
           });
@@ -1022,6 +1058,7 @@ class RealtimeService {
       case 'bacheca':
         return {
           bacheca: Array.isArray(this.cloudState.bacheca) ? normalizzaComunicazioniBacheca(this.cloudState.bacheca) : [],
+          notificheBachecaRecenti: Array.isArray(this.cloudState.notificheBachecaRecenti) ? this.cloudState.notificheBachecaRecenti : [],
           giornaleBordo: Array.isArray(this.cloudState.giornaleBordo) ? this.cloudState.giornaleBordo : [],
         };
       case 'magazzino':
@@ -1071,6 +1108,11 @@ class RealtimeService {
           tipologieMezzoUpdatedAt: this.cloudState.tipologieMezzoUpdatedAt || undefined,
           rubricaNumeriUtili: Array.isArray(this.cloudState.rubricaNumeriUtili) ? this.cloudState.rubricaNumeriUtili : undefined,
           rubricaNumeriUtiliUpdatedAt: this.cloudState.rubricaNumeriUtiliUpdatedAt || undefined,
+          modelliAttestatiCategoria:
+            this.cloudState.modelliAttestatiCategoria && typeof this.cloudState.modelliAttestatiCategoria === 'object'
+              ? sanitizzaModelliPerCloud(this.cloudState.modelliAttestatiCategoria)
+              : undefined,
+          modelliAttestatiUpdatedAt: this.cloudState.modelliAttestatiUpdatedAt || undefined,
         };
     }
   }
@@ -1387,6 +1429,10 @@ class RealtimeService {
         id: 'bacheca',
         patch: {
           bacheca: normalizzaComunicazioniBacheca(snapshot.bacheca || this.cloudState.bacheca || []),
+          notificheBachecaRecenti: mergeNotificheBachecaRecenti(
+            this.cloudState.notificheBachecaRecenti,
+            snapshot.notificheBachecaRecenti
+          ),
           giornaleBordo: snapshot.giornaleBordo || this.cloudState.giornaleBordo || [],
         },
       },
@@ -1560,6 +1606,12 @@ class RealtimeService {
                 ...(Array.isArray(this.cloudState.volontariEliminatiIds) ? this.cloudState.volontariEliminatiIds : []),
                 ...(Array.isArray(payload.volontariEliminatiIds) ? payload.volontariEliminatiIds : []),
               ]);
+              if (payload.loggedSessions && typeof payload.loggedSessions === 'object') {
+                this.cloudState.loggedSessions = mergeLoggedSessionsSafe(
+                  this.cloudState.loggedSessions,
+                  payload.loggedSessions
+                );
+              }
               const currentVols = Array.isArray(this.cloudState.volontari) ? this.cloudState.volontari : [];
               const mergedVols = mergeVolontariListsSafe(currentVols, payload.volontari, deletedIds);
               this.cloudState.volontariEliminatiIds = deletedIds;
@@ -1569,7 +1621,32 @@ class RealtimeService {
                   this.scheduleShardWrite('volontari', { volontari: mergedVols, volontariEliminatiIds: deletedIds });
                 }
               }
-              this.emit('VOLONTARI_UPDATED', { ...payload, volontari: mergedVols, volontariEliminatiIds: deletedIds });
+              this.emit('VOLONTARI_UPDATED', {
+                ...payload,
+                volontari: mergedVols,
+                volontariEliminatiIds: deletedIds,
+                loggedSessions: this.cloudState.loggedSessions,
+              });
+              return;
+            }
+            if ((payload.type === 'SHIFT_UPDATED' || payload.type === 'LOGGED_SESSIONS_UPDATED') && payload.loggedSessions && typeof payload.loggedSessions === 'object') {
+              const prevSessJson = JSON.stringify(this.cloudState.loggedSessions || {});
+              const mergedSessions = mergeLoggedSessionsSafe(this.cloudState.loggedSessions, payload.loggedSessions);
+              this.cloudState.loggedSessions = mergedSessions;
+              if (Array.isArray(payload.volontari) && payload.volontari.length > 0) {
+                const deletedIds = normalizeDeletedIds(this.cloudState.volontariEliminatiIds);
+                this.cloudState.volontari = mergeVolontariListsSafe(
+                  Array.isArray(this.cloudState.volontari) ? this.cloudState.volontari : [],
+                  payload.volontari,
+                  deletedIds
+                );
+              }
+              if (this.firebaseSession.isAuthorized && this.shardLoadedFromCloud['mission']) {
+                if (JSON.stringify(mergedSessions) !== prevSessJson) {
+                  this.scheduleShardWrite('mission', { loggedSessions: mergedSessions });
+                }
+              }
+              this.emit(payload.type, { ...payload, loggedSessions: mergedSessions });
               return;
             }
             if (payload.type === 'PTT_AUDIO_CHUNK' && payload.speakerId && Number(payload.seq || 0) > 0) {
@@ -1610,6 +1687,10 @@ class RealtimeService {
               this.cloudState.rubricaNumeriUtili = payload.rubrica;
               if (payload.updatedAt) this.cloudState.rubricaNumeriUtiliUpdatedAt = payload.updatedAt;
               applicaRubricaNumeriUtiliDaSync(payload.rubrica, payload.updatedAt);
+            } else if (payload.type === 'MODELLI_ATTESTATI_UPDATED' && payload.modelliAttestatiCategoria) {
+              this.cloudState.modelliAttestatiCategoria = payload.modelliAttestatiCategoria;
+              if (payload.updatedAt) this.cloudState.modelliAttestatiUpdatedAt = payload.updatedAt;
+              applicaModelliAttestatiDaSync(payload.modelliAttestatiCategoria, payload.updatedAt);
             }
             this.emit(payload.type, payload);
           }
@@ -1645,12 +1726,29 @@ class RealtimeService {
       ...(Array.isArray(incomingState.volontariEliminatiIds) ? incomingState.volontariEliminatiIds : []),
     ]);
 
-    const mergedVols = mergeVolontariListsSafe(prevVols, incomingVols, deletedIds);
+    const prevSessions = this.cloudState.loggedSessions && typeof this.cloudState.loggedSessions === 'object'
+      ? this.cloudState.loggedSessions
+      : {};
+    const incomingSessions = incomingState.loggedSessions && typeof incomingState.loggedSessions === 'object'
+      ? incomingState.loggedSessions
+      : {};
+    const mergedSessions = mergeLoggedSessionsSafe(prevSessions, incomingSessions);
 
-    // Se Firestore è già attivo, non lasciare che Express (più vecchio) sovrascriva le liste cloud più aggiornate
+    const mergedVols = mergeVolontariListsSafe(prevVols, incomingVols, deletedIds).map((v: any) => {
+      const sess = v?.id ? mergedSessions[v.id] : undefined;
+      if (sess && Number(sess.updatedAt || 0) >= Number(v.loggatoUpdatedAt || 0)) {
+        if (Boolean(v.loggato) !== Boolean(sess.loggato) || Number(v.loggatoUpdatedAt || 0) < Number(sess.updatedAt || 0)) {
+          return { ...v, loggato: Boolean(sess.loggato), loggatoUpdatedAt: Number(sess.updatedAt || Date.now()) };
+        }
+      }
+      return v;
+    });
+
+    // Se Firestore è già attivo, non lasciare che Express (più vecchio) sovrascriva le liste cloud più aggiornate,
+    // MA fonde sempre `loggedSessions` per timestamp così i login via PIN su Express sono subito visibili in Centrale!
     if (this.firestoreActive) {
       for (const [k, v] of Object.entries(incomingState)) {
-        if (k === 'volontari' || k === 'volontariEliminatiIds') continue;
+        if (k === 'volontari' || k === 'volontariEliminatiIds' || k === 'loggedSessions') continue;
         if (this.cloudState[k] === undefined || (Array.isArray(this.cloudState[k]) && this.cloudState[k].length === 0)) {
           this.cloudState[k] = v;
         }
@@ -1659,6 +1757,7 @@ class RealtimeService {
       Object.assign(this.cloudState, incomingState);
     }
 
+    this.cloudState.loggedSessions = mergedSessions;
     this.cloudState.volontariEliminatiIds = deletedIds;
     this.cloudState.volontari = mergedVols;
     if (Array.isArray(this.cloudState.corsiFormazione)) {
@@ -1695,13 +1794,19 @@ class RealtimeService {
     if (Array.isArray(this.cloudState.rubricaNumeriUtili)) {
       applicaRubricaNumeriUtiliDaSync(this.cloudState.rubricaNumeriUtili, this.cloudState.rubricaNumeriUtiliUpdatedAt);
     }
+    if (this.cloudState.modelliAttestatiCategoria && typeof this.cloudState.modelliAttestatiCategoria === 'object' && !Array.isArray(this.cloudState.modelliAttestatiCategoria)) {
+      applicaModelliAttestatiDaSync(this.cloudState.modelliAttestatiCategoria, this.cloudState.modelliAttestatiUpdatedAt);
+    }
 
-    // Ponte bidirezionale: se Express ha nuovi account non ancora presenti su Firestore, sincronizza verso Firestore
+    // Ponte bidirezionale: se Express ha nuovi account, firme, PIN o stati login più recenti rispetto a Firestore, sincronizza verso Firestore
     if (this.firebaseSession.isAuthorized && this.shardLoadedFromCloud['volontari']) {
-      const prevIds = new Set(prevVols.map((v: any) => v?.id).filter(Boolean));
-      const hasNewFromExpress = incomingVols.some((v: any) => v?.id && !deletedIds.includes(v.id) && !prevIds.has(v.id));
-      if (hasNewFromExpress) {
+      if (this.computeVolontariSig(mergedVols) !== this.computeVolontariSig(prevVols)) {
         this.scheduleShardWrite('volontari', { volontari: mergedVols, volontariEliminatiIds: deletedIds });
+      }
+    }
+    if (this.firebaseSession.isAuthorized && this.shardLoadedFromCloud['mission']) {
+      if (JSON.stringify(mergedSessions) !== JSON.stringify(prevSessions)) {
+        this.scheduleShardWrite('mission', { loggedSessions: mergedSessions });
       }
     }
 
@@ -2067,29 +2172,54 @@ class RealtimeService {
         this.scheduleShardWrite('mission', { gpsPosition: data });
         break;
       case 'UPDATE_SHIFT': {
-        const nextLoggedSessions: Record<string, any> = {
-          ...(this.cloudState.loggedSessions || {}),
-        };
+        const nowTs = Number(data?.updatedAt) || Date.now();
         const volId = data?.volontarioId ? String(data.volontarioId).trim() : '';
-        if (volId) {
-          nextLoggedSessions[volId] = {
-            loggato: Boolean(data?.attivo),
-            updatedAt: Date.now(),
-            volontarioNome: data?.volontarioNome || undefined,
-            mezzoScelto: data?.attivo ? (data?.mezzoScelto || '') : '',
-            orarioInizio: data?.orarioInizio || undefined,
-          };
-          if (Array.isArray(this.cloudState.volontari) && this.cloudState.volontari.length > 0) {
-            const nextVols = this.cloudState.volontari.map((v: any) =>
-              v?.id === volId ? { ...v, loggato: Boolean(data?.attivo) } : v
-            );
-            this.scheduleShardWrite('volontari', { volontari: nextVols });
-          }
+        const patchSess = volId
+          ? {
+              [volId]: {
+                loggato: Boolean(data?.attivo),
+                updatedAt: nowTs,
+                volontarioNome: data?.volontarioNome || undefined,
+                mezzoScelto: data?.attivo ? (data?.mezzoScelto || '') : '',
+                orarioInizio: data?.orarioInizio || undefined,
+              },
+            }
+          : {};
+        const nextLoggedSessions = mergeLoggedSessionsSafe(this.cloudState.loggedSessions, patchSess);
+        if (volId && Array.isArray(this.cloudState.volontari) && this.cloudState.volontari.length > 0) {
+          const nextVols = this.cloudState.volontari.map((v: any) =>
+            v?.id === volId ? { ...v, loggato: Boolean(data?.attivo), loggatoUpdatedAt: nowTs } : v
+          );
+          this.scheduleShardWrite('volontari', { volontari: nextVols });
         }
         this.scheduleShardWrite('mission', {
           activeShift: data,
           loggedSessions: nextLoggedSessions,
         });
+        break;
+      }
+      case 'SESSION_HEARTBEAT': {
+        const nowTs = Number(data?.updatedAt) || Date.now();
+        const volId = data?.volontarioId ? String(data.volontarioId).trim() : '';
+        if (volId) {
+          const isLogged = data?.loggato !== false;
+          const nextLoggedSessions = mergeLoggedSessionsSafe(this.cloudState.loggedSessions, {
+            [volId]: {
+              loggato: isLogged,
+              updatedAt: nowTs,
+              volontarioNome: data?.volontarioNome || undefined,
+              mezzoScelto: isLogged ? (data?.mezzoScelto || '') : '',
+              orarioInizio: data?.orarioInizio || undefined,
+            },
+          });
+          this.scheduleShardWrite('mission', { loggedSessions: nextLoggedSessions });
+          if (Array.isArray(this.cloudState.volontari) && this.cloudState.volontari.length > 0) {
+            const nextVols = this.cloudState.volontari.map((v: any) =>
+              v?.id === volId ? { ...v, loggato: isLogged, loggatoUpdatedAt: nowTs } : v
+            );
+            this.scheduleShardWrite('volontari', { volontari: nextVols });
+          }
+        }
         break;
       }
       case 'ATTESA_DESTINAZIONE_ARRIVO_SUL_POSTO':
@@ -2415,11 +2545,42 @@ class RealtimeService {
           this.scheduleShardWrite('timbrature', { timbrature: data.timbrature });
         }
         break;
-      case 'UPDATE_BACHECA':
+      case 'UPDATE_BACHECA': {
+        const patchBacheca: Record<string, any> = {};
         if (Array.isArray(data?.bacheca)) {
-          this.scheduleShardWrite('bacheca', { bacheca: data.bacheca });
+          patchBacheca.bacheca = data.bacheca;
+        }
+        if (data?.notifica && (data.notifica.tipo === 'nuovo_post' || data.notifica.tipo === 'nuovo_corso')) {
+          const rec: NotificaBachecaRecord = {
+            ...data.notifica,
+            id: data.notifica.id || `bacheca-${data.notifica.tipo}-${data.notifica.postId || Date.now()}`,
+            createdAt: Number(data.notifica.createdAt) || Date.now(),
+            soloInApp: data.notifica.soloInApp !== false,
+          };
+          const mergedRecenti = mergeNotificheBachecaRecenti(this.cloudState.notificheBachecaRecenti, [rec]);
+          this.cloudState.notificheBachecaRecenti = mergedRecenti;
+          patchBacheca.notificheBachecaRecenti = mergedRecenti;
+        }
+        if (Object.keys(patchBacheca).length > 0) {
+          this.scheduleShardWrite('bacheca', patchBacheca);
         }
         break;
+      }
+      case 'NOTIFICA_BACHECA': {
+        const rawNotif = data?.notifica || data;
+        if (rawNotif && rawNotif.postTitolo && (rawNotif.tipo === 'nuovo_post' || rawNotif.tipo === 'nuovo_corso')) {
+          const rec: NotificaBachecaRecord = {
+            ...rawNotif,
+            id: rawNotif.id || `bacheca-${rawNotif.tipo}-${rawNotif.postId || Date.now()}`,
+            createdAt: Number(rawNotif.createdAt) || Date.now(),
+            soloInApp: rawNotif.soloInApp !== false,
+          };
+          const mergedRecenti = mergeNotificheBachecaRecenti(this.cloudState.notificheBachecaRecenti, [rec]);
+          this.cloudState.notificheBachecaRecenti = mergedRecenti;
+          this.scheduleShardWrite('bacheca', { notificheBachecaRecenti: mergedRecenti });
+        }
+        break;
+      }
       case 'UPDATE_GIORNALE_BORDO':
         if (Array.isArray(data?.giornaleBordo)) {
           this.scheduleShardWrite('bacheca', { giornaleBordo: data.giornaleBordo });
@@ -2483,6 +2644,14 @@ class RealtimeService {
       case 'UPDATE_CORSI':
         if (Array.isArray(data?.corsiFormazione)) {
           this.scheduleShardWrite('servizi', { corsiFormazione: stripLegacyCorsi(data.corsiFormazione) });
+        }
+        break;
+      case 'UPDATE_MODELLI_ATTESTATI':
+        if (data?.modelliAttestatiCategoria && typeof data.modelliAttestatiCategoria === 'object') {
+          this.scheduleShardWrite('config', {
+            modelliAttestatiCategoria: sanitizzaModelliPerCloud(data.modelliAttestatiCategoria),
+            modelliAttestatiUpdatedAt: Number(data.updatedAt) || getModelliAttestatiUpdatedAt() || Date.now()
+          });
         }
         break;
       case 'UPDATE_NOTE_DEBITO':
@@ -3357,6 +3526,23 @@ class RealtimeService {
     return this.send('UPDATE_SHIFT', shift);
   }
 
+  public sendSessionHeartbeat(payload: {
+    volontarioId: string;
+    volontarioNome?: string;
+    qualificaTurno?: string;
+    mezzoScelto?: string;
+    orarioInizio?: string;
+    loggato?: boolean;
+    updatedAt?: number;
+  }) {
+    if (!payload?.volontarioId) return false;
+    return this.send('SESSION_HEARTBEAT', {
+      ...payload,
+      loggato: payload.loggato !== false,
+      updatedAt: payload.updatedAt || Date.now(),
+    });
+  }
+
   public alertCentraleAttesaDestinazione(codice?: string, mezzo?: string) {
     return this.send('ATTESA_DESTINAZIONE_ARRIVO_SUL_POSTO', { codice, mezzo });
   }
@@ -3795,6 +3981,17 @@ class RealtimeService {
   public syncCorsi(corsiFormazione: any[]) {
     const clean = stripLegacyCorsi(corsiFormazione);
     this.send('UPDATE_CORSI', { corsiFormazione: clean });
+  }
+
+  public syncModelliAttestatiCategoria(modelliAttestatiCategoria: Record<string, any>, updatedAt?: number) {
+    const clean = sanitizzaModelliPerCloud(modelliAttestatiCategoria);
+    const ts = updatedAt || Date.now();
+    this.cloudState.modelliAttestatiCategoria = clean;
+    this.cloudState.modelliAttestatiUpdatedAt = ts;
+    this.send('UPDATE_MODELLI_ATTESTATI', {
+      modelliAttestatiCategoria: clean,
+      updatedAt: ts
+    });
   }
 
   public syncNoteDiDebito(noteDiDebito: any[]) {

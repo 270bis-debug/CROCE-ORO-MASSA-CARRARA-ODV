@@ -91,7 +91,14 @@ import { SEDI_CROCE_ORO, SedeCroceOro } from './data/sediCroceOro';
 import { MappaOperativa, PosizioneGPS } from './components/MappaOperativa';
 import { VistaCittadinoLiveTracking } from './components/VistaCittadinoLiveTracking';
 import { DatabaseVolontariModal, Volontario } from './components/DatabaseVolontariModal';
-import { mergeVolontariListsSafe, normalizeDeletedIds } from './utils/volontariMerge';
+import { mergeVolontariListsSafe, mergeLoggedSessionsSafe, LoggedSessionEntry, normalizeDeletedIds } from './utils/volontariMerge';
+import {
+  getCorsiVisibiliInBacheca,
+  mergeNotificheBachecaRecenti,
+  NotificaBachecaRecord,
+  formatDataItalianaCorso,
+  normalizeCourseDateISO
+} from './utils/bachecaCorsi';
 import { ModalDecisioneSbloccoAdmin } from './components/ModalDecisioneSbloccoAdmin';
 import { SchermataTurnoVolontario, SessioneTurno } from './components/SchermataTurnoVolontario';
 import { ModalChecklistInizioTurnoGuidata } from './components/ModalChecklistInizioTurnoGuidata';
@@ -1095,9 +1102,7 @@ export default function App() {
   });
 
   // Stato multi-account di tutti gli utenti attualmente loggati su qualsiasi dispositivo (sincronizzato live via Firestore/WS)
-  const [loggedSessions, setLoggedSessions] = useState<
-    Record<string, { loggato: boolean; updatedAt?: number; volontarioNome?: string; mezzoScelto?: string }>
-  >({});
+  const [loggedSessions, setLoggedSessions] = useState<Record<string, LoggedSessionEntry>>({});
 
   // Sblocca automaticamente il motore audio Radio VHF/Emergenza al primo gesto utente sulla pagina,
   // così anche dispositivi loggati con account diversi che non hanno mai aperto il pannello radio
@@ -1937,6 +1942,34 @@ export default function App() {
     } catch {}
     realtime.syncBacheca(norm);
   };
+
+  // Notifiche recenti della bacheca (nuovi post e corsi/formazione) per consegna garantita solo in-app a tutti gli account
+  const [notificheBachecaRecenti, setNotificheBachecaRecenti] = useState<NotificaBachecaRecord[]>(() => {
+    try {
+      const saved = localStorage.getItem('CROCE_ORO_NOTIFICHE_BACHECA_RECENTI');
+      if (saved) return mergeNotificheBachecaRecenti([], JSON.parse(saved));
+    } catch {}
+    return [];
+  });
+  const applicaNotificheBachecaRecenti = useCallback((incoming?: NotificaBachecaRecord[] | null) => {
+    if (!Array.isArray(incoming) || incoming.length === 0) return;
+    setNotificheBachecaRecenti((prev) => {
+      const merged = mergeNotificheBachecaRecenti(prev, incoming);
+      try {
+        localStorage.setItem('CROCE_ORO_NOTIFICHE_BACHECA_RECENTI', JSON.stringify(merged));
+      } catch {}
+      return merged;
+    });
+  }, []);
+
+  // Conteggio corsi/formazione visibili in bacheca (in programma fino al giorno stesso in cui iniziano)
+  const corsiInBachecaCount = useMemo(() => {
+    return getCorsiVisibiliInBacheca(corsiFormazione).length;
+  }, [corsiFormazione]);
+
+  const totaleElementiBachecaAttivi = useMemo(() => {
+    return comunicazioniBacheca.filter(c => c.attiva).length + corsiInBachecaCount;
+  }, [comunicazioniBacheca, corsiInBachecaCount]);
 
   // 14. Contatti Esterni (Fornitori, Officine, Clienti/Debitori, Donatori da Intervento)
   const [contatti, setContatti] = useState<ContattoEsterno[]>(() => {
@@ -4343,6 +4376,12 @@ export default function App() {
     // 2. Carica subito lo stato operativo generale (missione, turni, allarmi)
     realtime.fetchSyncState().then((s) => {
       if (!s) return;
+      if (s.loggedSessions && typeof s.loggedSessions === 'object') {
+        setLoggedSessions(prev => mergeLoggedSessionsSafe(prev, s.loggedSessions));
+      }
+      if (Array.isArray(s.notificheBachecaRecenti) && s.notificheBachecaRecenti.length > 0) {
+        applicaNotificheBachecaRecenti(s.notificheBachecaRecenti);
+      }
       if ((s.volontari && Array.isArray(s.volontari) && s.volontari.length > 0) || Array.isArray(s.volontariEliminatiIds)) {
         applicaVolontari(Array.isArray(s.volontari) ? s.volontari : [], s.volontariEliminatiIds);
       }
@@ -4468,18 +4507,38 @@ export default function App() {
 
   const aggiornaStatoLoginCentrale = useCallback((volId: string | undefined, isLoggedIn: boolean) => {
     const targetId = volId || 'vol-admin';
-    const adesso = formatOrarioConSecondi(new Date());
-    const found = volontariRef.current.some(v => v.id === targetId);
-    if (!found) return;
+    const nowTs = Date.now();
+    const adesso = formatOrarioConSecondi(new Date(nowTs));
+    const targetVol = volontariRef.current.find(v => v.id === targetId);
+    if (!targetVol) return;
+    const effLoggedIn = isLoggedIn ? true : (sessioneTurnoRef.current.attivo && sessioneTurnoRef.current.volontarioId === targetId);
+    const volNome = `${targetVol.nome || ''} ${targetVol.cognome || ''}`.trim();
     const next = volontariRef.current.map(v => {
       if (v.id !== targetId) return v;
       const haTimb = Boolean(hasTimbraturaApertaPerVolontario(v, timbratureVolontariRef.current));
       return {
         ...v,
-        loggato: isLoggedIn ? true : (sessioneTurnoRef.current.attivo && sessioneTurnoRef.current.volontarioId === targetId),
+        loggato: effLoggedIn,
+        loggatoUpdatedAt: nowTs,
         inTurno: haTimb,
-        ...(isLoggedIn ? { ultimoAccesso: adesso } : {})
+        ...(effLoggedIn ? { ultimoAccesso: adesso } : {})
       };
+    });
+    setLoggedSessions(prev =>
+      mergeLoggedSessionsSafe(prev, {
+        [targetId]: {
+          loggato: effLoggedIn,
+          updatedAt: nowTs,
+          volontarioNome: volNome || prev[targetId]?.volontarioNome,
+          mezzoScelto: effLoggedIn ? (targetVol.mezzoAttivo || '') : '',
+        }
+      })
+    );
+    realtime.sendSessionHeartbeat({
+      volontarioId: targetId,
+      volontarioNome: volNome || undefined,
+      loggato: effLoggedIn,
+      updatedAt: nowTs,
     });
     aggiornaVolontari(next);
   }, [aggiornaVolontari]);
@@ -4542,12 +4601,116 @@ export default function App() {
 
   // Verifica centralizzata se un volontario è attualmente loggato su qualsiasi terminale
   const isVolontarioLoggatoLive = useCallback((v: Volontario): boolean => {
-    const sessCloud = loggedSessions[v.id];
-    if (sessCloud?.loggato === true) return true;
     if (sessioneTurno.attivo && sessioneTurno.volontarioId === v.id) return true;
     if (utenteCentrale?.id && utenteCentrale.id === v.id) return true;
+    const sessCloud = loggedSessions[v.id];
+    if (sessCloud) {
+      const sessTs = typeof sessCloud.updatedAt === 'number' && Number.isFinite(sessCloud.updatedAt) ? sessCloud.updatedAt : 0;
+      const volTs = typeof v.loggatoUpdatedAt === 'number' && Number.isFinite(v.loggatoUpdatedAt) ? v.loggatoUpdatedAt : 0;
+      if (sessTs >= volTs) {
+        return Boolean(sessCloud.loggato);
+      }
+    }
     return Boolean(v.loggato);
   }, [loggedSessions, sessioneTurno.attivo, sessioneTurno.volontarioId, utenteCentrale?.id]);
+
+  // Elenco volontari con flag `loggato` sempre riconciliato live con `loggedSessions` (usato da modali e riepiloghi)
+  const volontariConStatoLive = useMemo(() => {
+    return volontari.map(v => {
+      const liveLoggato = isVolontarioLoggatoLive(v);
+      return Boolean(v.loggato) === liveLoggato ? v : { ...v, loggato: liveLoggato };
+    });
+  }, [volontari, isVolontarioLoggatoLive]);
+
+  // Heartbeat silenzioso di presenza: riallinea automaticamente lo stato `Loggato` sul server/cloud
+  // al rientro in app, dopo ricaricamento pagina, riconnessione rete o riavvio del server
+  useEffect(() => {
+    const activeVolId = sessioneTurno.attivo && sessioneTurno.volontarioId ? sessioneTurno.volontarioId : null;
+    const activeCentraleId =
+      utenteCentrale?.id && utenteCentrale.id !== 'admin-centrale-root' && utenteCentrale.id !== 'vol-admin'
+        ? utenteCentrale.id
+        : null;
+
+    if (!activeVolId && !activeCentraleId) return;
+
+    const inviaPresenzaAttiva = () => {
+      const nowTs = Date.now();
+      const patchSessions: Record<string, LoggedSessionEntry> = {};
+
+      if (activeVolId) {
+        const volNome = sessioneTurno.volontarioNome || '';
+        const mezzo = sessioneTurno.mezzoScelto || '';
+        patchSessions[activeVolId] = {
+          loggato: true,
+          updatedAt: nowTs,
+          volontarioNome: volNome || undefined,
+          mezzoScelto: mezzo,
+          orarioInizio: sessioneTurno.orarioInizio || undefined,
+        };
+        realtime.sendSessionHeartbeat({
+          volontarioId: activeVolId,
+          volontarioNome: volNome || undefined,
+          qualificaTurno: sessioneTurno.qualificaTurno || undefined,
+          mezzoScelto: mezzo,
+          orarioInizio: sessioneTurno.orarioInizio || undefined,
+          loggato: true,
+          updatedAt: nowTs,
+        });
+      }
+
+      if (activeCentraleId && activeCentraleId !== activeVolId) {
+        const centNome = `${utenteCentrale?.nome || ''} ${utenteCentrale?.cognome || ''}`.trim();
+        patchSessions[activeCentraleId] = {
+          loggato: true,
+          updatedAt: nowTs,
+          volontarioNome: centNome || undefined,
+          mezzoScelto: '',
+        };
+        realtime.sendSessionHeartbeat({
+          volontarioId: activeCentraleId,
+          volontarioNome: centNome || undefined,
+          loggato: true,
+          updatedAt: nowTs,
+        });
+      }
+
+      if (Object.keys(patchSessions).length > 0) {
+        setLoggedSessions(prev => mergeLoggedSessionsSafe(prev, patchSessions));
+      }
+    };
+
+    inviaPresenzaAttiva();
+    const intervalId = window.setInterval(inviaPresenzaAttiva, 60000);
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        inviaPresenzaAttiva();
+      }
+    };
+    const onOnline = () => inviaPresenzaAttiva();
+    const unsubInit = realtime.on('INIT_SYNC', () => {
+      inviaPresenzaAttiva();
+    });
+
+    document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('online', onOnline);
+
+    return () => {
+      window.clearInterval(intervalId);
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('online', onOnline);
+      unsubInit();
+    };
+  }, [
+    sessioneTurno.attivo,
+    sessioneTurno.volontarioId,
+    sessioneTurno.volontarioNome,
+    sessioneTurno.qualificaTurno,
+    sessioneTurno.mezzoScelto,
+    sessioneTurno.orarioInizio,
+    utenteCentrale?.id,
+    utenteCentrale?.nome,
+    utenteCentrale?.cognome,
+  ]);
 
   // Corsi e Formazione destinati alla sezione del volontario attualmente loggato
   const corsiPerVolontarioLoggato = useMemo(() => {
@@ -4633,6 +4796,67 @@ export default function App() {
       silent: false
     });
   }, [sollecitoFirmaPin, volontarioLoggatoCorrente, utenteCentraleLive?.id, volontari]);
+
+  // Consegna garantita SOLO IN-APP a tutti gli account loggati (Volontari, Operatori, Admin)
+  // quando un post o un corso/formazione entra in Bacheca, mostrando anche il titolo del post/corso
+  useEffect(() => {
+    if (!Array.isArray(notificheBachecaRecenti) || notificheBachecaRecenti.length === 0) return;
+
+    const accountKey =
+      (sessioneTurno.attivo && sessioneTurno.volontarioId ? sessioneTurno.volontarioId : '') ||
+      (utenteCentrale?.id || '') ||
+      (ruolo === 'admin' ? 'vol-admin' : '');
+    if (!accountKey) return;
+
+    const nowMs = Date.now();
+    const quattordiciGiorniMs = 14 * 24 * 60 * 60 * 1000;
+    const oggiIso = formatISODateItaly(new Date());
+
+    // Processa dal meno recente al più recente così la più nuova resta in cima al Centro Notifiche
+    const ordinati = [...notificheBachecaRecenti].sort((a, b) => Number(a.createdAt || 0) - Number(b.createdAt || 0));
+
+    for (const notif of ordinati) {
+      if (!notif || !notif.postTitolo) continue;
+      if (notif.tipo !== 'nuovo_post' && notif.tipo !== 'nuovo_corso') continue;
+      if (notif.createdAt && nowMs - Number(notif.createdAt) > quattordiciGiorniMs) continue;
+
+      // Se è un corso già iniziato nei giorni scorsi (rimosso dalla bacheca), non notificare
+      if (notif.tipo === 'nuovo_corso' && notif.dataInizio) {
+        const startIso = normalizeCourseDateISO(notif.dataInizio);
+        if (startIso && startIso < oggiIso) continue;
+      }
+
+      const dedupKey =
+        notif.tipo === 'nuovo_corso'
+          ? `bacheca-corso-${notif.id || notif.postId || notif.postTitolo}-${accountKey}`
+          : `bacheca-post-${notif.id || notif.postId || notif.postTitolo}-${accountKey}`;
+
+      const alreadyProcessed =
+        processedNotifKeysRef.current.has(dedupKey) ||
+        notificheRicevuteAccountRef.current.some((n) => n.dedupKey === dedupKey);
+      if (alreadyProcessed) continue;
+
+      if (notif.tipo === 'nuovo_corso') {
+        riceviERegistraNotifica({
+          categoria: 'corso',
+          titolo: `🎓 Corso in Bacheca: "${notif.postTitolo}"`,
+          messaggio:
+            notif.messaggio ||
+            `Nuovo corso/formazione in bacheca: "${notif.postTitolo}"${notif.dataInizio ? ` (inizio il ${formatDataItalianaCorso(notif.dataInizio)})` : ''}`,
+          linkAzione: { tipo: 'bacheca', idRiferimento: notif.postId },
+          dedupKey
+        });
+      } else {
+        riceviERegistraNotifica({
+          categoria: 'bacheca',
+          titolo: `📢 Bacheca: "${notif.postTitolo}"`,
+          messaggio: notif.messaggio || `Nuovo post pubblicato in bacheca: "${notif.postTitolo}"`,
+          linkAzione: { tipo: 'bacheca', idRiferimento: notif.postId },
+          dedupKey
+        });
+      }
+    }
+  }, [notificheBachecaRecenti, sessioneTurno.attivo, sessioneTurno.volontarioId, utenteCentrale?.id, ruolo]);
 
   // Calcolo delle macro categorie autorizzate per la sessione corrente (include DB interi + singole sottosezioni abilitate)
   const sezioniAbilitateUtente = useMemo<AdminSectionId[]>(() => {
@@ -4857,16 +5081,19 @@ export default function App() {
     }
     // Riporta sempre sul canale radio Generale al cambio account per evitare isolamento su gruppi non autorizzati
     setSelectedRadioChannelId('general');
-    setLoggedSessions((prev) => ({
-      ...prev,
-      [volontario.id]: {
-        loggato: true,
-        updatedAt: Date.now(),
-        volontarioNome: nomeCompleto,
-        mezzoScelto: '',
-      },
-    }));
-    realtime.updateShift(nuovaSessione);
+    const nowTs = now.getTime();
+    setLoggedSessions((prev) =>
+      mergeLoggedSessionsSafe(prev, {
+        [volontario.id]: {
+          loggato: true,
+          updatedAt: nowTs,
+          volontarioNome: nomeCompleto,
+          mezzoScelto: '',
+          orarioInizio: orarioInizioTurno,
+        },
+      })
+    );
+    realtime.updateShift({ ...nuovaSessione, updatedAt: nowTs } as any);
     if (posizioneVolontario) {
       realtime.updateGps(posizioneVolontario);
     }
@@ -4876,6 +5103,7 @@ export default function App() {
         ? {
             ...v,
             loggato: true,
+            loggatoUpdatedAt: nowTs,
             inTurno: isDiTurno,
             mezzoAttivo: '',
             ruoloTurno: ruolo,
@@ -5163,12 +5391,15 @@ export default function App() {
       }
     }
 
+    const logoutTs = Date.now();
     if (sessioneCorrente.volontarioId) {
+      const stillInCentrale = utenteCentraleRef.current?.id === sessioneCorrente.volontarioId;
       const aggiornati = volontariRef.current.map(v =>
         v.id === sessioneCorrente.volontarioId
           ? {
               ...v,
-              loggato: utenteCentraleRef.current?.id === v.id ? true : false,
+              loggato: stillInCentrale ? true : false,
+              loggatoUpdatedAt: logoutTs,
               inTurno: Boolean(hasTimbraturaApertaPerVolontario(v, timbratureVolontariRef.current)),
               mezzoAttivo: '',
               ruoloTurno: ''
@@ -5185,22 +5416,24 @@ export default function App() {
     );
 
     if (sessioneCorrente.volontarioId) {
-      setLoggedSessions((prev) => ({
-        ...prev,
-        [sessioneCorrente.volontarioId!]: {
-          loggato: false,
-          updatedAt: Date.now(),
-          volontarioNome: nomeUscita,
-          mezzoScelto: '',
-        },
-      }));
+      setLoggedSessions((prev) =>
+        mergeLoggedSessionsSafe(prev, {
+          [sessioneCorrente.volontarioId!]: {
+            loggato: false,
+            updatedAt: logoutTs,
+            volontarioNome: nomeUscita,
+            mezzoScelto: '',
+          },
+        })
+      );
     }
     aggiornaSessioneTurno({ attivo: false });
     realtime.updateShift({
       attivo: false,
       volontarioId: sessioneCorrente.volontarioId,
       volontarioNome: nomeUscita,
-    });
+      updatedAt: logoutTs,
+    } as any);
     invitoAutoTriggeredRef.current = null;
     setInvitoAvvioDismissedVolKey(null);
     setInAttesaChecklistDopoTimbratura(null);
@@ -9814,7 +10047,7 @@ KM TOTALI: ${kmTot} KM`;
         const s = payload.state;
         if (!s) return;
         if (s.loggedSessions && typeof s.loggedSessions === 'object') {
-          setLoggedSessions(s.loggedSessions);
+          setLoggedSessions(prev => mergeLoggedSessionsSafe(prev, s.loggedSessions));
         }
         if ((s.volontari && Array.isArray(s.volontari) && s.volontari.length > 0) || Array.isArray(s.volontariEliminatiIds)) {
           applicaVolontari(Array.isArray(s.volontari) ? s.volontari : [], s.volontariEliminatiIds);
@@ -9989,6 +10222,9 @@ KM TOTALI: ${kmTot} KM`;
             localStorage.setItem('CROCE_ORO_BACHECA_COMUNICAZIONI', JSON.stringify(bachecaNorm));
           } catch {}
         }
+        if (Array.isArray(s.notificheBachecaRecenti) && s.notificheBachecaRecenti.length > 0) {
+          applicaNotificheBachecaRecenti(s.notificheBachecaRecenti);
+        }
         if (s.giornaleBordo && Array.isArray(s.giornaleBordo)) {
           setGiornaleBordo(s.giornaleBordo);
           try {
@@ -10141,7 +10377,7 @@ KM TOTALI: ${kmTot} KM`;
           setRadioEmergency(s.radioEmergency);
         }
         if (s.loggedSessions && typeof s.loggedSessions === 'object') {
-          setLoggedSessions(s.loggedSessions);
+          setLoggedSessions(prev => mergeLoggedSessionsSafe(prev, s.loggedSessions));
         }
         if ((s.volontari && Array.isArray(s.volontari) && s.volontari.length > 0) || Array.isArray(s.volontariEliminatiIds)) {
           applicaVolontari(Array.isArray(s.volontari) ? s.volontari : [], s.volontariEliminatiIds);
@@ -10200,6 +10436,9 @@ KM TOTALI: ${kmTot} KM`;
           try {
             localStorage.setItem('CROCE_ORO_BACHECA_COMUNICAZIONI', JSON.stringify(bachecaNorm));
           } catch {}
+        }
+        if (Array.isArray(s.notificheBachecaRecenti) && s.notificheBachecaRecenti.length > 0) {
+          applicaNotificheBachecaRecenti(s.notificheBachecaRecenti);
         }
         if (s.giornaleBordo && Array.isArray(s.giornaleBordo)) {
           setGiornaleBordo(s.giornaleBordo);
@@ -10501,6 +10740,9 @@ KM TOTALI: ${kmTot} KM`;
 
       // Ricezione aggiornamento elenco volontari e PIN in tempo reale dal cloud
       realtime.on('VOLONTARI_UPDATED', (payload: any) => {
+        if (payload?.loggedSessions && typeof payload.loggedSessions === 'object') {
+          setLoggedSessions(prev => mergeLoggedSessionsSafe(prev, payload.loggedSessions));
+        }
         if (payload && (Array.isArray(payload.volontari) || Array.isArray(payload.volontariEliminatiIds))) {
           applicaVolontari(Array.isArray(payload.volontari) ? payload.volontari : [], payload.volontariEliminatiIds);
         }
@@ -11196,17 +11438,20 @@ KM TOTALI: ${kmTot} KM`;
           return payload.shift;
         });
         if (payload.loggedSessions && typeof payload.loggedSessions === 'object') {
-          setLoggedSessions(payload.loggedSessions);
+          setLoggedSessions(prev => mergeLoggedSessionsSafe(prev, payload.loggedSessions));
         } else if (payload.shift?.volontarioId) {
-          setLoggedSessions((prev) => ({
-            ...prev,
-            [payload.shift.volontarioId]: {
-              loggato: Boolean(payload.shift.attivo),
-              updatedAt: Date.now(),
-              volontarioNome: payload.shift.volontarioNome || prev[payload.shift.volontarioId]?.volontarioNome,
-              mezzoScelto: payload.shift.mezzoScelto || '',
-            },
-          }));
+          const ts = typeof payload.shift.updatedAt === 'number' && payload.shift.updatedAt > 0 ? payload.shift.updatedAt : Date.now();
+          setLoggedSessions((prev) =>
+            mergeLoggedSessionsSafe(prev, {
+              [payload.shift.volontarioId]: {
+                loggato: Boolean(payload.shift.attivo),
+                updatedAt: ts,
+                volontarioNome: payload.shift.volontarioNome || prev[payload.shift.volontarioId]?.volontarioNome,
+                mezzoScelto: payload.shift.mezzoScelto || '',
+                orarioInizio: payload.shift.orarioInizio || prev[payload.shift.volontarioId]?.orarioInizio,
+              },
+            })
+          );
         }
         if (payload.volontari && Array.isArray(payload.volontari)) {
           applicaVolontari(payload.volontari);
@@ -12044,18 +12289,24 @@ KM TOTALI: ${kmTot} KM`;
             localStorage.setItem('CROCE_ORO_BACHECA_COMUNICAZIONI', JSON.stringify(bachecaNorm));
           } catch {}
         }
+        if (Array.isArray(payload?.notificheBachecaRecenti) && payload.notificheBachecaRecenti.length > 0) {
+          applicaNotificheBachecaRecenti(payload.notificheBachecaRecenti);
+        }
       }),
 
-      // 16. Ricezione Notifiche Bacheca (Nuovo Post o Nuovo Commento)
-      // "Per quanto riguarda le notifiche di nuovi posti in bacheca e dei commenti le notifiche avverranno tramite pop-up e suono o vibrazione della tipica standard così come previsto dai singoli device, non inviare suoni di sirena."
+      // 16. Ricezione Notifiche Bacheca (Nuovo Post, Nuovo Corso/Formazione o Nuovo Commento — solo in-app)
       realtime.on('NOTIFICA_BACHECA', (payload: any) => {
+        if (Array.isArray(payload?.notificheBachecaRecenti) && payload.notificheBachecaRecenti.length > 0) {
+          applicaNotificheBachecaRecenti(payload.notificheBachecaRecenti);
+        }
         const notif = payload?.notifica;
         if (!notif) return;
 
-        const volIdCorrente = sessioneTurnoRef.current?.volontarioId;
+        const volIdCorrente = sessioneTurnoRef.current?.attivo ? sessioneTurnoRef.current?.volontarioId : undefined;
         const volNomeCorrente = (sessioneTurnoRef.current?.volontarioNome || '').trim().toLowerCase();
-        const adminId = utenteCentraleRef.current?.id || 'admin';
+        const adminId = utenteCentraleRef.current?.id || (ruoloRef.current === 'admin' ? 'vol-admin' : '');
         const adminNome = `${utenteCentraleRef.current?.nome || ''} ${utenteCentraleRef.current?.cognome || ''}`.trim().toLowerCase();
+        const accountKey = volIdCorrente || adminId || '';
 
         if (notif.tipo === 'nuovo_commento') {
           // Controlla se l'utente corrente fa parte dei destinatari deduplicati (autore del post o commentatori precedenti)
@@ -12077,15 +12328,37 @@ KM TOTALI: ${kmTot} KM`;
               dedupKey: `bacheca-comm-${notif.id || `${notif.postId}-${notif.autoreCommento || ''}-${notif.messaggio || ''}`}`
             });
           }
-        } else if (notif.tipo === 'nuovo_post') {
-          // Registra nello storico permanente per tutti e attiva pop-up visivo con suoneria distinta generica
-          riceviERegistraNotifica({
-            categoria: 'bacheca',
-            titolo: '📢 Nuova Comunicazione in Bacheca',
-            messaggio: notif.messaggio || `Pubblicato un nuovo avviso: "${notif.postTitolo}"`,
-            linkAzione: { tipo: 'bacheca', idRiferimento: notif.postId },
-            dedupKey: `bacheca-post-${notif.postId || notif.id || notif.postTitolo || ''}`
-          });
+        } else if (notif.tipo === 'nuovo_post' || notif.tipo === 'nuovo_corso') {
+          applicaNotificheBachecaRecenti([
+            {
+              ...notif,
+              id: notif.id || `bacheca-${notif.tipo}-${notif.postId || Date.now()}`,
+              createdAt: Number(notif.createdAt) || Date.now(),
+              soloInApp: true,
+            }
+          ]);
+
+          if (!accountKey) return;
+
+          if (notif.tipo === 'nuovo_corso') {
+            riceviERegistraNotifica({
+              categoria: 'corso',
+              titolo: `🎓 Corso in Bacheca: "${notif.postTitolo}"`,
+              messaggio:
+                notif.messaggio ||
+                `Nuovo corso/formazione in bacheca: "${notif.postTitolo}"${notif.dataInizio ? ` (inizio il ${formatDataItalianaCorso(notif.dataInizio)})` : ''}`,
+              linkAzione: { tipo: 'bacheca', idRiferimento: notif.postId },
+              dedupKey: `bacheca-corso-${notif.id || notif.postId || notif.postTitolo}-${accountKey}`
+            });
+          } else {
+            riceviERegistraNotifica({
+              categoria: 'bacheca',
+              titolo: `📢 Bacheca: "${notif.postTitolo}"`,
+              messaggio: notif.messaggio || `Nuovo post pubblicato in bacheca: "${notif.postTitolo}"`,
+              linkAzione: { tipo: 'bacheca', idRiferimento: notif.postId },
+              dedupKey: `bacheca-post-${notif.id || notif.postId || notif.postTitolo}-${accountKey}`
+            });
+          }
         }
       }),
       realtime.on('NOTIFICA_DISPONIBILITA_TURNO', (notif: any) => {
@@ -12236,7 +12509,10 @@ KM TOTALI: ${kmTot} KM`;
       }),
       realtime.on('LOGGED_SESSIONS_UPDATED', (payload: any) => {
         if (payload?.loggedSessions && typeof payload.loggedSessions === 'object') {
-          setLoggedSessions(payload.loggedSessions);
+          setLoggedSessions(prev => mergeLoggedSessionsSafe(prev, payload.loggedSessions));
+        }
+        if (Array.isArray(payload?.volontari) && payload.volontari.length > 0) {
+          applicaVolontari(payload.volontari);
         }
       }),
       realtime.on('MAGAZZINO_VESTIARIO_UPDATED', (payload: any) => {
@@ -12738,7 +13014,7 @@ KM TOTALI: ${kmTot} KM`;
         <DatabaseVolontariModal
           isOpen={modalDatabaseVolontariAperta}
           onClose={() => setModalDatabaseVolontariAperta(false)}
-          volontari={volontari}
+          volontari={volontariConStatoLive}
           onAggiornaVolontari={aggiornaVolontari}
           onEliminaVolontario={handleEliminaVolontario}
           onNotificaRadio={aggiungiNotifica}
@@ -13322,7 +13598,7 @@ KM TOTALI: ${kmTot} KM`;
             conteggioCorsi={corsiFormazione.length}
             conteggioSedi={sediAssociative.length}
             conteggioTurniOggi={turniSedi.length}
-            conteggioComunicazioni={comunicazioniBacheca.filter(c => c.attiva).length}
+            conteggioComunicazioni={totaleElementiBachecaAttivi}
             conteggioContatti={contatti.length}
             mezziFlotta={mezziFlotta}
             manutenzioni={manutenzioniMezzi}
@@ -13485,6 +13761,7 @@ KM TOTALI: ${kmTot} KM`;
           <SezioneBacheca
             comunicazioni={comunicazioniBacheca}
             onAggiornaComunicazioni={handleAggiornaComunicazioniBacheca}
+            corsiFormazione={corsiFormazione}
             sedi={sediAssociative}
             operatoreCorrente={utenteCentrale?.nome ? `${utenteCentrale.nome} ${utenteCentrale.cognome || ''}` : 'Amministratore'}
             operatoreId={utenteCentrale?.id || 'admin'}
@@ -13815,7 +14092,7 @@ KM TOTALI: ${kmTot} KM`;
                       onNotificaRadio={aggiungiNotifica}
                       onApriTabelloneTurni={() => setModalTabelloneTurniVolontario(true)}
                       onApriBacheca={() => setModalBachecaVolontarioAperta(true)}
-                      conteggioBacheca={comunicazioniBacheca.filter(c => c.attiva).length}
+                      conteggioBacheca={totaleElementiBachecaAttivi}
                       onApriCentroNotifiche={() => setModalCentroNotificheAperta(true)}
                       conteggioNotificheNonLette={conteggioNotificheNonLette}
                       checklistsTemplates={checklistsTemplates}
@@ -13847,7 +14124,7 @@ KM TOTALI: ${kmTot} KM`;
                         onNotificaRadio={aggiungiNotifica}
                         onApriTabelloneTurni={() => setModalTabelloneTurniVolontario(true)}
                         onApriBacheca={() => setModalBachecaVolontarioAperta(true)}
-                        conteggioBacheca={comunicazioniBacheca.filter(c => c.attiva).length}
+                        conteggioBacheca={totaleElementiBachecaAttivi}
                         onApriCentroNotifiche={() => setModalCentroNotificheAperta(true)}
                         conteggioNotificheNonLette={conteggioNotificheNonLette}
                         onApriTimbratura={() => {
@@ -15504,7 +15781,7 @@ KM TOTALI: ${kmTot} KM`;
                             className="w-full sm:w-auto px-4 py-2.5 rounded-xl bg-violet-600 hover:bg-violet-500 text-white font-black text-xs uppercase flex items-center justify-center gap-1.5 shadow-lg shadow-violet-600/30 active:scale-95 transition-all cursor-pointer shrink-0 border border-violet-400/50"
                           >
                             <Megaphone className="w-4 h-4 text-violet-200" />
-                            <span>Apri Bacheca ({comunicazioniBacheca.filter(c => c.attiva).length})</span>
+                            <span>Apri Bacheca ({totaleElementiBachecaAttivi})</span>
                           </button>
                         </div>
 
@@ -16104,58 +16381,130 @@ KM TOTALI: ${kmTot} KM`;
                 </div>
               )}
 
-              {/* Monitor Stato Terminale Volontario / Di Turno (solo dopo timbratura) vs Loggato */}
+              {/* Monitor Stato Terminali Volontari Multi-Account (Di Turno / Timbrati vs Loggati) */}
               {(() => {
-                const capoTimb = sessioneTurno.attivo
-                  ? timbratureVolontari.find(t =>
-                      (t.volontarioId === sessioneTurno.volontarioId ||
-                       (t.volontarioNome && sessioneTurno.volontarioNome && t.volontarioNome.trim().toLowerCase() === sessioneTurno.volontarioNome.trim().toLowerCase())) &&
-                      (!t.orarioUscita || t.orarioUscita.trim() === '')
-                    )
-                  : undefined;
-                const isDiTurnoTimbrato = Boolean(sessioneTurno.attivo && capoTimb);
+                const volontariLoggatiLive = volontari
+                  .filter(v => v.id !== 'vol-admin' && isVolontarioLoggatoLive(v))
+                  .map(v => {
+                    const timbAperta = hasTimbraturaApertaPerVolontario(v, timbratureVolontari);
+                    const sessCloud = loggedSessions[v.id];
+                    const mezzoLive =
+                      (sessioneTurno.attivo && sessioneTurno.volontarioId === v.id ? sessioneTurno.mezzoScelto : '') ||
+                      sessCloud?.mezzoScelto ||
+                      v.mezzoAttivo ||
+                      '';
+                    const orarioLive =
+                      timbAperta?.orarioIngresso ||
+                      sessCloud?.orarioInizio ||
+                      (sessioneTurno.attivo && sessioneTurno.volontarioId === v.id ? sessioneTurno.orarioInizio : '') ||
+                      v.ultimoAccesso ||
+                      '';
+                    return {
+                      volontario: v,
+                      nomeCompleto: `${v.nome || ''} ${v.cognome || ''}`.trim() || 'Volontario',
+                      timbAperta,
+                      isDiTurnoTimbrato: Boolean(timbAperta),
+                      mezzoLive,
+                      orarioLive,
+                    };
+                  })
+                  .sort((a, b) => {
+                    if (a.isDiTurnoTimbrato !== b.isDiTurnoTimbrato) return a.isDiTurnoTimbrato ? -1 : 1;
+                    return a.nomeCompleto.localeCompare(b.nomeCompleto, 'it');
+                  });
+
+                const countTimbrati = volontariLoggatiLive.filter(x => x.isDiTurnoTimbrato).length;
+                const countLoggati = volontariLoggatiLive.length;
+
                 return (
-                  <div className="mb-4 bg-slate-950/80 border border-slate-800 rounded-xl p-2.5 px-3 flex flex-wrap items-center justify-between gap-2 text-xs">
-                    <div className="flex items-center gap-2">
-                      <div className={`w-2.5 h-2.5 rounded-full ${isDiTurnoTimbrato ? 'bg-emerald-400 animate-pulse' : sessioneTurno.attivo ? 'bg-sky-400' : 'bg-slate-600'}`} />
-                      <span className="text-slate-400 font-medium">
-                        {isDiTurnoTimbrato ? 'Di Turno (Timbrato):' : 'Terminale Volontario:'}
-                      </span>
-                      {sessioneTurno.attivo ? (
-                        <span className={`font-bold flex flex-wrap items-center gap-1.5 ${isDiTurnoTimbrato ? 'text-emerald-400' : 'text-sky-300'}`}>
-                          <span className={`flex items-center gap-1.5 ${isDiTurnoTimbrato ? 'text-emerald-300' : 'text-sky-200'}`}>
-                            <span className={`w-2.5 h-2.5 rounded-full inline-block shadow-sm ${isDiTurnoTimbrato ? 'bg-emerald-400 animate-pulse' : 'bg-sky-400'}`} />
-                            <span>{sessioneTurno.volontarioNome}</span>
+                  <div className="mb-4 bg-slate-950/80 border border-slate-800 rounded-xl p-2.5 px-3 flex flex-col gap-2 text-xs">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        <div
+                          className={`w-2.5 h-2.5 rounded-full shrink-0 ${
+                            countTimbrati > 0
+                              ? 'bg-emerald-400 animate-pulse'
+                              : countLoggati > 0
+                                ? 'bg-sky-400'
+                                : 'bg-slate-600'
+                          }`}
+                        />
+                        <span className="text-slate-400 font-medium">
+                          {countTimbrati > 0
+                            ? 'Personale Connesso / Di Turno:'
+                            : 'Terminali Volontari Loggati:'}
+                        </span>
+                        {countLoggati === 0 ? (
+                          <span className="text-slate-500 italic">
+                            Nessun volontario attualmente loggato sul terminale mobile
                           </span>
-                          <span className="text-slate-300 font-semibold">({sessioneTurno.qualificaTurno})</span>
-                          {sessioneTurno.mezzoScelto && (
-                            <span className="text-amber-400 font-mono">• Mezzo: {sessioneTurno.mezzoScelto}</span>
-                          )}
-                          <span className="text-slate-500 font-normal">• Dalle {sessioneTurno.orarioInizio}</span>
-                          {capoTimb ? (
-                            <span
-                              className="ml-1 inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 text-[10px] font-bold"
-                              title={`Timbratura di ingresso registrata alle ore ${capoTimb.orarioIngresso}${capoTimb.sede ? ` presso ${capoTimb.sede}` : ''}`}
-                            >
-                              <Clock className="w-3 h-3 text-emerald-400" />
-                              <span>🟢 Di Turno • Timbrato: {capoTimb.orarioIngresso}</span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1.5 font-bold text-slate-200">
+                            <span className="px-2 py-0.5 rounded-full bg-sky-500/20 text-sky-300 border border-sky-500/40 text-[10px]">
+                              {countLoggati} {countLoggati === 1 ? 'loggato' : 'loggati'}
                             </span>
-                          ) : (
-                            <span
-                              className="ml-1 inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-sky-500/20 text-sky-300 border border-sky-500/40 text-[10px] font-bold"
-                              title="Account loggato ma NON ancora di turno: manca la timbratura di ingresso."
-                            >
-                              <AlertTriangle className="w-3 h-3 text-amber-400" />
-                              <span>🔵 Loggato (Non di turno • Manca Timbratura)</span>
-                            </span>
-                          )}
-                        </span>
-                      ) : (
-                        <span className="text-slate-500 italic">
-                          Nessun volontario attualmente loggato sul terminale mobile
-                        </span>
-                      )}
+                            {countTimbrati > 0 && (
+                              <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 text-[10px]">
+                                {countTimbrati} {countTimbrati === 1 ? 'di turno' : 'di turno'}
+                              </span>
+                            )}
+                          </span>
+                        )}
+                      </div>
                     </div>
+
+                    {countLoggati > 0 && (
+                      <div className="flex flex-col gap-1.5">
+                        {volontariLoggatiLive.map(({ volontario, nomeCompleto, timbAperta, isDiTurnoTimbrato, mezzoLive, orarioLive }) => (
+                          <div
+                            key={volontario.id}
+                            className={`flex flex-wrap items-center justify-between gap-x-2 gap-y-1 px-2.5 py-1.5 rounded-lg border ${
+                              isDiTurnoTimbrato
+                                ? 'bg-emerald-950/30 border-emerald-500/30'
+                                : 'bg-sky-950/25 border-sky-500/25'
+                            }`}
+                          >
+                            <div className="flex flex-wrap items-center gap-1.5 min-w-0">
+                              <span
+                                className={`w-2 h-2 rounded-full shrink-0 ${
+                                  isDiTurnoTimbrato ? 'bg-emerald-400 animate-pulse' : 'bg-sky-400'
+                                }`}
+                              />
+                              <span className={`font-bold ${isDiTurnoTimbrato ? 'text-emerald-200' : 'text-sky-200'}`}>
+                                {nomeCompleto}
+                              </span>
+                              {volontario.qualifica && (
+                                <span className="text-slate-400 font-medium">({volontario.qualifica})</span>
+                              )}
+                              {mezzoLive && (
+                                <span className="text-amber-400 font-mono font-bold">• Mezzo: {mezzoLive}</span>
+                              )}
+                              {orarioLive && (
+                                <span className="text-slate-500 font-normal">• Dalle {orarioLive}</span>
+                              )}
+                            </div>
+
+                            {timbAperta ? (
+                              <span
+                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 text-[10px] font-bold shrink-0"
+                                title={`Timbratura di ingresso registrata alle ore ${timbAperta.orarioIngresso}${timbAperta.sede ? ` presso ${timbAperta.sede}` : ''}`}
+                              >
+                                <Clock className="w-3 h-3 text-emerald-400" />
+                                <span>🟢 Di Turno • Timbrato: {timbAperta.orarioIngresso}</span>
+                              </span>
+                            ) : (
+                              <span
+                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-sky-500/20 text-sky-300 border border-sky-500/40 text-[10px] font-bold shrink-0"
+                                title="Account loggato ma NON ancora di turno: manca la timbratura di ingresso."
+                              >
+                                <AlertTriangle className="w-3 h-3 text-amber-400" />
+                                <span>🔵 Loggato (Non di turno)</span>
+                              </span>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 );
               })()}
@@ -20280,7 +20629,7 @@ KM TOTALI: ${kmTot} KM`;
       <DatabaseVolontariModal
         isOpen={modalDatabaseVolontariAperta}
         onClose={() => setModalDatabaseVolontariAperta(false)}
-        volontari={volontari}
+        volontari={volontariConStatoLive}
         onAggiornaVolontari={aggiornaVolontari}
         onEliminaVolontario={handleEliminaVolontario}
         onNotificaRadio={aggiungiNotifica}
@@ -22283,12 +22632,17 @@ KM TOTALI: ${kmTot} KM`;
         onChiudi={() => setModalBachecaVolontarioAperta(false)}
         comunicazioni={comunicazioniBacheca}
         onAggiornaComunicazioni={handleAggiornaComunicazioniBacheca}
+        corsiFormazione={corsiFormazione}
+        onApriDettaglioCorso={(corso) => {
+          setModalBachecaVolontarioAperta(false);
+          setCorsoSelezionatoVolontario(corso);
+        }}
         volontarioNome={sessioneTurno.volontarioNome || (utenteCentrale?.nome ? `${utenteCentrale.nome} ${utenteCentrale.cognome || ''}`.trim() : 'Volontario')}
         volontarioId={sessioneTurno.volontarioId || utenteCentrale?.id}
         isAdmin={isCentraleAdmin}
         isPresidente={Boolean(volontarioLoggatoCorrente?.caricaConsiglioDirettivo?.toLowerCase().includes('presidente') || utenteCentrale?.caricaConsiglioDirettivo?.toLowerCase().includes('presidente'))}
-        sezioneVolontarioNome={sediAssociative[0]?.nome}
-        sezioneVolontarioId={sediAssociative[0]?.id}
+        sezioneVolontarioNome={volontarioLoggatoCorrente?.sezioneAppartenenzaNome || sediAssociative[0]?.nome}
+        sezioneVolontarioId={volontarioLoggatoCorrente?.sezioneAppartenenzaId || sediAssociative[0]?.id}
         sedi={sediAssociative}
       />
 
@@ -22457,8 +22811,12 @@ KM TOTALI: ${kmTot} KM`;
           contesto="centrale"
           onCompleta={(risultato: RisultatoObbligoFirmaEPin) => {
             const target = obbligoAdeguamentoCentrale;
+            const nowTs = Date.now();
             const aggiornato: Volontario = {
               ...target,
+              loggato: true,
+              loggatoUpdatedAt: nowTs,
+              ultimoAccesso: formatOrarioConSecondi(new Date(nowTs)),
               ...(risultato.firmaBase64 ? { firmaBase64: risultato.firmaBase64 } : {}),
               ...(risultato.nuovoPin
                 ? {
@@ -22472,6 +22830,23 @@ KM TOTALI: ${kmTot} KM`;
             const nextVolontari = volontariRef.current.map((v) =>
               v.id === aggiornato.id ? { ...v, ...aggiornato } : v
             );
+            const nomeAgg = `${aggiornato.nome || ''} ${aggiornato.cognome || ''}`.trim();
+            setLoggedSessions(prev =>
+              mergeLoggedSessionsSafe(prev, {
+                [aggiornato.id]: {
+                  loggato: true,
+                  updatedAt: nowTs,
+                  volontarioNome: nomeAgg || prev[aggiornato.id]?.volontarioNome,
+                  mezzoScelto: aggiornato.mezzoAttivo || '',
+                },
+              })
+            );
+            realtime.sendSessionHeartbeat({
+              volontarioId: aggiornato.id,
+              volontarioNome: nomeAgg || undefined,
+              loggato: true,
+              updatedAt: nowTs,
+            });
             aggiornaVolontari(nextVolontari);
             setUtenteCentrale((prev) => {
               if (!prev || prev.id !== aggiornato.id) return prev;

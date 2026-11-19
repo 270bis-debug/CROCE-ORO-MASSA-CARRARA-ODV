@@ -1,17 +1,27 @@
 import jsPDF from 'jspdf';
 import { PDFDocument, rgb, StandardFonts } from 'pdf-lib';
-import { CorsoFormazione, PartecipanteCorso, TipologiaCorso } from '../types/adminTypes';
+import { CorsoFormazione, ModelloAttestatoCategoria, PartecipanteCorso, PosizioneCampoPdfPrestampato, TipologiaCorso } from '../types/adminTypes';
 import { getDatiCartaIntestata } from './cartaIntestataStore';
 import { formatDateItaly, formatISODateItaly, getCurrentYearItaly, getItalianDateParts } from './italianTime';
 import { LOGO_IPOTESI_SEMITRASP_BASE64 as LOGO_CROCE_ORO_BASE64 } from '../assets/logoBase64';
 import { TEMPLATE_ATTESTATO_PSV_BASE64 } from '../assets/templateAttestatoPSVBase64';
 import { FIRMA_PRESIDENTE_SIMONINI_BASE64 } from '../assets/firmaPresidenteBase64';
+import {
+  caricaPdfPrestampatoBytes,
+  formattaMatricolaDaModello,
+  getModelloPerTipologia,
+  getProssimoNumeroEffettivoCategoria
+} from './modelliAttestatiStore';
 
 export interface OpzioniAttestato {
   presidenteNome?: string;
   presidenteFirmaBase64?: string;
   dataRilascio?: string;
+  luogoRilascio?: string;
   downloadImmediato?: boolean;
+  modelloPrestampato?: ModelloAttestatoCategoria;
+  pdfPrestampatoBytes?: Uint8Array;
+  apiBaseUrl?: string;
 }
 
 /**
@@ -210,43 +220,126 @@ export function recuperaFirmaPresidente(opzioni?: OpzioniAttestato): string {
  * - Per altri corsi: Protocollo ATT-BLSD / ATT-PC
  */
 export function generaNumeroAttestato(tipologia: TipologiaCorso, tuttiCorsi: CorsoFormazione[] = []): string {
-  if (tipologia === 'Seminario PSV') {
-    let maxNum = 98; // Così il primissimo generato sarà 99 -> "GEV-099"
-    tuttiCorsi.forEach((c) => {
-      c.iscritti?.forEach((p) => {
-        if (p.numeroAttestato) {
-          const match = p.numeroAttestato.match(/GEV[- ]?(\d+)/i);
-          if (match) {
-            const val = parseInt(match[1], 10);
-            if (!isNaN(val) && val > maxNum) {
-              maxNum = val;
-            }
-          }
-        }
-      });
-    });
-    const prossimo = maxNum + 1;
-    return `GEV-${String(prossimo).padStart(3, '0')}`;
-  } else if (tipologia === 'Seminario Autisti') {
-    let maxNum = 0;
-    tuttiCorsi.forEach((c) => {
-      c.iscritti?.forEach((p) => {
-        if (p.numeroAttestato && p.numeroAttestato.startsWith('AUT-PART-')) {
-          const match = p.numeroAttestato.match(/AUT-PART-(\d+)/);
-          if (match) {
-            const val = parseInt(match[1], 10);
-            if (!isNaN(val) && val > maxNum) maxNum = val;
-          }
-        }
-      });
-    });
-    return `AUT-PART-${String(maxNum + 1).padStart(3, '0')}`;
-  } else {
-    const slug = tipologia.replace(/[^A-Z0-9]/gi, '-').toUpperCase().slice(0, 8);
-    const anno = getCurrentYearItaly();
-    const casuale = Math.floor(100 + Math.random() * 900);
-    return `ATT-${slug}-${anno}-${casuale}`;
+  const modello = getModelloPerTipologia(tipologia);
+  const prossimoNum = getProssimoNumeroEffettivoCategoria(modello, tuttiCorsi);
+  return formattaMatricolaDaModello(modello, prossimoNum);
+}
+
+function hexToPdfRgb(hex?: string) {
+  const clean = String(hex || '#000000').replace('#', '').trim();
+  if (/^[0-9a-fA-F]{6}$/.test(clean)) {
+    const r = parseInt(clean.slice(0, 2), 16) / 255;
+    const g = parseInt(clean.slice(2, 4), 16) / 255;
+    const b = parseInt(clean.slice(4, 6), 16) / 255;
+    return rgb(r, g, b);
   }
+  return rgb(0, 0, 0);
+}
+
+function pulisciTestoWinAnsi(str: string): string {
+  if (!str) return '';
+  return str
+    .replace(/[“”]/g, '"')
+    .replace(/[‘’]/g, "'")
+    .replace(/[–—]/g, '-')
+    .replace(/…/g, '...')
+    .replace(/[^\x20-\xFF]/g, '');
+}
+
+/**
+ * Compila un PDF prestampato caricato per la categoria modificando SOLAMENTE:
+ * 1) Nome e Cognome del corsista che ha frequentato
+ * 2) Data e Luogo di rilascio
+ * 3) Numero di matricola progressivo
+ * Tutto il resto del PDF prestampato resta intatto al 100%.
+ */
+export async function compilaPdfPrestampatoCategoria(
+  pdfBytes: Uint8Array,
+  modello: ModelloAttestatoCategoria,
+  dati: {
+    nomeCognome: string;
+    luogoRilascio: string;
+    dataRilascio: string;
+    matricola: string;
+  }
+): Promise<Uint8Array> {
+  const pdfDoc = await PDFDocument.load(pdfBytes, { ignoreEncryption: true });
+  const pages = pdfDoc.getPages();
+  if (!pages || pages.length === 0) {
+    throw new Error('Il file PDF prestampato non contiene pagine.');
+  }
+  const page = pages[0];
+  const { width, height } = page.getSize();
+
+  const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+  const fontRegular = await pdfDoc.embedFont(StandardFonts.Helvetica);
+
+  const disegnaCampo = (valoreRaw: string, cfg: PosizioneCampoPdfPrestampato) => {
+    const prefisso = cfg.prefisso || '';
+    let testo = pulisciTestoWinAnsi(`${prefisso}${valoreRaw}`.trim());
+    if (!testo) return;
+    if (cfg.uppercase) {
+      testo = testo.toUpperCase();
+    }
+
+    const font = cfg.bold ? fontBold : fontRegular;
+    let size = Math.max(7, Math.min(48, Number(cfg.fontSize) || 14));
+    const maxWidth = width * 0.9;
+    let textWidth = font.widthOfTextAtSize(testo, size);
+    while (textWidth > maxWidth && size > 8) {
+      size -= 0.5;
+      textWidth = font.widthOfTextAtSize(testo, size);
+    }
+
+    const xAnchor = width * (Math.max(0, Math.min(100, Number(cfg.xPercent) || 50)) / 100);
+    const yFromTop = Math.max(0, Math.min(100, Number(cfg.yPercent) || 50)) / 100;
+    const yPdf = height * (1 - yFromTop) - size * 0.35;
+
+    let xPdf = xAnchor;
+    if (cfg.align === 'center') {
+      xPdf = xAnchor - textWidth / 2;
+    } else if (cfg.align === 'right') {
+      xPdf = xAnchor - textWidth;
+    }
+
+    // Assicura che il testo non esca dai bordi pagina
+    xPdf = Math.max(12, Math.min(width - textWidth - 12, xPdf));
+    const ySafe = Math.max(10, Math.min(height - size - 6, yPdf));
+
+    if (cfg.sfondoBianco) {
+      const padX = 6;
+      const padY = 4;
+      page.drawRectangle({
+        x: Math.max(4, xPdf - padX),
+        y: Math.max(4, ySafe - padY),
+        width: Math.min(width - 8, textWidth + padX * 2),
+        height: size + padY * 2,
+        color: rgb(1, 1, 1)
+      });
+    }
+
+    page.drawText(testo, {
+      x: xPdf,
+      y: ySafe,
+      size,
+      font,
+      color: hexToPdfRgb(cfg.colorHex)
+    });
+  };
+
+  const dataFormat = formattaDataSlash(dati.dataRilascio);
+  const luogoPulito = (dati.luogoRilascio || '').trim();
+  const dataLuogoText = luogoPulito
+    ? modello.formatoDataLuogo === 'virgola'
+      ? `${luogoPulito}, ${dataFormat}`
+      : `${luogoPulito}, lì ${dataFormat}`
+    : dataFormat;
+
+  disegnaCampo(dati.nomeCognome || 'PARTECIPANTE', modello.campoNomeCognome);
+  disegnaCampo(dataLuogoText, modello.campoDataLuogo);
+  disegnaCampo(dati.matricola || '', modello.campoMatricola);
+
+  return await pdfDoc.save();
 }
 
 /**
@@ -261,18 +354,32 @@ export async function avviaDownloadAttestatoUniversale(
 ): Promise<void> {
   if (typeof window === 'undefined' || typeof document === 'undefined') return;
 
+  const modelloCat = opzioni?.modelloPrestampato || getModelloPerTipologia(corso.tipologia);
+  const opzioniComplete: OpzioniAttestato = {
+    ...(opzioni || {}),
+    modelloPrestampato: modelloCat?.attivo && modelloCat?.hasPdfFile ? modelloCat : undefined
+  };
+
   try {
-    const res = await fetch('/api/prepara-attestato-pdf', {
+    const base = opzioni?.apiBaseUrl ? opzioni.apiBaseUrl.replace(/\/$/, '') : '';
+    const res = await fetch(`${base}/api/prepara-attestato-pdf`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ corso, partecipante, opzioni })
+      body: JSON.stringify({
+        corso,
+        partecipante,
+        opzioni: {
+          ...opzioniComplete,
+          pdfPrestampatoBytes: undefined
+        }
+      })
     });
 
     if (res.ok) {
       const data = await res.json();
       if (data.success && data.downloadUrl) {
         const a = document.createElement('a');
-        a.href = data.downloadUrl;
+        a.href = `${base}${data.downloadUrl}`;
         a.download = data.filename || 'Attestato.pdf';
         a.target = '_blank';
         a.rel = 'noopener noreferrer';
@@ -291,7 +398,7 @@ export async function avviaDownloadAttestatoUniversale(
   }
 
   // Fallback client-side se il server non risponde
-  await scaricaAttestatoPDF(corso, partecipante, opzioni);
+  await scaricaAttestatoPDF(corso, partecipante, opzioniComplete);
 }
 
 /**
@@ -467,18 +574,16 @@ export async function eseguiDownloadSicuroPDF(data: Uint8Array | Blob, nomeFile:
  */
 export async function condividiAttestatoPDF(
   corso: CorsoFormazione,
-  partecipante: PartecipanteCorso
+  partecipante: PartecipanteCorso,
+  opzioni?: OpzioniAttestato
 ): Promise<boolean> {
   if (typeof navigator === 'undefined' || !navigator.share) {
     return false;
   }
   try {
-    const bytes = await scaricaAttestatoPDF(corso, partecipante, { downloadImmediato: false });
+    const bytes = await scaricaAttestatoPDF(corso, partecipante, { ...(opzioni || {}), downloadImmediato: false });
     const blob = new Blob([bytes as any], { type: 'application/pdf' });
-    let numAtt = (partecipante.numeroAttestato || 'GEV_099').trim();
-    if (!numAtt.toUpperCase().startsWith('GEV')) {
-      numAtt = `GEV_${numAtt}`;
-    }
+    const numAtt = (partecipante.numeroAttestato || generaNumeroAttestato(corso.tipologia)).trim();
     const matricolaClean = numAtt.replace(/[^a-zA-Z0-9_-]/g, '_');
     const nomeClean = (partecipante.volontarioNome || 'Partecipante').replace(/[^a-zA-Z0-9_-]/g, '_');
     const nomeFile = `Attestato_${matricolaClean}_${nomeClean}.pdf`;
@@ -1063,15 +1168,64 @@ export async function stampaAttestatoPDF(
 
 /**
  * Genera e scarica il PDF dell'Attestato.
- * Conforme alla richiesta dell'utente: tutti gli attestati adottano il layout unico ufficiale
- * regionale A4 Portrait di GEV_098_Marco_Zeni_f7c39866.pdf, adattando dinamicamente il titolo,
- * il sottotitolo, la frase di frequenza ("Seminario" / "Corso Formativo") e la matricola.
- * Restituisce un Uint8Array garantito di circa 200KB sia su browser che su Node.js (zero file vuoti).
+ * Se per la tipologia/categoria del corso è stato caricato un file PDF prestampato attivo,
+ * utilizza quel prestampato compilando SOLAMENTE:
+ * - Nome e Cognome del corsista
+ * - Data e Luogo di rilascio
+ * - Numero di matricola progressivo
+ * Altrimenti utilizza il layout regionale ufficiale A4 predefinito.
  */
 export async function scaricaAttestatoPDF(
   corso: CorsoFormazione,
   partecipante: PartecipanteCorso,
   opzioni?: OpzioniAttestato
 ): Promise<Uint8Array> {
+  const modello = opzioni?.modelloPrestampato || getModelloPerTipologia(corso.tipologia);
+
+  if (modello && modello.attivo && modello.hasPdfFile) {
+    try {
+      const templateBytes =
+        opzioni?.pdfPrestampatoBytes ||
+        (await caricaPdfPrestampatoBytes(modello, opzioni?.apiBaseUrl || ''));
+
+      if (templateBytes && templateBytes.length > 100) {
+        const luogoRilascio =
+          (opzioni?.luogoRilascio || '').trim() ||
+          (partecipante.luogoRilascioAttestato || '').trim() ||
+          (modello.luogoRilascioDefault || '').trim() ||
+          determinaCittaPrevalenteCorso(corso);
+
+        const dataRilascio =
+          opzioni?.dataRilascio ||
+          partecipante.dataRilascioAttestato ||
+          formatISODateItaly();
+
+        const matricola =
+          (partecipante.numeroAttestato || '').trim() ||
+          formattaMatricolaDaModello(modello);
+
+        const nomeCognome = (partecipante.volontarioNome || 'PARTECIPANTE').trim();
+
+        const pdfBytes = await compilaPdfPrestampatoCategoria(templateBytes, modello, {
+          nomeCognome,
+          luogoRilascio,
+          dataRilascio,
+          matricola
+        });
+
+        if (opzioni?.downloadImmediato !== false && typeof window !== 'undefined' && typeof document !== 'undefined') {
+          const matricolaClean = (matricola || 'ATTESTATO').replace(/[^a-zA-Z0-9_-]/g, '_');
+          const nomeClean = (nomeCognome || 'Partecipante').replace(/[^a-zA-Z0-9_-]/g, '_');
+          const nomeFile = `Attestato_${matricolaClean}_${nomeClean}.pdf`;
+          eseguiDownloadSicuroPDF(pdfBytes, nomeFile);
+        }
+
+        return pdfBytes;
+      }
+    } catch (errCustom) {
+      console.error('Errore compilazione PDF prestampato di categoria, fallback a modello standard:', errCustom);
+    }
+  }
+
   return await scaricaAttestatoPSVUfficialePDF(corso, partecipante, opzioni);
 }

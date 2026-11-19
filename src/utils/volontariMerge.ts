@@ -103,9 +103,77 @@ function mergeSingleVolontario<T extends Record<string, any>>(base: T, incoming:
       };
       continue;
     }
+    if (key === 'loggato') {
+      const baseLogTs = Number(base.loggatoUpdatedAt || 0);
+      const incLogTs = Number(incoming.loggatoUpdatedAt || 0);
+      if (incLogTs > 0 && baseLogTs > 0 && incLogTs < baseLogTs) {
+        // Stato incoming più vecchio dello stato locale/server: non sovrascrivere
+        continue;
+      }
+      if (base.loggato === true && val === false && incLogTs === 0) {
+        // Non permettere a una sincronizzazione massiva priva di timestamp di azzerare un login attivo
+        continue;
+      }
+      merged.loggato = Boolean(val);
+      continue;
+    }
+    if (key === 'loggatoUpdatedAt') {
+      const baseLogTs = Number(base.loggatoUpdatedAt || 0);
+      const incLogTs = Number(val || 0);
+      if (incLogTs > baseLogTs) {
+        merged.loggatoUpdatedAt = incLogTs;
+      }
+      continue;
+    }
     merged[key] = val;
   }
   return merged as T;
+}
+
+export interface LoggedSessionEntry {
+  loggato: boolean;
+  updatedAt?: number;
+  volontarioNome?: string;
+  mezzoScelto?: string;
+  orarioInizio?: string;
+}
+
+/**
+ * Fonde in modo non distruttivo le mappe delle sessioni loggate (`loggedSessions`)
+ * mantenendo sempre l'evento più recente per singolo `volontarioId` (in base a `updatedAt`).
+ */
+export function mergeLoggedSessionsSafe(
+  prev?: Record<string, LoggedSessionEntry> | null,
+  incoming?: Record<string, LoggedSessionEntry> | null
+): Record<string, LoggedSessionEntry> {
+  const merged: Record<string, LoggedSessionEntry> = {};
+  if (prev && typeof prev === 'object') {
+    for (const [volId, info] of Object.entries(prev)) {
+      if (!volId || !info || typeof info !== 'object') continue;
+      merged[volId] = { ...info };
+    }
+  }
+  if (incoming && typeof incoming === 'object') {
+    for (const [volId, info] of Object.entries(incoming)) {
+      if (!volId || !info || typeof info !== 'object') continue;
+      const existing = merged[volId];
+      const prevTs = Number(existing?.updatedAt || 0);
+      const incTs = Number(info.updatedAt || 0);
+      if (!existing) {
+        merged[volId] = { ...info };
+      } else if (incTs > prevTs) {
+        merged[volId] = { ...existing, ...info };
+      } else if (incTs === prevTs) {
+        // A parità di timestamp, preserva loggato=true se presente
+        merged[volId] = {
+          ...existing,
+          ...info,
+          loggato: Boolean(existing.loggato || info.loggato),
+        };
+      }
+    }
+  }
+  return merged;
 }
 
 /**

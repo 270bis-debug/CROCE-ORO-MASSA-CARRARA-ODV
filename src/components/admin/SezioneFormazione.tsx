@@ -36,7 +36,9 @@ import {
   Loader2,
   Share2,
   Mail,
-  Send
+  Send,
+  FileUp,
+  Hash
 } from 'lucide-react';
 import { useTitoloDatabase, useNomiSottosezioniCustom } from '../../hooks/useNomiDatabase';
 import { getTitoloSottosezione } from '../../constants/macroCategorie';
@@ -49,6 +51,11 @@ import {
 } from '../../types/adminTypes';
 import { Volontario } from '../DatabaseVolontariModal';
 import { inviaNotificaModificaAdmin } from '../../utils/notificaModificaAdmin';
+import {
+  isCorsoVisibileInBacheca,
+  formatDataItalianaCorso,
+  getDataInizioEffettivaCorso
+} from '../../utils/bachecaCorsi';
 import {
   getMansioniCatalogo,
   volontarioHaMansione,
@@ -64,6 +71,13 @@ import {
   formattaIntervalloDateItaliano,
   formattaDataSlash
 } from '../../utils/pdfAttestatoCorso';
+import {
+  consumaProssimaMatricolaCategoria,
+  getModelloPerTipologia,
+  EVENTO_MODELLI_ATTESTATI_UPDATED
+} from '../../utils/modelliAttestatiStore';
+import { realtime } from '../../services/realtime';
+import { PannelloModelliAttestatiPdf } from './PannelloModelliAttestatiPdf';
 import { addDaysISODate, formatDateTimeItaly, formatISODateItaly, getCurrentYearItaly } from '../../utils/italianTime';
 
 export const TIPOLOGIE_CORSO_CONSENTITE: TipologiaCorso[] = [
@@ -142,12 +156,24 @@ export const SezioneFormazione: React.FC<SezioneFormazioneProps> = ({
   allowedSubtabs = null
 }) => {
   const nomiSubCustom = useNomiSottosezioniCustom();
-  const [sottoTab, setSottoTab] = useState<'corsi' | 'iscritti' | 'scadenziario'>('corsi');
-  const canShowSubtab = (id: string) => !allowedSubtabs || allowedSubtabs.includes(id);
+  const [sottoTab, setSottoTab] = useState<'corsi' | 'iscritti' | 'scadenziario' | 'modelli_pdf'>('corsi');
+  // Chiunque abbia accesso al database Corsi & Formazione può gestire i PDF prestampati e le matricole progressive
+  const canShowSubtab = (id: string) => {
+    if (!allowedSubtabs) return true;
+    if (id === 'modelli_pdf') return allowedSubtabs.includes('modelli_pdf') || allowedSubtabs.length > 0;
+    return allowedSubtabs.includes(id);
+  };
+  const [, setModelliVersionTick] = useState(0);
+
+  useEffect(() => {
+    const onModelliUpdated = () => setModelliVersionTick((v) => v + 1);
+    window.addEventListener(EVENTO_MODELLI_ATTESTATI_UPDATED, onModelliUpdated);
+    return () => window.removeEventListener(EVENTO_MODELLI_ATTESTATI_UPDATED, onModelliUpdated);
+  }, []);
 
   useEffect(() => {
     if (!canShowSubtab(sottoTab)) {
-      const ordine = ['corsi', 'iscritti', 'scadenziario'] as const;
+      const ordine = ['corsi', 'iscritti', 'scadenziario', 'modelli_pdf'] as const;
       const prima = ordine.find((t) => canShowSubtab(t));
       if (prima) setSottoTab(prima);
     }
@@ -203,11 +229,66 @@ export const SezioneFormazione: React.FC<SezioneFormazioneProps> = ({
   const [corsoPerIscrizioni, setCorsoPerIscrizioni] = useState<CorsoFormazione | null>(null);
   const [volontarioDaIscrivereId, setVolontarioDaIscrivereId] = useState('');
 
-  // Modale Rilascio Attestato / Stampa
+  // Modale Rilascio Attestato / Stampa + campi modificabili in anteprima
   const [attestatoPerStampa, setAttestatoPerStampa] = useState<{
     corso: CorsoFormazione;
     partecipante: PartecipanteCorso;
   } | null>(null);
+  const [editAttestatoMatricola, setEditAttestatoMatricola] = useState('');
+  const [editAttestatoData, setEditAttestatoData] = useState('');
+  const [editAttestatoLuogo, setEditAttestatoLuogo] = useState('');
+
+  useEffect(() => {
+    if (attestatoPerStampa) {
+      const modCat = getModelloPerTipologia(attestatoPerStampa.corso.tipologia);
+      setEditAttestatoMatricola(
+        (attestatoPerStampa.partecipante.numeroAttestato || generaNumeroAttestato(attestatoPerStampa.corso.tipologia, corsi)).trim()
+      );
+      setEditAttestatoData(
+        attestatoPerStampa.partecipante.dataRilascioAttestato || formatISODateItaly()
+      );
+      setEditAttestatoLuogo(
+        (attestatoPerStampa.partecipante.luogoRilascioAttestato || '').trim() ||
+          (modCat.luogoRilascioDefault || '').trim() ||
+          determinaCittaPrevalenteCorso(attestatoPerStampa.corso)
+      );
+    }
+  }, [attestatoPerStampa?.corso.id, attestatoPerStampa?.partecipante.volontarioId]);
+
+  const handleSalvaDatiAttestatoSingolo = () => {
+    if (!attestatoPerStampa) return;
+    const { corso, partecipante } = attestatoPerStampa;
+    const nuovaMatricola = editAttestatoMatricola.trim() || partecipante.numeroAttestato;
+    const nuovaData = editAttestatoData.trim() || partecipante.dataRilascioAttestato || formatISODateItaly();
+    const nuovoLuogo = editAttestatoLuogo.trim();
+
+    const aggiornati = corsi.map((c) => {
+      if (c.id !== corso.id) return c;
+      return {
+        ...c,
+        iscritti: c.iscritti.map((p) => {
+          if (p.volontarioId !== partecipante.volontarioId) return p;
+          return {
+            ...p,
+            numeroAttestato: nuovaMatricola,
+            dataRilascioAttestato: nuovaData,
+            luogoRilascioAttestato: nuovoLuogo || undefined
+          };
+        })
+      };
+    });
+
+    onAggiornaCorsi(aggiornati);
+    const corsoAgg = aggiornati.find((c) => c.id === corso.id);
+    const partAgg = corsoAgg?.iscritti.find((p) => p.volontarioId === partecipante.volontarioId);
+    if (corsoAgg && partAgg) {
+      setAttestatoPerStampa({ corso: corsoAgg, partecipante: partAgg });
+      if (corsoPerIscrizioni?.id === corsoAgg.id) {
+        setCorsoPerIscrizioni(corsoAgg);
+      }
+    }
+    mostraAvviso(`Dati attestato aggiornati (Matricola: ${nuovaMatricola || '—'}, Luogo: ${nuovoLuogo || 'auto'}).`);
+  };
 
   // Notifica
   const [avviso, setAvviso] = useState<string | null>(null);
@@ -223,7 +304,11 @@ export const SezioneFormazione: React.FC<SezioneFormazioneProps> = ({
     if (operazioneAttestatoInCorso) return;
     setOperazioneAttestatoInCorso(true);
     try {
-      await avviaDownloadAttestatoUniversale(corso, partecipante);
+      await avviaDownloadAttestatoUniversale(corso, partecipante, {
+        apiBaseUrl: realtime.getApiBaseUrl(),
+        luogoRilascio: partecipante.luogoRilascioAttestato,
+        dataRilascio: partecipante.dataRilascioAttestato
+      });
       mostraAvviso(`Download avviato per ${partecipante.volontarioNome || 'partecipante'}.`);
     } catch (err: any) {
       console.error('Errore download attestato:', err);
@@ -239,11 +324,16 @@ export const SezioneFormazione: React.FC<SezioneFormazioneProps> = ({
     if (operazioneAttestatoInCorso) return;
     setOperazioneAttestatoInCorso(true);
     try {
-      const ok = await condividiAttestatoPDF(corso, partecipante);
+      const opz = {
+        apiBaseUrl: realtime.getApiBaseUrl(),
+        luogoRilascio: partecipante.luogoRilascioAttestato,
+        dataRilascio: partecipante.dataRilascioAttestato
+      };
+      const ok = await condividiAttestatoPDF(corso, partecipante, opz);
       if (ok) {
         mostraAvviso('Apertura menu di condivisione e salvataggio...');
       } else {
-        await avviaDownloadAttestatoUniversale(corso, partecipante);
+        await avviaDownloadAttestatoUniversale(corso, partecipante, opz);
         mostraAvviso('Attestato inviato al download del dispositivo.');
       }
     } catch (err: any) {
@@ -446,10 +536,30 @@ export const SezioneFormazione: React.FC<SezioneFormazioneProps> = ({
     };
 
     if (corsoInModifica) {
+      const corsoAggiornato = { ...corsoInModifica, ...datiCorsoAggiornato } as CorsoFormazione;
       const aggiornati = corsi.map((c) =>
-        c.id === corsoInModifica.id ? ({ ...c, ...datiCorsoAggiornato } as CorsoFormazione) : c
+        c.id === corsoInModifica.id ? corsoAggiornato : c
       );
       onAggiornaCorsi(aggiornati);
+
+      // Se il corso non era in bacheca (es. era annullato/concluso o data passata) ed ora entra in bacheca, invia notifica solo in-app a tutti gli account
+      if (!isCorsoVisibileInBacheca(corsoInModifica) && isCorsoVisibileInBacheca(corsoAggiornato)) {
+        const dataInizioEff = getDataInizioEffettivaCorso(corsoAggiornato);
+        realtime.sendNotificaBacheca({
+          id: `bacheca-corso-${corsoAggiornato.id}-${Date.now()}`,
+          tipo: 'nuovo_corso',
+          postId: corsoAggiornato.id,
+          postTitolo: corsoAggiornato.titolo,
+          autoreCommento: operatoreCorrente || 'Formazione',
+          dataInizio: dataInizioEff,
+          tipologia: corsoAggiornato.tipologia,
+          sedeCorso: corsoAggiornato.sedeCorso,
+          soloInApp: true,
+          createdAt: Date.now(),
+          messaggio: `Nuovo corso/formazione in bacheca: "${corsoAggiornato.titolo}" (${corsoAggiornato.tipologia}) • Inizio il ${formatDataItalianaCorso(dataInizioEff)}${corsoAggiornato.sedeCorso ? ` — ${corsoAggiornato.sedeCorso}` : ''}`
+        });
+      }
+
       if (!isAdmin) {
         inviaNotificaModificaAdmin(
           'formazione',
@@ -466,6 +576,25 @@ export const SezioneFormazione: React.FC<SezioneFormazioneProps> = ({
         iscritti: []
       };
       onAggiornaCorsi([...corsi, nuovo]);
+
+      // Se il nuovo corso/formazione è visibile in bacheca (in programma fino al giorno di inizio), invia notifica solo in-app a tutti gli account con il titolo
+      if (isCorsoVisibileInBacheca(nuovo)) {
+        const dataInizioEff = getDataInizioEffettivaCorso(nuovo);
+        realtime.sendNotificaBacheca({
+          id: `bacheca-corso-${nuovo.id}-${Date.now()}`,
+          tipo: 'nuovo_corso',
+          postId: nuovo.id,
+          postTitolo: nuovo.titolo,
+          autoreCommento: operatoreCorrente || 'Formazione',
+          dataInizio: dataInizioEff,
+          tipologia: nuovo.tipologia,
+          sedeCorso: nuovo.sedeCorso,
+          soloInApp: true,
+          createdAt: Date.now(),
+          messaggio: `Nuovo corso/formazione in bacheca: "${nuovo.titolo}" (${nuovo.tipologia}) • Inizio il ${formatDataItalianaCorso(dataInizioEff)}${nuovo.sedeCorso ? ` — ${nuovo.sedeCorso}` : ''}`
+        });
+      }
+
       onNotificaRadio?.(`🎓 FORMAZIONE: Programmato nuovo corso "${nuovo.titolo}" per ${sezioniNomi.join(', ')} (${lezioniOrdinate.length} lezioni)`, 'sistema');
       if (!isAdmin) {
         inviaNotificaModificaAdmin(
@@ -553,6 +682,7 @@ export const SezioneFormazione: React.FC<SezioneFormazioneProps> = ({
     const scadenza = addDaysISODate(dataOggi, 2 * 365); // +2 anni per BLSD
 
     let mansioneDaAssegnare: string | undefined = undefined;
+    let matricolaEmessaMsg: string | null = null;
 
     const aggiornati = corsi.map((c) => {
       if (c.id === corsoId) {
@@ -566,8 +696,15 @@ export const SezioneFormazione: React.FC<SezioneFormazioneProps> = ({
               const isPartecipazione = isSeminarioPSV || isSeminarioAutisti;
 
               let numAtt = p.numeroAttestato;
+              let luogoRilascio = p.luogoRilascioAttestato;
               if (idoneo && !numAtt) {
-                numAtt = generaNumeroAttestato(c.tipologia, corsi);
+                const consumed = consumaProssimaMatricolaCategoria(c.tipologia, corsi, operatoreCorrente);
+                numAtt = consumed.matricola;
+                matricolaEmessaMsg = consumed.matricola;
+                realtime.syncModelliAttestatiCategoria(consumed.mappaAggiornata, consumed.updatedAt);
+                if (!luogoRilascio && consumed.modelloAggiornato.luogoRilascioDefault) {
+                  luogoRilascio = consumed.modelloAggiornato.luogoRilascioDefault;
+                }
               }
 
               // Se il corso riconosce una mansione al superamento (o esame previsto superato)
@@ -586,6 +723,7 @@ export const SezioneFormazione: React.FC<SezioneFormazioneProps> = ({
                 tipoAttestato: (isPartecipazione ? 'partecipazione' : 'idoneita') as 'partecipazione' | 'idoneita',
                 numeroAttestato: idoneo ? numAtt : undefined,
                 dataRilascioAttestato: idoneo ? (p.dataRilascioAttestato || dataOggi) : undefined,
+                luogoRilascioAttestato: idoneo ? luogoRilascio : undefined,
                 scadenzaBrevetto: idoneo ? (isPartecipazione ? undefined : scadenza) : undefined
               };
             }
@@ -616,7 +754,9 @@ export const SezioneFormazione: React.FC<SezioneFormazioneProps> = ({
       }
     }
 
-    mostraAvviso(`Esito formativo e attestato aggiornati.${mansioneDaAssegnare ? ` Mansione "${mansioneDaAssegnare}" assegnata in automatico!` : ''}`);
+    mostraAvviso(
+      `Esito formativo e attestato aggiornati${matricolaEmessaMsg ? ` (Matricola progressiva: ${matricolaEmessaMsg})` : ''}.${mansioneDaAssegnare ? ` Mansione "${mansioneDaAssegnare}" assegnata in automatico!` : ''}`
+    );
   };
 
   // Corsi filtrati
@@ -782,6 +922,20 @@ export const SezioneFormazione: React.FC<SezioneFormazioneProps> = ({
         </div>
 
         <div className="flex items-center gap-2 flex-wrap">
+          {canShowSubtab('modelli_pdf') && (
+            <button
+              type="button"
+              onClick={() => setSottoTab('modelli_pdf')}
+              className={`px-3.5 py-2 rounded-xl font-bold text-xs uppercase flex items-center gap-2 shadow-lg transition-transform active:scale-95 cursor-pointer border ${
+                sottoTab === 'modelli_pdf'
+                  ? 'bg-amber-500 text-slate-950 border-amber-300'
+                  : 'bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border-amber-500/40'
+              }`}
+            >
+              <FileUp className="w-4 h-4" />
+              <span>Modelli PDF &amp; Matricole</span>
+            </button>
+          )}
           <button
             type="button"
             onClick={apriNuovoCorso}
@@ -845,6 +999,21 @@ export const SezioneFormazione: React.FC<SezioneFormazioneProps> = ({
         >
           <Award className="w-4 h-4" />
           <span>3. {getTitoloSottosezione('formazione', 'scadenziario', 'Scadenziario Brevetti & Attestati', nomiSubCustom)} ({tuttiGliAttestati.length})</span>
+        </button>
+        )}
+
+        {canShowSubtab('modelli_pdf') && (
+        <button
+          type="button"
+          onClick={() => setSottoTab('modelli_pdf')}
+          className={`px-4 py-2.5 rounded-xl text-xs font-black uppercase flex items-center gap-2 transition-all cursor-pointer shrink-0 ${
+            sottoTab === 'modelli_pdf'
+              ? 'bg-amber-500 text-slate-950 shadow-lg shadow-amber-500/30 border border-amber-300'
+              : 'bg-slate-900 text-amber-300/90 hover:text-amber-200 border border-amber-500/30'
+          }`}
+        >
+          <FileUp className="w-4 h-4" />
+          <span>4. {getTitoloSottosezione('formazione', 'modelli_pdf', 'Modelli PDF Prestampati & Matricole', nomiSubCustom)}</span>
         </button>
         )}
       </div>
@@ -1321,24 +1490,22 @@ export const SezioneFormazione: React.FC<SezioneFormazioneProps> = ({
                                       </button>
                                     </>
                                   ) : (
-                                    (corsoPerIscrizioni.tipologia === 'Seminario PSV' || corsoPerIscrizioni.tipologia === 'Seminario Autisti') && (
-                                      <button
-                                        type="button"
-                                        onClick={() =>
-                                          handleAggiornaEsito(
-                                            corsoPerIscrizioni.id,
-                                            p.volontarioId,
-                                            'Idoneo / Superato',
-                                            p.oreFrequentate || corsoPerIscrizioni.oreTotali
-                                          )
-                                        }
-                                        className="px-2 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs flex items-center gap-1 shadow-sm cursor-pointer"
-                                        title="Rilascia Attestato di Partecipazione Ufficiale"
-                                      >
-                                        <Award className="w-3.5 h-3.5" />
-                                        <span>Rilascia Attestato</span>
-                                      </button>
-                                    )
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        handleAggiornaEsito(
+                                          corsoPerIscrizioni.id,
+                                          p.volontarioId,
+                                          'Idoneo / Superato',
+                                          p.oreFrequentate || corsoPerIscrizioni.oreTotali
+                                        )
+                                      }
+                                      className="px-2 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs flex items-center gap-1 shadow-sm cursor-pointer"
+                                      title="Rilascia Attestato Ufficiale e assegna matricola progressiva"
+                                    >
+                                      <Award className="w-3.5 h-3.5" />
+                                      <span>Rilascia Attestato</span>
+                                    </button>
                                   )}
                                 </div>
                               </td>
@@ -1542,6 +1709,18 @@ export const SezioneFormazione: React.FC<SezioneFormazioneProps> = ({
             </div>
           </div>
         </div>
+      )}
+
+      {/* ===================================================================== */}
+      {/* 4. SOTTO-TAB: MODELLI PDF PRESTAMPATI & MATRICOLE PROGRESSIVE         */}
+      {/* ===================================================================== */}
+      {sottoTab === 'modelli_pdf' && canShowSubtab('modelli_pdf') && (
+        <PannelloModelliAttestatiPdf
+          corsi={corsi}
+          operatoreCorrente={operatoreCorrente}
+          onNotificaRadio={onNotificaRadio}
+          onAvviso={mostraAvviso}
+        />
       )}
 
       {/* MODALE NUOVO / MODIFICA CORSO */}
@@ -2329,19 +2508,19 @@ export const SezioneFormazione: React.FC<SezioneFormazioneProps> = ({
       {attestatoPerStampa && (() => {
         const isPSV = attestatoPerStampa.corso.tipologia === 'Seminario PSV';
         const isSeminario = attestatoPerStampa.corso.tipologia.toLowerCase().includes('seminario');
-        const cittaPrevalente = determinaCittaPrevalenteCorso(attestatoPerStampa.corso);
+        const modelloCat = getModelloPerTipologia(attestatoPerStampa.corso.tipologia);
+        const usaPrestampato = Boolean(modelloCat.attivo && modelloCat.hasPdfFile);
+        const cittaPrevalente =
+          editAttestatoLuogo.trim() ||
+          (attestatoPerStampa.partecipante.luogoRilascioAttestato || '').trim() ||
+          (modelloCat.luogoRilascioDefault || '').trim() ||
+          determinaCittaPrevalenteCorso(attestatoPerStampa.corso);
         const intervalloDate = formattaIntervalloDateItaliano(attestatoPerStampa.corso.dataInizio, attestatoPerStampa.corso.dataFine);
-        const dataStampa = formattaDataSlash(attestatoPerStampa.partecipante.dataRilascioAttestato || formatISODateItaly());
+        const dataStampa = formattaDataSlash(editAttestatoData || attestatoPerStampa.partecipante.dataRilascioAttestato || formatISODateItaly());
 
-        let numAttestato = (attestatoPerStampa.partecipante.numeroAttestato || '').trim();
-        if (isPSV) {
-          if (!numAttestato) numAttestato = 'GEV 099';
-          if (!numAttestato.toUpperCase().startsWith('GEV')) {
-            numAttestato = `GEV ${numAttestato}`;
-          }
-          numAttestato = numAttestato.replace(/GEV[-_ ]+/i, 'GEV ');
-        } else if (!numAttestato) {
-          numAttestato = generaNumeroAttestato(attestatoPerStampa.corso.tipologia);
+        let numAttestato = (editAttestatoMatricola || attestatoPerStampa.partecipante.numeroAttestato || '').trim();
+        if (!numAttestato) {
+          numAttestato = generaNumeroAttestato(attestatoPerStampa.corso.tipologia, corsi);
         }
 
         const titoloMostrato = isPSV
@@ -2352,25 +2531,99 @@ export const SezioneFormazione: React.FC<SezioneFormazioneProps> = ({
           ? '“Dal Soccorso alla tutela degli animali”'
           : (attestatoPerStampa.corso.sottotitolo || '');
 
+        const partecipanteConModifiche: PartecipanteCorso = {
+          ...attestatoPerStampa.partecipante,
+          numeroAttestato: numAttestato,
+          dataRilascioAttestato: editAttestatoData || attestatoPerStampa.partecipante.dataRilascioAttestato,
+          luogoRilascioAttestato: cittaPrevalente
+        };
+
         return (
           <div className="fixed inset-0 z-50 bg-black/85 flex items-center justify-center p-4 backdrop-blur-md animate-in fade-in">
             <div className="bg-white text-slate-900 rounded-3xl max-w-2xl w-full p-6 shadow-2xl space-y-4 border-4 border-[#bfa353] max-h-[92vh] overflow-y-auto">
               <div className="text-center space-y-1">
                 <div className="text-xs font-black uppercase text-slate-500 tracking-wider">
-                  Croce Oro Massa Carrara OdV • Layout Regionale A4 Ufficiale
+                  {usaPrestampato
+                    ? `PDF Prestampato Categoria "${attestatoPerStampa.corso.tipologia}" Attivo`
+                    : 'Croce Oro Massa Carrara OdV • Layout Regionale A4 Ufficiale'}
                 </div>
                 <h2 className="text-xl font-black text-[#1d1a60] uppercase">
                   Attestato di Partecipazione
                 </h2>
-                <div className="flex items-center justify-center gap-2">
+                <div className="flex items-center justify-center gap-2 flex-wrap">
                   <span className="text-xs font-mono font-bold text-amber-700 bg-amber-50 px-3 py-1 rounded-full border border-amber-300">
-                    {isPSV ? 'Matricola Ufficiale GEV:' : 'Matricola / Protocollo:'} <strong>{numAttestato}</strong>
+                    Matricola: <strong>{numAttestato}</strong>
                   </span>
+                  {usaPrestampato && (
+                    <span className="text-[11px] font-bold text-emerald-700 bg-emerald-50 px-3 py-1 rounded-full border border-emerald-300">
+                      📄 Prestampato: {modelloCat.fileName || 'PDF personalizzato'}
+                    </span>
+                  )}
                 </div>
               </div>
 
-              {/* ANTEPRIMA FEDELE AL MODELLO UFFICIALE REGIONALE (TUTTI I CORSI) */}
+              {/* Controllo & Modifica rapida dei 3 campi stampati (Matricola, Data, Luogo) */}
+              <div className="bg-indigo-50/80 border border-indigo-200 rounded-2xl p-3.5 space-y-2.5 text-left">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[11px] font-black uppercase text-indigo-900 flex items-center gap-1.5">
+                    <Hash className="w-3.5 h-3.5" />
+                    <span>Verifica / Modifica Dati Attestato</span>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={handleSalvaDatiAttestatoSingolo}
+                    className="px-2.5 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-[11px] flex items-center gap-1 cursor-pointer"
+                  >
+                    <Save className="w-3 h-3" />
+                    <span>Salva Dati</span>
+                  </button>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs">
+                  <div>
+                    <label className="block text-[10px] font-bold uppercase text-slate-600 mb-0.5">
+                      Numero di Matricola
+                    </label>
+                    <input
+                      type="text"
+                      value={editAttestatoMatricola}
+                      onChange={(e) => setEditAttestatoMatricola(e.target.value)}
+                      className="w-full px-2.5 py-1.5 rounded-lg bg-white border border-indigo-200 text-slate-900 font-mono font-bold text-xs"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-bold uppercase text-slate-600 mb-0.5">
+                      Luogo di Rilascio
+                    </label>
+                    <input
+                      type="text"
+                      value={editAttestatoLuogo}
+                      onChange={(e) => setEditAttestatoLuogo(e.target.value)}
+                      placeholder="es. Massa"
+                      className="w-full px-2.5 py-1.5 rounded-lg bg-white border border-indigo-200 text-slate-900 font-semibold text-xs"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-bold uppercase text-slate-600 mb-0.5">
+                      Data di Rilascio
+                    </label>
+                    <input
+                      type="date"
+                      value={editAttestatoData}
+                      onChange={(e) => setEditAttestatoData(e.target.value)}
+                      className="w-full px-2.5 py-1.5 rounded-lg bg-white border border-indigo-200 text-slate-900 font-semibold text-xs"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* ANTEPRIMA RIEPILOGATIVA */}
               <div className="bg-slate-50 p-5 rounded-2xl border-2 border-slate-200 text-center space-y-3.5">
+                {usaPrestampato && (
+                  <div className="text-[11px] font-bold text-emerald-800 bg-emerald-50 border border-emerald-200 rounded-xl px-3 py-2">
+                    Al download verrà utilizzato il tuo PDF prestampato di categoria compilando <strong>solamente</strong>: Nome e Cognome, Data e Luogo di rilascio e Numero di Matricola.
+                  </div>
+                )}
+
                 <div className="text-xs font-bold text-slate-500 uppercase tracking-wide">
                   {isSeminario ? 'Seminario Formativo Regionale:' : 'Corso Formativo Regionale:'}
                 </div>
@@ -2405,7 +2658,11 @@ export const SezioneFormazione: React.FC<SezioneFormazioneProps> = ({
                     </div>
                     <div>
                       <span>Rilascio: </span>
-                      <strong className="text-slate-800">{cittaPrevalente}, lì {dataStampa}</strong>
+                      <strong className="text-slate-800">
+                        {modelloCat.formatoDataLuogo === 'virgola'
+                          ? `${cittaPrevalente}, ${dataStampa}`
+                          : `${cittaPrevalente}, lì ${dataStampa}`}
+                      </strong>
                     </div>
                   </div>
                   <div className="text-right">
@@ -2431,7 +2688,7 @@ export const SezioneFormazione: React.FC<SezioneFormazioneProps> = ({
                     <button
                       type="button"
                       disabled={operazioneAttestatoInCorso}
-                      onClick={() => handleCondividiAttestato(attestatoPerStampa.corso, attestatoPerStampa.partecipante)}
+                      onClick={() => handleCondividiAttestato(attestatoPerStampa.corso, partecipanteConModifiche)}
                       className="w-full sm:w-auto px-4 py-2.5 rounded-xl bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 text-white font-black text-xs uppercase flex items-center justify-center gap-2 shadow-md active:scale-95 cursor-pointer transition-all"
                       title="Salva in File / Invia su WhatsApp o Drive"
                     >
@@ -2443,7 +2700,7 @@ export const SezioneFormazione: React.FC<SezioneFormazioneProps> = ({
                   <button
                     type="button"
                     disabled={operazioneAttestatoInCorso}
-                    onClick={() => handleScaricaAttestato(attestatoPerStampa.corso, attestatoPerStampa.partecipante)}
+                    onClick={() => handleScaricaAttestato(attestatoPerStampa.corso, partecipanteConModifiche)}
                     className="w-full sm:w-auto px-6 py-2.5 rounded-xl bg-[#1d1a60] hover:bg-[#2b2787] disabled:opacity-50 text-white font-black text-xs uppercase flex items-center justify-center gap-2 shadow-md active:scale-95 cursor-pointer transition-all"
                   >
                     {operazioneAttestatoInCorso ? (
@@ -2451,7 +2708,7 @@ export const SezioneFormazione: React.FC<SezioneFormazioneProps> = ({
                     ) : (
                       <Download className="w-4 h-4 text-amber-300" />
                     )}
-                    <span>Scarica PDF</span>
+                    <span>{usaPrestampato ? 'Scarica PDF Prestampato' : 'Scarica PDF'}</span>
                   </button>
                 </div>
               </div>

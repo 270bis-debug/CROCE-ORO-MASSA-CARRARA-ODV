@@ -42,7 +42,7 @@ import { CHECKLIST_TEMPLATES_INIZIALI, trovaTemplatePerTipo } from '../data/chec
 import { MezzoFlotta } from '../types/adminTypes';
 import { TurnoSedeOperativa, TimbraturaVolontario } from '../types/adminTypes';
 import { verificaVolontarioInTurnoAdesso, hasTimbraturaApertaPerVolontario, EsitoVerificaTurno } from '../utils/turnoVerifica';
-import { formatDateItaly, formatDateTimeItaly, getItalianDateParts } from '../utils/italianTime';
+import { formatDateItaly, formatDateTimeItaly, formatTimeItaly, getItalianDateParts } from '../utils/italianTime';
 
 export interface SessioneTurno {
   attivo: boolean;
@@ -486,8 +486,13 @@ export const SchermataTurnoVolontario: React.FC<SchermataTurnoVolontarioProps> =
   const completaAdeguamentoEdEntra = (risultato: RisultatoObbligoFirmaEPin) => {
     if (!volontarioDaFirmare) return;
 
+    const nowTs = Date.now();
+    const orarioAdesso = formatTimeItaly(new Date(nowTs), true);
     const aggiornato: Volontario = {
       ...volontarioDaFirmare,
+      loggato: true,
+      loggatoUpdatedAt: nowTs,
+      ultimoAccesso: orarioAdesso,
       ...(risultato.firmaBase64 ? { firmaBase64: risultato.firmaBase64 } : {}),
       ...(risultato.nuovoPin
         ? {

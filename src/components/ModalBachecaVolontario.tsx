@@ -13,18 +13,28 @@ import {
   ShieldCheck,
   ChevronRight,
   Trash2,
-  Edit3
+  Edit3,
+  GraduationCap,
+  MapPin
 } from 'lucide-react';
-import { ComunicazioneBacheca, SedeAssociativaCompleta } from '../types/adminTypes';
+import { ComunicazioneBacheca, CorsoFormazione, SedeAssociativaCompleta } from '../types/adminTypes';
 import { CroceOroLogo } from './CroceOroLogo';
 import { CommentiBachecaPost } from './bacheca/CommentiBachecaPost';
 import { realtime } from '../services/realtime';
+import {
+  getCorsiVisibiliInBacheca,
+  getDataInizioEffettivaCorso,
+  formatDataItalianaCorso,
+  calcolaGiorniAlCorso
+} from '../utils/bachecaCorsi';
 
 interface ModalBachecaVolontarioProps {
   aperta: boolean;
   onChiudi: () => void;
   comunicazioni: ComunicazioneBacheca[];
   onAggiornaComunicazioni?: (nuove: ComunicazioneBacheca[]) => void;
+  corsiFormazione?: CorsoFormazione[];
+  onApriDettaglioCorso?: (corso: CorsoFormazione) => void;
   volontarioNome?: string;
   volontarioId?: string;
   isAdmin?: boolean;
@@ -39,6 +49,8 @@ export const ModalBachecaVolontario: React.FC<ModalBachecaVolontarioProps> = ({
   onChiudi,
   comunicazioni,
   onAggiornaComunicazioni,
+  corsiFormazione = [],
+  onApriDettaglioCorso,
   volontarioNome = 'Volontario',
   volontarioId,
   isAdmin = false,
@@ -87,6 +99,32 @@ export const ModalBachecaVolontario: React.FC<ModalBachecaVolontarioProps> = ({
         return dtB.localeCompare(dtA);
       });
   }, [comunicazioni, soloMiaSezione, sezioneVolontarioId, categoriaSelezionata, ricerca]);
+
+  // Prossimi corsi / formazione in programma (visibili fino al giorno stesso in cui iniziano, poi rimossi automaticamente)
+  const corsiInBacheca = useMemo(() => {
+    if (categoriaSelezionata !== 'tutte' && categoriaSelezionata !== 'Formazione & Eventi') return [];
+    return getCorsiVisibiliInBacheca(corsiFormazione).filter((c) => {
+      if (soloMiaSezione && sezioneVolontarioId) {
+        const destIds = c.sezioniDestinatarieIds || [];
+        const tutte = destIds.length === 0 || destIds.includes('TUTTE') || destIds.includes('tutte');
+        if (!tutte && !destIds.includes(sezioneVolontarioId) && c.sedeSvolgimentoSedeId !== sezioneVolontarioId) {
+          return false;
+        }
+      }
+      if (ricerca.trim()) {
+        const q = ricerca.toLowerCase().trim();
+        const match =
+          (c.titolo || '').toLowerCase().includes(q) ||
+          (c.sottotitolo || '').toLowerCase().includes(q) ||
+          (c.descrizione || '').toLowerCase().includes(q) ||
+          (c.tipologia || '').toLowerCase().includes(q) ||
+          (c.sedeCorso || '').toLowerCase().includes(q) ||
+          (c.docenteFormatore || '').toLowerCase().includes(q);
+        if (!match) return false;
+      }
+      return true;
+    });
+  }, [corsiFormazione, categoriaSelezionata, soloMiaSezione, sezioneVolontarioId, ricerca]);
 
   const comunicazioniUrgenti = comunicazioniAttive.filter((c) => c.priorita === 'Urgente');
 
@@ -161,6 +199,14 @@ export const ModalBachecaVolontario: React.FC<ModalBachecaVolontarioProps> = ({
                   <CheckCircle2 className="w-3 h-3 text-emerald-400" />
                   <span>{comunicazioniAttive.length} Avvisi Attivi</span>
                 </span>
+                {corsiInBacheca.length > 0 && (
+                  <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-full bg-amber-950 text-amber-300 border border-amber-700/60 flex items-center gap-1">
+                    <GraduationCap className="w-3 h-3 text-amber-400" />
+                    <span>
+                      {corsiInBacheca.length} {corsiInBacheca.length === 1 ? 'Corso in Programma' : 'Corsi in Programma'}
+                    </span>
+                  </span>
+                )}
               </div>
               <h3 className="text-base sm:text-lg font-black text-white uppercase tracking-wide mt-0.5">
                 Comunicazioni Ufficiali & Circolari ai Volontari
@@ -244,10 +290,143 @@ export const ModalBachecaVolontario: React.FC<ModalBachecaVolontarioProps> = ({
         </div>
 
         {/* ------------------------------------------------------------- */}
-        {/* CORPO MODALE: ELENCO COMUNICAZIONI                            */}
+        {/* CORPO MODALE: PROSSIMI CORSI + ELENCO COMUNICAZIONI           */}
         {/* ------------------------------------------------------------- */}
         <div className="flex-1 p-3.5 sm:p-5 overflow-y-auto space-y-3.5">
-          {comunicazioniAttive.length === 0 ? (
+          {/* Blocco Prossimi Corsi & Formazione in Programma */}
+          {corsiInBacheca.length > 0 && (
+            <div className="space-y-2.5">
+              <div className="flex flex-wrap items-center justify-between gap-2 px-1">
+                <div className="flex items-center gap-1.5">
+                  <GraduationCap className="w-4 h-4 text-amber-400" />
+                  <span className="text-xs font-black uppercase tracking-wide text-amber-300">
+                    Prossimi Corsi & Formazione in Programma ({corsiInBacheca.length})
+                  </span>
+                </div>
+                <span className="text-[10px] text-slate-400">
+                  Visibili fino al giorno di inizio
+                </span>
+              </div>
+
+              {corsiInBacheca.map((corso) => {
+                const dataInizioIso = getDataInizioEffettivaCorso(corso);
+                const giorni = calcolaGiorniAlCorso(dataInizioIso);
+                const iniziaOggi = giorni === 0;
+                const iniziaDomani = giorni === 1;
+                const sezioniLabel =
+                  Array.isArray(corso.sezioniDestinatarieNomi) && corso.sezioniDestinatarieNomi.length > 0
+                    ? corso.sezioniDestinatarieNomi.join(', ')
+                    : 'Tutte le Sezioni';
+
+                return (
+                  <div
+                    key={`modale-bacheca-corso-${corso.id}`}
+                    className={`p-4 rounded-2xl border-2 transition-all relative overflow-hidden ${
+                      iniziaOggi
+                        ? 'bg-gradient-to-r from-amber-950/50 via-slate-950 to-slate-950 border-amber-400/90 shadow-lg shadow-amber-950/40'
+                        : 'bg-gradient-to-r from-amber-950/25 via-slate-950 to-slate-950 border-amber-500/60'
+                    }`}
+                  >
+                    <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 pb-2 border-b border-slate-800/80">
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span className="px-2 py-0.5 rounded-full bg-amber-500 text-slate-950 text-[9.5px] font-black uppercase flex items-center gap-1">
+                          <GraduationCap className="w-3 h-3" />
+                          <span>Corso / Formazione</span>
+                        </span>
+                        <span
+                          className={`px-2 py-0.5 rounded-full text-[9.5px] font-black uppercase border ${
+                            iniziaOggi
+                              ? 'bg-red-950 text-red-300 border-red-600/70 animate-pulse'
+                              : iniziaDomani
+                              ? 'bg-orange-950 text-orange-300 border-orange-600/70'
+                              : 'bg-emerald-950 text-emerald-300 border-emerald-700/60'
+                          }`}
+                        >
+                          {iniziaOggi
+                            ? '🔴 Inizia Oggi'
+                            : iniziaDomani
+                            ? '🟠 Inizia Domani'
+                            : `📅 Tra ${giorni} giorni`}
+                        </span>
+                        <span className="px-2 py-0.5 rounded-full bg-slate-900 text-amber-200 border border-amber-700/50 text-[10px] font-bold">
+                          {corso.tipologia}
+                        </span>
+                        <span className="px-2 py-0.5 rounded-full bg-blue-950 text-blue-300 border border-blue-800/50 text-[10px] font-bold flex items-center gap-1">
+                          <Building2 className="w-3 h-3 text-blue-400" />
+                          <span>{sezioniLabel}</span>
+                        </span>
+                      </div>
+
+                      <div className="flex items-center gap-1.5 text-[11px] text-amber-200 font-mono font-bold">
+                        <Calendar className="w-3 h-3 text-amber-400" />
+                        <span>Inizio: {formatDataItalianaCorso(dataInizioIso)}</span>
+                        {corso.orarioInizioLezione && (
+                          <>
+                            <span>•</span>
+                            <Clock className="w-3 h-3 text-amber-400" />
+                            <span>
+                              {corso.orarioInizioLezione}
+                              {corso.orarioFineLezione ? `-${corso.orarioFineLezione}` : ''}
+                            </span>
+                          </>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="py-2.5 space-y-1.5">
+                      <h4 className="text-sm sm:text-base font-black text-white tracking-wide">
+                        {corso.titolo}
+                      </h4>
+                      {corso.sottotitolo && (
+                        <p className="text-[11px] font-semibold text-amber-200/90 italic">
+                          {corso.sottotitolo}
+                        </p>
+                      )}
+                      {corso.descrizione && (
+                        <p className="text-xs text-slate-200 leading-relaxed whitespace-pre-line font-normal">
+                          {corso.descrizione}
+                        </p>
+                      )}
+                    </div>
+
+                    <div className="pt-2 border-t border-slate-800/80 flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-400">
+                      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                        {corso.sedeCorso && (
+                          <span className="flex items-center gap-1 text-slate-300">
+                            <MapPin className="w-3 h-3 text-amber-400" />
+                            <strong>{corso.sedeCorso}</strong>
+                          </span>
+                        )}
+                        {corso.docenteFormatore && (
+                          <span>
+                            Docente: <strong className="text-slate-200">{corso.docenteFormatore}</strong>
+                          </span>
+                        )}
+                        {corso.oreTotali > 0 && (
+                          <span>
+                            Durata: <strong className="text-amber-300">{corso.oreTotali}h</strong>
+                          </span>
+                        )}
+                      </div>
+
+                      {onApriDettaglioCorso && (
+                        <button
+                          type="button"
+                          onClick={() => onApriDettaglioCorso(corso)}
+                          className="px-3 py-1 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-[10px] uppercase flex items-center gap-1 shadow-sm active:scale-95 transition-all cursor-pointer"
+                        >
+                          <span>Dettagli Corso</span>
+                          <ChevronRight className="w-3 h-3" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {comunicazioniAttive.length === 0 && corsiInBacheca.length === 0 ? (
             <div className="p-8 text-center text-slate-500 space-y-2">
               <Megaphone className="w-10 h-10 mx-auto opacity-30" />
               <p className="text-sm font-bold text-slate-400">Nessuna comunicazione corrispondente trovata</p>

@@ -174,6 +174,7 @@ export interface Volontario {
   dataRegistrazione: string;
   ultimoAccesso?: string;
   loggato?: boolean;
+  loggatoUpdatedAt?: number;
   inTurno: boolean;
   mezzoAttivo?: string;
   ruoloTurno?: string;

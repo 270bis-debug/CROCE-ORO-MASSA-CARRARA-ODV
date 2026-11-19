@@ -22,7 +22,8 @@ import {
   ITALY_TIMEZONE,
   parseItalianDateTimeMs
 } from './src/utils/italianTime';
-import { mergeVolontariListsSafe, normalizeDeletedIds } from './src/utils/volontariMerge';
+import { mergeVolontariListsSafe, mergeLoggedSessionsSafe, normalizeDeletedIds } from './src/utils/volontariMerge';
+import { mergeNotificheBachecaRecenti, NotificaBachecaRecord } from './src/utils/bachecaCorsi';
 import {
   normalizzaListaSediAssociative,
   normalizzaListaLuoghiTimbratura,
@@ -135,6 +136,7 @@ export interface Volontario {
   dataRegistrazione?: string;
   inTurno?: boolean;
   loggato?: boolean;
+  loggatoUpdatedAt?: number;
   ultimoAccesso?: string;
   mezzoAttivo?: string;
   ruoloTurno?: string;
@@ -397,6 +399,7 @@ export interface ServerState {
   promemoriaCompleanniInviati?: Record<string, { sentAt: string; recipients: string[] } | string>;
   timbrature?: any[];
   bacheca?: any[];
+  notificheBachecaRecenti?: NotificaBachecaRecord[];
   giornaleBordo?: any[];
   codiciEliminati?: string[];
   magazzinoParti?: any[];
@@ -424,6 +427,8 @@ export interface ServerState {
   metodiPagamentoCustom?: any[];
   metodiPagamentoCustomUpdatedAt?: number;
   regolaScadenzeMezzi?: any;
+  modelliAttestatiCategoria?: Record<string, any>;
+  modelliAttestatiUpdatedAt?: number;
   rubricaNumeriUtili?: any[];
   rubricaNumeriUtiliUpdatedAt?: number;
   indirizziCollezionati?: any[];
@@ -883,6 +888,7 @@ function loadPersistedState(): ServerState {
           promemoriaCompleanniInviati: parsed.promemoriaCompleanniInviati && typeof parsed.promemoriaCompleanniInviati === 'object' ? parsed.promemoriaCompleanniInviati : {},
           timbrature: Array.isArray(parsed.timbrature) ? parsed.timbrature : [],
           bacheca: Array.isArray(parsed.bacheca) ? normalizzaComunicazioniBacheca(parsed.bacheca) : [],
+          notificheBachecaRecenti: Array.isArray(parsed.notificheBachecaRecenti) ? mergeNotificheBachecaRecenti([], parsed.notificheBachecaRecenti) : [],
           giornaleBordo: Array.isArray(parsed.giornaleBordo) ? parsed.giornaleBordo : [],
           codiciEliminati: ensureCodiciEliminati(parsed.codiciEliminati),
           magazzinoParti: filterDemoMagazzinoParti(parsed.magazzinoParti),
@@ -1029,6 +1035,7 @@ function loadPersistedState(): ServerState {
     promemoriaCompleanniInviati: {},
     timbrature: [],
     bacheca: [],
+    notificheBachecaRecenti: [],
     giornaleBordo: [],
     codiciEliminati: ['CO-VET-ROSSO-2026-001'],
     magazzinoParti: [],
@@ -1080,6 +1087,81 @@ function syncVolontariInTurnoWithTimbrature(): boolean {
 
 // Allinea subito inTurno alle sole timbrature aperte (un account loggato non è di turno finché non timbra)
 syncVolontariInTurnoWithTimbrature();
+
+// Riconcilia bidirezionalmente state.loggedSessions <-> state.volontari[].loggato usando i timestamp
+// così nessun aggiornamento parziale o massivo può azzerare volontari regolarmente loggati
+function reconcileVolontariConLoggedSessions(): boolean {
+  if (!state.loggedSessions || typeof state.loggedSessions !== 'object') {
+    state.loggedSessions = {};
+  }
+  if (!Array.isArray(state.volontari)) return false;
+
+  let changed = false;
+  const nextSessions: Record<string, any> = { ...state.loggedSessions };
+
+  state.volontari = state.volontari.map(v => {
+    if (!v || !v.id) return v;
+    const sess = nextSessions[v.id];
+    const sessTs = typeof sess?.updatedAt === 'number' && Number.isFinite(sess.updatedAt) ? sess.updatedAt : 0;
+    const volTs = typeof v.loggatoUpdatedAt === 'number' && Number.isFinite(v.loggatoUpdatedAt) ? v.loggatoUpdatedAt : 0;
+
+    if (sess) {
+      if (volTs > sessTs && typeof v.loggato === 'boolean') {
+        nextSessions[v.id] = {
+          ...sess,
+          loggato: v.loggato,
+          updatedAt: volTs,
+          volontarioNome: sess.volontarioNome || `${v.nome || ''} ${v.cognome || ''}`.trim() || undefined,
+          mezzoScelto: v.loggato ? (v.mezzoAttivo || sess.mezzoScelto || '') : ''
+        };
+        changed = true;
+        return v;
+      }
+      const sessLoggato = Boolean(sess.loggato);
+      const effectiveTs = Math.max(sessTs, volTs) || undefined;
+      if (Boolean(v.loggato) !== sessLoggato || v.loggatoUpdatedAt !== effectiveTs) {
+        changed = true;
+        return {
+          ...v,
+          loggato: sessLoggato,
+          loggatoUpdatedAt: effectiveTs
+        };
+      }
+      return v;
+    }
+
+    if (v.loggato === true) {
+      const ts = volTs || Date.now();
+      nextSessions[v.id] = {
+        loggato: true,
+        updatedAt: ts,
+        volontarioNome: `${v.nome || ''} ${v.cognome || ''}`.trim() || undefined,
+        mezzoScelto: v.mezzoAttivo || ''
+      };
+      changed = true;
+      if (!v.loggatoUpdatedAt) {
+        return { ...v, loggatoUpdatedAt: ts };
+      }
+    }
+    return v;
+  });
+
+  const mergedSessions = mergeLoggedSessionsSafe(state.loggedSessions, nextSessions);
+  const normalizedSessions: NonNullable<ServerState['loggedSessions']> = {};
+  for (const [volId, entry] of Object.entries(mergedSessions)) {
+    normalizedSessions[volId] = {
+      loggato: Boolean(entry.loggato),
+      updatedAt: typeof entry.updatedAt === 'number' && Number.isFinite(entry.updatedAt) ? entry.updatedAt : Date.now(),
+      ...(entry.volontarioNome ? { volontarioNome: entry.volontarioNome } : {}),
+      ...(entry.mezzoScelto !== undefined ? { mezzoScelto: entry.mezzoScelto } : {}),
+      ...(entry.orarioInizio ? { orarioInizio: entry.orarioInizio } : {}),
+    };
+  }
+  state.loggedSessions = normalizedSessions;
+  return changed;
+}
+
+reconcileVolontariConLoggedSessions();
 
 // Auto-ripulitura: se la missione presente in activeMission è già stata archiviata con KM completati,
 // azzera activeMission e i dati operativi temporanei così i terminali risultano liberi per nuovo servizio
@@ -2235,12 +2317,14 @@ async function startServer() {
               ]);
               state.volontariEliminatiIds = mergedDeleted;
               state.volontari = mergeVolontariLists(state.volontari, data.volontari, mergedDeleted);
+              reconcileVolontariConLoggedSessions();
               persistState();
 
               broadcast({
                 type: 'VOLONTARI_UPDATED',
                 volontari: state.volontari,
-                volontariEliminatiIds: state.volontariEliminatiIds
+                volontariEliminatiIds: state.volontariEliminatiIds,
+                loggedSessions: state.loggedSessions
               });
             }
             break;
@@ -3809,31 +3893,47 @@ async function startServer() {
 
           // 9. Aggiornamento Sessione / Login Volontario (tracciamento multi-account simultaneo)
           case 'UPDATE_SHIFT': {
-            state.activeShift = data;
             if (!state.loggedSessions || typeof state.loggedSessions !== 'object') {
               state.loggedSessions = {};
             }
 
-            // Aggiorna stato loggato (e mantiene inTurno legato SOLO alla presenza di timbratura aperta)
-            if (data.volontarioId) {
-              const targetVolId = String(data.volontarioId).trim();
-              state.loggedSessions[targetVolId] = {
-                loggato: !!data.attivo,
-                updatedAt: Date.now(),
-                volontarioNome: data.volontarioNome || undefined,
-                mezzoScelto: data.attivo ? (data.mezzoScelto || '') : '',
-                orarioInizio: data.orarioInizio || undefined
-              };
-              state.volontari = state.volontari.map(v =>
-                v.id === targetVolId
-                  ? {
-                      ...v,
-                      loggato: !!data.attivo,
-                      inTurno: Boolean(hasTimbraturaApertaServer(v, state.timbrature || [])),
-                      mezzoAttivo: data.attivo ? (data.mezzoScelto || '') : ''
-                    }
-                  : v
-              );
+            const nowTs =
+              typeof data?.updatedAt === 'number' && Number.isFinite(data.updatedAt) && data.updatedAt > 0
+                ? data.updatedAt
+                : Date.now();
+
+            const targetVolId = data?.volontarioId ? String(data.volontarioId).trim() : '';
+
+            // Evita che il logout di un volontario sovrascriva l'activeShift di un altro volontario ancora connesso
+            if (data?.attivo || !state.activeShift?.volontarioId || state.activeShift.volontarioId === targetVolId) {
+              state.activeShift = data;
+            }
+
+            // Aggiorna stato loggato protetto da timestamp (e mantiene inTurno legato SOLO alla presenza di timbratura aperta)
+            if (targetVolId) {
+              const existing = state.loggedSessions[targetVolId];
+              const existingTs = typeof existing?.updatedAt === 'number' && Number.isFinite(existing.updatedAt) ? existing.updatedAt : 0;
+              if (nowTs >= existingTs) {
+                state.loggedSessions[targetVolId] = {
+                  loggato: !!data.attivo,
+                  updatedAt: nowTs,
+                  volontarioNome: data.volontarioNome || existing?.volontarioNome || undefined,
+                  mezzoScelto: data.attivo ? (data.mezzoScelto || '') : '',
+                  orarioInizio: data.orarioInizio || existing?.orarioInizio || undefined
+                };
+                state.volontari = state.volontari.map(v =>
+                  v.id === targetVolId
+                    ? {
+                        ...v,
+                        loggato: !!data.attivo,
+                        loggatoUpdatedAt: nowTs,
+                        ...(data.attivo ? { ultimoAccesso: formatTimeItaly(new Date(nowTs), true) } : {}),
+                        inTurno: Boolean(hasTimbraturaApertaServer(v, state.timbrature || [])),
+                        mezzoAttivo: data.attivo ? (data.mezzoScelto || '') : ''
+                      }
+                    : v
+                );
+              }
             }
 
             const mezzoTxt = data.mezzoScelto ? ` sul mezzo ${data.mezzoScelto}` : '';
@@ -3862,6 +3962,75 @@ async function startServer() {
                 body: `${data.volontarioNome} ha effettuato l'accesso all'app${mezzoTxt || ' (in attesa di timbratura, nessun mezzo associato)'} (${data.qualificaTurno || 'Operativo'}) alle ore ${formatTimeItaly()}`,
                 tag: `login-volontario-${data.volontarioId || Date.now()}`,
                 urgenza: 'VERDE'
+              });
+            }
+            break;
+          }
+
+          // 9b. Heartbeat silenzioso presenza account loggato (riallineamento dopo riavvio/reconnect/rientro app)
+          case 'SESSION_HEARTBEAT': {
+            const targetVolId = data?.volontarioId ? String(data.volontarioId).trim() : '';
+            if (!targetVolId) break;
+
+            if (!state.loggedSessions || typeof state.loggedSessions !== 'object') {
+              state.loggedSessions = {};
+            }
+
+            const nowTs =
+              typeof data?.updatedAt === 'number' && Number.isFinite(data.updatedAt) && data.updatedAt > 0
+                ? data.updatedAt
+                : Date.now();
+            const incomingLoggato = data?.loggato !== undefined ? Boolean(data.loggato) : true;
+            const existing = state.loggedSessions[targetVolId];
+            const existingTs = typeof existing?.updatedAt === 'number' && Number.isFinite(existing.updatedAt) ? existing.updatedAt : 0;
+
+            if (nowTs < existingTs) break;
+
+            const nextMezzo = incomingLoggato
+              ? (data?.mezzoScelto !== undefined ? String(data.mezzoScelto || '') : (existing?.mezzoScelto || ''))
+              : '';
+            const statusChanged =
+              !existing ||
+              Boolean(existing.loggato) !== incomingLoggato ||
+              (existing.mezzoScelto || '') !== nextMezzo;
+
+            state.loggedSessions[targetVolId] = {
+              loggato: incomingLoggato,
+              updatedAt: nowTs,
+              volontarioNome: data?.volontarioNome || existing?.volontarioNome || undefined,
+              mezzoScelto: nextMezzo,
+              orarioInizio: data?.orarioInizio || existing?.orarioInizio || undefined
+            };
+
+            let volChanged = false;
+            state.volontari = state.volontari.map(v => {
+              if (v.id !== targetVolId) return v;
+              const nextInTurno = Boolean(hasTimbraturaApertaServer(v, state.timbrature || []));
+              if (
+                Boolean(v.loggato) !== incomingLoggato ||
+                (v.loggatoUpdatedAt || 0) < nowTs ||
+                Boolean(v.inTurno) !== nextInTurno ||
+                (data?.mezzoScelto !== undefined && (v.mezzoAttivo || '') !== nextMezzo)
+              ) {
+                volChanged = true;
+                return {
+                  ...v,
+                  loggato: incomingLoggato,
+                  loggatoUpdatedAt: nowTs,
+                  ...(incomingLoggato && !v.ultimoAccesso ? { ultimoAccesso: formatTimeItaly(new Date(nowTs), true) } : {}),
+                  inTurno: nextInTurno,
+                  ...(data?.mezzoScelto !== undefined ? { mezzoAttivo: nextMezzo } : {})
+                };
+              }
+              return v;
+            });
+
+            if (statusChanged || volChanged || (nowTs - existingTs > 45000)) {
+              persistState();
+              broadcast({
+                type: 'LOGGED_SESSIONS_UPDATED',
+                loggedSessions: state.loggedSessions,
+                volontari: state.volontari
               });
             }
             break;
@@ -4399,45 +4568,95 @@ async function startServer() {
             const bachecaArray = Array.isArray(data?.bacheca) ? data.bacheca : (Array.isArray(data) ? data : null);
             if (bachecaArray) {
               state.bacheca = bachecaArray;
+              if (data?.notifica && (data.notifica.tipo === 'nuovo_post' || data.notifica.tipo === 'nuovo_corso')) {
+                const record: NotificaBachecaRecord = {
+                  ...data.notifica,
+                  id: data.notifica.id || `bacheca-${data.notifica.tipo}-${data.notifica.postId || Date.now()}`,
+                  createdAt: Number(data.notifica.createdAt) || Date.now(),
+                  soloInApp: data.notifica.soloInApp !== false,
+                };
+                state.notificheBachecaRecenti = mergeNotificheBachecaRecenti(state.notificheBachecaRecenti, [record]);
+              }
               persistState();
 
               broadcast({
                 type: 'BACHECA_UPDATED',
-                bacheca: state.bacheca
+                bacheca: state.bacheca,
+                notificheBachecaRecenti: state.notificheBachecaRecenti || []
               });
 
               if (data?.notifica) {
-                const notif = data.notifica;
+                const notif = {
+                  ...data.notifica,
+                  id: data.notifica.id || `bacheca-${data.notifica.tipo || 'post'}-${data.notifica.postId || Date.now()}`,
+                  createdAt: Number(data.notifica.createdAt) || Date.now(),
+                };
                 broadcast({
                   type: 'NOTIFICA_BACHECA',
-                  notifica: notif
+                  notifica: notif,
+                  notificheBachecaRecenti: state.notificheBachecaRecenti || []
                 });
 
-                // WebPush di cortesia ai destinatari del commento/post
-                try {
-                  if (Array.isArray(notif.destinatariVolontariIds) && notif.destinatariVolontariIds.length > 0) {
-                    notif.destinatariVolontariIds.forEach((volId: string) => {
-                      sendPushNotificationToVolunteer(volId, {
-                        title: notif.tipo === 'nuovo_commento' ? '💬 Nuovo commento in bacheca' : '📢 Nuova comunicazione in bacheca',
+                // WebPush di cortesia SOLO se non è una notifica strettamente solo in-app
+                if (!notif.soloInApp) {
+                  try {
+                    const pushTitle =
+                      notif.tipo === 'nuovo_commento'
+                        ? '💬 Nuovo commento in bacheca'
+                        : notif.tipo === 'nuovo_corso'
+                        ? `🎓 Corso in Bacheca: ${notif.postTitolo || ''}`
+                        : `📢 Bacheca: ${notif.postTitolo || 'Nuova comunicazione'}`;
+                    if (Array.isArray(notif.destinatariVolontariIds) && notif.destinatariVolontariIds.length > 0) {
+                      notif.destinatariVolontariIds.forEach((volId: string) => {
+                        sendPushNotificationToVolunteer(volId, {
+                          title: pushTitle,
+                          body: notif.messaggio || notif.postTitolo || '',
+                          tag: 'bacheca-notif',
+                          data: { url: '/', postId: notif.postId, tipo: notif.tipo }
+                        });
+                      });
+                    } else {
+                      sendPushNotificationToRole('all', {
+                        title: pushTitle,
                         body: notif.messaggio || notif.postTitolo || '',
                         tag: 'bacheca-notif',
                         data: { url: '/', postId: notif.postId, tipo: notif.tipo }
                       });
-                    });
-                  } else {
-                    sendPushNotificationToRole('all', {
-                      title: notif.tipo === 'nuovo_commento' ? '💬 Nuovo commento in bacheca' : '📢 Nuova comunicazione in bacheca',
-                      body: notif.messaggio || notif.postTitolo || '',
-                      tag: 'bacheca-notif',
-                      data: { url: '/', postId: notif.postId, tipo: notif.tipo }
-                    });
+                    }
+                  } catch (pushErr) {
+                    console.warn('[WebPush Bacheca] Errore push:', pushErr);
                   }
-                } catch (pushErr) {
-                  console.warn('[WebPush Bacheca] Errore push:', pushErr);
                 }
               }
 
               console.log(`[Bacheca] Sincronizzati ${bachecaArray.length} post in bacheca e commenti collegati nel database persistito.`);
+            }
+            break;
+          }
+
+          // 17b. Notifica in-app dedicata Bacheca (es. nuovo corso/formazione pubblicato in bacheca)
+          case 'NOTIFICA_BACHECA': {
+            const rawNotif = data?.notifica || data;
+            if (rawNotif && rawNotif.postTitolo) {
+              const notif: NotificaBachecaRecord = {
+                ...rawNotif,
+                id: rawNotif.id || `bacheca-${rawNotif.tipo || 'nuovo_post'}-${rawNotif.postId || Date.now()}`,
+                tipo: rawNotif.tipo || 'nuovo_post',
+                postId: rawNotif.postId || '',
+                postTitolo: String(rawNotif.postTitolo),
+                messaggio: rawNotif.messaggio || `Pubblicato in bacheca: "${rawNotif.postTitolo}"`,
+                soloInApp: rawNotif.soloInApp !== false,
+                createdAt: Number(rawNotif.createdAt) || Date.now(),
+              };
+              if (notif.tipo === 'nuovo_post' || notif.tipo === 'nuovo_corso') {
+                state.notificheBachecaRecenti = mergeNotificheBachecaRecenti(state.notificheBachecaRecenti, [notif]);
+                persistState();
+              }
+              broadcast({
+                type: 'NOTIFICA_BACHECA',
+                notifica: notif,
+                notificheBachecaRecenti: state.notificheBachecaRecenti || []
+              });
             }
             break;
           }
@@ -4735,6 +4954,20 @@ async function startServer() {
               broadcast({
                 type: 'SOLLECITO_FIRMA_PIN_UPDATED',
                 sollecitoFirmaPin: state.sollecitoFirmaPin
+              });
+            }
+            break;
+          }
+
+          case 'UPDATE_MODELLI_ATTESTATI': {
+            if (data?.modelliAttestatiCategoria && typeof data.modelliAttestatiCategoria === 'object' && !Array.isArray(data.modelliAttestatiCategoria)) {
+              state.modelliAttestatiCategoria = data.modelliAttestatiCategoria;
+              state.modelliAttestatiUpdatedAt = Number(data.updatedAt) || Date.now();
+              persistState();
+              broadcast({
+                type: 'MODELLI_ATTESTATI_UPDATED',
+                modelliAttestatiCategoria: state.modelliAttestatiCategoria,
+                updatedAt: state.modelliAttestatiUpdatedAt
               });
             }
             break;
@@ -5460,61 +5693,100 @@ async function startServer() {
     const bacheca = Array.isArray(req.body?.bacheca) ? req.body.bacheca : (Array.isArray(req.body) ? req.body : null);
     if (bacheca) {
       state.bacheca = bacheca;
+      if (req.body?.notifica && (req.body.notifica.tipo === 'nuovo_post' || req.body.notifica.tipo === 'nuovo_corso')) {
+        const record: NotificaBachecaRecord = {
+          ...req.body.notifica,
+          id: req.body.notifica.id || `bacheca-${req.body.notifica.tipo}-${req.body.notifica.postId || Date.now()}`,
+          createdAt: Number(req.body.notifica.createdAt) || Date.now(),
+          soloInApp: req.body.notifica.soloInApp !== false,
+        };
+        state.notificheBachecaRecenti = mergeNotificheBachecaRecenti(state.notificheBachecaRecenti, [record]);
+      }
       persistState();
       broadcast({
         type: 'BACHECA_UPDATED',
-        bacheca: state.bacheca
+        bacheca: state.bacheca,
+        notificheBachecaRecenti: state.notificheBachecaRecenti || []
       });
 
-      // Se il client ha allegato una notifica (nuovo commento o nuovo post), broadcast con tipo dedicato
+      // Se il client ha allegato una notifica (nuovo commento, nuovo post o nuovo corso), broadcast con tipo dedicato
       if (req.body?.notifica) {
-        const notif = req.body.notifica;
+        const notif = {
+          ...req.body.notifica,
+          id: req.body.notifica.id || `bacheca-${req.body.notifica.tipo || 'post'}-${req.body.notifica.postId || Date.now()}`,
+          createdAt: Number(req.body.notifica.createdAt) || Date.now(),
+        };
         broadcast({
           type: 'NOTIFICA_BACHECA',
-          notifica: notif
+          notifica: notif,
+          notificheBachecaRecenti: state.notificheBachecaRecenti || []
         });
 
-        // Invio WebPush ai destinatari mirati (urgency high, nessun suono sirena)
-        try {
-          if (Array.isArray(notif.destinatariVolontariIds) && notif.destinatariVolontariIds.length > 0) {
-            notif.destinatariVolontariIds.forEach((volId: string) => {
-              sendPushNotificationToVolunteer(volId, {
-                title: notif.tipo === 'nuovo_commento' ? '💬 Nuovo commento in bacheca' : '📢 Nuova comunicazione in bacheca',
+        // Invio WebPush ai destinatari mirati SOLO se non è contrassegnata come solo in-app
+        if (!notif.soloInApp) {
+          try {
+            const pushTitle =
+              notif.tipo === 'nuovo_commento'
+                ? '💬 Nuovo commento in bacheca'
+                : notif.tipo === 'nuovo_corso'
+                ? `🎓 Corso in Bacheca: ${notif.postTitolo || ''}`
+                : `📢 Bacheca: ${notif.postTitolo || 'Nuova comunicazione'}`;
+            if (Array.isArray(notif.destinatariVolontariIds) && notif.destinatariVolontariIds.length > 0) {
+              notif.destinatariVolontariIds.forEach((volId: string) => {
+                sendPushNotificationToVolunteer(volId, {
+                  title: pushTitle,
+                  body: notif.messaggio || notif.postTitolo || '',
+                  tag: 'bacheca-notif',
+                  data: { url: '/', postId: notif.postId, tipo: notif.tipo }
+                });
+              });
+            } else {
+              sendPushNotificationToRole('all', {
+                title: pushTitle,
                 body: notif.messaggio || notif.postTitolo || '',
                 tag: 'bacheca-notif',
                 data: { url: '/', postId: notif.postId, tipo: notif.tipo }
               });
-            });
-          } else {
-            sendPushNotificationToRole('all', {
-              title: notif.tipo === 'nuovo_commento' ? '💬 Nuovo commento in bacheca' : '📢 Nuova comunicazione in bacheca',
-              body: notif.messaggio || notif.postTitolo || '',
-              tag: 'bacheca-notif',
-              data: { url: '/', postId: notif.postId, tipo: notif.tipo }
-            });
+            }
+          } catch (pushErr) {
+            console.warn('[WebPush Bacheca] Invio push non riuscito:', pushErr);
           }
-        } catch (pushErr) {
-          console.warn('[WebPush Bacheca] Invio push non riuscito:', pushErr);
         }
       }
 
       return res.json({
         success: true,
         count: bacheca.length,
-        bacheca: bacheca
+        bacheca: bacheca,
+        notificheBachecaRecenti: state.notificheBachecaRecenti || []
       });
     }
     return res.status(400).json({ success: false, error: 'Dati bacheca non validi' });
   });
 
   app.post('/api/bacheca/notifica', (req, res) => {
-    const notif = req.body?.notifica || req.body;
-    if (notif) {
+    const rawNotif = req.body?.notifica || req.body;
+    if (rawNotif && rawNotif.postTitolo) {
+      const notif: NotificaBachecaRecord = {
+        ...rawNotif,
+        id: rawNotif.id || `bacheca-${rawNotif.tipo || 'nuovo_post'}-${rawNotif.postId || Date.now()}`,
+        tipo: rawNotif.tipo || 'nuovo_post',
+        postId: rawNotif.postId || '',
+        postTitolo: String(rawNotif.postTitolo),
+        messaggio: rawNotif.messaggio || `Pubblicato in bacheca: "${rawNotif.postTitolo}"`,
+        soloInApp: rawNotif.soloInApp !== false,
+        createdAt: Number(rawNotif.createdAt) || Date.now(),
+      };
+      if (notif.tipo === 'nuovo_post' || notif.tipo === 'nuovo_corso') {
+        state.notificheBachecaRecenti = mergeNotificheBachecaRecenti(state.notificheBachecaRecenti, [notif]);
+        persistState();
+      }
       broadcast({
         type: 'NOTIFICA_BACHECA',
-        notifica: notif
+        notifica: notif,
+        notificheBachecaRecenti: state.notificheBachecaRecenti || []
       });
-      return res.json({ success: true });
+      return res.json({ success: true, notificheBachecaRecenti: state.notificheBachecaRecenti || [] });
     }
     return res.status(400).json({ success: false, error: 'Notifica mancante' });
   });
@@ -6186,19 +6458,22 @@ async function startServer() {
         (state.volontariEliminatiIds || []).filter((id) => id !== idVol)
       );
       state.volontari = mergeVolontariLists(state.volontari, [nuovoVol], state.volontariEliminatiIds);
+      reconcileVolontariConLoggedSessions();
       persistState();
 
       broadcast({
         type: 'VOLONTARI_UPDATED',
         volontari: state.volontari,
-        volontariEliminatiIds: state.volontariEliminatiIds
+        volontariEliminatiIds: state.volontariEliminatiIds,
+        loggedSessions: state.loggedSessions
       });
 
       return res.json({
         success: true,
         volontario: state.volontari.find(v => v.id === idVol),
         volontari: state.volontari,
-        volontariEliminatiIds: state.volontariEliminatiIds
+        volontariEliminatiIds: state.volontariEliminatiIds,
+        loggedSessions: state.loggedSessions
       });
     }
 
@@ -6209,16 +6484,19 @@ async function startServer() {
       ]);
       state.volontariEliminatiIds = mergedDeleted;
       state.volontari = mergeVolontariLists(state.volontari, req.body.volontari, mergedDeleted);
+      reconcileVolontariConLoggedSessions();
       persistState();
       broadcast({
         type: 'VOLONTARI_UPDATED',
         volontari: state.volontari,
-        volontariEliminatiIds: state.volontariEliminatiIds
+        volontariEliminatiIds: state.volontariEliminatiIds,
+        loggedSessions: state.loggedSessions
       });
       return res.json({
         success: true,
         volontari: state.volontari,
-        volontariEliminatiIds: state.volontariEliminatiIds
+        volontariEliminatiIds: state.volontariEliminatiIds,
+        loggedSessions: state.loggedSessions
       });
     }
 
@@ -6308,17 +6586,20 @@ async function startServer() {
       [{ ...patch, id }],
       state.volontariEliminatiIds
     );
+    reconcileVolontariConLoggedSessions();
     persistState();
     broadcast({
       type: 'VOLONTARI_UPDATED',
       volontari: state.volontari,
-      volontariEliminatiIds: state.volontariEliminatiIds
+      volontariEliminatiIds: state.volontariEliminatiIds,
+      loggedSessions: state.loggedSessions
     });
     return res.json({
       success: true,
       volontario: state.volontari.find(v => v.id === id),
       volontari: state.volontari,
-      volontariEliminatiIds: state.volontariEliminatiIds
+      volontariEliminatiIds: state.volontariEliminatiIds,
+      loggedSessions: state.loggedSessions
     });
   });
 
@@ -6895,6 +7176,82 @@ async function startServer() {
     eseguiControlloCompleanniOggi(false).catch(() => {});
   }, 3000);
 
+  // Cartella persistente per i file PDF prestampati caricati per categoria di corso
+  const MODELLI_ATTESTATI_DIR = path.join(path.dirname(DB_PATH), 'modelli_attestati');
+  const sanitizePdfSlug = (raw: string) =>
+    String(raw || 'corso')
+      .toLowerCase()
+      .replace(/[^a-z0-9_-]/g, '-')
+      .replace(/-+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 80) || 'corso';
+
+  app.post('/api/modelli-attestati/:slug', (req, res) => {
+    try {
+      const slug = sanitizePdfSlug(req.params.slug);
+      const { pdfBase64 } = req.body || {};
+      if (!pdfBase64 || typeof pdfBase64 !== 'string') {
+        return res.status(400).json({ success: false, error: 'Contenuto PDF mancante' });
+      }
+      const clean = pdfBase64.replace(/^data:[^;]+;base64,/, '').replace(/\s/g, '');
+      const buf = Buffer.from(clean, 'base64');
+      if (buf.length < 100 || buf.subarray(0, 4).toString('ascii') !== '%PDF') {
+        return res.status(400).json({ success: false, error: 'Il file non è un PDF valido' });
+      }
+      if (buf.length > 15 * 1024 * 1024) {
+        return res.status(413).json({ success: false, error: 'Il file PDF supera il limite di 15 MB' });
+      }
+      if (!fs.existsSync(MODELLI_ATTESTATI_DIR)) {
+        fs.mkdirSync(MODELLI_ATTESTATI_DIR, { recursive: true });
+      }
+      const targetPath = path.join(MODELLI_ATTESTATI_DIR, `${slug}.pdf`);
+      fs.writeFileSync(targetPath, buf);
+      return res.json({ success: true, pdfSlug: slug, fileSize: buf.length });
+    } catch (err: any) {
+      console.error('[Modelli Attestati] Errore salvataggio PDF:', err);
+      return res.status(500).json({ success: false, error: err?.message || 'Errore salvataggio file PDF' });
+    }
+  });
+
+  app.get('/api/modelli-attestati/:slug', (req, res) => {
+    try {
+      const slug = sanitizePdfSlug(req.params.slug);
+      const targetPath = path.join(MODELLI_ATTESTATI_DIR, `${slug}.pdf`);
+      if (!fs.existsSync(targetPath)) {
+        return res.status(404).json({ success: false, error: 'Modello PDF non trovato sul server' });
+      }
+      const buf = fs.readFileSync(targetPath);
+      if (req.query.raw === '1') {
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `inline; filename="${slug}.pdf"`);
+        res.setHeader('Content-Length', buf.length);
+        return res.send(buf);
+      }
+      return res.json({
+        success: true,
+        pdfSlug: slug,
+        fileSize: buf.length,
+        pdfBase64: buf.toString('base64')
+      });
+    } catch (err: any) {
+      console.error('[Modelli Attestati] Errore lettura PDF:', err);
+      return res.status(500).json({ success: false, error: err?.message || 'Errore lettura file PDF' });
+    }
+  });
+
+  app.delete('/api/modelli-attestati/:slug', (req, res) => {
+    try {
+      const slug = sanitizePdfSlug(req.params.slug);
+      const targetPath = path.join(MODELLI_ATTESTATI_DIR, `${slug}.pdf`);
+      if (fs.existsSync(targetPath)) {
+        fs.unlinkSync(targetPath);
+      }
+      return res.json({ success: true, pdfSlug: slug });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err?.message || 'Errore eliminazione PDF' });
+    }
+  });
+
   // Prepara l'attestato PDF sul server in modo asincrono, evitando blocchi e crash sul device client
   app.post('/api/prepara-attestato-pdf', async (req, res) => {
     try {
@@ -6903,8 +7260,26 @@ async function startServer() {
         return res.status(400).json({ success: false, error: 'Dati corso o partecipante mancanti' });
       }
 
+      const modelloServer =
+        opzioni?.modelloPrestampato ||
+        (corso?.tipologia && state.modelliAttestatiCategoria ? state.modelliAttestatiCategoria[corso.tipologia] : undefined);
+
+      let pdfPrestampatoBytes: Uint8Array | undefined = undefined;
+      if (modelloServer && modelloServer.attivo && modelloServer.hasPdfFile) {
+        const slug = sanitizePdfSlug(modelloServer.pdfSlug || corso.tipologia || 'corso');
+        const targetPath = path.join(MODELLI_ATTESTATI_DIR, `${slug}.pdf`);
+        if (fs.existsSync(targetPath)) {
+          pdfPrestampatoBytes = new Uint8Array(fs.readFileSync(targetPath));
+        } else if (typeof modelloServer.pdfBase64Inline === 'string' && modelloServer.pdfBase64Inline.length > 100) {
+          const clean = modelloServer.pdfBase64Inline.replace(/^data:[^;]+;base64,/, '').replace(/\s/g, '');
+          pdfPrestampatoBytes = new Uint8Array(Buffer.from(clean, 'base64'));
+        }
+      }
+
       const pdfResult = await scaricaAttestatoPDF(corso, partecipante, {
         ...(opzioni || {}),
+        modelloPrestampato: modelloServer,
+        pdfPrestampatoBytes,
         downloadImmediato: false
       });
 
