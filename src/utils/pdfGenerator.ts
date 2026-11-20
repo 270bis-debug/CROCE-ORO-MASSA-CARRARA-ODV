@@ -179,7 +179,13 @@ export interface ReportDataPDF {
   richiedenteAnnullamento?: string;
   orarioAnnullamento?: string;
   datiDestinazione?: DatiDestinazionePDF;
-  firmaVolontario?: string; // Firma digitale autografa del volontario/capo turno registrata dal device
+  capoServizioNome?: string; // Nominativo del Capo Servizio (badge turno) la cui firma appare sul foglio di servizio
+  convalidaCapoServizio?: {
+    convalidato?: boolean;
+    capoServizioNome?: string;
+    convalidatoAlle?: string;
+  };
+  firmaVolontario?: string; // Firma digitale autografa del Capo Servizio registrata sul profilo/device
   firmaOperatoreCentrale?: string; // Firma digitale autografa dell'operatore di centrale registrata dal device
   numeroSegreteriaSoupRt?: string;
   allertaMeteo?: string;
@@ -462,7 +468,11 @@ export function generaDocumentoPDF(data: ReportDataPDF): jsPDF {
   const rightValMaxW = margin + contentWidth - (colRightX + 26) - 3;
 
   const capoTurno = sanitizeWinAnsi(
-    data.volontarioNome ? `${data.volontarioNome} (${data.qualificaTurno || 'Autista'})` : 'Capo Turno di Servizio'
+    data.capoServizioNome
+      ? `${data.capoServizioNome} (Capo Servizio)`
+      : data.volontarioNome
+      ? `${data.volontarioNome} (${data.qualificaTurno || 'Autista'})`
+      : 'Capo Servizio'
   );
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(8.2);
@@ -892,12 +902,12 @@ export function generaDocumentoPDF(data: ReportDataPDF): jsPDF {
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(7.4);
   doc.setTextColor(255, 255, 255);
-  doc.text('FIRMA CAPO TURNO / AUTISTA MEZZO', margin + 3, boxFirmaY + 4.8, { maxWidth: colFirmaW - 6 });
+  doc.text('FIRMA CAPO SERVIZIO', margin + 3, boxFirmaY + 4.8, { maxWidth: colFirmaW - 6 });
 
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(7.0);
   doc.setTextColor(15, 23, 42);
-  doc.text(sanitizeWinAnsi(`Nominativo: ${capoTurno}`), margin + 3, boxFirmaY + 11.5, { maxWidth: colFirmaW - 6 });
+  doc.text(sanitizeWinAnsi(`Capo Servizio: ${capoTurno}`), margin + 3, boxFirmaY + 11.5, { maxWidth: colFirmaW - 6 });
 
   if (data.firmaVolontario) {
     try {
@@ -908,7 +918,11 @@ export function generaDocumentoPDF(data: ReportDataPDF): jsPDF {
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(5.5);
       doc.text(
-        '[OK] SOTTOSCRITTO DIGITALMENTE A BORDO MEZZO',
+        sanitizeWinAnsi(
+          data.convalidaCapoServizio?.convalidatoAlle
+            ? `[OK] CONVALIDATO DAL CAPO SERVIZIO (${data.convalidaCapoServizio.convalidatoAlle})`
+            : '[OK] FIRMA CAPO SERVIZIO CONVALIDATA'
+        ),
         margin + 3 + (colFirmaW - 6) / 2,
         boxFirmaY + boxFirmaH - 3.4,
         { align: 'center', maxWidth: colFirmaW - 10 }
@@ -1647,10 +1661,14 @@ export function generaVerbaleAnimaleNonProprietaPDF(data: ReportDataPDF): jsPDF 
 
   doc.setFont('helvetica', 'bold');
   doc.setTextColor(71, 85, 105);
-  doc.text('Capo Turno:', col2, y + 18);
+  doc.text('Capo Servizio:', col2, y + 18);
   doc.setFont('helvetica', 'normal');
   doc.setTextColor(15, 23, 42);
-  const capoNome = data.volontarioNome ? `${data.volontarioNome} (${data.qualificaTurno || 'Autista'})` : 'Capo Turno';
+  const capoNome = data.capoServizioNome
+    ? `${data.capoServizioNome} (Capo Servizio)`
+    : data.volontarioNome
+    ? `${data.volontarioNome} (${data.qualificaTurno || 'Autista'})`
+    : 'Capo Servizio';
   doc.text(sanitizePdfText(capoNome), col2 + 35, y + 18, { maxWidth: (contentWidth / 2) - 41 });
 
   y += 27;
@@ -1893,10 +1911,10 @@ export function generaVerbaleAnimaleNonProprietaPDF(data: ReportDataPDF): jsPDF 
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(7);
   doc.setTextColor(255, 255, 255);
-  doc.text('1. FIRMA VOLONTARIO / CAPO TURNO', margin + 3, y + 3.8, { maxWidth: colW - 6 });
+  doc.text('1. FIRMA CAPO SERVIZIO', margin + 3, y + 3.8, { maxWidth: colW - 6 });
   doc.setTextColor(15, 23, 42);
   doc.setFontSize(6.8);
-  doc.text(sanitizePdfText(`Nominativo: ${capoNome}`), margin + 3, y + 9.5, { maxWidth: colW - 6 });
+  doc.text(sanitizePdfText(`Capo Servizio: ${capoNome}`), margin + 3, y + 9.5, { maxWidth: colW - 6 });
 
   if (data.firmaVolontario) {
     try {
@@ -1907,7 +1925,11 @@ export function generaVerbaleAnimaleNonProprietaPDF(data: ReportDataPDF): jsPDF 
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(5.3);
       doc.text(
-        '[FIRMA OK] SOTTOSCRITTO DIGITALMENTE A BORDO MEZZO',
+        sanitizePdfText(
+          data.convalidaCapoServizio?.convalidatoAlle
+            ? `[OK] CONVALIDATO DAL CAPO SERVIZIO (${data.convalidaCapoServizio.convalidatoAlle})`
+            : '[FIRMA OK] FIRMA CAPO SERVIZIO CONVALIDATA'
+        ),
         margin + 3 + (colW - 6) / 2,
         y + hCardFirma - 1.8,
         { align: 'center', maxWidth: colW - 8 }

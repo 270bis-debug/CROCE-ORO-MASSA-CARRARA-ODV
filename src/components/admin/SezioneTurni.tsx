@@ -36,7 +36,9 @@ import {
   Filter,
   Info,
   Sun,
-  Flame
+  Flame,
+  Award,
+  Star
 } from 'lucide-react';
 import { TurnoSedeOperativa, SedeAssociativaCompleta, RuoloTurno, CandidaturaTurno, MezzoFlotta } from '../../types/adminTypes';
 import { MEZZI_FLOTTA_INIZIALI } from '../../data/adminMockData';
@@ -52,7 +54,12 @@ import {
   getDettaglioTipoGiorno
 } from '../../utils/festivitaItaliane';
 import { puoCoprireRuoloTurno, getMansioniVolontario } from '../../utils/mansioniVolontari';
-import { useTipiTurno } from '../../utils/tipiTurno';
+import {
+  useTipiTurno,
+  calcolaCoperturaTurno,
+  getCapoServizioTurno,
+  getVolontariAssegnatiTurno
+} from '../../utils/tipiTurno';
 import { PannelloTipiTurno } from './PannelloTipiTurno';
 import { addDaysISODate, formatDateItaly, formatISODateItaly, formatTimeItaly } from '../../utils/italianTime';
 
@@ -237,36 +244,30 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
         );
 
         const assegnato = { id: cand.volontarioId, nome: cand.volontarioNome };
-        let { autista, caposervizio, soccorritore2, terzoSoccorritore, operatoreCentrale, centralinista, osservatore } = t;
+        let { autista, soccorritore2, terzoSoccorritore, operatoreCentrale, centralinista, osservatore } = t;
 
-        if (cand.ruoloRichiesto === 'autista') {
-          autista = assegnato;
-          if (!caposervizio) {
-            caposervizio = { id: assegnato.id, nome: assegnato.nome };
-          }
-        }
-        else if (cand.ruoloRichiesto === 'caposervizio') caposervizio = assegnato;
+        if (cand.ruoloRichiesto === 'autista') autista = assegnato;
         else if (cand.ruoloRichiesto === 'soccorritore2') soccorritore2 = assegnato;
         else if (cand.ruoloRichiesto === 'terzoSoccorritore') terzoSoccorritore = assegnato;
         else if (cand.ruoloRichiesto === 'operatoreCentrale') operatoreCentrale = assegnato;
         else if (cand.ruoloRichiesto === 'centralinista') centralinista = assegnato;
         else if (cand.ruoloRichiesto === 'osservatore') osservatore = assegnato;
 
-        const effettivoCapo = caposervizio || autista;
-        const statoCopertura: TurnoSedeOperativa['statoCopertura'] =
-          autista && effettivoCapo && soccorritore2 ? 'Coperto' : (autista || effettivoCapo || soccorritore2 ? 'Parziale' : 'Scoperto');
-
-        return {
+        const turnoAggiornatoBase: TurnoSedeOperativa = {
           ...t,
           autista,
-          caposervizio,
           soccorritore2,
           terzoSoccorritore,
           operatoreCentrale,
           centralinista,
           osservatore,
-          statoCopertura,
           richiesteIscrizione: nuoveRichieste
+        };
+        const statoCopertura = calcolaCoperturaTurno(turnoAggiornatoBase);
+
+        return {
+          ...turnoAggiornatoBase,
+          statoCopertura
         };
       }
       return t;
@@ -593,18 +594,31 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
 
     // Duplicazione selettiva dell'equipaggio in base ai volontari selezionati
     const autistaEffettivo = ruoliSelezionatiDuplicazione.autista ? t.autista : undefined;
-    const capoEffettivo = ruoliSelezionatiDuplicazione.caposervizio ? (t.caposervizio || t.autista) : undefined;
     const socc2Effettivo = ruoliSelezionatiDuplicazione.soccorritore2 ? t.soccorritore2 : undefined;
     const terzoEffettivo = ruoliSelezionatiDuplicazione.terzoSoccorritore ? t.terzoSoccorritore : undefined;
     const centraleEffettivo = ruoliSelezionatiDuplicazione.operatoreCentrale ? t.operatoreCentrale : undefined;
     const centralinistaEffettivo = ruoliSelezionatiDuplicazione.centralinista ? t.centralinista : undefined;
     const osservatoreEffettivo = ruoliSelezionatiDuplicazione.osservatore ? t.osservatore : undefined;
 
-    const statoCopertura = calcolaStatoCopertura(
-      autistaEffettivo?.id,
-      capoEffettivo?.id,
-      socc2Effettivo?.id
+    const capoOriginale = getCapoServizioTurno(t);
+    const volontariDuplicatiIds = new Set(
+      [autistaEffettivo, socc2Effettivo, terzoEffettivo, centraleEffettivo, centralinistaEffettivo, osservatoreEffettivo]
+        .filter(Boolean)
+        .map((s) => s!.id)
     );
+    const capoServizioBadgeEffettivo =
+      capoOriginale && volontariDuplicatiIds.has(capoOriginale.id) ? capoOriginale : undefined;
+    const capoEffettivo = capoServizioBadgeEffettivo;
+
+    const statoCopertura = calcolaCoperturaTurno({
+      mansioniRichieste: t.mansioniRichieste,
+      autista: autistaEffettivo,
+      soccorritore2: socc2Effettivo,
+      terzoSoccorritore: terzoEffettivo,
+      operatoreCentrale: centraleEffettivo,
+      centralinista: centralinistaEffettivo,
+      osservatore: osservatoreEffettivo
+    });
 
     // Creazione nuovi turni duplicati
     // NOTA VINCOLANTE: Il mezzo assegnato (mezzoAssegnato), il nome del turno (nomeTurno) e il tipo di turno rimangono identici all'originale
@@ -622,8 +636,9 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
       orarioInizio: t.orarioInizio,
       orarioFine: t.orarioFine,
       statoCopertura,
+      capoServizioBadge: capoServizioBadgeEffettivo,
       autista: autistaEffettivo,
-      caposervizio: capoEffettivo,
+      caposervizio: undefined,
       soccorritore2: socc2Effettivo,
       terzoSoccorritore: terzoEffettivo,
       operatoreCentrale: centraleEffettivo,
@@ -855,16 +870,31 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
     setDataSelezionata(addDaysISODate(dataSelezionata, delta));
   };
 
-  // Calcolo automatico dello stato di copertura (se caposervizio non inserito, coperto automaticamente dall'autista)
-  const calcolaStatoCopertura = (
-    autistaId?: string,
-    capoId?: string,
-    socc2Id?: string
-  ): TurnoSedeOperativa['statoCopertura'] => {
-    const capoEffettivoId = capoId || autistaId;
-    if (autistaId && capoEffettivoId && socc2Id) return 'Coperto';
-    if (autistaId || capoEffettivoId) return 'Parziale';
-    return 'Scoperto';
+  // Assegnazione / revoca del badge di Capo Servizio a qualsiasi volontario assegnato al turno (indipendentemente dalla mansione)
+  const handleAssegnaBadgeCapoServizio = (
+    turnoId: string,
+    volontarioTarget: { id: string; nome: string } | null
+  ) => {
+    const targetTurno = turni.find((t) => t.id === turnoId);
+    if (!targetTurno) return;
+    const aggiornati = turni.map((t) => {
+      if (t.id !== turnoId) return t;
+      return {
+        ...t,
+        capoServizioBadge: volontarioTarget ? { id: volontarioTarget.id, nome: volontarioTarget.nome } : undefined,
+        caposervizio: undefined
+      };
+    });
+    onAggiornaTurni(aggiornati);
+    if (volontarioTarget) {
+      onNotificaRadio?.(
+        `⭐ CAPO SERVIZIO ASSEGNATO: ${volontarioTarget.nome} nominato Capo Servizio per il turno "${targetTurno.nomeTurno || targetTurno.fasciaOraria}" del ${formatDateItaly(targetTurno.data)} (${targetTurno.sedeNome}).`,
+        'centrale'
+      );
+      mostraAvviso(`⭐ Badge Capo Servizio assegnato a ${volontarioTarget.nome} (la sua firma apparirà sui fogli di servizio).`);
+    } else {
+      mostraAvviso('Badge Capo Servizio rimosso dal turno.');
+    }
   };
 
   // Salva Turno
@@ -889,8 +919,6 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
 
     if (turnoInModifica) {
       const autistaObj = volontari.find((v) => v.id === formAutistaId);
-      const capoObj = volontari.find((v) => v.id === formCapoId);
-      const capoEffettivo = capoObj || (formAutistaId ? autistaObj : undefined);
       const socc2Obj = volontari.find((v) => v.id === formSoccorritore2Id);
       const terzoObj = volontari.find((v) => v.id === formTerzoSoccorritoreId);
       const centraleObj = volontari.find((v) => v.id === formCentraleId);
@@ -901,13 +929,6 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
         const vAut = puoCoprireRuoloTurno(autistaObj, 'autista');
         if (!vAut.idoneo) {
           mostraAvviso(`⛔ ${autistaObj.nome} ${autistaObj.cognome} non possiede la mansione di Autista.`);
-          return;
-        }
-      }
-      if (capoObj) {
-        const vCapo = puoCoprireRuoloTurno(capoObj, 'caposervizio');
-        if (!vCapo.idoneo) {
-          mostraAvviso(`⛔ ${capoObj.nome} ${capoObj.cognome} non possiede la mansione di Caposervizio.`);
           return;
         }
       }
@@ -940,7 +961,17 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
         }
       }
 
-      const statoCopertura = calcolaStatoCopertura(formAutistaId, capoEffettivo?.id, formSoccorritore2Id);
+      const autistaSlot = autistaObj ? { id: autistaObj.id, nome: `${autistaObj.nome} ${autistaObj.cognome}` } : undefined;
+      const socc2Slot = socc2Obj ? { id: socc2Obj.id, nome: `${socc2Obj.nome} ${socc2Obj.cognome}` } : undefined;
+      const terzoSlot = terzoObj ? { id: terzoObj.id, nome: `${terzoObj.nome} ${terzoObj.cognome}` } : undefined;
+      const centraleSlot = centraleObj ? { id: centraleObj.id, nome: `${centraleObj.nome} ${centraleObj.cognome}` } : undefined;
+      const centralinistaSlot = centralinistaObj ? { id: centralinistaObj.id, nome: `${centralinistaObj.nome} ${centralinistaObj.cognome}` } : undefined;
+      const osservatoreSlot = osservatoreObj ? { id: osservatoreObj.id, nome: `${osservatoreObj.nome} ${osservatoreObj.cognome}` } : undefined;
+
+      // Il badge Capo Servizio può essere assegnato a qualsiasi volontario presente nel turno, indipendentemente dalla mansione
+      const slotsAssegnati = [autistaSlot, socc2Slot, terzoSlot, centraleSlot, centralinistaSlot, osservatoreSlot].filter(Boolean) as Array<{ id: string; nome: string }>;
+      const capoBadgeObj = formCapoId ? slotsAssegnati.find((s) => s.id === formCapoId) : undefined;
+
       const targetIds = new Set<string>([turnoInModifica.id]);
       if (modificaModalitaSerie === 'serie_futura') {
         const serieFutura = trovaTurniSerie(turnoInModifica, turni).filter(
@@ -951,32 +982,36 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
 
       const aggiornati = turni.map((t) => {
         if (targetIds.has(t.id)) {
-          return {
+          const mansioniAggiornate = tipoSelezionato
+            ? tipoSelezionato.mansioniObbligatorie.map((m) => ({ ...m }))
+            : t.mansioniRichieste;
+          const nextTurno: TurnoSedeOperativa = {
             ...t,
             sedeId: sedeObj?.id || t.sedeId,
             sedeNome: sedeObj?.nome || t.sedeNome,
             nomeTurno: nomeTurnoPulito,
             tipoTurnoId: tipoSelezionato ? tipoSelezionato.id : t.tipoTurnoId,
             tipoTurnoNome: tipoSelezionato ? tipoSelezionato.nome : t.tipoTurnoNome,
-            mansioniRichieste: tipoSelezionato
-              ? tipoSelezionato.mansioniObbligatorie.map((m) => ({ ...m }))
-              : t.mansioniRichieste,
+            mansioniRichieste: mansioniAggiornate,
             data: modificaModalitaSerie === 'serie_futura' && t.id !== turnoInModifica.id ? t.data : formData,
             fasciaOraria: formFascia,
             orarioInizio: formInizio,
             orarioFine: formFine,
             mezzoAssegnato: mezzoValido,
-            statoCopertura,
-            autista: autistaObj ? { id: autistaObj.id, nome: `${autistaObj.nome} ${autistaObj.cognome}` } : undefined,
-            caposervizio: capoEffettivo ? { id: capoEffettivo.id, nome: `${capoEffettivo.nome} ${capoEffettivo.cognome}` } : undefined,
-            soccorritore2: socc2Obj ? { id: socc2Obj.id, nome: `${socc2Obj.nome} ${socc2Obj.cognome}` } : undefined,
-            terzoSoccorritore: terzoObj ? { id: terzoObj.id, nome: `${terzoObj.nome} ${terzoObj.cognome}` } : undefined,
-            operatoreCentrale: centraleObj ? { id: centraleObj.id, nome: `${centraleObj.nome} ${centraleObj.cognome}` } : undefined,
-            centralinista: centralinistaObj ? { id: centralinistaObj.id, nome: `${centralinistaObj.nome} ${centralinistaObj.cognome}` } : undefined,
-            osservatore: osservatoreObj ? { id: osservatoreObj.id, nome: `${osservatoreObj.nome} ${osservatoreObj.cognome}` } : undefined,
+            capoServizioBadge: capoBadgeObj,
+            autista: autistaSlot,
+            caposervizio: undefined,
+            soccorritore2: socc2Slot,
+            terzoSoccorritore: terzoSlot,
+            operatoreCentrale: centraleSlot,
+            centralinista: centralinistaSlot,
+            osservatore: osservatoreSlot,
             richiesteIscrizione: t.richiesteIscrizione,
-            note: formNote
+            note: formNote,
+            statoCopertura: 'Scoperto'
           };
+          nextTurno.statoCopertura = calcolaCoperturaTurno(nextTurno);
+          return nextTurno;
         }
         return t;
       });
@@ -1131,13 +1166,11 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
     const aggiornati = turni.map((t) => {
       if (t.id === turno.id) {
         const autista = ruolo === 'autista' ? { id: vol.id, nome: `${vol.nome} ${vol.cognome}` } : t.autista;
-        let caposervizio = ruolo === 'caposervizio' ? { id: vol.id, nome: `${vol.nome} ${vol.cognome}` } : t.caposervizio;
-        if (ruolo === 'autista' && !caposervizio) {
-          caposervizio = autista;
-        }
         const soccorritore2 = ruolo === 'soccorritore2' ? { id: vol.id, nome: `${vol.nome} ${vol.cognome}` } : t.soccorritore2;
-        const statoCopertura = calcolaStatoCopertura(autista?.id, caposervizio?.id, soccorritore2?.id);
-        return { ...t, autista, caposervizio, soccorritore2, statoCopertura };
+        const capoServizioBadge = ruolo === 'caposervizio' ? { id: vol.id, nome: `${vol.nome} ${vol.cognome}` } : t.capoServizioBadge;
+        const nextTurno: TurnoSedeOperativa = { ...t, autista, soccorritore2, capoServizioBadge };
+        nextTurno.statoCopertura = calcolaCoperturaTurno(nextTurno);
+        return nextTurno;
       }
       return t;
     });
@@ -1157,14 +1190,15 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
   const turniFiltrati = turni.filter((t) => {
     const matchData = t.data === dataSelezionata;
     const matchSede = filtroSedeId === 'tutte' || t.sedeId === filtroSedeId;
-    const matchCopertura = filtroCopertura === 'tutti' || t.statoCopertura === filtroCopertura;
+    const coperturaReale = calcolaCoperturaTurno(t);
+    const matchCopertura = filtroCopertura === 'tutti' || coperturaReale === filtroCopertura;
     return matchData && matchSede && matchCopertura;
   });
 
   // KPI Giornata
-  const turniCopertiGiorno = turniFiltrati.filter((t) => t.statoCopertura === 'Coperto').length;
-  const turniParzialiGiorno = turniFiltrati.filter((t) => t.statoCopertura === 'Parziale').length;
-  const turniScopertiGiorno = turniFiltrati.filter((t) => t.statoCopertura === 'Scoperto').length;
+  const turniCopertiGiorno = turniFiltrati.filter((t) => calcolaCoperturaTurno(t) === 'Coperto').length;
+  const turniParzialiGiorno = turniFiltrati.filter((t) => calcolaCoperturaTurno(t) === 'Parziale').length;
+  const turniScopertiGiorno = turniFiltrati.filter((t) => calcolaCoperturaTurno(t) === 'Scoperto').length;
 
   return (
     <div className="w-full max-w-7xl mx-auto space-y-5 animate-in fade-in duration-200">
@@ -1665,101 +1699,172 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
                               key={mr.id}
                               className="px-1.5 py-0.5 rounded bg-slate-900 border border-slate-700 text-[10px] text-slate-200 font-semibold"
                             >
-                              {mr.emoji || '🎖️'} {mr.nome} <span className="text-indigo-300 font-mono">({mr.minimo === mr.massimo ? mr.minimo : `${mr.minimo}–${mr.massimo}`})</span>
+                              {mr.emoji || '🎖️'} {mr.nome}{' '}
+                              <span className="text-indigo-300 font-mono">
+                                ({mr.minimo === 0 ? `Facolt. 0–${mr.massimo}` : mr.minimo === mr.massimo ? mr.minimo : `${mr.minimo}–${mr.massimo}`})
+                              </span>
                             </span>
                           ))}
                         </div>
                       )}
                     </div>
 
-                    <span className={`px-2.5 py-1 rounded-full text-[10px] font-black uppercase border shrink-0 ${
-                      isCoperto
-                        ? 'bg-emerald-950 text-emerald-300 border-emerald-700/50'
-                        : isParziale
-                        ? 'bg-amber-950 text-amber-300 border-amber-700/50'
-                        : 'bg-red-950 text-red-300 border-red-700/50 animate-pulse'
-                    }`}>
-                      {t.statoCopertura}
-                    </span>
+                    {(() => {
+                      const statoEffettivo = calcolaCoperturaTurno(t);
+                      const effCoperto = statoEffettivo === 'Coperto';
+                      const effParziale = statoEffettivo === 'Parziale';
+                      return (
+                        <span className={`px-2.5 py-1 rounded-full text-[10px] font-black uppercase border shrink-0 ${
+                          effCoperto
+                            ? 'bg-emerald-950 text-emerald-300 border-emerald-700/50'
+                            : effParziale
+                            ? 'bg-amber-950 text-amber-300 border-amber-700/50'
+                            : 'bg-red-950 text-red-300 border-red-700/50 animate-pulse'
+                        }`}>
+                          {statoEffettivo}
+                        </span>
+                      );
+                    })()}
                   </div>
 
-                  {/* Componenti Equipaggio */}
-                  <div className="space-y-1.5 p-3 rounded-xl bg-slate-900 border border-slate-800 text-xs">
-                    <div className="flex items-center justify-between">
-                      <span className="text-slate-400 font-semibold flex items-center gap-1">
-                        <Car className="w-3.5 h-3.5 text-amber-400" /> Autista:
-                      </span>
-                      {t.autista ? (
-                        <strong className="text-white font-bold">{t.autista.nome}</strong>
-                      ) : (
-                        <span className="text-red-400 italic font-semibold">Da Assegnare</span>
-                      )}
-                    </div>
+                  {/* Componenti Equipaggio & Badge Capo Servizio */}
+                  {(() => {
+                    const capoAttuale = getCapoServizioTurno(t);
+                    const volontariNelTurno = getVolontariAssegnatiTurno(t);
+                    const renderCapoBadgeBtn = (slot?: { id: string; nome: string }) => {
+                      if (!slot) return null;
+                      const isCapo = Boolean(
+                        capoAttuale && (
+                          (capoAttuale.id && capoAttuale.id === slot.id) ||
+                          (capoAttuale.nome && capoAttuale.nome.trim().toLowerCase() === slot.nome.trim().toLowerCase())
+                        )
+                      );
+                      return (
+                        <button
+                          type="button"
+                          onClick={() => handleAssegnaBadgeCapoServizio(t.id, isCapo ? null : slot)}
+                          className={`ml-1.5 px-1.5 py-0.5 rounded-md text-[9.5px] font-black uppercase inline-flex items-center gap-1 transition-all cursor-pointer shrink-0 border ${
+                            isCapo
+                              ? 'bg-amber-500/25 text-amber-300 border-amber-400 shadow-sm hover:bg-amber-500/35'
+                              : 'bg-slate-800/90 text-slate-400 border-slate-700 hover:text-amber-300 hover:border-amber-500/60'
+                          }`}
+                          title={
+                            isCapo
+                              ? 'Capo Servizio attuale (la sua firma appare sui fogli di servizio) — clicca per rimuovere'
+                              : `Assegna il badge di Capo Servizio a ${slot.nome} (indipendentemente dalla mansione)`
+                          }
+                        >
+                          <Star className={`w-2.5 h-2.5 ${isCapo ? 'fill-amber-400 text-amber-400' : ''}`} />
+                          <span>{isCapo ? 'Capo Servizio' : 'Nomina CS'}</span>
+                        </button>
+                      );
+                    };
 
-                    <div className="flex items-center justify-between">
-                      <span className="text-slate-400 font-semibold flex items-center gap-1">
-                        <Users className="w-3.5 h-3.5 text-blue-400" /> Caposervizio:
-                      </span>
-                      {t.caposervizio ? (
-                        <strong className="text-white font-bold">{t.caposervizio.nome}</strong>
-                      ) : (
-                        <span className="text-red-400 italic font-semibold">Da Assegnare</span>
-                      )}
-                    </div>
+                    return (
+                      <div className="space-y-1.5 p-3 rounded-xl bg-slate-900 border border-slate-800 text-xs">
+                        {/* Riepilogo Badge Capo Servizio del Turno */}
+                        <div className={`flex items-center justify-between gap-2 pb-1.5 mb-1 border-b border-slate-800 text-[11px] ${
+                          capoAttuale ? 'text-amber-300' : 'text-slate-400'
+                        }`}>
+                          <span className="font-black uppercase flex items-center gap-1">
+                            <Award className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                            <span>Badge Capo Servizio:</span>
+                          </span>
+                          {capoAttuale ? (
+                            <span className="px-2 py-0.5 rounded-md bg-amber-500/20 border border-amber-400/60 text-amber-200 font-black truncate max-w-[180px]" title="La firma del Capo Servizio appare sui fogli di servizio">
+                              ⭐ {capoAttuale.nome}
+                            </span>
+                          ) : (
+                            <span className="text-[10px] text-amber-400/90 italic font-semibold">
+                              {volontariNelTurno.length > 0 ? 'Clicca "Nomina CS" su un volontario' : 'Nessun volontario'}
+                            </span>
+                          )}
+                        </div>
 
-                    <div className="flex items-center justify-between">
-                      <span className="text-slate-400 font-semibold flex items-center gap-1">
-                        <Users className="w-3.5 h-3.5 text-emerald-400" /> Soccorritore 2:
-                      </span>
-                      {t.soccorritore2 ? (
-                        <strong className="text-white font-bold">{t.soccorritore2.nome}</strong>
-                      ) : (
-                        <span className="text-amber-400 italic font-semibold">Mancante</span>
-                      )}
-                    </div>
+                        <div className="flex items-center justify-between gap-1">
+                          <span className="text-slate-400 font-semibold flex items-center gap-1 shrink-0">
+                            <Car className="w-3.5 h-3.5 text-amber-400" /> Autista:
+                          </span>
+                          {t.autista ? (
+                            <div className="flex items-center justify-end min-w-0">
+                              <strong className="text-white font-bold truncate">{t.autista.nome}</strong>
+                              {renderCapoBadgeBtn(t.autista)}
+                            </div>
+                          ) : (
+                            <span className="text-red-400 italic font-semibold">Da Assegnare</span>
+                          )}
+                        </div>
 
-                    {t.terzoSoccorritore && (
-                      <div className="flex items-center justify-between">
-                        <span className="text-slate-400 font-semibold flex items-center gap-1">
-                          <Users className="w-3.5 h-3.5 text-teal-400" /> Terzo Socc.:
-                        </span>
-                        <strong className="text-white font-bold">{t.terzoSoccorritore.nome}</strong>
+                        <div className="flex items-center justify-between gap-1">
+                          <span className="text-slate-400 font-semibold flex items-center gap-1 shrink-0">
+                            <Users className="w-3.5 h-3.5 text-emerald-400" /> Soccorritore 2:
+                          </span>
+                          {t.soccorritore2 ? (
+                            <div className="flex items-center justify-end min-w-0">
+                              <strong className="text-white font-bold truncate">{t.soccorritore2.nome}</strong>
+                              {renderCapoBadgeBtn(t.soccorritore2)}
+                            </div>
+                          ) : (
+                            <span className="text-amber-400 italic font-semibold">Mancante</span>
+                          )}
+                        </div>
+
+                        {t.terzoSoccorritore && (
+                          <div className="flex items-center justify-between gap-1">
+                            <span className="text-slate-400 font-semibold flex items-center gap-1 shrink-0">
+                              <Users className="w-3.5 h-3.5 text-teal-400" /> Terzo Socc.:
+                            </span>
+                            <div className="flex items-center justify-end min-w-0">
+                              <strong className="text-white font-bold truncate">{t.terzoSoccorritore.nome}</strong>
+                              {renderCapoBadgeBtn(t.terzoSoccorritore)}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Centralinista */}
+                        <div className="flex items-center justify-between gap-1">
+                          <span className="text-slate-400 font-semibold flex items-center gap-1 shrink-0">
+                            <Users className="w-3.5 h-3.5 text-cyan-400" /> Centralinista:
+                          </span>
+                          {t.centralinista ? (
+                            <div className="flex items-center justify-end min-w-0">
+                              <strong className="text-cyan-300 font-bold truncate">{t.centralinista.nome}</strong>
+                              {renderCapoBadgeBtn(t.centralinista)}
+                            </div>
+                          ) : (
+                            <span className="text-slate-500 italic font-semibold text-[11px]">Disponibile</span>
+                          )}
+                        </div>
+
+                        {/* Osservatore */}
+                        <div className="flex items-center justify-between gap-1">
+                          <span className="text-slate-400 font-semibold flex items-center gap-1 shrink-0">
+                            <Eye className="w-3.5 h-3.5 text-amber-400" /> Osservatore:
+                          </span>
+                          {t.osservatore ? (
+                            <div className="flex items-center justify-end min-w-0">
+                              <strong className="text-amber-300 font-bold truncate">{t.osservatore.nome}</strong>
+                              {renderCapoBadgeBtn(t.osservatore)}
+                            </div>
+                          ) : (
+                            <span className="text-slate-500 italic font-semibold text-[11px]">Disponibile</span>
+                          )}
+                        </div>
+
+                        {t.operatoreCentrale && (
+                          <div className="flex items-center justify-between gap-1 pt-1 border-t border-slate-800">
+                            <span className="text-slate-400 font-semibold flex items-center gap-1 shrink-0">
+                              <Headphones className="w-3.5 h-3.5 text-purple-400" /> Sala Radio:
+                            </span>
+                            <div className="flex items-center justify-end min-w-0">
+                              <strong className="text-purple-300 font-bold truncate">{t.operatoreCentrale.nome}</strong>
+                              {renderCapoBadgeBtn(t.operatoreCentrale)}
+                            </div>
+                          </div>
+                        )}
                       </div>
-                    )}
-
-                    {/* Centralinista */}
-                    <div className="flex items-center justify-between">
-                      <span className="text-slate-400 font-semibold flex items-center gap-1">
-                        <Users className="w-3.5 h-3.5 text-cyan-400" /> Centralinista:
-                      </span>
-                      {t.centralinista ? (
-                        <strong className="text-cyan-300 font-bold">{t.centralinista.nome}</strong>
-                      ) : (
-                        <span className="text-slate-500 italic font-semibold text-[11px]">Disponibile</span>
-                      )}
-                    </div>
-
-                    {/* Osservatore */}
-                    <div className="flex items-center justify-between">
-                      <span className="text-slate-400 font-semibold flex items-center gap-1">
-                        <Eye className="w-3.5 h-3.5 text-amber-400" /> Osservatore:
-                      </span>
-                      {t.osservatore ? (
-                        <strong className="text-amber-300 font-bold">{t.osservatore.nome}</strong>
-                      ) : (
-                        <span className="text-slate-500 italic font-semibold text-[11px]">Disponibile</span>
-                      )}
-                    </div>
-
-                    {t.operatoreCentrale && (
-                      <div className="flex items-center justify-between pt-1 border-t border-slate-800">
-                        <span className="text-slate-400 font-semibold flex items-center gap-1">
-                          <Headphones className="w-3.5 h-3.5 text-purple-400" /> Sala Radio:
-                        </span>
-                        <strong className="text-purple-300 font-bold">{t.operatoreCentrale.nome}</strong>
-                      </div>
-                    )}
-                  </div>
+                    );
+                  })()}
 
                   {/* Box Candidature Volontari in attesa su questo specifico turno */}
                   {(() => {
@@ -1846,7 +1951,7 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
                       setFormFine(t.orarioFine);
                       setFormMezzo(t.mezzoAssegnato || '');
                       setFormAutistaId(t.autista?.id || '');
-                      setFormCapoId(t.caposervizio?.id || '');
+                      setFormCapoId(getCapoServizioTurno(t)?.id || '');
                       setFormSoccorritore2Id(t.soccorritore2?.id || '');
                       setFormTerzoSoccorritoreId(t.terzoSoccorritore?.id || '');
                       setFormCentraleId(t.operatoreCentrale?.id || '');
@@ -2116,18 +2221,31 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
                         </select>
                       </div>
                       <div>
-                        <label className="block text-slate-300 font-semibold mb-1">👨‍⚕️ Caposervizio</label>
+                        <label className="block text-amber-300 font-bold mb-1">⭐ Badge Capo Servizio (da equipaggio assegnato)</label>
                         <select
                           value={formCapoId}
                           onChange={(e) => setFormCapoId(e.target.value)}
-                          className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white"
+                          className="w-full p-2.5 rounded-xl bg-slate-950 border border-amber-500/60 text-amber-200 font-bold"
                         >
-                          <option value="">-- Nessuno --</option>
-                          {volontari.map((v) => (
-                            <option key={v.id} value={v.id}>
-                              {v.nome} {v.cognome} ({v.qualifica || 'Volontario'})
-                            </option>
-                          ))}
+                          <option value="">-- Nessun Capo Servizio --</option>
+                          {Array.from(
+                            new Set([
+                              formAutistaId,
+                              formSoccorritore2Id,
+                              formTerzoSoccorritoreId,
+                              formCentraleId,
+                              formCentralinistaId,
+                              formOsservatoreId
+                            ].filter(Boolean))
+                          ).map((vId) => {
+                            const volObj = volontari.find((v) => v.id === vId);
+                            if (!volObj) return null;
+                            return (
+                              <option key={volObj.id} value={volObj.id}>
+                                ⭐ {volObj.nome} {volObj.cognome}
+                              </option>
+                            );
+                          })}
                         </select>
                       </div>
                       <div>
@@ -2734,31 +2852,6 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
                       disabled={!turnoDaDuplicare.autista}
                       checked={Boolean(turnoDaDuplicare.autista && ruoliSelezionatiDuplicazione.autista)}
                       onChange={() => toggleRuoloDuplicazione('autista')}
-                      className="w-4 h-4 rounded text-amber-500 bg-slate-950 border-slate-700 focus:ring-amber-400 cursor-pointer"
-                    />
-                  </label>
-
-                  {/* Caposervizio */}
-                  <label
-                    className={`p-3 rounded-xl border flex items-center justify-between gap-2.5 transition-all cursor-pointer select-none ${
-                      !turnoDaDuplicare.caposervizio
-                        ? 'bg-slate-900/40 border-slate-850 opacity-60 cursor-not-allowed'
-                        : ruoliSelezionatiDuplicazione.caposervizio
-                        ? 'bg-amber-950/30 border-amber-500/70 shadow-sm'
-                        : 'bg-slate-900 border-slate-800 hover:border-slate-700'
-                    }`}
-                  >
-                    <div className="min-w-0 flex-1">
-                      <span className="text-[10px] text-slate-400 uppercase font-black block">👨‍⚕️ Caposervizio</span>
-                      <strong className="text-white text-xs truncate block">
-                        {turnoDaDuplicare.caposervizio ? turnoDaDuplicare.caposervizio.nome : '— Non Assegnato —'}
-                      </strong>
-                    </div>
-                    <input
-                      type="checkbox"
-                      disabled={!turnoDaDuplicare.caposervizio}
-                      checked={Boolean(turnoDaDuplicare.caposervizio && ruoliSelezionatiDuplicazione.caposervizio)}
-                      onChange={() => toggleRuoloDuplicazione('caposervizio')}
                       className="w-4 h-4 rounded text-amber-500 bg-slate-950 border-slate-700 focus:ring-amber-400 cursor-pointer"
                     />
                   </label>

@@ -1,12 +1,13 @@
 /**
  * tipiTurno.ts
  * Catalogo dinamico e sincronizzato dei Tipi di Turni per il Database Calendario Turni.
- * Ogni Tipo di Turno definisce un nome e una o più mansioni obbligatorie con numero minimo e massimo
- * di volontari richiesti (sia dai 7 ruoli equipaggio standard sia dal catalogo Mansioni & Competenze).
+ * Ogni Tipo di Turno definisce un nome e una o più mansioni con numero minimo (>= 0) e massimo
+ * di volontari previsti (sia dai ruoli equipaggio base sia dal catalogo Mansioni & Competenze).
+ * Se minimo = 0, la mansione è facoltativa e non blocca la copertura del turno.
  */
 
 import { useState, useEffect } from 'react';
-import { TipoTurnoConfig, MansioneTipoTurno, RuoloTurno } from '../types/adminTypes';
+import { TipoTurnoConfig, MansioneTipoTurno, RuoloTurno, TurnoSedeOperativa } from '../types/adminTypes';
 import { getMansioniCatalogo, MansioneOperativa } from './mansioniVolontari';
 
 export type { TipoTurnoConfig, MansioneTipoTurno };
@@ -26,7 +27,9 @@ export interface OpzioneMansioneTurno {
 }
 
 /**
- * I 7 ruoli equipaggio standard richiesti per la composizione dei tipi di turno.
+ * Ruoli equipaggio standard selezionabili nei Tipi di Turno.
+ * NOTA: "Caposervizio / Soccorritore Avanzato" NON è una mansione:
+ * il Capo Servizio è un badge assegnabile a qualsiasi volontario presente nel turno, indipendentemente dalla mansione.
  */
 export const MANSIONI_BASE_EQUIPAGGIO: OpzioneMansioneTurno[] = [
   {
@@ -39,17 +42,8 @@ export const MANSIONI_BASE_EQUIPAGGIO: OpzioneMansioneTurno[] = [
     isRuoloBase: true,
   },
   {
-    id: 'ruolo-caposervizio',
-    nome: '2. Caposervizio / Soccorritore Avanzato',
-    emoji: '👨‍⚕️',
-    categoria: 'Ruoli Equipaggio Base',
-    ruoloTurno: 'caposervizio',
-    descrizione: 'Responsabile dell\'equipaggio sanitario e gestione protocolli avanzati',
-    isRuoloBase: true,
-  },
-  {
     id: 'ruolo-soccorritore2',
-    nome: '3. Secondo Soccorritore',
+    nome: '2. Secondo Soccorritore',
     emoji: '🧑‍⚕️',
     categoria: 'Ruoli Equipaggio Base',
     ruoloTurno: 'soccorritore2',
@@ -58,7 +52,7 @@ export const MANSIONI_BASE_EQUIPAGGIO: OpzioneMansioneTurno[] = [
   },
   {
     id: 'ruolo-terzoSoccorritore',
-    nome: '4. Terzo Soccorritore',
+    nome: '3. Terzo Soccorritore',
     emoji: '🧑‍⚕️',
     categoria: 'Ruoli Equipaggio Base',
     ruoloTurno: 'terzoSoccorritore',
@@ -67,7 +61,7 @@ export const MANSIONI_BASE_EQUIPAGGIO: OpzioneMansioneTurno[] = [
   },
   {
     id: 'ruolo-operatoreCentrale',
-    nome: '5. Operatore Centrale / Sala Radio',
+    nome: '4. Operatore Centrale / Sala Radio',
     emoji: '🎧',
     categoria: 'Ruoli Equipaggio Base',
     ruoloTurno: 'operatoreCentrale',
@@ -76,7 +70,7 @@ export const MANSIONI_BASE_EQUIPAGGIO: OpzioneMansioneTurno[] = [
   },
   {
     id: 'ruolo-centralinista',
-    nome: '6. Centralinista',
+    nome: '5. Centralinista',
     emoji: '📞',
     categoria: 'Ruoli Equipaggio Base',
     ruoloTurno: 'centralinista',
@@ -85,7 +79,7 @@ export const MANSIONI_BASE_EQUIPAGGIO: OpzioneMansioneTurno[] = [
   },
   {
     id: 'ruolo-osservatore',
-    nome: '7. Osservatore (In Formazione / Tirocinante)',
+    nome: '6. Osservatore (In Formazione / Tirocinante)',
     emoji: '👁️',
     categoria: 'Ruoli Equipaggio Base',
     ruoloTurno: 'osservatore',
@@ -94,24 +88,39 @@ export const MANSIONI_BASE_EQUIPAGGIO: OpzioneMansioneTurno[] = [
   },
 ];
 
+function isMansioneCaposervizioVietata(id?: string, nome?: string, ruoloTurno?: string): boolean {
+  const idLow = String(id || '').toLowerCase();
+  const nomeLow = String(nome || '').toLowerCase();
+  const ruoloLow = String(ruoloTurno || '').toLowerCase();
+  return (
+    idLow === 'ruolo-caposervizio' ||
+    idLow === 'mansione-socc-avanzato' ||
+    ruoloLow === 'caposervizio' ||
+    nomeLow.includes('caposervizio') ||
+    nomeLow.includes('capo servizio')
+  );
+}
+
 /**
  * Restituisce tutte le mansioni selezionabili per un Tipo di Turno:
- * prima i 7 ruoli equipaggio base, seguiti da tutte le mansioni definite nel database
- * Gestione Volontari -> sottosezione MANSIONI & COMPETENZE.
+ * prima i ruoli equipaggio base, seguiti da tutte le mansioni definite nel database
+ * Gestione Volontari -> sottosezione MANSIONI & COMPETENZE (escluso Caposervizio che è un badge, non una mansione).
  */
 export function getTutteMansioniDisponibiliPerTipoTurno(
   catalogoCustom?: MansioneOperativa[]
 ): OpzioneMansioneTurno[] {
   const catalogo = catalogoCustom || getMansioniCatalogo();
-  const extra: OpzioneMansioneTurno[] = catalogo.map((m) => ({
-    id: `mansione-${m.id}`,
-    nome: m.nome,
-    emoji: m.badgeEmoji || '🎖️',
-    categoria: m.categoria || 'Mansioni & Competenze',
-    mansioneCatalogoId: m.id,
-    descrizione: m.descrizione,
-    isRuoloBase: false,
-  }));
+  const extra: OpzioneMansioneTurno[] = catalogo
+    .filter((m) => !isMansioneCaposervizioVietata(m.id, m.nome))
+    .map((m) => ({
+      id: `mansione-${m.id}`,
+      nome: m.nome,
+      emoji: m.badgeEmoji || '🎖️',
+      categoria: m.categoria || 'Mansioni & Competenze',
+      mansioneCatalogoId: m.id,
+      descrizione: m.descrizione,
+      isRuoloBase: false,
+    }));
   return [...MANSIONI_BASE_EQUIPAGGIO, ...extra];
 }
 
@@ -134,22 +143,22 @@ export const TIPI_TURNO_DEFAULT: TipoTurnoConfig[] = [
         massimo: 1,
       },
       {
-        id: 'ruolo-caposervizio',
-        nome: '2. Caposervizio / Soccorritore Avanzato',
-        emoji: '👨‍⚕️',
-        ruoloTurno: 'caposervizio',
-        categoria: 'Ruoli Equipaggio Base',
-        minimo: 1,
-        massimo: 1,
-      },
-      {
         id: 'ruolo-soccorritore2',
-        nome: '3. Secondo Soccorritore',
+        nome: '2. Secondo Soccorritore',
         emoji: '🧑‍⚕️',
         ruoloTurno: 'soccorritore2',
         categoria: 'Ruoli Equipaggio Base',
         minimo: 1,
         massimo: 2,
+      },
+      {
+        id: 'ruolo-terzoSoccorritore',
+        nome: '3. Terzo Soccorritore',
+        emoji: '🧑‍⚕️',
+        ruoloTurno: 'terzoSoccorritore',
+        categoria: 'Ruoli Equipaggio Base',
+        minimo: 0,
+        massimo: 1,
       },
     ],
   },
@@ -172,7 +181,7 @@ export const TIPI_TURNO_DEFAULT: TipoTurnoConfig[] = [
       },
       {
         id: 'ruolo-soccorritore2',
-        nome: '3. Secondo Soccorritore',
+        nome: '2. Secondo Soccorritore',
         emoji: '🧑‍⚕️',
         ruoloTurno: 'soccorritore2',
         categoria: 'Ruoli Equipaggio Base',
@@ -191,7 +200,7 @@ export const TIPI_TURNO_DEFAULT: TipoTurnoConfig[] = [
     mansioniObbligatorie: [
       {
         id: 'ruolo-operatoreCentrale',
-        nome: '5. Operatore Centrale / Sala Radio',
+        nome: '4. Operatore Centrale / Sala Radio',
         emoji: '🎧',
         ruoloTurno: 'operatoreCentrale',
         categoria: 'Ruoli Equipaggio Base',
@@ -200,16 +209,133 @@ export const TIPI_TURNO_DEFAULT: TipoTurnoConfig[] = [
       },
       {
         id: 'ruolo-centralinista',
-        nome: '6. Centralinista',
+        nome: '5. Centralinista',
         emoji: '📞',
         ruoloTurno: 'centralinista',
         categoria: 'Ruoli Equipaggio Base',
-        minimo: 1,
+        minimo: 0,
         massimo: 1,
       },
     ],
   },
 ];
+
+/**
+ * Restituisce il volontario che detiene il badge di Capo Servizio per il turno.
+ */
+export function getCapoServizioTurno(
+  turno?: Partial<TurnoSedeOperativa> | null
+): { id: string; nome: string } | undefined {
+  if (!turno) return undefined;
+  if (turno.capoServizioBadge?.id || turno.capoServizioBadge?.nome) {
+    return turno.capoServizioBadge;
+  }
+  if (turno.caposervizio?.id || turno.caposervizio?.nome) {
+    return turno.caposervizio;
+  }
+  return undefined;
+}
+
+/**
+ * Restituisce l'elenco univoco di tutti i volontari assegnati e segnati nel turno,
+ * indipendentemente dalla mansione ricoperta.
+ */
+export function getVolontariAssegnatiTurno(
+  turno?: Partial<TurnoSedeOperativa> | null
+): Array<{ id: string; nome: string; ruoloLabel: string; ruoloKey: RuoloTurno }> {
+  if (!turno) return [];
+  const entries: Array<{ slot?: { id: string; nome: string }; ruoloLabel: string; ruoloKey: RuoloTurno }> = [
+    { slot: turno.autista, ruoloLabel: 'Autista Soccorritore', ruoloKey: 'autista' },
+    { slot: turno.soccorritore2, ruoloLabel: 'Secondo Soccorritore', ruoloKey: 'soccorritore2' },
+    { slot: turno.terzoSoccorritore, ruoloLabel: 'Terzo Soccorritore', ruoloKey: 'terzoSoccorritore' },
+    { slot: turno.operatoreCentrale, ruoloLabel: 'Operatore Centrale', ruoloKey: 'operatoreCentrale' },
+    { slot: turno.centralinista, ruoloLabel: 'Centralinista', ruoloKey: 'centralinista' },
+    { slot: turno.osservatore, ruoloLabel: 'Osservatore', ruoloKey: 'osservatore' },
+    { slot: turno.caposervizio, ruoloLabel: 'Equipaggio', ruoloKey: 'caposervizio' },
+  ];
+
+  const seen = new Set<string>();
+  const out: Array<{ id: string; nome: string; ruoloLabel: string; ruoloKey: RuoloTurno }> = [];
+  for (const e of entries) {
+    if (!e.slot || (!e.slot.id && !e.slot.nome)) continue;
+    const key = e.slot.id || e.slot.nome.trim().toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      id: e.slot.id,
+      nome: e.slot.nome,
+      ruoloLabel: e.ruoloLabel,
+      ruoloKey: e.ruoloKey,
+    });
+  }
+  return out;
+}
+
+/**
+ * Conta quanti volontari assegnati nel turno coprono una determinata mansione richiesta.
+ */
+function contaAssegnatiPerMansione(
+  turno: Partial<TurnoSedeOperativa>,
+  m: MansioneTipoTurno
+): number {
+  const ruolo = m.ruoloTurno;
+  if (ruolo === 'autista') return turno.autista ? 1 : 0;
+  if (ruolo === 'soccorritore2') {
+    return (turno.soccorritore2 ? 1 : 0) + (turno.terzoSoccorritore ? 1 : 0);
+  }
+  if (ruolo === 'terzoSoccorritore') return turno.terzoSoccorritore ? 1 : 0;
+  if (ruolo === 'operatoreCentrale') return turno.operatoreCentrale ? 1 : 0;
+  if (ruolo === 'centralinista') return turno.centralinista ? 1 : 0;
+  if (ruolo === 'osservatore') return turno.osservatore ? 1 : 0;
+
+  // Per mansioni custom dal catalogo Gestione Volontari: verifica per nome/ruolo o numero volontari assegnati
+  const nomeLow = (m.nome || '').toLowerCase();
+  if (nomeLow.includes('autist')) return turno.autista ? 1 : 0;
+  if (nomeLow.includes('centralin')) return turno.centralinista ? 1 : 0;
+  if (nomeLow.includes('centrale') || nomeLow.includes('radio')) return turno.operatoreCentrale ? 1 : 0;
+  if (nomeLow.includes('osservat') || nomeLow.includes('tirocin')) return turno.osservatore ? 1 : 0;
+  if (nomeLow.includes('soccorrit') || nomeLow.includes('barell')) {
+    return (turno.soccorritore2 ? 1 : 0) + (turno.terzoSoccorritore ? 1 : 0);
+  }
+
+  // Fallback generico: usa il totale dei volontari assegnati al turno
+  return getVolontariAssegnatiTurno(turno).length;
+}
+
+/**
+ * Calcola lo stato di copertura di un turno tenendo conto delle mansioni del Tipo di Turno:
+ * - Se una mansione ha minimo === 0, NON è obbligatoria: anche con 0 persone assegnate in quella mansione,
+ *   se tutte le altre mansioni obbligatorie (minimo > 0) sono coperte, il turno è considerato 'Coperto'.
+ */
+export function calcolaCoperturaTurno(
+  turno: Partial<TurnoSedeOperativa>
+): TurnoSedeOperativa['statoCopertura'] {
+  const assegnati = getVolontariAssegnatiTurno(turno);
+  const totaleAssegnati = assegnati.length;
+
+  const richieste = Array.isArray(turno.mansioniRichieste)
+    ? turno.mansioniRichieste.filter((m) => !isMansioneCaposervizioVietata(m.id, m.nome, m.ruoloTurno))
+    : [];
+
+  if (richieste.length > 0) {
+    const obbligatorie = richieste.filter((m) => (typeof m.minimo === 'number' ? m.minimo : 0) > 0);
+    if (obbligatorie.length === 0) {
+      // Tutte le mansioni hanno minimo 0 (nessuna obbligatoria): turno coperto appena c'è almeno un volontario (o anche 0 se configurato senza obblighi)
+      return totaleAssegnati > 0 ? 'Coperto' : 'Scoperto';
+    }
+    const tutteObbligatorieCoperte = obbligatorie.every(
+      (m) => contaAssegnatiPerMansione(turno, m) >= m.minimo
+    );
+    if (tutteObbligatorieCoperte) return 'Coperto';
+    if (totaleAssegnati > 0) return 'Parziale';
+    return 'Scoperto';
+  }
+
+  // Fallback per turni storici senza tipoTurno/mansioniRichieste
+  if (turno.autista && turno.soccorritore2) return 'Coperto';
+  if (totaleAssegnati > 0) return 'Parziale';
+  return 'Scoperto';
+}
 
 export function getTipiTurnoUpdatedAt(): number {
   if (typeof window === 'undefined') return 0;
@@ -257,12 +383,14 @@ export function normalizzaMansioniTipoTurno(rawList: any[]): MansioneTipoTurno[]
     const nome = String(item?.nome || '').trim();
     if (!nome) return;
     const id = String(item?.id || `mans-turno-${idx}-${nome.toLowerCase().replace(/\s+/g, '-')}`);
+    if (isMansioneCaposervizioVietata(id, nome, item?.ruoloTurno)) return;
     if (seen.has(id)) return;
     seen.add(id);
     const minRaw = Number(item?.minimo);
     const maxRaw = Number(item?.massimo);
-    const minimo = Number.isFinite(minRaw) && minRaw >= 1 ? Math.floor(minRaw) : 1;
-    const massimo = Number.isFinite(maxRaw) && maxRaw >= minimo ? Math.floor(maxRaw) : minimo;
+    const minimo = Number.isFinite(minRaw) && minRaw >= 0 ? Math.floor(minRaw) : 0;
+    const minMaxFloor = Math.max(1, minimo);
+    const massimo = Number.isFinite(maxRaw) && maxRaw >= minMaxFloor ? Math.floor(maxRaw) : minMaxFloor;
     out.push({
       id,
       nome,

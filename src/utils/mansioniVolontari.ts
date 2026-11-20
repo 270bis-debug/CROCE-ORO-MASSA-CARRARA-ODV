@@ -53,24 +53,8 @@ export const MANSIONI_DEFAULT: MansioneOperativa[] = [
     coloreBorder: 'border-amber-500/60',
     badgeEmoji: '🚑',
     mansioniIncluse: [
-      'Soccorritore Avanzato (Caposervizio)',
       'Soccorritore Base',
       'Autista Mezzi Ordinari / Pulmino',
-      'Barelliere / Accompagnatore Sanitario',
-      'Volontario'
-    ]
-  },
-  {
-    id: 'mansione-socc-avanzato',
-    nome: 'Soccorritore Avanzato (Caposervizio)',
-    descrizione: 'Caposervizio in ambulanza, gestione soccorso avanzato, DAE e protocolli 118',
-    categoria: 'Emergenza 118',
-    coloreBg: 'bg-blue-950/70',
-    coloreTesto: 'text-blue-300',
-    coloreBorder: 'border-blue-500/60',
-    badgeEmoji: '👨‍⚕️',
-    mansioniIncluse: [
-      'Soccorritore Base',
       'Barelliere / Accompagnatore Sanitario',
       'Volontario'
     ]
@@ -161,7 +145,6 @@ export const MANSIONI_DEFAULT: MansioneOperativa[] = [
     coloreBorder: 'border-rose-500/60',
     badgeEmoji: '🎓',
     mansioniIncluse: [
-      'Soccorritore Avanzato (Caposervizio)',
       'Soccorritore Base',
       'Barelliere / Accompagnatore Sanitario',
       'Volontario'

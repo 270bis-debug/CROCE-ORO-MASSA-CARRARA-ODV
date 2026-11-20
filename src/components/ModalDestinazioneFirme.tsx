@@ -138,6 +138,8 @@ interface ModalDestinazioneFirmeProps {
   indirizzoPartenza?: string;
   isStrutturaVeterinariaPartenza?: boolean;
   isSulPosto?: boolean;
+  isCapoServizio?: boolean;
+  capoServizioNome?: string;
 }
 
 let cacheComuni: ComuneItaliano[] | null = null;
@@ -162,7 +164,9 @@ export const ModalDestinazioneFirme: React.FC<ModalDestinazioneFirmeProps> = ({
   isStrutturaVeterinariaCentrale,
   indirizzoPartenza = '',
   isStrutturaVeterinariaPartenza,
-  isSulPosto = false
+  isSulPosto = false,
+  isCapoServizio = false,
+  capoServizioNome = ''
 }) => {
   // Lista Comuni Italiani caricata da /data/comuni_italiani.json
   const [listaComuni, setListaComuni] = useState<ComuneItaliano[]>(cacheComuni || []);
@@ -861,74 +865,117 @@ export const ModalDestinazioneFirme: React.FC<ModalDestinazioneFirmeProps> = ({
       }
     }
 
+    // Regola collaborativa: i dati già compilati da altri volontari possono essere modificati SOLO dal Capo Servizio.
+    // Un volontario non Capo Servizio può compilare tutti i campi ancora vuoti ma non sovrascrivere quelli già inseriti.
+    const preserveText = (existing: string | undefined, nextVal: string): string => {
+      if (!isCapoServizio && existing && existing.trim() !== '') {
+        return existing;
+      }
+      return nextVal;
+    };
+    const preserveOptText = (existing: string | undefined, nextVal: string | undefined): string | undefined => {
+      if (!isCapoServizio && existing && existing.trim() !== '') {
+        return existing;
+      }
+      return nextVal;
+    };
+    const preserveSig = (existing: string | null | undefined, nextVal: string | null): string | null => {
+      if (!isCapoServizio && existing) {
+        return existing;
+      }
+      return nextVal;
+    };
+
+    const existingProp = initialDati?.proprietario;
+    const existingAnim = initialDati?.animale;
+    const existingDon = initialDati?.donazione;
+    const existingVet = initialDati?.strutturaVeterinaria;
+
+    const finalDonazione =
+      !isCapoServizio && existingDon && (existingDon.ricevuta || (existingDon.somma && existingDon.somma > 0))
+        ? existingDon
+        : {
+            ricevuta: haDonazione && (parseFloat(sommaDonata) > 0),
+            somma: (haDonazione && parseFloat(sommaDonata) > 0) ? (parseFloat(sommaDonata) || 0) : 0,
+            metodo: (haDonazione && parseFloat(sommaDonata) > 0) ? (metodoDonazione || '') : '',
+            tipoDonatore: (haDonazione && parseFloat(sommaDonata) > 0) ? tipoDonatore : undefined,
+            donatoreAltro: (haDonazione && parseFloat(sommaDonata) > 0 && tipoDonatore === 'altra_persona')
+              ? {
+                  nome: donatoreAltroNome.trim(),
+                  cognome: donatoreAltroCognome.trim(),
+                  codiceFiscale: donatoreAltroCF.trim() || undefined,
+                  telefono: donatoreAltroTelefono.trim() || undefined,
+                  indirizzo: donatoreAltroIndirizzo.trim() || undefined
+                }
+              : undefined
+          };
+
     const payload: DatiDestinazione = {
       animale: {
-        tipo: effTipoAnimale,
-        tipoAltro: effTipoAnimale === 'Altro' ? tipoAnimaleAltro.trim() : undefined,
-        microchip: noMicrochip ? 'NO MICROCHIP' : microchip.trim(),
-        noMicrochip,
-        nonDiProprieta,
-        anagrafeRegione: regioneTipo === 'TOSCANA' ? 'TOSCANA' : (regioneTipo === 'ALTRO' ? (regioneAltro.trim() || 'ALTRA REGIONE') : undefined),
-        anagrafeAltraRegione: regioneTipo === 'ALTRO' ? regioneAltro.trim() : undefined
+        tipo: preserveText(existingAnim?.tipo, effTipoAnimale),
+        tipoAltro: preserveOptText(existingAnim?.tipoAltro, effTipoAnimale === 'Altro' ? tipoAnimaleAltro.trim() : undefined),
+        microchip: preserveText(existingAnim?.microchip, noMicrochip ? 'NO MICROCHIP' : microchip.trim()),
+        noMicrochip: !isCapoServizio && existingAnim?.microchip ? Boolean(existingAnim.noMicrochip) : noMicrochip,
+        nonDiProprieta: !isCapoServizio && existingAnim?.nonDiProprieta !== undefined ? existingAnim.nonDiProprieta : nonDiProprieta,
+        anagrafeRegione: preserveOptText(
+          existingAnim?.anagrafeRegione,
+          regioneTipo === 'TOSCANA' ? 'TOSCANA' : (regioneTipo === 'ALTRO' ? (regioneAltro.trim() || 'ALTRA REGIONE') : undefined)
+        ),
+        anagrafeAltraRegione: preserveOptText(existingAnim?.anagrafeAltraRegione, regioneTipo === 'ALTRO' ? regioneAltro.trim() : undefined)
       },
       proprietario: {
-        nome: nome.trim(),
-        cognome: cognome.trim(),
-        indirizzo: indirizzo.trim(),
-        cap: cap.trim(),
-        comune: comune.trim(),
-        provincia: provincia.trim(),
-        telefono: telefono.trim(),
-        email: nonHaEmail ? 'Non presente' : email.trim(),
-        nonHaEmail,
-        codiceFiscale: codiceFiscale.trim() || undefined,
-        dataNascita: dataNascita.trim() || undefined,
-        regioneTipo: regioneTipo || undefined,
-        regioneAltro: regioneTipo === 'ALTRO' ? regioneAltro.trim() : undefined,
-        regione: regioneTipo === 'TOSCANA' ? 'TOSCANA' : (regioneTipo === 'ALTRO' ? (regioneAltro.trim() || 'ALTRO') : undefined),
-        note: noteProprietario.trim() || undefined,
-        coincideConChiamante
+        nome: preserveText(existingProp?.nome, nome.trim()),
+        cognome: preserveText(existingProp?.cognome, cognome.trim()),
+        indirizzo: preserveText(existingProp?.indirizzo, indirizzo.trim()),
+        cap: preserveText(existingProp?.cap, cap.trim()),
+        comune: preserveText(existingProp?.comune, comune.trim()),
+        provincia: preserveText(existingProp?.provincia, provincia.trim()),
+        telefono: preserveText(existingProp?.telefono, telefono.trim()),
+        email: preserveText(existingProp?.email, nonHaEmail ? 'Non presente' : email.trim()),
+        nonHaEmail: !isCapoServizio && existingProp?.email ? Boolean(existingProp.nonHaEmail) : nonHaEmail,
+        codiceFiscale: preserveOptText(existingProp?.codiceFiscale, codiceFiscale.trim() || undefined),
+        dataNascita: preserveOptText(existingProp?.dataNascita, dataNascita.trim() || undefined),
+        regioneTipo: (!isCapoServizio && existingProp?.regioneTipo ? existingProp.regioneTipo : (regioneTipo || undefined)) as any,
+        regioneAltro: preserveOptText(existingProp?.regioneAltro, regioneTipo === 'ALTRO' ? regioneAltro.trim() : undefined),
+        regione: preserveOptText(
+          existingProp?.regione,
+          regioneTipo === 'TOSCANA' ? 'TOSCANA' : (regioneTipo === 'ALTRO' ? (regioneAltro.trim() || 'ALTRO') : undefined)
+        ),
+        note: preserveOptText(existingProp?.note, noteProprietario.trim() || undefined),
+        coincideConChiamante: !isCapoServizio && existingProp?.coincideConChiamante !== undefined ? existingProp.coincideConChiamante : coincideConChiamante
       },
       fotoDocumento: (fotoDocFronte || fotoDocRetro) ? {
-        fronte: fotoDocFronte,
-        retro: fotoDocRetro,
-        dataAcquisizione: dataAcquisizioneDoc || formatDateTimeItaly()
-      } : undefined,
-      donazione: {
-        ricevuta: haDonazione && (parseFloat(sommaDonata) > 0),
-        somma: (haDonazione && parseFloat(sommaDonata) > 0) ? (parseFloat(sommaDonata) || 0) : 0,
-        metodo: (haDonazione && parseFloat(sommaDonata) > 0) ? (metodoDonazione || '') : '',
-        tipoDonatore: (haDonazione && parseFloat(sommaDonata) > 0) ? tipoDonatore : undefined,
-        donatoreAltro: (haDonazione && parseFloat(sommaDonata) > 0 && tipoDonatore === 'altra_persona')
-          ? {
-              nome: donatoreAltroNome.trim(),
-              cognome: donatoreAltroCognome.trim(),
-              codiceFiscale: donatoreAltroCF.trim() || undefined,
-              telefono: donatoreAltroTelefono.trim() || undefined,
-              indirizzo: donatoreAltroIndirizzo.trim() || undefined
-            }
-          : undefined
-      },
-      firmaProprietario,
+        fronte: preserveOptText(initialDati?.fotoDocumento?.fronte, fotoDocFronte),
+        retro: preserveOptText(initialDati?.fotoDocumento?.retro, fotoDocRetro),
+        dataAcquisizione: initialDati?.fotoDocumento?.dataAcquisizione || dataAcquisizioneDoc || formatDateTimeItaly()
+      } : initialDati?.fotoDocumento,
+      donazione: finalDonazione,
+      firmaProprietario: preserveSig(initialDati?.firmaProprietario, firmaProprietario),
       strutturaVeterinaria: {
         isVeterinario,
         nomeStrutturaOVeterinario: isVeterinario
           ? (ruoloVeterinario === 'partenza' ? (indirizzoPartenza || nomeStrutturaOVeterinario) : (destinazioneAssegnata || nomeStrutturaOVeterinario))
           : '',
-        nomeVeterinario: (ruoloVeterinario === 'partenza' ? (nomeVeterinarioPartenza || nomeVeterinario) : (nomeVeterinarioDest || nomeVeterinario)).trim(),
+        nomeVeterinario: preserveText(
+          existingVet?.nomeVeterinario,
+          (ruoloVeterinario === 'partenza' ? (nomeVeterinarioPartenza || nomeVeterinario) : (nomeVeterinarioDest || nomeVeterinario)).trim()
+        ),
         firmaVeterinario: isVeterinario
-          ? (ruoloVeterinario === 'partenza' ? (firmaVeterinarioPartenza || firmaVeterinario) : (firmaVeterinarioDest || firmaVeterinario))
+          ? preserveSig(
+              existingVet?.firmaVeterinario,
+              ruoloVeterinario === 'partenza' ? (firmaVeterinarioPartenza || firmaVeterinario) : (firmaVeterinarioDest || firmaVeterinario)
+            )
           : null,
         tipoRuolo: ruoloVeterinario,
         partenza: isPartenzaVet ? {
           nomeStruttura: indirizzoPartenza || '',
-          nomeVeterinario: (nomeVeterinarioPartenza || nomeVeterinario).trim(),
-          firmaVeterinario: firmaVeterinarioPartenza || firmaVeterinario
+          nomeVeterinario: preserveText(existingVet?.partenza?.nomeVeterinario, (nomeVeterinarioPartenza || nomeVeterinario).trim()),
+          firmaVeterinario: preserveSig(existingVet?.partenza?.firmaVeterinario, firmaVeterinarioPartenza || firmaVeterinario)
         } : undefined,
         destinazione: isDestinazioneVet ? {
           nomeStruttura: destinazioneAssegnata || '',
-          nomeVeterinario: (nomeVeterinarioDest || nomeVeterinario).trim(),
-          firmaVeterinario: firmaVeterinarioDest || firmaVeterinario
+          nomeVeterinario: preserveText(existingVet?.destinazione?.nomeVeterinario, (nomeVeterinarioDest || nomeVeterinario).trim()),
+          firmaVeterinario: preserveSig(existingVet?.destinazione?.firmaVeterinario, firmaVeterinarioDest || firmaVeterinario)
         } : undefined
       },
       coordinateCertificazione: coordinateDestinazione
@@ -938,8 +985,8 @@ export const ModalDestinazioneFirme: React.FC<ModalDestinazioneFirmeProps> = ({
             accuracy: coordinateDestinazione.accuracy,
             timestamp: coordinateDestinazione.time || formatTimeItaly()
           }
-        : undefined,
-      manovreEffettuatePatologie: manovreEffettuatePatologie.trim() || undefined
+        : initialDati?.coordinateCertificazione,
+      manovreEffettuatePatologie: preserveOptText(initialDati?.manovreEffettuatePatologie, manovreEffettuatePatologie.trim() || undefined)
     };
 
     onSalva(payload);
@@ -995,6 +1042,29 @@ export const ModalDestinazioneFirme: React.FC<ModalDestinazioneFirmeProps> = ({
                 : 'Inserisci i dati dell\'animale, i dati del proprietario/intestatario (anche recuperabili dal chiamante), eventuale donazione e fai apporre la firma sul display.'}
             </p>
           </div>
+        </div>
+
+        {/* Banner Permessi Collaborativi Equipaggio / Capo Servizio */}
+        <div
+          className={`mx-4 mt-2 p-2.5 rounded-xl border text-[11px] flex items-center gap-2 ${
+            isCapoServizio
+              ? 'bg-amber-950/50 border-amber-400/60 text-amber-100'
+              : 'bg-indigo-950/50 border-indigo-500/50 text-indigo-100'
+          }`}
+        >
+          <Lock className={`w-4 h-4 shrink-0 ${isCapoServizio ? 'text-amber-400' : 'text-indigo-400'}`} />
+          <span>
+            {isCapoServizio ? (
+              <>
+                <strong>⭐ Capo Servizio ({capoServizioNome || 'Tu'}):</strong> puoi compilare e modificare tutti i dati della scheda (i tuoi aggiornamenti si sincronizzano automaticamente su tutti i dispositivi dell'equipaggio).
+              </>
+            ) : (
+              <>
+                <strong>Compilazione Collaborativa Live:</strong> puoi compilare tutti i campi ancora vuoti. I campi già compilati da altri volontari sono sincronizzati in tempo reale e possono essere modificati <strong>solo dal Capo Servizio</strong>
+                {capoServizioNome ? ` (${capoServizioNome})` : ''}.
+              </>
+            )}
+          </span>
         </div>
 
         {/* Banner Dati Precaricati da Centrale */}

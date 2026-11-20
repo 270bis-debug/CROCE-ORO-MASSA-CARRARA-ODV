@@ -104,7 +104,13 @@ import {
 import { ModalDecisioneSbloccoAdmin } from './components/ModalDecisioneSbloccoAdmin';
 import { SchermataTurnoVolontario, SessioneTurno } from './components/SchermataTurnoVolontario';
 import { ModalChecklistInizioTurnoGuidata } from './components/ModalChecklistInizioTurnoGuidata';
-import { verificaVolontarioInTurnoAdesso, verificaFinestraTimbraturaTurno, hasTimbraturaApertaPerVolontario } from './utils/turnoVerifica';
+import {
+  verificaVolontarioInTurnoAdesso,
+  verificaFinestraTimbraturaTurno,
+  hasTimbraturaApertaPerVolontario,
+  trovaTurnoAttivoPerServizio,
+  isVolontarioCapoServizio
+} from './utils/turnoVerifica';
 import { TabelloneTurniSettimanale } from './components/TabelloneTurniSettimanale';
 import { SchermataSceltaRuolo } from './components/SchermataSceltaRuolo';
 import { SchermataAccountInAttivazione } from './components/SchermataAccountInAttivazione';
@@ -125,7 +131,7 @@ import { ModalAnteprimaMultipla } from './components/ModalAnteprimaMultipla';
 import { attivaServiceWorkerEPush, mostraNotificaNativa } from './services/pushManager';
 import { soundEngine } from './services/soundEngine';
 import { vhfRadioEngine } from './services/vhfRadioEngine';
-import { realtime, ConnectionInfo } from './services/realtime';
+import { realtime, ConnectionInfo, mergeOperativeTimesImmutable } from './services/realtime';
 import {
   creaTicketResetPinFirestore,
   generaTokenResetPinSicuro,
@@ -581,6 +587,17 @@ interface MissionData {
   autonomoVolontario?: boolean;
   creatoDaVolontarioNome?: string;
   creatoDaVolontarioId?: string;
+  // Gestione Capo Servizio, compilazione collaborativa live e convalida obbligatoria pre-chiusura
+  capoServizioId?: string;
+  capoServizioNome?: string;
+  campiCompilatiDa?: Record<string, { byId?: string; byNome: string; at: string }>;
+  convalidaCapoServizio?: {
+    convalidato: boolean;
+    capoServizioId?: string;
+    capoServizioNome: string;
+    convalidatoAlle: string;
+    firmaCapoServizio?: string;
+  };
 }
 
 interface OperativeTimes {
@@ -686,6 +703,15 @@ interface PdfArchiveItem {
   numeroSegreteriaSoupRt?: string;
   allertaMeteo?: string;
   schedaDirettaArchivio?: boolean;
+  capoServizioId?: string;
+  capoServizioNome?: string;
+  convalidaCapoServizio?: {
+    convalidato: boolean;
+    capoServizioId?: string;
+    capoServizioNome: string;
+    convalidatoAlle: string;
+    firmaCapoServizio?: string;
+  };
 }
 
 export interface CountdownKmData {
@@ -3150,9 +3176,52 @@ export default function App() {
   // Dati derivati per garantire che, se il countdown dei 30 minuti è attivo, la scheda compilata con tutti i dati rimanga visibile in consultazione
   const missioneBase = missione || countdown30Minuti?.missioneDati || null;
 
-  // Indirizzamento specifico del servizio (max 3 volontari scelti dalla centrale):
-  // Il servizio è visualizzabile sul terminale SOLO al primo volontario tra quelli selezionati non appena fa accesso,
-  // e continuerà ad essere visibile solo a lui fino al completamento del servizio stesso.
+  // Ricerca turno operativo attivo associato al servizio corrente (per badge Capo Servizio e visibilità collaborativa)
+  const infoTurnoServizioAttivo = useMemo(() => {
+    if (!missioneBase) {
+      return { turno: null, capoServizio: null, volontariAssegnati: [] as Array<{ id: string; nome: string; ruoloLabel: string }> };
+    }
+    return trovaTurnoAttivoPerServizio({
+      turni: turniSedi,
+      mezzo: missioneBase.mezzoAssegnato,
+      volontarioId: sessioneTurno.volontarioId,
+      volontarioNome: sessioneTurno.volontarioNome,
+      destinatariIds: missioneBase.destinatariVolontariIds
+    });
+  }, [missioneBase, turniSedi, sessioneTurno.volontarioId, sessioneTurno.volontarioNome]);
+
+  const capoServizioAttivo = useMemo(() => {
+    if (missioneBase?.convalidaCapoServizio?.capoServizioNome) {
+      return {
+        id: missioneBase.convalidaCapoServizio.capoServizioId || missioneBase.capoServizioId || '',
+        nome: missioneBase.convalidaCapoServizio.capoServizioNome
+      };
+    }
+    if (missioneBase?.capoServizioNome) {
+      return {
+        id: missioneBase.capoServizioId || '',
+        nome: missioneBase.capoServizioNome
+      };
+    }
+    if (infoTurnoServizioAttivo.capoServizio) {
+      return infoTurnoServizioAttivo.capoServizio;
+    }
+    return null;
+  }, [missioneBase, infoTurnoServizioAttivo.capoServizio]);
+
+  const isUtenteCapoServizio = useMemo(() => {
+    if (ruolo === 'admin') return true;
+    if (!sessioneTurno.attivo) return false;
+    return isVolontarioCapoServizio(
+      capoServizioAttivo,
+      sessioneTurno.volontarioId,
+      sessioneTurno.volontarioNome
+    );
+  }, [ruolo, sessioneTurno.attivo, sessioneTurno.volontarioId, sessioneTurno.volontarioNome, capoServizioAttivo]);
+
+  // Visibilità collaborativa live:
+  // Tutti i volontari di turno sul turno/mezzo e tutti i destinatari assegnati vedono il servizio in tempo reale
+  // e ricevono automaticamente sul proprio dispositivo ogni dato/orario compilato dai colleghi.
   const isMissioneRiservataVolontari = Boolean(
     missioneBase?.destinatariVolontariIds && missioneBase.destinatariVolontariIds.length > 0
   );
@@ -3161,19 +3230,26 @@ export default function App() {
 
   const isMissioneVisibileSuQuestoTerminale = (() => {
     if (!missioneBase) return false;
-    // Se non ha destinatari specifici (servizio ordinario di equipaggio / mezzo), visibilità consueta
+    // Se non ha destinatari specifici (servizio ordinario di equipaggio / mezzo), visibilità a tutti i volontari di turno
     if (!isMissioneRiservataVolontari) return true;
 
     // Se la missione è riservata ma nessun volontario è loggato sul terminale, non mostrare la missione
     if (!volontarioAttivoId) return false;
 
-    // Se è già stata assegnata in esclusiva al primo volontario che ha fatto accesso:
-    if (missioneBase.volontarioAssegnatoEsclusivoId) {
-      return missioneBase.volontarioAssegnatoEsclusivoId === volontarioAttivoId;
+    // Visibile a tutti i destinatari selezionati, al Capo Servizio del turno e ai colleghi di turno sullo stesso turno
+    if (missioneBase.destinatariVolontariIds?.includes(volontarioAttivoId)) return true;
+    if (missioneBase.volontarioAssegnatoEsclusivoId === volontarioAttivoId) return true;
+    if (isUtenteCapoServizio) return true;
+    if (
+      infoTurnoServizioAttivo.volontariAssegnati.some(
+        (v) =>
+          (v.id && v.id === volontarioAttivoId) ||
+          (sessioneTurno.volontarioNome && v.nome.trim().toLowerCase() === sessioneTurno.volontarioNome.trim().toLowerCase())
+      )
+    ) {
+      return true;
     }
-
-    // Se non è ancora assegnata in esclusiva, visibile solo se l'utente corrente è tra i selezionati
-    return Boolean(missioneBase.destinatariVolontariIds?.includes(volontarioAttivoId));
+    return false;
   })();
 
   // Archivio PDF / Fogli di viaggio & Database Servizi Permanente
@@ -6221,7 +6297,9 @@ export default function App() {
         isStrutturaVeterinariaPartenza: isVet ? (item.isStrutturaVeterinariaPartenza !== undefined ? item.isStrutturaVeterinariaPartenza : (item.codice === missione?.codice ? missione?.isStrutturaVeterinariaPartenza : undefined)) : false,
         manovreEffettuatePatologie: item.manovreEffettuatePatologie || (item.codice === missione?.codice ? manovreEffettuatePatologie : undefined) || destInfo?.manovreEffettuatePatologie || (item.codice === missione?.codice ? missione?.manovreEffettuatePatologie : undefined),
         datiDestinazione: isVet ? destInfo : (destInfo ? { ...destInfo, animale: undefined, proprietario: undefined, strutturaVeterinaria: undefined } : undefined),
-        firmaVolontario: item.firmaVolontario || getFirmaVolontario(item.volontarioNome || sessioneTurno.volontarioNome),
+        capoServizioNome: item.capoServizioNome || item.convalidaCapoServizio?.capoServizioNome,
+        convalidaCapoServizio: item.convalidaCapoServizio,
+        firmaVolontario: item.firmaVolontario || getFirmaVolontario(item.capoServizioNome || item.volontarioNome || sessioneTurno.volontarioNome),
         firmaOperatoreCentrale: item.firmaOperatoreCentrale,
         annullata: item.annullata,
         motivoAnnullamento: item.motivoAnnullamento,
@@ -6277,7 +6355,9 @@ export default function App() {
         coordinateDestinazione: item.coordinateDestinazione || item.tempi?.coordinateDestinazione,
         manovreEffettuatePatologie: item.manovreEffettuatePatologie || (item.codice === missione?.codice ? manovreEffettuatePatologie : undefined) || destInfo?.manovreEffettuatePatologie || (item.codice === missione?.codice ? missione?.manovreEffettuatePatologie : undefined),
         datiDestinazione: destInfo,
-        firmaVolontario: item.firmaVolontario || getFirmaVolontario(item.volontarioNome || sessioneTurno.volontarioNome),
+        capoServizioNome: item.capoServizioNome || item.convalidaCapoServizio?.capoServizioNome,
+        convalidaCapoServizio: item.convalidaCapoServizio,
+        firmaVolontario: item.firmaVolontario || getFirmaVolontario(item.capoServizioNome || item.volontarioNome || sessioneTurno.volontarioNome),
         firmaOperatoreCentrale: item.firmaOperatoreCentrale
       });
       aggiungiNotifica(`🐕 VERBALE RECUPERO PDF: Scaricato automaticamente (${nomeFile})`, 'sistema');
@@ -6479,7 +6559,9 @@ export default function App() {
         coordinateDestinazione: item.coordinateDestinazione || item.tempi?.coordinateDestinazione,
         manovreEffettuatePatologie: item.manovreEffettuatePatologie || (item.codice === missione?.codice ? manovreEffettuatePatologie : undefined) || destInfo?.manovreEffettuatePatologie || (item.codice === missione?.codice ? missione?.manovreEffettuatePatologie : undefined),
         datiDestinazione: destInfo,
-        firmaVolontario: item.firmaVolontario || getFirmaVolontario(item.volontarioNome || sessioneTurno.volontarioNome),
+        capoServizioNome: item.capoServizioNome || item.convalidaCapoServizio?.capoServizioNome,
+        convalidaCapoServizio: item.convalidaCapoServizio,
+        firmaVolontario: item.firmaVolontario || getFirmaVolontario(item.capoServizioNome || item.volontarioNome || sessioneTurno.volontarioNome),
         firmaOperatoreCentrale: item.firmaOperatoreCentrale
       });
       if (res.method === 'share') {
@@ -6686,6 +6768,23 @@ export default function App() {
     const now = new Date();
     const dataEOraCompleta = `${formatDateItaly(now)}, ${formatTimeItaly(now)}`;
 
+    // La firma sui fogli di servizio appartiene al Capo Servizio designato sul turno (badge ⭐ Capo Servizio)
+    const capoServizioNomeEffettivo =
+      missione.convalidaCapoServizio?.capoServizioNome ||
+      capoServizioAttivo?.nome ||
+      missione.capoServizioNome ||
+      sessioneTurno.volontarioNome ||
+      'Volontario Bordo Mezzo';
+    const capoServizioIdEffettivo =
+      missione.convalidaCapoServizio?.capoServizioId ||
+      capoServizioAttivo?.id ||
+      missione.capoServizioId ||
+      sessioneTurno.volontarioId;
+    const firmaCapoServizioEffettiva =
+      missione.convalidaCapoServizio?.firmaCapoServizio ||
+      getFirmaVolontario(capoServizioNomeEffettivo) ||
+      getFirmaVolontario(sessioneTurno.volontarioNome);
+
     const nuovoArchivio: PdfArchiveItem = {
       id: `DOC-${missione.codice}`,
       codice: missione.codice,
@@ -6709,8 +6808,11 @@ export default function App() {
       urgenza: missione.urgenza,
       ambito: missione.ambito,
       noteCritiche: missione.noteCritiche,
-      volontarioNome: sessioneTurno.volontarioNome || 'Volontario Bordo Mezzo',
-      volontarioId: sessioneTurno.volontarioId,
+      volontarioNome: capoServizioNomeEffettivo,
+      volontarioId: capoServizioIdEffettivo,
+      capoServizioId: capoServizioIdEffettivo,
+      capoServizioNome: capoServizioNomeEffettivo,
+      convalidaCapoServizio: missione.convalidaCapoServizio,
       idTurno: sessioneTurno.orarioInizio,
       volontarioTelefono: volTel,
       qualificaTurno: sessioneTurno.qualificaTurno,
@@ -6732,7 +6834,7 @@ export default function App() {
       motivoAnnullamento: missione.motivoAnnullamento,
       richiedenteAnnullamento: missione.richiedenteAnnullamento,
       orarioAnnullamento: missione.orarioAnnullamento,
-      firmaVolontario: getFirmaVolontario(sessioneTurno.volontarioNome),
+      firmaVolontario: firmaCapoServizioEffettiva,
       firmaOperatoreCentrale: undefined,
       operatoreCentraleNome: undefined,
       dataFirmaCentrale: undefined,
@@ -6861,25 +6963,86 @@ export default function App() {
     setServizioKmSelezionato(null);
   };
 
+  // Convalida obbligatoria del foglio di servizio da parte del Capo Servizio prima della chiusura
+  const verificaConvalidaCapoServizioPerChiusura = (): boolean => {
+    if (!missione) return false;
+    if (missione.convalidaCapoServizio?.convalidato) return true;
+    const nomeCs = capoServizioAttivo?.nome
+      ? ` (${capoServizioAttivo.nome})`
+      : '';
+    aggiungiNotifica(
+      `⚠️ CONVALIDA OBBLIGATORIA: Il foglio di servizio deve essere convalidato dal Capo Servizio${nomeCs} prima di poter essere chiuso!`,
+      'allarme'
+    );
+    return false;
+  };
+
+  const handleConvalidaCapoServizio = () => {
+    if (!missione) return;
+    if (!isUtenteCapoServizio) {
+      aggiungiNotifica(
+        `⛔ Solo il Capo Servizio${capoServizioAttivo?.nome ? ` (${capoServizioAttivo.nome})` : ''} può convalidare il foglio di servizio prima della chiusura!`,
+        'allarme'
+      );
+      return;
+    }
+    const csNome =
+      capoServizioAttivo?.nome ||
+      sessioneTurno.volontarioNome ||
+      (utenteCentrale ? `${utenteCentrale.nome} ${utenteCentrale.cognome}`.trim() : 'Capo Servizio');
+    const csId = capoServizioAttivo?.id || sessioneTurno.volontarioId || utenteCentrale?.id || '';
+    const firmaCs = getFirmaVolontario(csNome);
+    const orarioConv = formatTimeItaly();
+    const convalida = {
+      convalidato: true,
+      capoServizioId: csId,
+      capoServizioNome: csNome,
+      convalidatoAlle: orarioConv,
+      firmaCapoServizio: firmaCs
+    };
+    setMissione((prev) =>
+      prev
+        ? {
+            ...prev,
+            capoServizioId: csId,
+            capoServizioNome: csNome,
+            convalidaCapoServizio: convalida
+          }
+        : null
+    );
+    realtime.updateMissionDraftData({
+      codice: missione.codice,
+      capoServizioId: csId,
+      capoServizioNome: csNome,
+      convalidaCapoServizio: convalida,
+      messaggioNotifica: `⭐ CONVALIDA CAPO SERVIZIO (${missione.codice}): Foglio di servizio verificato e convalidato dal Capo Servizio ${csNome} alle ore ${orarioConv}. Ora è possibile chiudere il servizio.`
+    });
+    aggiungiNotifica(
+      `⭐ Foglio di servizio ${missione.codice} convalidato dal Capo Servizio ${csNome} alle ore ${orarioConv}! Ora è possibile chiudere il servizio.`,
+      'mezzo'
+    );
+  };
+
   // Chiusura definitiva del servizio con KM già validati (genera subito il PDF e avvia countdown 30 min)
   const completaRientroConKm = (ini: number, fin: number) => {
     if (!missione) return;
+    if (!verificaConvalidaCapoServizioPerChiusura()) return;
     if (fin < ini) {
       aggiungiNotifica(`⚠️ I KM finali (${fin}) non possono essere un numero inferiore a quello iniziale (${ini})!`, 'allarme');
       return;
     }
     const tot = fin >= ini ? fin - ini : 0;
-    const timeStr = formatTimeItaly();
-    const newTempi = {
-      ...tempi,
+    // Rispetta sempre l'orario di rientro del primo click se già registrato (mai sovrascrivere un orario verde!)
+    const timeStr = tempi.rientro || formatTimeItaly();
+    const newTempi = mergeOperativeTimesImmutable(tempi, {
       fineMissione: (missione.annullata && !tempi.fineMissione) ? timeStr : tempi.fineMissione,
       rientro: timeStr
-    };
+    });
     setTempi(newTempi);
 
     // Trasmette immediatamente il tempo registrato alla Centrale Operativa via WebSocket
     realtime.updateOperativeTimes(newTempi, 'RIENTRO IN SEDE', timeStr, true, missione.codice);
-    realtime.updateKm(String(ini), String(fin), `🛣️ KM Bordo registrati dal capo turno: ${ini} → ${fin} (${tot} KM)`);
+    realtime.updateKm(String(ini), String(fin), `🛣️ KM Bordo registrati dal capo servizio: ${ini} → ${fin} (${tot} KM)`);
 
     // Notifica critica
     notificaDatoAllaCentrale(
@@ -6933,14 +7096,14 @@ export default function App() {
   // Chiusura del servizio per invio su nuovo obiettivo (senza rientro in sede)
   const completaServizioNuovoObiettivo = (ini: number, fin: number) => {
     if (!missione) return;
+    if (!verificaConvalidaCapoServizioPerChiusura()) return;
     const tot = fin - ini;
     const timeStr = formatTimeItaly();
     
     // Per nuovo obiettivo, non è richiesto l'orario di rientro in sede
-    const newTempi = {
-      ...tempi,
+    const newTempi = mergeOperativeTimesImmutable(tempi, {
       fineMissione: tempi.fineMissione || timeStr
-    };
+    });
     setTempi(newTempi);
 
     realtime.updateOperativeTimes(newTempi, 'CHIUSURA SU NUOVO OBIETTIVO', timeStr, false, missione.codice);
@@ -7069,8 +7232,9 @@ export default function App() {
   // In questo caso NON GENERARE IL PDF finché non vengono inseriti i KM
   const handleChiudiConCountdown30Min = () => {
     if (!missione) return;
-    const timeStr = formatTimeItaly();
-    const newTempi = { ...tempi, rientro: timeStr };
+    if (!verificaConvalidaCapoServizioPerChiusura()) return;
+    const timeStr = tempi.rientro || formatTimeItaly();
+    const newTempi = mergeOperativeTimesImmutable(tempi, { rientro: timeStr });
     setTempi(newTempi);
 
     // Trasmette orario rientro alla Centrale
@@ -9567,12 +9731,68 @@ export default function App() {
 
   const registraTempo = (tipo: keyof OperativeTimes, etichetta: string) => {
     if (!missione) return;
-    const timeStr = formatTimeItaly();
 
-    const newTempi = { ...tempi, [tipo]: timeStr };
+    // REGOLA FERREA: una volta cliccato un orario (diventato verde), NON può più essere ricliccato né modificato da nessuno!
+    if (tempi[tipo]) {
+      return;
+    }
+
+    // Validazione preventiva per FINE MISSIONE PRIMA di registrare e bloccare l'orario!
+    if (tipo === 'fineMissione') {
+      if (!missione.annullata) {
+        if (!tempi.arrivoDestinazione) {
+          aggiungiNotifica("⚠️ ATTENZIONE: Devi prima registrare l'Arrivo a Destinazione / Clinica (tasto 4) prima di cliccare su Fine Missione!", "allarme");
+          return;
+        }
+        if (isServizioVeterinario) {
+          const dest = datiDestinazione || (missione as any)?.datiDestinazione;
+          const prop = dest?.proprietario;
+          const propOk = Boolean(
+            prop?.nome?.trim() &&
+            prop?.cognome?.trim() &&
+            prop?.indirizzo?.trim() &&
+            prop?.comune?.trim() &&
+            prop?.provincia?.trim() &&
+            prop?.cap?.trim() &&
+            prop?.telefono?.trim() &&
+            (prop?.email?.trim() || prop?.nonHaEmail || prop?.email === 'Non presente') &&
+            dest?.firmaProprietario
+          );
+          const isVetRequired = (missione?.isStrutturaVeterinaria !== undefined
+            ? missione.isStrutturaVeterinaria
+            : false) || (missione?.isStrutturaVeterinariaPartenza !== undefined
+            ? missione.isStrutturaVeterinariaPartenza
+            : false) || Boolean(dest?.strutturaVeterinaria?.isVeterinario ?? true);
+          const vetOk = isVetRequired
+            ? Boolean(
+                (dest?.strutturaVeterinaria?.nomeStrutturaOVeterinario?.trim() || missione?.destinazione?.trim() || missione?.indirizzo?.trim()) &&
+                (dest?.strutturaVeterinaria?.firmaVeterinario || dest?.strutturaVeterinaria?.partenza?.firmaVeterinario || dest?.strutturaVeterinaria?.destinazione?.firmaVeterinario)
+              )
+            : true;
+          if (!propOk || !vetOk) {
+            setModalDestinazioneFirmeAperta(true);
+            aggiungiNotifica(
+              isVetRequired
+                ? "⚠️ ATTENZIONE: Prima di cliccare su Fine Missione è OBBLIGATORIO completare la Scheda con tutti i dati del proprietario ed i dati e firma della struttura veterinaria!"
+                : "⚠️ ATTENZIONE: Prima di cliccare su Fine Missione è OBBLIGATORIO completare la Scheda con tutti i dati e la firma del proprietario!",
+              "allarme"
+            );
+            return;
+          }
+        }
+      } else {
+        if (!tempi.partenza) {
+          aggiungiNotifica("⚠️ ATTENZIONE: Intervento annullato dalla Centrale. Devi obbligatoriamente registrare l'Orario di Partenza da Sede prima della Fine Missione!", "allarme");
+          return;
+        }
+      }
+    }
+
+    const timeStr = formatTimeItaly();
+    const newTempi = mergeOperativeTimesImmutable(tempi, { [tipo]: timeStr });
     setTempi(newTempi);
 
-    // Trasmette immediatamente il tempo registrato alla Centrale Operativa via WebSocket
+    // Trasmette immediatamente il tempo registrato alla Centrale Operativa e a tutti i colleghi di turno
     realtime.updateOperativeTimes(newTempi, etichetta, timeStr, tipo === 'rientro', missione.codice);
 
     if (tipo === 'partenza') {
@@ -9589,6 +9809,14 @@ export default function App() {
       }
       return;
     } else if (tipo === 'rientro') {
+      // L'orario di rientro è ora registrato e bloccato (verde) per tutti; per chiudere serve convalida Capo Servizio + KM
+      if (!missione.convalidaCapoServizio?.convalidato) {
+        aggiungiNotifica(
+          `🔒 Orario Rientro in Sede registrato alle ore ${timeStr}. Ora è obbligatoria la convalida del Capo Servizio${capoServizioAttivo?.nome ? ` (${capoServizioAttivo.nome})` : ''} prima di chiudere il foglio!`,
+          'allarme'
+        );
+        return;
+      }
       const ini = parseFloat(kmInizio) || 0;
       const fin = parseFloat(kmFine) || 0;
       if (ini > 0 && fin > 0 && fin >= ini) {
@@ -9605,7 +9833,7 @@ export default function App() {
       catturaCoordinateGPS().then((coord) => {
         if (coord) {
           setCoordinateSulPosto(coord);
-          const tConCoord = { ...newTempi, coordinateSulPosto: coord };
+          const tConCoord = mergeOperativeTimesImmutable(newTempi, { coordinateSulPosto: coord });
           setTempi(tConCoord);
           realtime.updateOperativeTimes(
             tConCoord,
@@ -9650,7 +9878,7 @@ export default function App() {
       catturaCoordinateGPS().then((coord) => {
         if (coord) {
           setCoordinateDestinazione(coord);
-          const tConCoord = { ...newTempi, coordinateDestinazione: coord };
+          const tConCoord = mergeOperativeTimesImmutable(newTempi, { coordinateDestinazione: coord });
           setTempi(tConCoord);
           realtime.updateOperativeTimes(
             tConCoord,
@@ -9672,58 +9900,6 @@ export default function App() {
         'orario'
       );
     } else if (tipo === 'fineMissione') {
-      if (!missione.annullata) {
-        // Verifica tassativa: non è possibile chiudere la missione prima di essere arrivati a destinazione
-        if (!tempi.arrivoDestinazione) {
-          aggiungiNotifica("⚠️ ATTENZIONE: Devi prima registrare l'Arrivo a Destinazione / Clinica (tasto 4) prima di cliccare su Fine Missione!", "allarme");
-          return;
-        }
-
-        // Per il Servizio Veterinario, dati completi del proprietario con firma e dati veterinario con firma sono OBBLIGATORI prima di Fine Missione
-        if (isServizioVeterinario) {
-          const dest = datiDestinazione || (missione as any)?.datiDestinazione;
-          const prop = dest?.proprietario;
-          const propOk = Boolean(
-            prop?.nome?.trim() &&
-            prop?.cognome?.trim() &&
-            prop?.indirizzo?.trim() &&
-            prop?.comune?.trim() &&
-            prop?.provincia?.trim() &&
-            prop?.cap?.trim() &&
-            prop?.telefono?.trim() &&
-            (prop?.email?.trim() || prop?.nonHaEmail || prop?.email === 'Non presente') &&
-            dest?.firmaProprietario
-          );
-          const isVetRequired = (missione?.isStrutturaVeterinaria !== undefined
-            ? missione.isStrutturaVeterinaria
-            : false) || (missione?.isStrutturaVeterinariaPartenza !== undefined
-            ? missione.isStrutturaVeterinariaPartenza
-            : false) || Boolean(dest?.strutturaVeterinaria?.isVeterinario ?? true);
-          const vetOk = isVetRequired
-            ? Boolean(
-                (dest?.strutturaVeterinaria?.nomeStrutturaOVeterinario?.trim() || missione?.destinazione?.trim() || missione?.indirizzo?.trim()) &&
-                (dest?.strutturaVeterinaria?.firmaVeterinario || dest?.strutturaVeterinaria?.partenza?.firmaVeterinario || dest?.strutturaVeterinaria?.destinazione?.firmaVeterinario)
-              )
-            : true;
-          if (!propOk || !vetOk) {
-            setModalDestinazioneFirmeAperta(true);
-            aggiungiNotifica(
-              isVetRequired
-                ? "⚠️ ATTENZIONE: Prima di cliccare su Fine Missione è OBBLIGATORIO completare la Scheda con tutti i dati del proprietario ed i dati e firma della struttura veterinaria!"
-                : "⚠️ ATTENZIONE: Prima di cliccare su Fine Missione è OBBLIGATORIO completare la Scheda con tutti i dati e la firma del proprietario!",
-              "allarme"
-            );
-            return;
-          }
-        }
-      } else {
-        // Se intervento annullato dalla centrale: l'orario di arrivo su obiettivo, partenza e destinazione NON va inserito.
-        // Ma la partenza da sede è obbligatoria!
-        if (!tempi.partenza) {
-          aggiungiNotifica("⚠️ ATTENZIONE: Intervento annullato dalla Centrale. Devi obbligatoriamente registrare l'Orario di Partenza da Sede prima della Fine Missione!", "allarme");
-          return;
-        }
-      }
       notificaDatoAllaCentrale(
         `⏱️ Registrato orario: [${etichetta}] alle ore ${timeStr} (${missione.codice})${missione.annullata ? ' [INTERVENTO ANNULLATO]' : ''}`,
         'orario'
@@ -9744,10 +9920,22 @@ export default function App() {
       setManovreEffettuatePatologie(dati.manovreEffettuatePatologie);
     }
     const foto = dati.fotoDocumento;
+    const compilatoreNome = sessioneTurno.volontarioNome || 'Volontario di Turno';
+    const compilatoreEntry = {
+      byId: sessioneTurno.volontarioId,
+      byNome: compilatoreNome,
+      at: formatTimeItaly()
+    };
+    const nextCampi = {
+      ...(missione?.campiCompilatiDa || {}),
+      datiDestinazione: compilatoreEntry,
+      ...(dati.manovreEffettuatePatologie ? { manovre: compilatoreEntry } : {})
+    };
     if (missione) {
       setMissione(prev => prev ? {
         ...prev,
         datiDestinazione: dati,
+        campiCompilatiDa: nextCampi,
         manovreEffettuatePatologie: dati.manovreEffettuatePatologie || prev.manovreEffettuatePatologie,
         fotoDocumento: foto || prev.fotoDocumento,
         datiProprietarioCentrale: prev.datiProprietarioCentrale ? {
@@ -9766,13 +9954,13 @@ export default function App() {
         } : s.datiProprietarioCentrale
       } : s));
     }
-    realtime.updateDatiDestinazione(dati, missione?.codice);
+    realtime.updateDatiDestinazione(dati, missione?.codice, nextCampi);
     if (foto && missione?.codice) {
       realtime.updateFotoDocumento(missione.codice, foto);
     }
     const nomeProp = `${dati.proprietario.nome} ${dati.proprietario.cognome}`.trim();
     aggiungiNotifica(
-      `✅ Scheda Consegna & Firme registrate per ${nomeProp}! Integrate nel Foglio di Viaggio e nel PDF.`,
+      `✅ Scheda Consegna & Firme registrate per ${nomeProp}! Sincronizzate automaticamente su tutti i dispositivi dell'equipaggio.`,
       'mezzo'
     );
   };
@@ -9976,26 +10164,77 @@ export default function App() {
 
   const handleKmInizioBlur = (val: string) => {
     if (!val.trim()) return;
+    if (!isUtenteCapoServizio && missione?.campiCompilatiDa?.kmInizio) {
+      aggiungiNotifica(`🔒 KM Inizio già compilato: solo il Capo Servizio può modificarlo.`, 'allarme');
+      return;
+    }
     const ini = parseFloat(val) || 0;
     const fin = parseFloat(kmFine) || 0;
     if (fin > 0 && ini > 0 && fin < ini) {
       aggiungiNotifica(`⚠️ I KM finali (${fin}) non possono essere un numero inferiore a quello iniziale (${ini})!`, 'allarme');
     }
+    const campiPatch = {
+      kmInizio: {
+        byId: sessioneTurno.volontarioId,
+        byNome: sessioneTurno.volontarioNome || 'Volontario di Turno',
+        at: formatTimeItaly()
+      }
+    };
+    setMissione(prev => prev ? { ...prev, campiCompilatiDa: { ...(prev.campiCompilatiDa || {}), ...campiPatch } } : null);
     notificaDatoAllaCentrale(`🛣️ Inserito KM Inizio Servizio: ${val} KM`, 'km');
-    realtime.updateKm(val, kmFine, `🛣️ Inserito KM Inizio Servizio: ${val} KM`);
+    realtime.updateKm(val, kmFine, `🛣️ Inserito KM Inizio Servizio: ${val} KM`, campiPatch);
   };
 
   const handleKmFineBlur = (val: string) => {
     if (!val.trim()) return;
+    if (!isUtenteCapoServizio && missione?.campiCompilatiDa?.kmFine) {
+      aggiungiNotifica(`🔒 KM Fine già compilato: solo il Capo Servizio può modificarlo.`, 'allarme');
+      return;
+    }
     const ini = parseFloat(kmInizio) || 0;
     const fin = parseFloat(val) || 0;
     if (fin > 0 && ini > 0 && fin < ini) {
       aggiungiNotifica(`⚠️ I KM finali (${fin}) non possono essere un numero inferiore a quello iniziale (${ini})!`, 'allarme');
       return;
     }
+    const campiPatch = {
+      kmFine: {
+        byId: sessioneTurno.volontarioId,
+        byNome: sessioneTurno.volontarioNome || 'Volontario di Turno',
+        at: formatTimeItaly()
+      }
+    };
+    setMissione(prev => prev ? { ...prev, campiCompilatiDa: { ...(prev.campiCompilatiDa || {}), ...campiPatch } } : null);
     const tot = fin >= ini ? fin - ini : 0;
     notificaDatoAllaCentrale(`🛣️ Inserito KM Fine Servizio: ${val} KM (Chilometraggio totale calcolato: ${tot} KM)`, 'km');
-    realtime.updateKm(kmInizio, val, `🛣️ Inserito KM Fine Servizio: ${val} KM (Chilometraggio totale calcolato: ${tot} KM)`);
+    realtime.updateKm(kmInizio, val, `🛣️ Inserito KM Fine Servizio: ${val} KM (Chilometraggio totale calcolato: ${tot} KM)`, campiPatch);
+  };
+
+  const handleManovreNoteBlur = (val: string) => {
+    if (!missione) return;
+    if (!val.trim()) return;
+    if (!isUtenteCapoServizio && missione.campiCompilatiDa?.manovre) {
+      return;
+    }
+    const campiPatch = {
+      manovre: {
+        byId: sessioneTurno.volontarioId,
+        byNome: sessioneTurno.volontarioNome || 'Volontario di Turno',
+        at: formatTimeItaly()
+      }
+    };
+    setMissione(prev => prev ? {
+      ...prev,
+      manovreEffettuatePatologie: val,
+      noteNonVet: val,
+      campiCompilatiDa: { ...(prev.campiCompilatiDa || {}), ...campiPatch }
+    } : null);
+    realtime.updateMissionDraftData({
+      codice: missione.codice,
+      manovreEffettuatePatologie: val,
+      noteNonVet: val,
+      campiCompilatiDa: campiPatch
+    });
   };
 
   const calcolaKmTotali = (): number => {
@@ -10640,6 +10879,12 @@ KM TOTALI: ${kmTot} KM`;
                     prev.oraInizioServizioSpecifico !== s.activeMission.oraInizioServizioSpecifico ||
                     prev.dataArrivoRichiestaServizio !== s.activeMission.dataArrivoRichiestaServizio ||
                     prev.oraArrivoRichiestaServizio !== s.activeMission.oraArrivoRichiestaServizio ||
+                    prev.manovreEffettuatePatologie !== s.activeMission.manovreEffettuatePatologie ||
+                    prev.noteNonVet !== s.activeMission.noteNonVet ||
+                    prev.capoServizioId !== s.activeMission.capoServizioId ||
+                    prev.capoServizioNome !== s.activeMission.capoServizioNome ||
+                    JSON.stringify(prev.campiCompilatiDa || null) !== JSON.stringify(s.activeMission.campiCompilatiDa || null) ||
+                    JSON.stringify(prev.convalidaCapoServizio || null) !== JSON.stringify(s.activeMission.convalidaCapoServizio || null) ||
                     JSON.stringify(prev.datiProprietarioCentrale || null) !== JSON.stringify(s.activeMission.datiProprietarioCentrale || null) ||
                     JSON.stringify(prev.proprietarioImmobile || null) !== JSON.stringify(s.activeMission.proprietarioImmobile || null);
                   if (!changed) return prev;
@@ -10668,18 +10913,30 @@ KM TOTALI: ${kmTot} KM`;
                     oraInizioServizioSpecifico: s.activeMission.oraInizioServizioSpecifico ?? prev.oraInizioServizioSpecifico,
                     dataArrivoRichiestaServizio: s.activeMission.dataArrivoRichiestaServizio ?? prev.dataArrivoRichiestaServizio,
                     oraArrivoRichiestaServizio: s.activeMission.oraArrivoRichiestaServizio ?? prev.oraArrivoRichiestaServizio,
+                    manovreEffettuatePatologie: s.activeMission.manovreEffettuatePatologie ?? prev.manovreEffettuatePatologie,
+                    noteNonVet: s.activeMission.noteNonVet ?? prev.noteNonVet,
+                    capoServizioId: s.activeMission.capoServizioId ?? prev.capoServizioId,
+                    capoServizioNome: s.activeMission.capoServizioNome ?? prev.capoServizioNome,
+                    campiCompilatiDa: s.activeMission.campiCompilatiDa ?? prev.campiCompilatiDa,
+                    convalidaCapoServizio: s.activeMission.convalidaCapoServizio ?? prev.convalidaCapoServizio,
                   };
                 });
+                if (s.activeMission.manovreEffettuatePatologie !== undefined || s.activeMission.noteNonVet !== undefined) {
+                  const syncedNotes = s.activeMission.manovreEffettuatePatologie ?? s.activeMission.noteNonVet;
+                  if (typeof syncedNotes === 'string' && syncedNotes.length > 0) {
+                    setManovreEffettuatePatologie(syncedNotes);
+                  }
+                }
                 if (typeof s.letturaConfermata === 'boolean' && s.letturaConfermata && !letturaConfermataRef.current) {
                   setLetturaConfermata(true);
                 }
                 if (s.operativeTimes && Object.keys(s.operativeTimes).length > 0) {
-                  setTempi(prev => ({ ...prev, ...s.operativeTimes }));
+                  setTempi(prev => mergeOperativeTimesImmutable(prev, s.operativeTimes));
                 }
-                if (s.kmInizio) setKmInizio(prev => prev || s.kmInizio);
-                if (s.kmFine) setKmFine(prev => prev || s.kmFine);
+                if (s.kmInizio) setKmInizio(s.kmInizio);
+                if (s.kmFine) setKmFine(s.kmFine);
                 if (s.datiDestinazione) {
-                  setDatiDestinazione(prev => prev || s.datiDestinazione);
+                  setDatiDestinazione(s.datiDestinazione);
                 }
               }
             } else {
@@ -10963,7 +11220,7 @@ KM TOTALI: ${kmTot} KM`;
 
       // 5. Orari operativi aggiornati dal volontario (partenza, sul posto, destinazione, fine missione, rientro)
       realtime.on('OPERATIVE_TIMES_UPDATED', (payload: any) => {
-        setTempi(payload.times);
+        setTempi(prev => mergeOperativeTimesImmutable(prev, payload.times));
         if (payload.times?.coordinateSulPosto) {
           setCoordinateSulPosto(payload.times.coordinateSulPosto);
         }
@@ -11095,6 +11352,12 @@ KM TOTALI: ${kmTot} KM`;
       realtime.on('KM_UPDATED', (payload: any) => {
         if (payload.kmInizio !== undefined) setKmInizio(payload.kmInizio);
         if (payload.kmFine !== undefined) setKmFine(payload.kmFine);
+        if (payload.campiCompilatiDa) {
+          setMissione(prev => prev ? {
+            ...prev,
+            campiCompilatiDa: { ...(prev.campiCompilatiDa || {}), ...payload.campiCompilatiDa }
+          } : null);
+        }
         if (payload.notification) {
           setNotificheCentrale(prev => [...prev, payload.notification]);
         }
@@ -11981,13 +12244,45 @@ KM TOTALI: ${kmTot} KM`;
       realtime.on('DATI_DESTINAZIONE_UPDATED', (payload: any) => {
         if (payload.dati) {
           setDatiDestinazione(payload.dati);
-          setMissione(prev => prev ? { ...prev, datiDestinazione: payload.dati } : null);
+          setMissione(prev => prev ? {
+            ...prev,
+            datiDestinazione: payload.dati,
+            ...(payload.campiCompilatiDa
+              ? { campiCompilatiDa: { ...(prev.campiCompilatiDa || {}), ...payload.campiCompilatiDa } }
+              : {})
+          } : null);
           const targetCod = payload.codice || missione?.codice;
           if (targetCod) {
             setArchivioPDF(prev => prev.map(s => (s.codice === targetCod || s.id === `DOC-${targetCod}`) ? { ...s, datiDestinazione: payload.dati } : s));
           }
         }
         if (payload.notification) {
+          setNotificheCentrale(prev => [...prev, payload.notification]);
+        }
+      }),
+
+      // 10c. Sincronizzazione Collaborativa Live Bozza Foglio di Servizio & Convalida Capo Servizio
+      realtime.on('MISSION_DRAFT_UPDATED', (payload: any) => {
+        if (payload?.mission) {
+          const inc = payload.mission;
+          setMissione(prev => {
+            if (!prev || (inc.codice && prev.codice !== inc.codice)) return prev;
+            return {
+              ...prev,
+              manovreEffettuatePatologie: inc.manovreEffettuatePatologie ?? prev.manovreEffettuatePatologie,
+              noteNonVet: inc.noteNonVet ?? prev.noteNonVet,
+              campiCompilatiDa: inc.campiCompilatiDa ?? prev.campiCompilatiDa,
+              convalidaCapoServizio: inc.convalidaCapoServizio ?? prev.convalidaCapoServizio,
+              capoServizioId: inc.capoServizioId ?? prev.capoServizioId,
+              capoServizioNome: inc.capoServizioNome ?? prev.capoServizioNome
+            };
+          });
+          const syncedNote = inc.manovreEffettuatePatologie ?? inc.noteNonVet;
+          if (typeof syncedNote === 'string') {
+            setManovreEffettuatePatologie(syncedNote);
+          }
+        }
+        if (payload?.notification) {
           setNotificheCentrale(prev => [...prev, payload.notification]);
         }
       }),
@@ -15342,81 +15637,118 @@ KM TOTALI: ${kmTot} KM`;
                           </div>
                         )}
 
-                        {/* Stati Operativi Mezzo (Bottoni cronologici) */}
+                        {/* Stati Operativi Mezzo (Bottoni cronologici — una volta verdi sono bloccati per tutti; funzioni associate riavviabili separatamente) */}
                         <div className="pt-2 border-t border-slate-200">
-                          <div className="text-[11px] font-black uppercase text-[#bfa353] mb-1.5 flex items-center justify-between">
+                          <div className="text-[11px] font-black uppercase text-[#bfa353] mb-1.5 flex items-center justify-between gap-2 flex-wrap">
                             <span>⏱️ Stati Operativi Mezzo</span>
+                            <span className="text-[9.5px] font-bold normal-case text-emerald-700 bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded">
+                              🔒 Orari verdi bloccati • Sync live
+                            </span>
                           </div>
 
                           <div className="grid grid-cols-2 gap-1.5">
-                            <button
-                              disabled={isSchedaBloccata}
-                              onClick={() => {
-                                if (isSchedaBloccata) return;
-                                registraTempo('partenza', 'PARTENZA DA SEDE');
-                                if (missioneVisualizzata?.indirizzo) {
-                                  avviaNavigatorePercorsoVeloce(missioneVisualizzata.indirizzo, 'bordo');
+                            {/* 1. PARTENZA */}
+                            <div className="flex flex-col gap-1">
+                              <button
+                                type="button"
+                                disabled={isSchedaBloccata || Boolean(tempiVisualizzati.partenza)}
+                                onClick={() => {
+                                  if (isSchedaBloccata || tempiVisualizzati.partenza) return;
+                                  registraTempo('partenza', 'PARTENZA DA SEDE');
+                                  if (missioneVisualizzata?.indirizzo) {
+                                    avviaNavigatorePercorsoVeloce(missioneVisualizzata.indirizzo, 'bordo');
+                                  }
+                                }}
+                                className={`py-2 px-1 rounded-md text-xs font-bold transition-all text-center ${
+                                  isSchedaBloccata || tempiVisualizzati.partenza
+                                    ? 'bg-emerald-700 text-white cursor-not-allowed shadow-sm opacity-95'
+                                    : (isServizioIstitutoOProtezioneCivile || missioneVisualizzata?.autonomoVolontario)
+                                    ? 'bg-amber-500 hover:bg-amber-400 text-slate-950 shadow-lg ring-2 ring-amber-400 animate-pulse cursor-pointer'
+                                    : 'bg-slate-600 hover:bg-slate-700 text-white cursor-pointer active:scale-95'
+                                }`}
+                                title={
+                                  tempiVisualizzati.partenza
+                                    ? `Orario bloccato alle ${tempiVisualizzati.partenza} (non ricliccabile da nessuno)`
+                                    : (isServizioIstitutoOProtezioneCivile || missioneVisualizzata?.autonomoVolontario)
+                                    ? 'Clicca non appena parti dalla sede: allerta subito la Centrale che il mezzo si sta spostando!'
+                                    : 'Registra orario e apre navigatore verso intervento'
                                 }
-                              }}
-                              className={`py-2 px-1 rounded-md text-xs font-bold transition-all text-center ${
-                                isSchedaBloccata
-                                  ? 'bg-emerald-800 text-white cursor-not-allowed opacity-90'
-                                  : tempiVisualizzati.partenza
-                                  ? 'bg-emerald-600 text-white shadow-sm cursor-pointer'
-                                  : (isServizioIstitutoOProtezioneCivile || missioneVisualizzata?.autonomoVolontario)
-                                  ? 'bg-amber-500 hover:bg-amber-400 text-slate-950 shadow-lg ring-2 ring-amber-400 animate-pulse cursor-pointer'
-                                  : 'bg-slate-600 hover:bg-slate-700 text-white cursor-pointer active:scale-95'
-                              }`}
-                              title={
-                                isSchedaBloccata
-                                  ? 'Orario registrato e bloccato'
-                                  : (isServizioIstitutoOProtezioneCivile || missioneVisualizzata?.autonomoVolontario)
-                                  ? 'Clicca non appena parti dalla sede: allerta subito la Centrale che il mezzo si sta spostando!'
-                                  : 'Registra orario e apre navigatore verso intervento'
-                              }
-                            >
-                              {(isServizioIstitutoOProtezioneCivile || missioneVisualizzata?.autonomoVolontario)
-                                ? '1. PARTENZA DA SEDE'
-                                : '1. PARTENZA'}
-                              <span className="block text-[10px] font-normal opacity-90 mt-0.5">
-                                {tempiVisualizzati.partenza || (isSchedaBloccata ? '-' : (isServizioIstitutoOProtezioneCivile || missioneVisualizzata?.autonomoVolontario) ? '🚗 Clicca alla partenza' : '▶ Avvia Navigatore')}
-                              </span>
-                            </button>
-
-                            <button
-                              disabled={isSchedaBloccata || Boolean(missioneVisualizzata?.annullata)}
-                              onClick={() => {
-                                if (isSchedaBloccata || missioneVisualizzata?.annullata) return;
-                                registraTempo('sulPosto', 'ARRIVO SUL POSTO');
-                                if (isServizioVeterinario && missioneVisualizzata?.nonDiProprieta) {
-                                  setModalMicrochipObiettivoAperta(true);
-                                }
-                              }}
-                              className={`py-2 px-1 rounded-md text-xs font-bold transition-all text-center ${
-                                isSchedaBloccata
-                                  ? 'bg-emerald-800 text-white cursor-not-allowed opacity-90'
-                                  : missioneVisualizzata?.annullata
-                                  ? 'bg-slate-800 text-slate-500 border border-slate-700/60 cursor-not-allowed opacity-60'
-                                  : tempiVisualizzati.sulPosto
-                                  ? 'bg-emerald-600 text-white shadow-sm cursor-pointer'
-                                  : 'bg-slate-600 hover:bg-slate-700 text-white cursor-pointer active:scale-95'
-                              }`}
-                              title={
-                                missioneVisualizzata?.annullata
-                                  ? 'Intervento annullato dalla Centrale: orario non richiesto'
-                                  : 'Registra orario arrivo sul posto'
-                              }
-                            >
-                              2. SUL POSTO
-                              <span className="block text-[10px] font-normal opacity-90 mt-0.5">
-                                {missioneVisualizzata?.annullata ? '❌ Non Richiesto' : (tempiVisualizzati.sulPosto || '-')}
-                              </span>
-                              {!missioneVisualizzata?.annullata && (coordinateSulPosto || tempiVisualizzati.coordinateSulPosto) && (
-                                <span className="block text-[8.5px] font-mono text-emerald-100 bg-emerald-900/60 px-1 py-0.5 rounded mt-0.5 truncate">
-                                  GPS {(coordinateSulPosto || tempiVisualizzati.coordinateSulPosto)!.lat.toFixed(4)}, {(coordinateSulPosto || tempiVisualizzati.coordinateSulPosto)!.lng.toFixed(4)}
+                              >
+                                {(isServizioIstitutoOProtezioneCivile || missioneVisualizzata?.autonomoVolontario)
+                                  ? '1. PARTENZA DA SEDE'
+                                  : '1. PARTENZA'}
+                                <span className="block text-[10px] font-normal opacity-95 mt-0.5">
+                                  {tempiVisualizzati.partenza
+                                    ? `🔒 ${tempiVisualizzati.partenza}`
+                                    : (isSchedaBloccata ? '-' : (isServizioIstitutoOProtezioneCivile || missioneVisualizzata?.autonomoVolontario) ? '🚗 Clicca alla partenza' : '▶ Avvia Navigatore')}
                                 </span>
+                              </button>
+                              {!isSchedaBloccata && tempiVisualizzati.partenza && missioneVisualizzata?.indirizzo && (
+                                <button
+                                  type="button"
+                                  onClick={() => avviaNavigatorePercorsoVeloce(missioneVisualizzata.indirizzo, 'bordo')}
+                                  className="py-1 px-1.5 rounded bg-blue-600 hover:bg-blue-700 text-white text-[10px] font-bold flex items-center justify-center gap-1 cursor-pointer active:scale-95 transition-all"
+                                  title="Riavvia il navigatore sul tuo dispositivo senza modificare l'orario del primo click"
+                                >
+                                  <RotateCcw className="w-3 h-3 shrink-0" />
+                                  <span className="truncate">Riavvia Navigatore</span>
+                                </button>
                               )}
-                            </button>
+                            </div>
+
+                            {/* 2. SUL POSTO */}
+                            <div className="flex flex-col gap-1">
+                              <button
+                                type="button"
+                                disabled={isSchedaBloccata || Boolean(missioneVisualizzata?.annullata) || Boolean(tempiVisualizzati.sulPosto)}
+                                onClick={() => {
+                                  if (isSchedaBloccata || missioneVisualizzata?.annullata || tempiVisualizzati.sulPosto) return;
+                                  registraTempo('sulPosto', 'ARRIVO SUL POSTO');
+                                  if (isServizioVeterinario && missioneVisualizzata?.nonDiProprieta) {
+                                    setModalMicrochipObiettivoAperta(true);
+                                  }
+                                }}
+                                className={`py-2 px-1 rounded-md text-xs font-bold transition-all text-center ${
+                                  isSchedaBloccata || tempiVisualizzati.sulPosto
+                                    ? 'bg-emerald-700 text-white cursor-not-allowed shadow-sm opacity-95'
+                                    : missioneVisualizzata?.annullata
+                                    ? 'bg-slate-800 text-slate-500 border border-slate-700/60 cursor-not-allowed opacity-60'
+                                    : 'bg-slate-600 hover:bg-slate-700 text-white cursor-pointer active:scale-95'
+                                }`}
+                                title={
+                                  tempiVisualizzati.sulPosto
+                                    ? `Orario bloccato alle ${tempiVisualizzati.sulPosto} (non ricliccabile da nessuno)`
+                                    : missioneVisualizzata?.annullata
+                                    ? 'Intervento annullato dalla Centrale: orario non richiesto'
+                                    : 'Registra orario arrivo sul posto'
+                                }
+                              >
+                                2. SUL POSTO
+                                <span className="block text-[10px] font-normal opacity-95 mt-0.5">
+                                  {missioneVisualizzata?.annullata
+                                    ? '❌ Non Richiesto'
+                                    : tempiVisualizzati.sulPosto
+                                    ? `🔒 ${tempiVisualizzati.sulPosto}`
+                                    : '-'}
+                                </span>
+                                {!missioneVisualizzata?.annullata && (coordinateSulPosto || tempiVisualizzati.coordinateSulPosto) && (
+                                  <span className="block text-[8.5px] font-mono text-emerald-100 bg-emerald-900/60 px-1 py-0.5 rounded mt-0.5 truncate">
+                                    GPS {(coordinateSulPosto || tempiVisualizzati.coordinateSulPosto)!.lat.toFixed(4)}, {(coordinateSulPosto || tempiVisualizzati.coordinateSulPosto)!.lng.toFixed(4)}
+                                  </span>
+                                )}
+                              </button>
+                              {!isSchedaBloccata && !missioneVisualizzata?.annullata && tempiVisualizzati.sulPosto && isServizioVeterinario && missioneVisualizzata?.nonDiProprieta && (
+                                <button
+                                  type="button"
+                                  onClick={() => setModalMicrochipObiettivoAperta(true)}
+                                  className="py-1 px-1.5 rounded bg-amber-600 hover:bg-amber-700 text-white text-[10px] font-bold flex items-center justify-center gap-1 cursor-pointer active:scale-95 transition-all"
+                                  title="Riavvia la rilevazione microchip sul tuo dispositivo senza modificare l'orario del primo click"
+                                >
+                                  <RotateCcw className="w-3 h-3 shrink-0" />
+                                  <span className="truncate">Riavvia Microchip</span>
+                                </button>
+                              )}
+                            </div>
 
                             {(() => {
                               const isDecisioneRientroSedeNonVet = isServizioIstitutoOProtezioneCivile && missioneVisualizzata?.decisioneCentraleNonVet === 'rientro_sede';
@@ -15425,98 +15757,132 @@ KM TOTALI: ${kmTot} KM`;
 
                               return (
                                 <>
-                                  <button
-                                    disabled={isSchedaBloccata || Boolean(missioneVisualizzata?.annullata) || saltaOrariObiettivoEDestinazione}
-                                    onClick={() => {
-                                      if (isSchedaBloccata || missioneVisualizzata?.annullata || saltaOrariObiettivoEDestinazione) return;
-                                      if (
-                                        isServizioVeterinario &&
-                                        missioneVisualizzata?.nonDiProprieta &&
-                                        !missioneVisualizzata.microchip &&
-                                        !missioneVisualizzata.noMicrochip
-                                      ) {
-                                        setModalMicrochipObiettivoAperta(true);
-                                        aggiungiNotifica(
-                                          "⚠️ OBBLIGATORIO: Devi inserire il numero di Microchip o spuntare 'NO MICROCHIP' prima di ripartire dall'obiettivo!",
-                                          "allarme"
-                                        );
-                                        return;
+                                  {/* 3. PARTENZA DA OBIETTIVO */}
+                                  <div className="flex flex-col gap-1">
+                                    <button
+                                      type="button"
+                                      disabled={isSchedaBloccata || Boolean(missioneVisualizzata?.annullata) || saltaOrariObiettivoEDestinazione || Boolean(tempiVisualizzati.partenzaObiettivo)}
+                                      onClick={() => {
+                                        if (isSchedaBloccata || missioneVisualizzata?.annullata || saltaOrariObiettivoEDestinazione || tempiVisualizzati.partenzaObiettivo) return;
+                                        if (
+                                          isServizioVeterinario &&
+                                          missioneVisualizzata?.nonDiProprieta &&
+                                          !missioneVisualizzata.microchip &&
+                                          !missioneVisualizzata.noMicrochip
+                                        ) {
+                                          setModalMicrochipObiettivoAperta(true);
+                                          aggiungiNotifica(
+                                            "⚠️ OBBLIGATORIO: Devi inserire il numero di Microchip o spuntare 'NO MICROCHIP' prima di ripartire dall'obiettivo!",
+                                            "allarme"
+                                          );
+                                          return;
+                                        }
+                                        if (!missioneVisualizzata.destinazione && tempiVisualizzati.sulPosto) {
+                                          aggiungiNotifica("⚠️ In attesa che la Centrale Operativa indichi il luogo di destinazione (attendi sul posto)!", "sistema");
+                                          return;
+                                        }
+                                        registraTempo('partenzaObiettivo', 'PARTENZA DA OBIETTIVO');
+                                        if (missioneVisualizzata.destinazione) {
+                                          avviaNavigatorePercorsoVeloce(missioneVisualizzata.destinazione, 'bordo');
+                                        }
+                                      }}
+                                      className={`py-2 px-1 rounded-md text-xs font-bold transition-all text-center ${
+                                        isSchedaBloccata || tempiVisualizzati.partenzaObiettivo
+                                          ? 'bg-emerald-700 text-white cursor-not-allowed shadow-sm opacity-95'
+                                          : (missioneVisualizzata?.annullata || saltaOrariObiettivoEDestinazione)
+                                          ? 'bg-slate-800 text-slate-500 border border-slate-700/60 cursor-not-allowed opacity-60'
+                                          : !missioneVisualizzata.destinazione && tempiVisualizzati.sulPosto
+                                          ? 'bg-amber-600/70 text-amber-100 border border-amber-500 cursor-pointer'
+                                          : 'bg-slate-600 hover:bg-slate-700 text-white cursor-pointer active:scale-95'
+                                      }`}
+                                      title={
+                                        tempiVisualizzati.partenzaObiettivo
+                                          ? `Orario bloccato alle ${tempiVisualizzati.partenzaObiettivo} (non ricliccabile da nessuno)`
+                                          : missioneVisualizzata?.annullata
+                                          ? 'Intervento annullato dalla Centrale: orario non richiesto'
+                                          : saltaOrariObiettivoEDestinazione
+                                          ? `Centrale dispone ${isDecisioneRientroSedeNonVet ? 'rientro in sede' : 'nuovo obiettivo'}: orario non richiesto`
+                                          : (missioneVisualizzata.destinazione ? `Registra orario e apre navigatore verso ${missioneVisualizzata.destinazione}` : 'Registra orario partenza da obiettivo')
                                       }
-                                      if (!missioneVisualizzata.destinazione && tempiVisualizzati.sulPosto) {
-                                        aggiungiNotifica("⚠️ In attesa che la Centrale Operativa indichi il luogo di destinazione (attendi sul posto)!", "sistema");
-                                        return;
-                                      }
-                                      registraTempo('partenzaObiettivo', 'PARTENZA DA OBIETTIVO');
-                                      if (missioneVisualizzata.destinazione) {
-                                        avviaNavigatorePercorsoVeloce(missioneVisualizzata.destinazione, 'bordo');
-                                      }
-                                    }}
-                                    className={`py-2 px-1 rounded-md text-xs font-bold transition-all text-center ${
-                                      isSchedaBloccata
-                                        ? 'bg-emerald-800 text-white cursor-not-allowed opacity-90'
-                                        : (missioneVisualizzata?.annullata || saltaOrariObiettivoEDestinazione)
-                                        ? 'bg-slate-800 text-slate-500 border border-slate-700/60 cursor-not-allowed opacity-60'
-                                        : tempiVisualizzati.partenzaObiettivo
-                                        ? 'bg-emerald-600 text-white shadow-sm cursor-pointer'
-                                        : !missioneVisualizzata.destinazione && tempiVisualizzati.sulPosto
-                                        ? 'bg-amber-600/70 text-amber-100 border border-amber-500 cursor-pointer'
-                                        : 'bg-slate-600 hover:bg-slate-700 text-white cursor-pointer active:scale-95'
-                                    }`}
-                                    title={
-                                      missioneVisualizzata?.annullata
-                                        ? 'Intervento annullato dalla Centrale: orario non richiesto'
-                                        : saltaOrariObiettivoEDestinazione
-                                        ? `Centrale dispone ${isDecisioneRientroSedeNonVet ? 'rientro in sede' : 'nuovo obiettivo'}: orario non richiesto`
-                                        : (missioneVisualizzata.destinazione ? `Registra orario e apre navigatore verso ${missioneVisualizzata.destinazione}` : 'Registra orario partenza da obiettivo')
-                                    }
-                                  >
-                                    3. PART. OBIETT.
-                                    <span className="block text-[10px] font-normal opacity-90 mt-0.5">
-                                      {missioneVisualizzata?.annullata
-                                        ? '❌ Non Richiesto'
-                                        : saltaOrariObiettivoEDestinazione
-                                        ? `❌ Non Richiesto`
-                                        : (tempiVisualizzati.partenzaObiettivo || (!missioneVisualizzata.destinazione && tempiVisualizzati.sulPosto ? '⏳ Attesa Dest.' : missioneVisualizzata.destinazione ? '▶ Avvia Navigatore' : '-'))}
-                                    </span>
-                                  </button>
-
-                                  <button
-                                    disabled={isSchedaBloccata || Boolean(missioneVisualizzata?.annullata) || saltaOrariObiettivoEDestinazione}
-                                    onClick={() => {
-                                      if (isSchedaBloccata || missioneVisualizzata?.annullata || saltaOrariObiettivoEDestinazione) return;
-                                      registraTempo('arrivoDestinazione', 'ARRIVO A DESTINAZIONE');
-                                    }}
-                                    className={`py-2 px-1 rounded-md text-xs font-bold transition-all text-center ${
-                                      isSchedaBloccata
-                                        ? 'bg-emerald-800 text-white cursor-not-allowed opacity-90'
-                                        : (missioneVisualizzata?.annullata || saltaOrariObiettivoEDestinazione)
-                                        ? 'bg-slate-800 text-slate-500 border border-slate-700/60 cursor-not-allowed opacity-60'
-                                        : tempiVisualizzati.arrivoDestinazione
-                                        ? 'bg-emerald-600 text-white shadow-sm cursor-pointer'
-                                        : 'bg-slate-600 hover:bg-slate-700 text-white cursor-pointer active:scale-95'
-                                    }`}
-                                    title={
-                                      missioneVisualizzata?.annullata
-                                        ? 'Intervento annullato dalla Centrale: orario non richiesto'
-                                        : saltaOrariObiettivoEDestinazione
-                                        ? `Centrale dispone ${isDecisioneRientroSedeNonVet ? 'rientro in sede' : 'nuovo obiettivo'}: orario non richiesto`
-                                        : 'Registra orario arrivo a destinazione'
-                                    }
-                                  >
-                                    4. ARR. DESTIN.
-                                    <span className="block text-[10px] font-normal opacity-90 mt-0.5">
-                                      {missioneVisualizzata?.annullata
-                                        ? '❌ Non Richiesto'
-                                        : saltaOrariObiettivoEDestinazione
-                                        ? `❌ Non Richiesto`
-                                        : (tempiVisualizzati.arrivoDestinazione || '-')}
-                                    </span>
-                                    {!missioneVisualizzata?.annullata && !saltaOrariObiettivoEDestinazione && (coordinateDestinazione || tempiVisualizzati.coordinateDestinazione) && (
-                                      <span className="block text-[8.5px] font-mono text-emerald-100 bg-emerald-900/60 px-1 py-0.5 rounded mt-0.5 truncate">
-                                        GPS {(coordinateDestinazione || tempiVisualizzati.coordinateDestinazione)!.lat.toFixed(4)}, {(coordinateDestinazione || tempiVisualizzati.coordinateDestinazione)!.lng.toFixed(4)}
+                                    >
+                                      3. PART. OBIETT.
+                                      <span className="block text-[10px] font-normal opacity-95 mt-0.5">
+                                        {missioneVisualizzata?.annullata
+                                          ? '❌ Non Richiesto'
+                                          : saltaOrariObiettivoEDestinazione
+                                          ? `❌ Non Richiesto`
+                                          : tempiVisualizzati.partenzaObiettivo
+                                          ? `🔒 ${tempiVisualizzati.partenzaObiettivo}`
+                                          : (!missioneVisualizzata.destinazione && tempiVisualizzati.sulPosto ? '⏳ Attesa Dest.' : missioneVisualizzata.destinazione ? '▶ Avvia Navigatore' : '-')}
                                       </span>
+                                    </button>
+                                    {!isSchedaBloccata && !missioneVisualizzata?.annullata && !saltaOrariObiettivoEDestinazione && tempiVisualizzati.partenzaObiettivo && missioneVisualizzata?.destinazione && (
+                                      <button
+                                        type="button"
+                                        onClick={() => avviaNavigatorePercorsoVeloce(missioneVisualizzata.destinazione!, 'bordo')}
+                                        className="py-1 px-1.5 rounded bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-bold flex items-center justify-center gap-1 cursor-pointer active:scale-95 transition-all"
+                                        title="Riavvia il navigatore verso la destinazione sul tuo dispositivo senza modificare l'orario del primo click"
+                                      >
+                                        <RotateCcw className="w-3 h-3 shrink-0" />
+                                        <span className="truncate">Riavvia Navigatore</span>
+                                      </button>
                                     )}
-                                  </button>
+                                  </div>
+
+                                  {/* 4. ARRIVO A DESTINAZIONE */}
+                                  <div className="flex flex-col gap-1">
+                                    <button
+                                      type="button"
+                                      disabled={isSchedaBloccata || Boolean(missioneVisualizzata?.annullata) || saltaOrariObiettivoEDestinazione || Boolean(tempiVisualizzati.arrivoDestinazione)}
+                                      onClick={() => {
+                                        if (isSchedaBloccata || missioneVisualizzata?.annullata || saltaOrariObiettivoEDestinazione || tempiVisualizzati.arrivoDestinazione) return;
+                                        registraTempo('arrivoDestinazione', 'ARRIVO A DESTINAZIONE');
+                                      }}
+                                      className={`py-2 px-1 rounded-md text-xs font-bold transition-all text-center ${
+                                        isSchedaBloccata || tempiVisualizzati.arrivoDestinazione
+                                          ? 'bg-emerald-700 text-white cursor-not-allowed shadow-sm opacity-95'
+                                          : (missioneVisualizzata?.annullata || saltaOrariObiettivoEDestinazione)
+                                          ? 'bg-slate-800 text-slate-500 border border-slate-700/60 cursor-not-allowed opacity-60'
+                                          : 'bg-slate-600 hover:bg-slate-700 text-white cursor-pointer active:scale-95'
+                                      }`}
+                                      title={
+                                        tempiVisualizzati.arrivoDestinazione
+                                          ? `Orario bloccato alle ${tempiVisualizzati.arrivoDestinazione} (non ricliccabile da nessuno)`
+                                          : missioneVisualizzata?.annullata
+                                          ? 'Intervento annullato dalla Centrale: orario non richiesto'
+                                          : saltaOrariObiettivoEDestinazione
+                                          ? `Centrale dispone ${isDecisioneRientroSedeNonVet ? 'rientro in sede' : 'nuovo obiettivo'}: orario non richiesto`
+                                          : 'Registra orario arrivo a destinazione'
+                                      }
+                                    >
+                                      4. ARR. DESTIN.
+                                      <span className="block text-[10px] font-normal opacity-95 mt-0.5">
+                                        {missioneVisualizzata?.annullata
+                                          ? '❌ Non Richiesto'
+                                          : saltaOrariObiettivoEDestinazione
+                                          ? `❌ Non Richiesto`
+                                          : tempiVisualizzati.arrivoDestinazione
+                                          ? `🔒 ${tempiVisualizzati.arrivoDestinazione}`
+                                          : '-'}
+                                      </span>
+                                      {!missioneVisualizzata?.annullata && !saltaOrariObiettivoEDestinazione && (coordinateDestinazione || tempiVisualizzati.coordinateDestinazione) && (
+                                        <span className="block text-[8.5px] font-mono text-emerald-100 bg-emerald-900/60 px-1 py-0.5 rounded mt-0.5 truncate">
+                                          GPS {(coordinateDestinazione || tempiVisualizzati.coordinateDestinazione)!.lat.toFixed(4)}, {(coordinateDestinazione || tempiVisualizzati.coordinateDestinazione)!.lng.toFixed(4)}
+                                        </span>
+                                      )}
+                                    </button>
+                                    {!isSchedaBloccata && !missioneVisualizzata?.annullata && !saltaOrariObiettivoEDestinazione && tempiVisualizzati.arrivoDestinazione && isServizioVeterinario && (
+                                      <button
+                                        type="button"
+                                        onClick={() => setModalDestinazioneFirmeAperta(true)}
+                                        className="py-1 px-1.5 rounded bg-teal-600 hover:bg-teal-700 text-white text-[10px] font-bold flex items-center justify-center gap-1 cursor-pointer active:scale-95 transition-all"
+                                        title="Riapri la scheda consegna e firme sul tuo dispositivo senza modificare l'orario del primo click"
+                                      >
+                                        <RotateCcw className="w-3 h-3 shrink-0" />
+                                        <span className="truncate">Riapri Scheda Firme</span>
+                                      </button>
+                                    )}
+                                  </div>
                                 </>
                               );
                             })()}
@@ -15574,9 +15940,10 @@ KM TOTALI: ${kmTot} KM`;
 
                             return (
                               <button
-                                disabled={isSchedaBloccata || isDecisioneNuovoObiettivoNonVet}
+                                type="button"
+                                disabled={isSchedaBloccata || isDecisioneNuovoObiettivoNonVet || Boolean(tempiVisualizzati.fineMissione)}
                                 onClick={() => {
-                                  if (isSchedaBloccata || isDecisioneNuovoObiettivoNonVet) return;
+                                  if (isSchedaBloccata || isDecisioneNuovoObiettivoNonVet || tempiVisualizzati.fineMissione) return;
                                   if (isAnnullata && !tempiVisualizzati.partenza) {
                                     aggiungiNotifica("ℹ️ Intervento annullato: puoi chiudere direttamente la scheda cliccando sul Rientro in Sede.", "sistema");
                                     return;
@@ -15584,12 +15951,10 @@ KM TOTALI: ${kmTot} KM`;
                                   registraTempo('fineMissione', 'FINE MISSIONE');
                                 }}
                                 className={`w-full mt-1.5 py-2 px-2 rounded-md text-xs font-bold transition-all text-center ${
-                                  isSchedaBloccata
-                                    ? 'bg-emerald-800 text-white cursor-not-allowed opacity-90'
+                                  isSchedaBloccata || tempiVisualizzati.fineMissione
+                                    ? 'bg-emerald-700 text-white cursor-not-allowed opacity-95'
                                     : isDecisioneNuovoObiettivoNonVet
                                     ? 'bg-slate-800 text-slate-500 border border-slate-700/60 cursor-not-allowed opacity-60'
-                                    : tempiVisualizzati.fineMissione
-                                    ? 'bg-emerald-600 text-white cursor-pointer'
                                     : mancanoFirmeObbligatorie
                                     ? 'bg-amber-600 hover:bg-amber-500 text-white border-2 border-amber-400 cursor-pointer shadow-md animate-pulse'
                                     : isAnnullata
@@ -15597,7 +15962,9 @@ KM TOTALI: ${kmTot} KM`;
                                     : 'bg-slate-700 hover:bg-slate-800 text-white cursor-pointer active:scale-95'
                                 }`}
                                 title={
-                                  isDecisioneNuovoObiettivoNonVet
+                                  tempiVisualizzati.fineMissione
+                                    ? `Orario bloccato alle ${tempiVisualizzati.fineMissione} (non ricliccabile da nessuno)`
+                                    : isDecisioneNuovoObiettivoNonVet
                                     ? 'Nuovo obiettivo assegnato: fine missione non richiesta'
                                     : mancanoFirmeObbligatorie
                                     ? 'Firme proprietario e veterinario obbligatorie per completare la missione'
@@ -15609,10 +15976,14 @@ KM TOTALI: ${kmTot} KM`;
                                 {isDecisioneNuovoObiettivoNonVet
                                   ? '5. FINE MISSIONE (❌ Non Richiesto)'
                                   : isAnnullata
-                                  ? (tempiVisualizzati.fineMissione ? '5. FINE MISSIONE (Registrato)' : '5. FINE MISSIONE (Opzionale)')
+                                  ? (tempiVisualizzati.fineMissione ? '5. FINE MISSIONE (Bloccato)' : '5. FINE MISSIONE (Opzionale)')
                                   : (mancanoFirmeObbligatorie ? '✍️ 5. FINE MISSIONE (Firme Obbligatorie)' : '5. FINE MISSIONE')}
                                 <span className="inline-block ml-2 text-[10px] font-normal">
-                                  ({isDecisioneNuovoObiettivoNonVet ? 'Nuovo Obiettivo' : (tempiVisualizzati.fineMissione || (isAnnullata ? 'Non obbligatorio' : mancanoFirmeObbligatorie ? 'Richieste firme' : 'In attesa'))})
+                                  ({isDecisioneNuovoObiettivoNonVet
+                                    ? 'Nuovo Obiettivo'
+                                    : tempiVisualizzati.fineMissione
+                                    ? `🔒 ${tempiVisualizzati.fineMissione}`
+                                    : (isAnnullata ? 'Non obbligatorio' : mancanoFirmeObbligatorie ? 'Richieste firme' : 'In attesa')})
                                 </span>
                               </button>
                             );
@@ -15628,7 +15999,7 @@ KM TOTALI: ${kmTot} KM`;
                                     INVIATO SU NUOVO OBIETTIVO (SENZA RIENTRO IN SEDE)
                                   </div>
                                   <p className="text-[10.5px] text-slate-700 leading-tight">
-                                    Non devi inserire l'orario di rientro in sede né di chiusura. Inserisci i KM per completare questo servizio e passare al nuovo obiettivo:
+                                    Non devi inserire l'orario di rientro in sede né di chiusura. Inserisci i KM e fai convalidare dal Capo Servizio per completare questo servizio:
                                   </p>
                                 </div>
                               </div>
@@ -15638,20 +16009,24 @@ KM TOTALI: ${kmTot} KM`;
                                   <label className="block text-[10px] font-bold text-slate-700 uppercase mb-0.5">KM Inizio *</label>
                                   <input
                                     type="number"
+                                    disabled={!isUtenteCapoServizio && Boolean(missioneVisualizzata?.campiCompilatiDa?.kmInizio && kmInizio)}
                                     value={kmInizio}
                                     onChange={(e) => setKmInizio(e.target.value)}
+                                    onBlur={(e) => handleKmInizioBlur(e.target.value)}
                                     placeholder="Es. 10000"
-                                    className="w-full p-2 rounded-xl bg-white border border-slate-300 text-slate-900 font-mono font-bold text-xs focus:ring-2 focus:ring-amber-500 focus:outline-none"
+                                    className="w-full p-2 rounded-xl bg-white border border-slate-300 text-slate-900 font-mono font-bold text-xs focus:ring-2 focus:ring-amber-500 focus:outline-none disabled:bg-slate-100 disabled:cursor-not-allowed"
                                   />
                                 </div>
                                 <div>
                                   <label className="block text-[10px] font-bold text-slate-700 uppercase mb-0.5">KM Fine *</label>
                                   <input
                                     type="number"
+                                    disabled={!isUtenteCapoServizio && Boolean(missioneVisualizzata?.campiCompilatiDa?.kmFine && kmFine)}
                                     value={kmFine}
                                     onChange={(e) => setKmFine(e.target.value)}
+                                    onBlur={(e) => handleKmFineBlur(e.target.value)}
                                     placeholder="Es. 10025"
-                                    className="w-full p-2 rounded-xl bg-white border border-slate-300 text-slate-900 font-mono font-bold text-xs focus:ring-2 focus:ring-amber-500 focus:outline-none"
+                                    className="w-full p-2 rounded-xl bg-white border border-slate-300 text-slate-900 font-mono font-bold text-xs focus:ring-2 focus:ring-amber-500 focus:outline-none disabled:bg-slate-100 disabled:cursor-not-allowed"
                                   />
                                 </div>
                               </div>
@@ -15664,6 +16039,7 @@ KM TOTALI: ${kmTot} KM`;
                               <button
                                 type="button"
                                 onClick={() => {
+                                  if (!verificaConvalidaCapoServizioPerChiusura()) return;
                                   const ini = parseFloat(kmInizio) || 0;
                                   const fin = parseFloat(kmFine) || 0;
                                   if (ini <= 0 || fin <= 0 || fin < ini) {
@@ -15679,50 +16055,70 @@ KM TOTALI: ${kmTot} KM`;
                               </button>
                             </div>
                           ) : (
-                            <button
-                              type="button"
-                              disabled={isSchedaBloccata}
-                              onClick={() => {
-                                if (isSchedaBloccata) return;
-                                if (!tempiVisualizzati.partenza) {
-                                  // Se il mezzo non è nemmeno partito ed è stato annullato, permetti chiusura diretta
-                                  if (missioneVisualizzata?.annullata) {
-                                    completaRientroConKm(0, 0);
+                            <div className="mt-2 space-y-1">
+                              <button
+                                type="button"
+                                disabled={isSchedaBloccata || Boolean(tempiVisualizzati.rientro)}
+                                onClick={() => {
+                                  if (isSchedaBloccata || tempiVisualizzati.rientro) return;
+                                  if (!tempiVisualizzati.partenza) {
+                                    if (missioneVisualizzata?.annullata) {
+                                      registraTempo('rientro', 'RIENTRO IN SEDE');
+                                      return;
+                                    }
+                                    aggiungiNotifica("⚠️ OBBLIGATORIO: Devi registrare l'Orario di Partenza da Sede prima del Rientro in Sede!", "allarme");
                                     return;
                                   }
-                                  aggiungiNotifica("⚠️ OBBLIGATORIO: Devi registrare l'Orario di Partenza da Sede prima del Rientro in Sede!", "allarme");
-                                  return;
+                                  if (!tempiVisualizzati.fineMissione && !missioneVisualizzata?.annullata) {
+                                    aggiungiNotifica("⚠️ OBBLIGATORIO: Devi registrare l'Orario di Fine Missione prima del Rientro in Sede!", "allarme");
+                                    return;
+                                  }
+                                  registraTempo('rientro', 'RIENTRO IN SEDE');
+                                }}
+                                className={`w-full py-3 px-3 rounded-xl text-xs font-black uppercase transition-all text-center border shadow-lg ${
+                                  isSchedaBloccata || tempiVisualizzati.rientro
+                                    ? 'bg-emerald-700 text-white border-emerald-600 cursor-not-allowed opacity-95'
+                                    : missioneVisualizzata?.annullata
+                                    ? 'bg-gradient-to-r from-red-700 to-amber-600 hover:brightness-110 text-white border-amber-400 cursor-pointer active:scale-95 animate-pulse'
+                                    : 'bg-blue-900 hover:bg-blue-800 text-white border-blue-700 cursor-pointer active:scale-95'
+                                }`}
+                                title={
+                                  tempiVisualizzati.rientro
+                                    ? `Orario Rientro bloccato alle ${tempiVisualizzati.rientro} (non ricliccabile da nessuno)`
+                                    : 'Registra orario di rientro in sede'
                                 }
-                                if (!tempiVisualizzati.fineMissione && !missioneVisualizzata?.annullata) {
-                                  aggiungiNotifica("⚠️ OBBLIGATORIO: Devi registrare l'Orario di Fine Missione prima del Rientro in Sede!", "allarme");
-                                  return;
-                                }
-                                const ini = parseFloat(kmInizio) || 0;
-                                const fin = parseFloat(kmFine) || 0;
-                                if (ini <= 0 || fin <= 0 || fin < ini) {
-                                  setKmInizioTemp(kmInizio);
-                                  setKmFineTemp(kmFine);
-                                  setErroreKmObbligatori(null);
-                                  setModalKmObbligatoriAperta(true);
-                                } else {
-                                  completaRientroConKm(ini, fin);
-                                }
-                              }}
-                              className={`w-full mt-2 py-3 px-3 rounded-xl text-xs font-black uppercase transition-all text-center border shadow-lg ${
-                                isSchedaBloccata
-                                  ? 'bg-emerald-800 text-white border-emerald-700 cursor-not-allowed opacity-90'
-                                  : tempiVisualizzati.rientro
-                                  ? 'bg-emerald-600 hover:bg-emerald-500 text-white border-emerald-500 cursor-pointer active:scale-95'
-                                  : missioneVisualizzata?.annullata
-                                  ? 'bg-gradient-to-r from-red-700 to-amber-600 hover:brightness-110 text-white border-amber-400 cursor-pointer active:scale-95 animate-pulse'
-                                  : 'bg-blue-900 hover:bg-blue-800 text-white border-blue-700 cursor-pointer active:scale-95'
-                              }`}
-                            >
-                              {missioneVisualizzata?.annullata ? '🚨 6. RIENTRO IN SEDE & CHIUSURA (INTERVENTO ANNULLATO)' : '6. RIENTRO IN SEDE & CHIUSURA'}
-                              <span className="inline-block ml-2 text-[10px] font-normal opacity-90">
-                                ({tempiVisualizzati.rientro || (missioneVisualizzata?.annullata ? 'Mezzo rientra in sede • Clicca per chiudere' : 'In attesa')})
-                              </span>
-                            </button>
+                              >
+                                {missioneVisualizzata?.annullata ? '🚨 6. RIENTRO IN SEDE & CHIUSURA (INTERVENTO ANNULLATO)' : '6. RIENTRO IN SEDE & CHIUSURA'}
+                                <span className="inline-block ml-2 text-[10px] font-normal opacity-95">
+                                  ({tempiVisualizzati.rientro
+                                    ? `🔒 ${tempiVisualizzati.rientro}`
+                                    : (missioneVisualizzata?.annullata ? 'Mezzo rientra in sede • Clicca per registrare' : 'In attesa')})
+                                </span>
+                              </button>
+                              {!isSchedaBloccata && tempiVisualizzati.rientro && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    if (!verificaConvalidaCapoServizioPerChiusura()) return;
+                                    const ini = parseFloat(kmInizio) || 0;
+                                    const fin = parseFloat(kmFine) || 0;
+                                    if (ini <= 0 || fin <= 0 || fin < ini) {
+                                      setKmInizioTemp(kmInizio);
+                                      setKmFineTemp(kmFine);
+                                      setErroreKmObbligatori(null);
+                                      setModalKmObbligatoriAperta(true);
+                                    } else {
+                                      completaRientroConKm(ini, fin);
+                                    }
+                                  }}
+                                  className="w-full py-1.5 px-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-[11px] font-bold flex items-center justify-center gap-1.5 cursor-pointer active:scale-95 transition-all"
+                                  title="Riavvia la procedura di inserimento KM / chiusura senza modificare l'orario di rientro già registrato"
+                                >
+                                  <RotateCcw className="w-3.5 h-3.5 shrink-0" />
+                                  <span>Inserisci KM / Chiudi Foglio (Orario {tempiVisualizzati.rientro} bloccato)</span>
+                                </button>
+                              )}
+                            </div>
                           )}
                         </div>
 
@@ -15742,56 +16138,71 @@ KM TOTALI: ${kmTot} KM`;
                               </span>
                               {kmInizioVisualizzato && (
                                 <span className="text-[9.5px] text-emerald-700 font-bold bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-300">
-                                  ✓ Precompilato da ultimo servizio
+                                  ✓ Sincronizzato live
                                 </span>
                               )}
                             </div>
-                            <div className="grid grid-cols-2 gap-2">
-                              <div>
-                                <input
-                                  type="number"
-                                  placeholder="KM Inizio"
-                                  disabled={isBloccatoPrivacy || isSchedaBloccata}
-                                  readOnly={isSchedaBloccata}
-                                  value={kmInizioVisualizzato}
-                                  onChange={(e) => {
-                                    if (!isSchedaBloccata) setKmInizio(e.target.value);
-                                  }}
-                                  onBlur={(e) => {
-                                    if (!isSchedaBloccata) handleKmInizioBlur(e.target.value);
-                                  }}
-                                  className={`p-1.5 text-xs border rounded-md focus:outline-none w-full ${
-                                    isSchedaBloccata
-                                      ? 'bg-slate-100 border-slate-300 text-slate-900 font-bold cursor-not-allowed select-text'
-                                      : 'border-slate-300 bg-white focus:ring-1 focus:ring-amber-500 font-bold text-slate-900'
-                                  }`}
-                                />
-                                <span className="text-[9px] text-slate-500 block mt-0.5">Partenza mezzo</span>
-                              </div>
-                              <div>
-                                <input
-                                  type="number"
-                                  placeholder="KM Fine"
-                                  disabled={isBloccatoPrivacy || isSchedaBloccata}
-                                  readOnly={isSchedaBloccata}
-                                  value={kmFineVisualizzato}
-                                  onChange={(e) => {
-                                    if (!isSchedaBloccata) setKmFine(e.target.value);
-                                  }}
-                                  onBlur={(e) => {
-                                    if (!isSchedaBloccata) handleKmFineBlur(e.target.value);
-                                  }}
-                                  className={`p-1.5 text-xs border rounded-md focus:outline-none w-full ${
-                                    isSchedaBloccata
-                                      ? 'bg-slate-100 border-slate-300 text-slate-900 font-bold cursor-not-allowed select-text'
-                                      : (kmFineVisualizzato && kmInizioVisualizzato && parseFloat(kmFineVisualizzato) < parseFloat(kmInizioVisualizzato))
-                                      ? 'border-red-500 bg-red-50 text-red-900 font-bold focus:ring-1 focus:ring-red-500'
-                                      : 'border-slate-300 bg-white focus:ring-1 focus:ring-amber-500 font-bold text-slate-900'
-                                  }`}
-                                />
-                                <span className="text-[9px] text-slate-500 block mt-0.5">Rientro sede</span>
-                              </div>
-                            </div>
+                            {(() => {
+                              const campiMap = missioneVisualizzata?.campiCompilatiDa || {};
+                              const kmIniLock = Boolean(!isUtenteCapoServizio && campiMap.kmInizio && kmInizioVisualizzato);
+                              const kmFinLock = Boolean(!isUtenteCapoServizio && campiMap.kmFine && kmFineVisualizzato);
+                              return (
+                                <div className="grid grid-cols-2 gap-2">
+                                  <div>
+                                    <input
+                                      type="number"
+                                      placeholder="KM Inizio"
+                                      disabled={isBloccatoPrivacy || isSchedaBloccata || kmIniLock}
+                                      readOnly={isSchedaBloccata || kmIniLock}
+                                      value={kmInizioVisualizzato}
+                                      onChange={(e) => {
+                                        if (!isSchedaBloccata && !kmIniLock) setKmInizio(e.target.value);
+                                      }}
+                                      onBlur={(e) => {
+                                        if (!isSchedaBloccata && !kmIniLock) handleKmInizioBlur(e.target.value);
+                                      }}
+                                      className={`p-1.5 text-xs border rounded-md focus:outline-none w-full ${
+                                        isSchedaBloccata || kmIniLock
+                                          ? 'bg-slate-100 border-slate-300 text-slate-900 font-bold cursor-not-allowed select-text'
+                                          : 'border-slate-300 bg-white focus:ring-1 focus:ring-amber-500 font-bold text-slate-900'
+                                      }`}
+                                    />
+                                    <span className="text-[9px] text-slate-500 block mt-0.5">
+                                      {kmIniLock
+                                        ? `🔒 ${campiMap.kmInizio.byNome} (solo Capo Servizio)`
+                                        : 'Partenza mezzo'}
+                                    </span>
+                                  </div>
+                                  <div>
+                                    <input
+                                      type="number"
+                                      placeholder="KM Fine"
+                                      disabled={isBloccatoPrivacy || isSchedaBloccata || kmFinLock}
+                                      readOnly={isSchedaBloccata || kmFinLock}
+                                      value={kmFineVisualizzato}
+                                      onChange={(e) => {
+                                        if (!isSchedaBloccata && !kmFinLock) setKmFine(e.target.value);
+                                      }}
+                                      onBlur={(e) => {
+                                        if (!isSchedaBloccata && !kmFinLock) handleKmFineBlur(e.target.value);
+                                      }}
+                                      className={`p-1.5 text-xs border rounded-md focus:outline-none w-full ${
+                                        isSchedaBloccata || kmFinLock
+                                          ? 'bg-slate-100 border-slate-300 text-slate-900 font-bold cursor-not-allowed select-text'
+                                          : (kmFineVisualizzato && kmInizioVisualizzato && parseFloat(kmFineVisualizzato) < parseFloat(kmInizioVisualizzato))
+                                          ? 'border-red-500 bg-red-50 text-red-900 font-bold focus:ring-1 focus:ring-red-500'
+                                          : 'border-slate-300 bg-white focus:ring-1 focus:ring-amber-500 font-bold text-slate-900'
+                                      }`}
+                                    />
+                                    <span className="text-[9px] text-slate-500 block mt-0.5">
+                                      {kmFinLock
+                                        ? `🔒 ${campiMap.kmFine.byNome} (solo Capo Servizio)`
+                                        : 'Rientro sede'}
+                                    </span>
+                                  </div>
+                                </div>
+                              );
+                            })()}
 
                             {kmInizioVisualizzato && kmFineVisualizzato && (parseFloat(kmFineVisualizzato) < parseFloat(kmInizioVisualizzato)) && (
                               <div className="mt-1.5 p-2 rounded-lg bg-red-100 border border-red-400 text-red-800 text-[10.5px] font-bold flex items-center gap-1.5 animate-pulse">
@@ -15804,80 +16215,152 @@ KM TOTALI: ${kmTot} KM`;
                               Totale Percorsi: <span className="text-emerald-600 text-sm">{calcolaKmTotali()}</span> KM
                             </div>
 
-                            {/* CAMPO MANOVRE EFFETTUATE/PATOLOGIE O NOTE NON-VET */}
-                            {isServizioIstitutoOProtezioneCivile ? (
-                              <div className="mt-2.5 p-2.5 rounded-xl bg-slate-50 border border-slate-300 shadow-sm space-y-1.5 text-left">
-                                <div className="flex items-center justify-between">
-                                  <label className="text-[11px] uppercase font-black text-slate-800 flex items-center gap-1.5">
-                                    <span>📝</span>
-                                    <span>NOTE E OSSERVAZIONI SUL SERVIZIO</span>
-                                  </label>
-                                  <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-slate-200 text-slate-700 font-bold border border-slate-300">
-                                    Facoltativo
+                            {/* CAMPO MANOVRE EFFETTUATE/PATOLOGIE O NOTE NON-VET (Sincronizzato Live su tutti i device dell'equipaggio) */}
+                            {(() => {
+                              const manovreCompilatore = missioneVisualizzata?.campiCompilatiDa?.manovre;
+                              const isManovreLocked = Boolean(!isUtenteCapoServizio && manovreCompilatore && manovreVisualizzate.trim());
+                              return isServizioIstitutoOProtezioneCivile ? (
+                                <div className="mt-2.5 p-2.5 rounded-xl bg-slate-50 border border-slate-300 shadow-sm space-y-1.5 text-left">
+                                  <div className="flex items-center justify-between gap-1 flex-wrap">
+                                    <label className="text-[11px] uppercase font-black text-slate-800 flex items-center gap-1.5">
+                                      <span>📝</span>
+                                      <span>NOTE E OSSERVAZIONI SUL SERVIZIO</span>
+                                    </label>
+                                    <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-slate-200 text-slate-700 font-bold border border-slate-300">
+                                      {isManovreLocked ? `🔒 Solo Capo Servizio` : 'Facoltativo • Sync live'}
+                                    </span>
+                                  </div>
+                                  <p className="text-[10px] text-slate-600 leading-tight">
+                                    {isManovreLocked
+                                      ? `Compilato da ${manovreCompilatore?.byNome} alle ${manovreCompilatore?.at}. Modificabile solo dal Capo Servizio.`
+                                      : 'Scrivi eventuali note o informazioni importanti per questo servizio (sincronizzate in automatico con tutto l\'equipaggio e riportate sul PDF).'}
+                                  </p>
+                                  <textarea
+                                    rows={2}
+                                    disabled={isBloccatoPrivacy || isSchedaBloccata || isManovreLocked}
+                                    readOnly={isSchedaBloccata || isManovreLocked}
+                                    value={manovreVisualizzate}
+                                    onChange={(e) => {
+                                      if (!isSchedaBloccata && !isManovreLocked) {
+                                        setManovreEffettuatePatologie(e.target.value);
+                                        if (missione) {
+                                          setMissione({
+                                            ...missione,
+                                            manovreEffettuatePatologie: e.target.value,
+                                            noteNonVet: e.target.value
+                                          });
+                                        }
+                                      }
+                                    }}
+                                    onBlur={(e) => {
+                                      if (!isSchedaBloccata && !isManovreLocked) {
+                                        handleManovreNoteBlur(e.target.value);
+                                      }
+                                    }}
+                                    placeholder="Scrivi qui eventuali note che ritieni importanti per il servizio..."
+                                    className={`w-full p-2 text-xs rounded-lg border focus:outline-none transition-all ${
+                                      isSchedaBloccata || isManovreLocked
+                                        ? 'bg-slate-100 border-slate-300 text-slate-900 font-medium cursor-not-allowed select-text'
+                                        : 'bg-white border-slate-300 text-slate-900 focus:ring-1 focus:ring-indigo-500 placeholder-slate-400'
+                                    }`}
+                                  />
+                                </div>
+                              ) : (
+                                <div className="mt-2.5 p-2.5 rounded-xl bg-amber-50/90 border border-amber-300 shadow-sm space-y-1.5 text-left">
+                                  <div className="flex items-center justify-between gap-1 flex-wrap">
+                                    <label className="text-[11px] uppercase font-black text-amber-950 flex items-center gap-1.5">
+                                      <span>🩺</span>
+                                      <span>MANOVRE EFFETTUATE/PATOLOGIE</span>
+                                    </label>
+                                    <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-amber-200/90 text-amber-900 font-bold border border-amber-400/60">
+                                      {isManovreLocked ? `🔒 Solo Capo Servizio` : 'Non Obbligatorio • Sync live'}
+                                    </span>
+                                  </div>
+                                  <p className="text-[10px] text-slate-600 leading-tight">
+                                    {isManovreLocked
+                                      ? `Compilato da ${manovreCompilatore?.byNome} alle ${manovreCompilatore?.at}. Modificabile solo dal Capo Servizio.`
+                                      : 'Note cliniche o operative sul servizio effettuato (sincronizzate automaticamente su tutti i dispositivi dell\'equipaggio).'}
+                                  </p>
+                                  <textarea
+                                    rows={2}
+                                    disabled={isBloccatoPrivacy || isSchedaBloccata || isManovreLocked}
+                                    readOnly={isSchedaBloccata || isManovreLocked}
+                                    value={manovreVisualizzate}
+                                    onChange={(e) => {
+                                      if (!isSchedaBloccata && !isManovreLocked) {
+                                        setManovreEffettuatePatologie(e.target.value);
+                                        if (missione) {
+                                          setMissione({ ...missione, manovreEffettuatePatologie: e.target.value });
+                                        }
+                                      }
+                                    }}
+                                    onBlur={(e) => {
+                                      if (!isSchedaBloccata && !isManovreLocked) {
+                                        handleManovreNoteBlur(e.target.value);
+                                      }
+                                    }}
+                                    placeholder="Inserisci eventuali manovre effettuate, patologie riscontrate o note operative (facoltativo)..."
+                                    className={`w-full p-2 text-xs rounded-lg border focus:outline-none transition-all ${
+                                      isSchedaBloccata || isManovreLocked
+                                        ? 'bg-slate-100 border-slate-300 text-slate-900 font-medium cursor-not-allowed select-text'
+                                        : 'bg-white border-amber-300 text-slate-900 focus:ring-1 focus:ring-amber-500 placeholder-slate-400'
+                                    }`}
+                                  />
+                                </div>
+                              );
+                            })()}
+
+                            {/* CONVALIDA OBBLIGATORIA CAPO SERVIZIO (prima della chiusura del foglio di servizio) */}
+                            {!isSchedaBloccata && (
+                              <div
+                                className={`mt-2.5 p-2.5 rounded-xl border-2 text-left space-y-1.5 ${
+                                  missioneVisualizzata?.convalidaCapoServizio?.convalidato
+                                    ? 'bg-emerald-50 border-emerald-500 text-emerald-950'
+                                    : 'bg-amber-50 border-amber-400 text-amber-950'
+                                }`}
+                              >
+                                <div className="flex items-center justify-between gap-2 flex-wrap">
+                                  <span className="text-[11px] font-black uppercase flex items-center gap-1.5">
+                                    <Award className="w-4 h-4 text-amber-600 shrink-0" />
+                                    <span>Convalida Capo Servizio (Obbligatoria)</span>
+                                  </span>
+                                  <span
+                                    className={`text-[9.5px] font-black uppercase px-2 py-0.5 rounded-full ${
+                                      missioneVisualizzata?.convalidaCapoServizio?.convalidato
+                                        ? 'bg-emerald-600 text-white'
+                                        : 'bg-amber-500 text-slate-950'
+                                    }`}
+                                  >
+                                    {missioneVisualizzata?.convalidaCapoServizio?.convalidato ? '✓ Convalidato' : 'In Attesa'}
                                   </span>
                                 </div>
-                                <p className="text-[10px] text-slate-600 leading-tight">
-                                  Scrivi eventuali note o informazioni che ritieni importanti per questo servizio (compaiono sul Foglio di Viaggio PDF generato).
-                                </p>
-                                <textarea
-                                  rows={2}
-                                  disabled={isBloccatoPrivacy || isSchedaBloccata}
-                                  readOnly={isSchedaBloccata}
-                                  value={manovreVisualizzate}
-                                  onChange={(e) => {
-                                    if (!isSchedaBloccata) {
-                                      setManovreEffettuatePatologie(e.target.value);
-                                      if (missione) {
-                                        setMissione({
-                                          ...missione,
-                                          manovreEffettuatePatologie: e.target.value,
-                                          noteNonVet: e.target.value
-                                        });
-                                      }
-                                    }
-                                  }}
-                                  placeholder="Scrivi qui eventuali note che ritieni importanti per il servizio..."
-                                  className={`w-full p-2 text-xs rounded-lg border focus:outline-none transition-all ${
-                                    isSchedaBloccata
-                                      ? 'bg-slate-100 border-slate-300 text-slate-900 font-medium cursor-not-allowed select-text'
-                                      : 'bg-white border-slate-300 text-slate-900 focus:ring-1 focus:ring-indigo-500 placeholder-slate-400'
-                                  }`}
-                                />
-                              </div>
-                            ) : (
-                              <div className="mt-2.5 p-2.5 rounded-xl bg-amber-50/90 border border-amber-300 shadow-sm space-y-1.5 text-left">
-                                <div className="flex items-center justify-between">
-                                  <label className="text-[11px] uppercase font-black text-amber-950 flex items-center gap-1.5">
-                                    <span>🩺</span>
-                                    <span>MANOVRE EFFETTUATE/PATOLOGIE</span>
-                                  </label>
-                                  <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-amber-200/90 text-amber-900 font-bold border border-amber-400/60">
-                                    Non Obbligatorio
-                                  </span>
+
+                                <div className="text-[10.5px] leading-snug">
+                                  {missioneVisualizzata?.convalidaCapoServizio?.convalidato ? (
+                                    <p className="font-semibold text-emerald-900">
+                                      ✅ Convalidato dal Capo Servizio <strong>{missioneVisualizzata.convalidaCapoServizio.capoServizioNome}</strong> alle ore <strong>{missioneVisualizzata.convalidaCapoServizio.convalidatoAlle}</strong>. La sua firma verrà apposta automaticamente sul foglio di servizio PDF.
+                                    </p>
+                                  ) : capoServizioAttivo ? (
+                                    <p className="text-amber-900">
+                                      ⭐ Capo Servizio designato: <strong>{capoServizioAttivo.nome}</strong>. Ogni volontario di turno può compilare il foglio, ma la chiusura richiede la convalida obbligatoria del Capo Servizio (che apporrà la propria firma sul documento).
+                                    </p>
+                                  ) : (
+                                    <p className="text-red-800 font-semibold">
+                                      ⚠️ Nessun Capo Servizio assegnato sul turno nel Calendario Turni. Assegna il badge ⭐ Capo Servizio nel Calendario Turni per poter convalidare e chiudere il foglio di servizio.
+                                    </p>
+                                  )}
                                 </div>
-                                <p className="text-[10px] text-slate-600 leading-tight">
-                                  Note cliniche o operative sul servizio effettuato (manovre sanitarie, patologie riscontrate, ecc.). Se compilato, compare anche sul PDF della scheda generata.
-                                </p>
-                                <textarea
-                                  rows={2}
-                                  disabled={isBloccatoPrivacy || isSchedaBloccata}
-                                  readOnly={isSchedaBloccata}
-                                  value={manovreVisualizzate}
-                                  onChange={(e) => {
-                                    if (!isSchedaBloccata) {
-                                      setManovreEffettuatePatologie(e.target.value);
-                                      if (missione) {
-                                        setMissione({ ...missione, manovreEffettuatePatologie: e.target.value });
-                                      }
-                                    }
-                                  }}
-                                  placeholder="Inserisci eventuali manovre effettuate, patologie riscontrate o note operative (facoltativo)..."
-                                  className={`w-full p-2 text-xs rounded-lg border focus:outline-none transition-all ${
-                                    isSchedaBloccata
-                                      ? 'bg-slate-100 border-slate-300 text-slate-900 font-medium cursor-not-allowed select-text'
-                                      : 'bg-white border-amber-300 text-slate-900 focus:ring-1 focus:ring-amber-500 placeholder-slate-400'
-                                  }`}
-                                />
+
+                                {!missioneVisualizzata?.convalidaCapoServizio?.convalidato && isUtenteCapoServizio && (
+                                  <button
+                                    type="button"
+                                    onClick={handleConvalidaCapoServizio}
+                                    className="w-full py-2 px-3 rounded-lg bg-gradient-to-r from-amber-500 to-yellow-500 hover:from-amber-400 hover:to-yellow-400 text-slate-950 font-black text-xs uppercase shadow-md flex items-center justify-center gap-1.5 cursor-pointer active:scale-95 transition-all"
+                                  >
+                                    <Award className="w-4 h-4 shrink-0" />
+                                    <span>⭐ Convalida Foglio come Capo Servizio</span>
+                                  </button>
+                                )}
                               </div>
                             )}
 
@@ -15889,26 +16372,39 @@ KM TOTALI: ${kmTot} KM`;
                                   <span>Servizio Concluso & Archiviato</span>
                                 </div>
                                 <p className="text-[11px] text-slate-700 font-medium">
-                                  Tutti i campi sono stati compilati correttamente. I dati restano visibili ma bloccati (non modificabili).
+                                  Tutti i campi sono stati compilati e convalidati dal Capo Servizio. I dati restano visibili ma bloccati (non modificabili).
                                 </p>
                               </div>
                             ) : (
                               parseFloat(kmInizio) > 0 && parseFloat(kmFine) > 0 && parseFloat(kmFine) >= parseFloat(kmInizio) && (
-                                <div className="mt-2.5 p-2 rounded-xl bg-gradient-to-r from-emerald-600 to-emerald-700 text-white shadow-md border border-emerald-400 text-center animate-pulse">
+                                <div className={`mt-2.5 p-2 rounded-xl text-white shadow-md border text-center ${
+                                  missioneVisualizzata?.convalidaCapoServizio?.convalidato
+                                    ? 'bg-gradient-to-r from-emerald-600 to-emerald-700 border-emerald-400 animate-pulse'
+                                    : 'bg-slate-700 border-slate-500'
+                                }`}>
                                   <div className="text-[11px] font-black uppercase mb-1 flex items-center justify-center gap-1">
                                     <CheckCircle2 className="w-3.5 h-3.5 text-emerald-200" />
-                                    <span>Tutti i dati e i KM sono completati!</span>
+                                    <span>
+                                      {missioneVisualizzata?.convalidaCapoServizio?.convalidato
+                                        ? 'Foglio convalidato e KM completati!'
+                                        : 'KM completati — in attesa convalida Capo Servizio'}
+                                    </span>
                                   </div>
                                   <button
                                     type="button"
                                     onClick={() => {
+                                      if (!verificaConvalidaCapoServizioPerChiusura()) return;
                                       const ini = parseFloat(kmInizio);
                                       const fin = parseFloat(kmFine);
                                       completaRientroConKm(ini, fin);
                                     }}
                                     className="w-full py-2 px-3 rounded-lg bg-white text-emerald-950 hover:bg-emerald-50 font-black text-xs uppercase shadow transition-all active:scale-95 cursor-pointer flex items-center justify-center gap-1"
                                   >
-                                    <span>🏁 Concludi Servizio & Blocca Scheda</span>
+                                    <span>
+                                      {missioneVisualizzata?.convalidaCapoServizio?.convalidato
+                                        ? '🏁 Concludi Servizio & Blocca Scheda'
+                                        : '🔒 Concludi (Richiede Convalida Capo Servizio)'}
+                                    </span>
                                   </button>
                                 </div>
                               )
@@ -21136,6 +21632,8 @@ KM TOTALI: ${kmTot} KM`;
         initialManovre={manovreEffettuatePatologie || missione?.manovreEffettuatePatologie}
         onSalva={handleSalvaDatiDestinazioneEFirme}
         isArrivatoDestinazione={Boolean(tempi.arrivoDestinazione || tempiVisualizzati.arrivoDestinazione)}
+        isCapoServizio={isUtenteCapoServizio}
+        capoServizioNome={capoServizioAttivo?.nome || ''}
         chiamanteMissione={{
           nome: missione?.chiamante || formChiamante,
           telefono: missione?.telefono || formTelefono,

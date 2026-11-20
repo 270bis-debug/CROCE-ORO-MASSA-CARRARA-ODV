@@ -585,11 +585,11 @@ export interface MansioneTipoTurno {
   id: string; // ID univoco della mansione (es. 'ruolo-autista' o ID dal catalogo Mansioni & Competenze)
   nome: string; // Nome visualizzato della mansione
   emoji?: string; // Emoji / icona della mansione
-  ruoloTurno?: RuoloTurno; // Mappatura opzionale ai 7 ruoli base
+  ruoloTurno?: RuoloTurno; // Mappatura opzionale ai ruoli base equipaggio
   mansioneCatalogoId?: string; // Riferimento opzionale al catalogo Gestione Volontari -> Mansioni & Competenze
   categoria?: string; // Categoria mansione
-  minimo: number; // Numero minimo obbligatorio di persone (>= 1)
-  massimo: number; // Numero massimo di persone (>= minimo)
+  minimo: number; // Numero minimo di persone (>= 0; se 0 la mansione è facoltativa e non blocca la copertura del turno)
+  massimo: number; // Numero massimo di persone (>= max(1, minimo))
 }
 
 export interface TipoTurnoConfig {
@@ -610,15 +610,16 @@ export interface TurnoSedeOperativa {
   nomeTurno?: string; // Nome del turno (obbligatorio e sempre editabile)
   tipoTurnoId?: string; // ID del Tipo di Turno selezionato dalla sottosezione Tipi di Turni
   tipoTurnoNome?: string; // Nome del Tipo di Turno selezionato
-  mansioniRichieste?: MansioneTipoTurno[]; // Mansioni obbligatorie con numero minimo e massimo previste dal tipo turno
+  mansioniRichieste?: MansioneTipoTurno[]; // Mansioni previste dal tipo turno con numero minimo (>= 0) e massimo
   data: string; // YYYY-MM-DD
   fasciaOraria: 'Mattina (08:00 - 14:00)' | 'Pomeriggio (14:00 - 20:00)' | 'Notte (20:00 - 08:00)' | 'Reperibilità H24' | 'Servizio Ordinario Programmato' | string;
   orarioInizio: string; // HH:mm
   orarioFine: string; // HH:mm
   mezzoAssegnato?: string; // es. T4606
   statoCopertura: 'Coperto' | 'Parziale' | 'Scoperto';
+  capoServizioBadge?: { id: string; nome: string }; // Badge Capo Servizio assegnabile a qualsiasi volontario segnato nel turno (indipendentemente dalla mansione)
   autista?: { id: string; nome: string };
-  caposervizio?: { id: string; nome: string };
+  caposervizio?: { id: string; nome: string }; // Legacy: mantenuto solo per retrocompatibilità turni storici
   soccorritore2?: { id: string; nome: string };
   terzoSoccorritore?: { id: string; nome: string };
   operatoreCentrale?: { id: string; nome: string };

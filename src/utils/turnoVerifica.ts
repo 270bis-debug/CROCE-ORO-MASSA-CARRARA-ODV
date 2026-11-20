@@ -1,6 +1,7 @@
 import { TurnoSedeOperativa, TimbraturaVolontario, CorsoFormazione } from '../types/adminTypes';
 import { Volontario } from '../components/DatabaseVolontariModal';
 import { addDaysISODate, getItalianDateParts, parseItalianDateTimeMs } from './italianTime';
+import { getCapoServizioTurno, getVolontariAssegnatiTurno } from './tipiTurno';
 
 export interface EsitoVerificaTurno {
   isDiTurno: boolean;
@@ -621,3 +622,99 @@ export function rilevaAttivitaProgrammataPerTimbratura(params: {
     titolo: ''
   };
 }
+
+/**
+ * Verifica se un volontario (per ID o nome completo) coincide con il Capo Servizio indicato.
+ */
+export function isVolontarioCapoServizio(
+  capo?: { id?: string; nome?: string } | null,
+  volId?: string,
+  volNome?: string
+): boolean {
+  if (!capo) return false;
+  if (volId && capo.id && String(volId).trim() === String(capo.id).trim()) return true;
+  const nCapo = normalizzaNome(capo.nome);
+  const nVol = normalizzaNome(volNome);
+  if (nCapo && nVol && nCapo === nVol) return true;
+  return false;
+}
+
+/**
+ * Trova il turno operativo attualmente attivo collegato a un servizio (per mezzo, volontario o destinatari),
+ * restituendo anche l'elenco dei volontari assegnati e il Capo Servizio designato (badge).
+ */
+export function trovaTurnoAttivoPerServizio(params: {
+  turni?: TurnoSedeOperativa[];
+  mezzo?: string;
+  volontarioId?: string;
+  volontarioNome?: string;
+  destinatariIds?: string[];
+  nowMs?: number;
+}): {
+  turno: TurnoSedeOperativa | null;
+  capoServizio: { id: string; nome: string } | null;
+  volontariAssegnati: Array<{ id: string; nome: string; ruoloLabel: string }>;
+} {
+  const turni = loadTurniFallback(params.turni);
+  if (turni.length === 0) {
+    return { turno: null, capoServizio: null, volontariAssegnati: [] };
+  }
+
+  const nowMs = params.nowMs ?? Date.now();
+  const nowItaly = getItalianDateParts(nowMs);
+  const oggiStr = nowItaly.isoDate;
+  const ieriStr = nowItaly.yesterdayIsoDate;
+  const domaniStr = nowItaly.tomorrowIsoDate;
+  const mezzoNorm = normalizzaNome(params.mezzo);
+  const destSet = new Set((params.destinatariIds || []).filter(Boolean).map((x) => String(x).trim()));
+
+  const scored: Array<{ turno: TurnoSedeOperativa; score: number }> = [];
+
+  for (const t of turni) {
+    const dataNorm = normalizzaDataIsoSemplice(t.data);
+    if (dataNorm !== oggiStr && dataNorm !== ieriStr && dataNorm !== domaniStr) continue;
+
+    const bounds = resolveBoundsTurnoMs(t);
+    const inFinestra = bounds
+      ? nowMs >= bounds.startMs - ANTICIPO_INGRESSO_MS && nowMs <= bounds.endMs + ESTENSIONE_USCITA_MS
+      : dataNorm === oggiStr;
+    if (!inFinestra && dataNorm !== oggiStr) continue;
+
+    const assegnati = getVolontariAssegnatiTurno(t);
+    let score = inFinestra ? 100 : 20;
+
+    if (mezzoNorm && t.mezzoAssegnato && normalizzaNome(t.mezzoAssegnato) === mezzoNorm) {
+      score += 80;
+    }
+    if (
+      (params.volontarioId || params.volontarioNome) &&
+      trovaAssegnazioneVolontario(t, params.volontarioId, params.volontarioNome)
+    ) {
+      score += 60;
+    }
+    if (destSet.size > 0 && assegnati.some((a) => a.id && destSet.has(a.id))) {
+      score += 50;
+    }
+    if (getCapoServizioTurno(t)) {
+      score += 15;
+    }
+
+    // Serve almeno una corrispondenza su mezzo, volontario o destinatari
+    if (score >= 70) {
+      scored.push({ turno: t, score });
+    }
+  }
+
+  if (scored.length === 0) {
+    return { turno: null, capoServizio: null, volontariAssegnati: [] };
+  }
+
+  scored.sort((a, b) => b.score - a.score);
+  const best = scored[0].turno;
+  return {
+    turno: best,
+    capoServizio: getCapoServizioTurno(best) ?? null,
+    volontariAssegnati: getVolontariAssegnatiTurno(best),
+  };
+}
+

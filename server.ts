@@ -2644,8 +2644,24 @@ async function startServer() {
           }
 
           // 5. Registrazione Orari Operativi (Partenza, Sul Posto, Rientro, ecc.)
+          // REGOLA FERREA: ogni orario già cliccato (verde) è immutabile e non può mai essere sovrascritto da nessuno.
           case 'UPDATE_OPERATIVE_TIMES': {
-            state.operativeTimes = data.times;
+            const prevTimes: any = state.operativeTimes && typeof state.operativeTimes === 'object' ? { ...state.operativeTimes } : {};
+            const incTimes: any = data.times && typeof data.times === 'object' ? data.times : {};
+            const mergedTimes: any = { ...prevTimes, ...incTimes };
+            const immutableKeys = ['partenza', 'sulPosto', 'partenzaObiettivo', 'arrivoDestinazione', 'fineMissione', 'rientro'];
+            for (const k of immutableKeys) {
+              if (prevTimes[k] && String(prevTimes[k]).trim() !== '') {
+                mergedTimes[k] = prevTimes[k];
+              }
+            }
+            if (prevTimes.coordinateSulPosto && !incTimes.coordinateSulPosto) {
+              mergedTimes.coordinateSulPosto = prevTimes.coordinateSulPosto;
+            }
+            if (prevTimes.coordinateDestinazione && !incTimes.coordinateDestinazione) {
+              mergedTimes.coordinateDestinazione = prevTimes.coordinateDestinazione;
+            }
+            state.operativeTimes = mergedTimes;
 
             let extraGps = '';
             if (data.times?.coordinateSulPosto && (data.label?.includes('SUL POSTO') || data.label?.includes('posto'))) {
@@ -3023,6 +3039,12 @@ async function startServer() {
             state.datiDestinazione = data.dati;
             if (state.activeMission) {
               state.activeMission.datiDestinazione = data.dati;
+              if (data.campiCompilatiDa && typeof data.campiCompilatiDa === 'object') {
+                (state.activeMission as any).campiCompilatiDa = {
+                  ...((state.activeMission as any).campiCompilatiDa || {}),
+                  ...data.campiCompilatiDa
+                };
+              }
             }
 
             const targetCodice = data.codice || state.activeMission?.codice;
@@ -3052,8 +3074,57 @@ async function startServer() {
               type: 'DATI_DESTINAZIONE_UPDATED',
               dati: data.dati,
               codice: data.codice,
+              campiCompilatiDa: (state.activeMission as any)?.campiCompilatiDa,
               notification: notif
             });
+            break;
+          }
+
+          // 5d-bis. Sincronizzazione Collaborativa Dati Bozza Foglio di Servizio & Convalida Capo Servizio
+          case 'UPDATE_MISSION_DRAFT_DATA': {
+            if (state.activeMission && (!data?.codice || state.activeMission.codice === data.codice)) {
+              const mAny = state.activeMission as any;
+              if (data?.manovreEffettuatePatologie !== undefined) {
+                mAny.manovreEffettuatePatologie = data.manovreEffettuatePatologie;
+              }
+              if (data?.noteNonVet !== undefined) {
+                mAny.noteNonVet = data.noteNonVet;
+              }
+              if (data?.capoServizioId !== undefined) {
+                mAny.capoServizioId = data.capoServizioId;
+              }
+              if (data?.capoServizioNome !== undefined) {
+                mAny.capoServizioNome = data.capoServizioNome;
+              }
+              if (data?.convalidaCapoServizio !== undefined) {
+                mAny.convalidaCapoServizio = data.convalidaCapoServizio;
+              }
+              if (data?.campiCompilatiDa && typeof data.campiCompilatiDa === 'object') {
+                mAny.campiCompilatiDa = {
+                  ...(mAny.campiCompilatiDa || {}),
+                  ...data.campiCompilatiDa
+                };
+              }
+
+              let notif: RadioNotification | undefined;
+              if (data?.messaggioNotifica) {
+                notif = {
+                  id: generateUniqueNotifId(),
+                  orario: formatTimeItaly(),
+                  testo: String(data.messaggioNotifica),
+                  tipo: 'sistema'
+                };
+                state.notifiche.push(notif);
+              }
+              persistState();
+
+              broadcast({
+                type: 'MISSION_DRAFT_UPDATED',
+                mission: state.activeMission,
+                codice: state.activeMission.codice,
+                notification: notif
+              });
+            }
             break;
           }
 
@@ -3107,6 +3178,12 @@ async function startServer() {
 
             if (data.kmInizio !== undefined) state.kmInizio = data.kmInizio;
             if (data.kmFine !== undefined) state.kmFine = data.kmFine;
+            if (state.activeMission && data.campiCompilatiDa && typeof data.campiCompilatiDa === 'object') {
+              (state.activeMission as any).campiCompilatiDa = {
+                ...((state.activeMission as any).campiCompilatiDa || {}),
+                ...data.campiCompilatiDa
+              };
+            }
 
             const notif: RadioNotification = {
               id: generateUniqueNotifId(),
@@ -3121,6 +3198,7 @@ async function startServer() {
               type: 'KM_UPDATED',
               kmInizio: state.kmInizio,
               kmFine: state.kmFine,
+              campiCompilatiDa: (state.activeMission as any)?.campiCompilatiDa,
               notification: notif
             });
             break;

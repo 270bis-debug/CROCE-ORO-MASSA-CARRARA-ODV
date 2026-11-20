@@ -66,6 +66,33 @@ const stripLegacyCorsi = (list: any): any[] => {
   return list.filter((c: any) => c && !legacySet.has(String(c.id || '')));
 };
 
+const IMMUTABLE_TIME_KEYS = [
+  'partenza',
+  'sulPosto',
+  'partenzaObiettivo',
+  'arrivoDestinazione',
+  'fineMissione',
+  'rientro',
+] as const;
+
+export function mergeOperativeTimesImmutable(prev: any, incoming: any): any {
+  const base = prev && typeof prev === 'object' ? { ...prev } : {};
+  const next = incoming && typeof incoming === 'object' ? incoming : {};
+  const merged: any = { ...base, ...next };
+  for (const k of IMMUTABLE_TIME_KEYS) {
+    if (base[k] && String(base[k]).trim() !== '') {
+      merged[k] = base[k];
+    }
+  }
+  if (base.coordinateSulPosto && !next.coordinateSulPosto) {
+    merged.coordinateSulPosto = base.coordinateSulPosto;
+  }
+  if (base.coordinateDestinazione && !next.coordinateDestinazione) {
+    merged.coordinateDestinazione = base.coordinateDestinazione;
+  }
+  return merged;
+}
+
 type MessageHandler = (data: any) => void;
 
 export type SyncShardId =
@@ -798,6 +825,20 @@ class RealtimeService {
       const prevActiveSpeaker = this.cloudState.radioPtt?.activeSpeaker || null;
       const prevEmergency = this.cloudState.radioEmergency || null;
 
+      const prevTimes = this.cloudState.operativeTimes || {};
+      const prevKmIni = this.cloudState.kmInizio ?? '';
+      const prevKmFin = this.cloudState.kmFine ?? '';
+      const prevDatiDest = this.cloudState.datiDestinazione || null;
+
+      if (payload.operativeTimes && typeof payload.operativeTimes === 'object') {
+        const isSameMission = Boolean(
+          payload.activeMission && prevMission && payload.activeMission.codice === prevMission.codice
+        );
+        if (isSameMission) {
+          this.cloudState.operativeTimes = mergeOperativeTimesImmutable(prevTimes, payload.operativeTimes);
+        }
+      }
+
       if (isRemoteLiveDelta) {
         if (payload.activeMission && (!prevMission || payload.activeMission.codice !== prevMission.codice)) {
           this.emit('MISSION_DISPATCHED', {
@@ -806,6 +847,56 @@ class RealtimeService {
           });
         } else if (!payload.activeMission && prevMission) {
           this.emit('MISSION_CLEARED', { forceClear: true });
+        } else if (payload.activeMission && prevMission && payload.activeMission.codice === prevMission.codice) {
+          const prevDraftSig = JSON.stringify({
+            m: prevMission.manovreEffettuatePatologie || '',
+            n: prevMission.noteNonVet || '',
+            c: prevMission.campiCompilatiDa || null,
+            v: prevMission.convalidaCapoServizio || null,
+            cs: prevMission.capoServizioId || prevMission.capoServizioNome || '',
+          });
+          const nextDraftSig = JSON.stringify({
+            m: payload.activeMission.manovreEffettuatePatologie || '',
+            n: payload.activeMission.noteNonVet || '',
+            c: payload.activeMission.campiCompilatiDa || null,
+            v: payload.activeMission.convalidaCapoServizio || null,
+            cs: payload.activeMission.capoServizioId || payload.activeMission.capoServizioNome || '',
+          });
+          if (prevDraftSig !== nextDraftSig) {
+            this.emit('MISSION_DRAFT_UPDATED', {
+              mission: payload.activeMission,
+              codice: payload.activeMission.codice,
+            });
+          }
+        }
+        if (
+          payload.operativeTimes &&
+          JSON.stringify(prevTimes) !== JSON.stringify(this.cloudState.operativeTimes)
+        ) {
+          this.emit('OPERATIVE_TIMES_UPDATED', {
+            times: this.cloudState.operativeTimes,
+            codice: payload.activeMission?.codice,
+          });
+        }
+        if (
+          ('kmInizio' in payload && String(payload.kmInizio ?? '') !== String(prevKmIni)) ||
+          ('kmFine' in payload && String(payload.kmFine ?? '') !== String(prevKmFin))
+        ) {
+          this.emit('KM_UPDATED', {
+            kmInizio: payload.kmInizio ?? this.cloudState.kmInizio ?? '',
+            kmFine: payload.kmFine ?? this.cloudState.kmFine ?? '',
+            campiCompilatiDa: payload.activeMission?.campiCompilatiDa,
+          });
+        }
+        if (
+          'datiDestinazione' in payload &&
+          JSON.stringify(prevDatiDest) !== JSON.stringify(payload.datiDestinazione || null)
+        ) {
+          this.emit('DATI_DESTINAZIONE_UPDATED', {
+            dati: payload.datiDestinazione,
+            codice: payload.activeMission?.codice,
+            campiCompilatiDa: payload.activeMission?.campiCompilatiDa,
+          });
         }
         if (payload.letturaConfermata === true && !prevLettura) {
           this.emit('MISSION_READ_CONFIRMED', { codice: payload.activeMission?.codice });
@@ -2002,17 +2093,59 @@ class RealtimeService {
           ringing: { active: false, source: '', soundType: 'telefono', timestamp: Date.now() },
         });
         break;
-      case 'UPDATE_OPERATIVE_TIMES':
+      case 'UPDATE_OPERATIVE_TIMES': {
+        const mergedTimes = mergeOperativeTimesImmutable(this.cloudState.operativeTimes, data?.times);
         this.scheduleShardWrite('mission', {
-          operativeTimes: data?.times || {},
+          operativeTimes: mergedTimes,
         });
         break;
-      case 'UPDATE_KM':
-        this.scheduleShardWrite('mission', {
+      }
+      case 'UPDATE_KM': {
+        const patchMission: Record<string, any> = {
           kmInizio: data?.kmInizio ?? this.cloudState.kmInizio ?? '',
           kmFine: data?.kmFine ?? this.cloudState.kmFine ?? '',
-        });
+        };
+        if (data?.campiCompilatiDa && this.cloudState.activeMission) {
+          patchMission.activeMission = {
+            ...this.cloudState.activeMission,
+            campiCompilatiDa: {
+              ...(this.cloudState.activeMission.campiCompilatiDa || {}),
+              ...data.campiCompilatiDa,
+            },
+          };
+        }
+        this.scheduleShardWrite('mission', patchMission);
         break;
+      }
+      case 'UPDATE_MISSION_DRAFT_DATA': {
+        if (this.cloudState.activeMission) {
+          const prevM = this.cloudState.activeMission;
+          const nextM: any = { ...prevM };
+          if (data?.manovreEffettuatePatologie !== undefined) {
+            nextM.manovreEffettuatePatologie = data.manovreEffettuatePatologie;
+          }
+          if (data?.noteNonVet !== undefined) {
+            nextM.noteNonVet = data.noteNonVet;
+          }
+          if (data?.capoServizioId !== undefined) {
+            nextM.capoServizioId = data.capoServizioId;
+          }
+          if (data?.capoServizioNome !== undefined) {
+            nextM.capoServizioNome = data.capoServizioNome;
+          }
+          if (data?.convalidaCapoServizio !== undefined) {
+            nextM.convalidaCapoServizio = data.convalidaCapoServizio;
+          }
+          if (data?.campiCompilatiDa && typeof data.campiCompilatiDa === 'object') {
+            nextM.campiCompilatiDa = {
+              ...(prevM.campiCompilatiDa || {}),
+              ...data.campiCompilatiDa,
+            };
+          }
+          this.scheduleShardWrite('mission', { activeMission: nextM });
+        }
+        break;
+      }
       case 'SEND_RADIO_MESSAGE': {
         const list = Array.isArray(this.cloudState.notifiche) ? [...this.cloudState.notifiche] : [];
         const hasAudio = Boolean(data?.audioDataUrl && typeof data.audioDataUrl === 'string');
@@ -2322,9 +2455,25 @@ class RealtimeService {
           });
         }
         break;
-      case 'UPDATE_DATI_DESTINAZIONE':
-        this.scheduleShardWrite('mission', { datiDestinazione: data?.dati });
+      case 'UPDATE_DATI_DESTINAZIONE': {
+        const patchDest: Record<string, any> = { datiDestinazione: data?.dati };
+        if (this.cloudState.activeMission) {
+          patchDest.activeMission = {
+            ...this.cloudState.activeMission,
+            datiDestinazione: data?.dati,
+            ...(data?.campiCompilatiDa
+              ? {
+                  campiCompilatiDa: {
+                    ...(this.cloudState.activeMission.campiCompilatiDa || {}),
+                    ...data.campiCompilatiDa,
+                  },
+                }
+              : {}),
+          };
+        }
+        this.scheduleShardWrite('mission', patchDest);
         break;
+      }
       case 'UPDATE_FOTO_DOCUMENTO':
         if (this.cloudState.activeMission) {
           this.scheduleShardWrite('mission', {
@@ -3357,8 +3506,32 @@ class RealtimeService {
     return this.send('UPDATE_OPERATIVE_TIMES', { times, label, timeStr, isRientro, codice });
   }
 
-  public updateKm(kmInizio?: string, kmFine?: string, messaggio?: string) {
-    return this.send('UPDATE_KM', { kmInizio, kmFine, messaggio });
+  public updateKm(
+    kmInizio?: string,
+    kmFine?: string,
+    messaggio?: string,
+    campiCompilatiDa?: Record<string, { byId?: string; byNome: string; at: string }>
+  ) {
+    return this.send('UPDATE_KM', { kmInizio, kmFine, messaggio, campiCompilatiDa });
+  }
+
+  public updateMissionDraftData(patch: {
+    codice?: string;
+    manovreEffettuatePatologie?: string;
+    noteNonVet?: string;
+    campiCompilatiDa?: Record<string, { byId?: string; byNome: string; at: string }>;
+    convalidaCapoServizio?: {
+      convalidato: boolean;
+      capoServizioId?: string;
+      capoServizioNome: string;
+      convalidatoAlle: string;
+      firmaCapoServizio?: string;
+    };
+    capoServizioId?: string;
+    capoServizioNome?: string;
+    messaggioNotifica?: string;
+  }) {
+    return this.send('UPDATE_MISSION_DRAFT_DATA', patch);
   }
 
   public sendRadioMessage(
@@ -3619,8 +3792,12 @@ class RealtimeService {
     return this.send('UPDATE_MICROCHIP_INFO', { codice, microchip, noMicrochip, tipo, tipoAltro });
   }
 
-  public updateDatiDestinazione(dati: any, codice?: string) {
-    return this.send('UPDATE_DATI_DESTINAZIONE', { dati, codice });
+  public updateDatiDestinazione(
+    dati: any,
+    codice?: string,
+    campiCompilatiDa?: Record<string, { byId?: string; byNome: string; at: string }>
+  ) {
+    return this.send('UPDATE_DATI_DESTINAZIONE', { dati, codice, campiCompilatiDa });
   }
 
   public updateFotoDocumento(codice: string, fotoDocumento: { fronte?: string; retro?: string; dataAcquisizione?: string }) {

@@ -35,6 +35,7 @@ import { Volontario } from './DatabaseVolontariModal';
 import { CroceOroLogo } from './CroceOroLogo';
 import { realtime } from '../services/realtime';
 import { puoCoprireRuoloTurno, getMansioniVolontario } from '../utils/mansioniVolontari';
+import { calcolaCoperturaTurno, getCapoServizioTurno } from '../utils/tipiTurno';
 import { addDaysISODate, formatDateItaly, formatISODateItaly, formatTimeItaly, getItalianDateParts } from '../utils/italianTime';
 
 interface TabelloneTurniSettimanaleProps {
@@ -192,7 +193,6 @@ export const TabelloneTurniSettimanale: React.FC<TabelloneTurniSettimanaleProps>
   ): RuoloTurno => {
     const ruoliOrdine: Array<{ id: RuoloTurno; occupato: boolean }> = [
       { id: 'autista', occupato: Boolean(turno.autista) },
-      { id: 'caposervizio', occupato: Boolean(turno.caposervizio) },
       { id: 'soccorritore2', occupato: Boolean(turno.soccorritore2) },
       { id: 'terzoSoccorritore', occupato: Boolean(turno.terzoSoccorritore) },
       { id: 'operatoreCentrale', occupato: Boolean(turno.operatoreCentrale) },
@@ -384,37 +384,28 @@ export const TabelloneTurniSettimanale: React.FC<TabelloneTurniSettimanaleProps>
         );
 
         const assegnato = { id: cand.volontarioId, nome: cand.volontarioNome };
-        let { autista, caposervizio, soccorritore2, terzoSoccorritore, operatoreCentrale, centralinista, osservatore } = t;
+        let { autista, soccorritore2, terzoSoccorritore, operatoreCentrale, centralinista, osservatore } = t;
 
         if (cand.ruoloRichiesto === 'autista') {
           autista = assegnato;
-          if (!caposervizio) {
-            caposervizio = { id: assegnato.id, nome: assegnato.nome };
-          }
-        }
-        else if (cand.ruoloRichiesto === 'caposervizio') caposervizio = assegnato;
-        else if (cand.ruoloRichiesto === 'soccorritore2') soccorritore2 = assegnato;
+        } else if (cand.ruoloRichiesto === 'soccorritore2') soccorritore2 = assegnato;
         else if (cand.ruoloRichiesto === 'terzoSoccorritore') terzoSoccorritore = assegnato;
         else if (cand.ruoloRichiesto === 'operatoreCentrale') operatoreCentrale = assegnato;
         else if (cand.ruoloRichiesto === 'centralinista') centralinista = assegnato;
         else if (cand.ruoloRichiesto === 'osservatore') osservatore = assegnato;
 
-        const effettivoCapo = caposervizio || autista;
-        const statoCopertura: TurnoSedeOperativa['statoCopertura'] =
-          autista && effettivoCapo && soccorritore2 ? 'Coperto' : (autista || effettivoCapo || soccorritore2 ? 'Parziale' : 'Scoperto');
-
-        return {
+        const nextTurno: TurnoSedeOperativa = {
           ...t,
           autista,
-          caposervizio,
           soccorritore2,
           terzoSoccorritore,
           operatoreCentrale,
           centralinista,
           osservatore,
-          statoCopertura,
           richiesteIscrizione: nuoveRichieste
         };
+        nextTurno.statoCopertura = calcolaCoperturaTurno(nextTurno);
+        return nextTurno;
       }
       return t;
     });
@@ -1081,91 +1072,117 @@ export const TabelloneTurniSettimanale: React.FC<TabelloneTurniSettimanaleProps>
                         )}
 
                         {/* Equipaggio del Turno */}
-                        <div className="space-y-1 text-[10.5px]">
-                          {/* Autista */}
-                          <div className="flex items-center justify-between gap-1">
-                            <span className="text-slate-400 text-[10px] shrink-0">Autista:</span>
-                            {turno.autista ? (
-                              <span className={`font-bold truncate max-w-[165px] text-right ${turno.autista.nome.toLowerCase().includes(volontarioLoggatoNome?.toLowerCase() || '---') ? 'text-amber-400 font-black' : 'text-slate-100'}`} title={turno.autista.nome}>
-                                🚑 {turno.autista.nome}
+                        {(() => {
+                          const capoTurno = getCapoServizioTurno(turno);
+                          const isCs = (slot?: { id?: string; nome?: string }) =>
+                            Boolean(
+                              slot &&
+                                capoTurno &&
+                                ((slot.id && capoTurno.id && slot.id === capoTurno.id) ||
+                                  (slot.nome && capoTurno.nome && slot.nome.trim().toLowerCase() === capoTurno.nome.trim().toLowerCase()))
+                            );
+                          const renderCsTag = (slot?: { id?: string; nome?: string }) =>
+                            isCs(slot) ? (
+                              <span
+                                className="ml-1 inline-flex items-center px-1 py-0.2 rounded bg-amber-400/20 border border-amber-400/60 text-amber-300 text-[8.5px] font-black uppercase tracking-tight"
+                                title="Capo Servizio (firma sui fogli di servizio)"
+                              >
+                                ⭐ CS
                               </span>
-                            ) : (
-                              <span className="text-red-400 font-bold italic text-[10px]">Da Assegnare</span>
-                            )}
-                          </div>
+                            ) : null;
 
-                          {/* Caposervizio */}
-                          <div className="flex items-center justify-between gap-1">
-                            <span className="text-slate-400 text-[10px] shrink-0">Caposervizio:</span>
-                            {turno.caposervizio ? (
-                              <span className={`font-bold truncate max-w-[165px] text-right ${turno.caposervizio.nome.toLowerCase().includes(volontarioLoggatoNome?.toLowerCase() || '---') ? 'text-amber-400 font-black' : 'text-slate-100'}`} title={turno.caposervizio.nome}>
-                                👨‍⚕️ {turno.caposervizio.nome}
-                              </span>
-                            ) : (
-                              <span className="text-amber-400/90 font-bold italic text-[10px]">Da Assegnare</span>
-                            )}
-                          </div>
+                          return (
+                            <div className="space-y-1 text-[10.5px]">
+                              {/* Badge Capo Servizio del Turno */}
+                              {capoTurno && (
+                                <div className="flex items-center justify-between gap-1 px-1.5 py-0.5 rounded bg-amber-500/10 border border-amber-500/30 text-[9.5px]">
+                                  <span className="text-amber-300 font-black uppercase shrink-0">⭐ Capo Servizio:</span>
+                                  <span className="text-amber-200 font-bold truncate max-w-[140px] text-right" title={capoTurno.nome}>
+                                    {capoTurno.nome}
+                                  </span>
+                                </div>
+                              )}
 
-                          {/* 2° Soccorritore */}
-                          {turno.soccorritore2 && (
-                            <div className="flex items-center justify-between gap-1">
-                              <span className="text-slate-400 text-[10px] shrink-0">2° Socc.:</span>
-                              <span className={`truncate max-w-[165px] text-right ${turno.soccorritore2.nome.toLowerCase().includes(volontarioLoggatoNome?.toLowerCase() || '---') ? 'text-amber-400 font-black' : 'text-slate-200'}`} title={turno.soccorritore2.nome}>
-                                🧑‍⚕️ {turno.soccorritore2.nome}
-                              </span>
-                            </div>
-                          )}
+                              {/* Autista */}
+                              <div className="flex items-center justify-between gap-1">
+                                <span className="text-slate-400 text-[10px] shrink-0">Autista:</span>
+                                {turno.autista ? (
+                                  <span className={`font-bold truncate max-w-[175px] text-right ${turno.autista.nome.toLowerCase().includes(volontarioLoggatoNome?.toLowerCase() || '---') ? 'text-amber-400 font-black' : 'text-slate-100'}`} title={turno.autista.nome}>
+                                    🚑 {turno.autista.nome}
+                                    {renderCsTag(turno.autista)}
+                                  </span>
+                                ) : (
+                                  <span className="text-red-400 font-bold italic text-[10px]">Da Assegnare</span>
+                                )}
+                              </div>
 
-                          {/* 3° Soccorritore */}
-                          {turno.terzoSoccorritore && (
-                            <div className="flex items-center justify-between gap-1">
-                              <span className="text-slate-400 text-[10px] shrink-0">3° Socc.:</span>
-                              <span className={`truncate max-w-[165px] text-right ${turno.terzoSoccorritore.nome.toLowerCase().includes(volontarioLoggatoNome?.toLowerCase() || '---') ? 'text-amber-400 font-black' : 'text-slate-200'}`} title={turno.terzoSoccorritore.nome}>
-                                🧑‍⚕️ {turno.terzoSoccorritore.nome}
-                              </span>
-                            </div>
-                          )}
+                              {/* 2° Soccorritore */}
+                              {turno.soccorritore2 && (
+                                <div className="flex items-center justify-between gap-1">
+                                  <span className="text-slate-400 text-[10px] shrink-0">2° Socc.:</span>
+                                  <span className={`truncate max-w-[175px] text-right ${turno.soccorritore2.nome.toLowerCase().includes(volontarioLoggatoNome?.toLowerCase() || '---') ? 'text-amber-400 font-black' : 'text-slate-200'}`} title={turno.soccorritore2.nome}>
+                                    🧑‍⚕️ {turno.soccorritore2.nome}
+                                    {renderCsTag(turno.soccorritore2)}
+                                  </span>
+                                </div>
+                              )}
 
-                          {/* Operatore Centrale */}
-                          {turno.operatoreCentrale && (
-                            <div className="flex items-center justify-between gap-1 pt-0.5 border-t border-slate-800/80">
-                              <span className="text-slate-400 text-[10px] shrink-0">Centrale:</span>
-                              <span className="text-slate-300 text-[10px] truncate max-w-[165px] text-right" title={turno.operatoreCentrale.nome}>
-                                🎧 {turno.operatoreCentrale.nome}
-                              </span>
-                            </div>
-                          )}
+                              {/* 3° Soccorritore */}
+                              {turno.terzoSoccorritore && (
+                                <div className="flex items-center justify-between gap-1">
+                                  <span className="text-slate-400 text-[10px] shrink-0">3° Socc.:</span>
+                                  <span className={`truncate max-w-[175px] text-right ${turno.terzoSoccorritore.nome.toLowerCase().includes(volontarioLoggatoNome?.toLowerCase() || '---') ? 'text-amber-400 font-black' : 'text-slate-200'}`} title={turno.terzoSoccorritore.nome}>
+                                    🧑‍⚕️ {turno.terzoSoccorritore.nome}
+                                    {renderCsTag(turno.terzoSoccorritore)}
+                                  </span>
+                                </div>
+                              )}
 
-                          {/* Centralinista */}
-                          {turno.centralinista ? (
-                            <div className="flex items-center justify-between gap-1 pt-0.5 border-t border-slate-800/80">
-                              <span className="text-slate-400 text-[10px] shrink-0">Centralinista:</span>
-                              <span className={`font-bold truncate max-w-[165px] text-right ${turno.centralinista.nome.toLowerCase().includes(volontarioLoggatoNome?.toLowerCase() || '---') ? 'text-amber-400 font-black' : 'text-slate-200'}`} title={turno.centralinista.nome}>
-                                📞 {turno.centralinista.nome}
-                              </span>
-                            </div>
-                          ) : (
-                            <div className="flex items-center justify-between gap-1 text-[10px] text-slate-500 pt-0.5 border-t border-slate-800/40">
-                              <span className="text-slate-400 text-[10px] shrink-0">Centralinista:</span>
-                              <span className="italic text-slate-500 text-[9.5px]">Disponibile</span>
-                            </div>
-                          )}
+                              {/* Operatore Centrale */}
+                              {turno.operatoreCentrale && (
+                                <div className="flex items-center justify-between gap-1 pt-0.5 border-t border-slate-800/80">
+                                  <span className="text-slate-400 text-[10px] shrink-0">Centrale:</span>
+                                  <span className="text-slate-300 text-[10px] truncate max-w-[175px] text-right" title={turno.operatoreCentrale.nome}>
+                                    🎧 {turno.operatoreCentrale.nome}
+                                    {renderCsTag(turno.operatoreCentrale)}
+                                  </span>
+                                </div>
+                              )}
 
-                          {/* Osservatore */}
-                          {turno.osservatore ? (
-                            <div className="flex items-center justify-between gap-1">
-                              <span className="text-slate-400 text-[10px] shrink-0">Osservatore:</span>
-                              <span className={`font-bold truncate max-w-[165px] text-right ${turno.osservatore.nome.toLowerCase().includes(volontarioLoggatoNome?.toLowerCase() || '---') ? 'text-amber-400 font-black' : 'text-slate-200'}`} title={turno.osservatore.nome}>
-                                👁️ {turno.osservatore.nome}
-                              </span>
+                              {/* Centralinista */}
+                              {turno.centralinista ? (
+                                <div className="flex items-center justify-between gap-1 pt-0.5 border-t border-slate-800/80">
+                                  <span className="text-slate-400 text-[10px] shrink-0">Centralinista:</span>
+                                  <span className={`font-bold truncate max-w-[175px] text-right ${turno.centralinista.nome.toLowerCase().includes(volontarioLoggatoNome?.toLowerCase() || '---') ? 'text-amber-400 font-black' : 'text-slate-200'}`} title={turno.centralinista.nome}>
+                                    📞 {turno.centralinista.nome}
+                                    {renderCsTag(turno.centralinista)}
+                                  </span>
+                                </div>
+                              ) : (
+                                <div className="flex items-center justify-between gap-1 text-[10px] text-slate-500 pt-0.5 border-t border-slate-800/40">
+                                  <span className="text-slate-400 text-[10px] shrink-0">Centralinista:</span>
+                                  <span className="italic text-slate-500 text-[9.5px]">Disponibile</span>
+                                </div>
+                              )}
+
+                              {/* Osservatore */}
+                              {turno.osservatore ? (
+                                <div className="flex items-center justify-between gap-1">
+                                  <span className="text-slate-400 text-[10px] shrink-0">Osservatore:</span>
+                                  <span className={`font-bold truncate max-w-[175px] text-right ${turno.osservatore.nome.toLowerCase().includes(volontarioLoggatoNome?.toLowerCase() || '---') ? 'text-amber-400 font-black' : 'text-slate-200'}`} title={turno.osservatore.nome}>
+                                    👁️ {turno.osservatore.nome}
+                                    {renderCsTag(turno.osservatore)}
+                                  </span>
+                                </div>
+                              ) : (
+                                <div className="flex items-center justify-between gap-1 text-[10px] text-slate-500">
+                                  <span className="text-slate-400 text-[10px] shrink-0">Osservatore:</span>
+                                  <span className="italic text-slate-500 text-[9.5px]">Disponibile</span>
+                                </div>
+                              )}
                             </div>
-                          ) : (
-                            <div className="flex items-center justify-between gap-1 text-[10px] text-slate-500">
-                              <span className="text-slate-400 text-[10px] shrink-0">Osservatore:</span>
-                              <span className="italic text-slate-500 text-[9.5px]">Disponibile</span>
-                            </div>
-                          )}
-                        </div>
+                          );
+                        })()}
 
                         {turno.note && (
                           <div className="text-[9.5px] text-slate-400 italic bg-slate-900/50 p-1 rounded border border-slate-800/60 truncate" title={turno.note}>
@@ -1509,7 +1526,6 @@ export const TabelloneTurniSettimanale: React.FC<TabelloneTurniSettimanaleProps>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                   {([
                     { id: 'autista', label: '🚑 Autista Soccorritore', occupato: Boolean(turnoPerCandidatura.autista) },
-                    { id: 'caposervizio', label: '👨‍⚕️ Caposervizio', occupato: Boolean(turnoPerCandidatura.caposervizio) },
                     { id: 'soccorritore2', label: '🧑‍⚕️ 2° Soccorritore', occupato: Boolean(turnoPerCandidatura.soccorritore2) },
                     { id: 'terzoSoccorritore', label: '🧑‍⚕️ 3° Soccorritore', occupato: Boolean(turnoPerCandidatura.terzoSoccorritore) },
                     { id: 'operatoreCentrale', label: '🎧 Sala Radio / Centrale', occupato: Boolean(turnoPerCandidatura.operatoreCentrale) },

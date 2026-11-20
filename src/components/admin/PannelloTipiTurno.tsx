@@ -107,7 +107,7 @@ export const PannelloTipiTurno: React.FC<PannelloTipiTurnoProps> = ({
           ruoloTurno: opt.ruoloTurno,
           mansioneCatalogoId: opt.mansioneCatalogoId,
           categoria: opt.categoria,
-          minimo: 1,
+          minimo: 0,
           massimo: 1,
         },
       ];
@@ -119,18 +119,18 @@ export const PannelloTipiTurno: React.FC<PannelloTipiTurnoProps> = ({
   };
 
   const aggiornaMinMaxMansione = (id: string, campo: 'minimo' | 'massimo', valoreRaw: number) => {
-    const val = Math.max(1, Math.min(50, Math.floor(Number.isFinite(valoreRaw) ? valoreRaw : 1)));
+    const parsed = Number.isFinite(valoreRaw) ? Math.floor(valoreRaw) : 0;
     setFormMansioni((prev) =>
       prev.map((m) => {
         if (m.id !== id) return m;
         if (campo === 'minimo') {
-          const nextMin = val;
-          const nextMax = Math.max(nextMin, m.massimo);
+          const nextMin = Math.max(0, Math.min(50, parsed));
+          const nextMax = Math.max(Math.max(1, nextMin), m.massimo);
           return { ...m, minimo: nextMin, massimo: nextMax };
         } else {
-          const nextMax = val;
-          const nextMin = Math.min(m.minimo, nextMax);
-          return { ...m, minimo: Math.max(1, nextMin), massimo: nextMax };
+          const nextMax = Math.max(1, Math.min(50, parsed));
+          const nextMin = Math.max(0, Math.min(m.minimo, nextMax));
+          return { ...m, minimo: nextMin, massimo: nextMax };
         }
       })
     );
@@ -144,7 +144,7 @@ export const PannelloTipiTurno: React.FC<PannelloTipiTurnoProps> = ({
       return;
     }
     if (formMansioni.length === 0) {
-      setErroreForm('Associa almeno una mansione obbligatoria per comporre l\'equipaggio.');
+      setErroreForm('Associa almeno una mansione per comporre l\'equipaggio.');
       return;
     }
 
@@ -158,8 +158,8 @@ export const PannelloTipiTurno: React.FC<PannelloTipiTurnoProps> = ({
     }
 
     const mansioniPulite: MansioneTipoTurno[] = formMansioni.map((m) => {
-      const minimo = Math.max(1, Math.floor(m.minimo || 1));
-      const massimo = Math.max(minimo, Math.floor(m.massimo || minimo));
+      const minimo = Math.max(0, Math.floor(Number.isFinite(m.minimo) ? m.minimo : 0));
+      const massimo = Math.max(Math.max(1, minimo), Math.floor(Number.isFinite(m.massimo) ? m.massimo : 1));
       return { ...m, minimo, massimo };
     });
 
@@ -250,10 +250,10 @@ export const PannelloTipiTurno: React.FC<PannelloTipiTurnoProps> = ({
           </div>
           <div>
             <h3 className="text-base sm:text-lg font-black text-white uppercase tracking-wide">
-              Tipi di Turni & Equipaggi Obbligatori
+              Tipi di Turni & Equipaggi
             </h3>
             <p className="text-xs text-slate-300 mt-0.5">
-              Crea e configura i tipi di turno selezionabili nella programmazione di turni singoli o ripetuti. Associa una o più mansioni obbligatorie indicando il numero minimo e massimo di persone per ciascuna mansione.
+              Crea e configura i tipi di turno selezionabili nella programmazione di turni singoli o ripetuti. Imposta il numero minimo (da 0 = facoltativa) e massimo di persone per ciascuna mansione. Il badge Capo Servizio si assegna direttamente sui turni a qualsiasi volontario presente.
             </p>
           </div>
         </div>
@@ -288,8 +288,8 @@ export const PannelloTipiTurno: React.FC<PannelloTipiTurnoProps> = ({
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {tipiTurno.map((tipo) => {
-            const totMin = tipo.mansioniObbligatorie.reduce((acc, m) => acc + (m.minimo || 1), 0);
-            const totMax = tipo.mansioniObbligatorie.reduce((acc, m) => acc + (m.massimo || m.minimo || 1), 0);
+            const totMin = tipo.mansioniObbligatorie.reduce((acc, m) => acc + (typeof m.minimo === 'number' ? m.minimo : 0), 0);
+            const totMax = tipo.mansioniObbligatorie.reduce((acc, m) => acc + (m.massimo || Math.max(1, m.minimo || 0)), 0);
 
             return (
               <div
@@ -321,10 +321,10 @@ export const PannelloTipiTurno: React.FC<PannelloTipiTurnoProps> = ({
                     </span>
                   </div>
 
-                  {/* Mansioni Obbligatorie */}
+                  {/* Mansioni Associate */}
                   <div className="space-y-1.5 p-3 rounded-xl bg-slate-900/90 border border-slate-800">
                     <div className="text-[10px] uppercase font-black text-slate-400 tracking-wide mb-1">
-                      Mansioni Obbligatorie ({tipo.mansioniObbligatorie.length}):
+                      Mansioni Previste ({tipo.mansioniObbligatorie.length}):
                     </div>
                     {tipo.mansioniObbligatorie.length === 0 ? (
                       <div className="text-[11px] text-amber-400 italic">Nessuna mansione associata</div>
@@ -338,9 +338,20 @@ export const PannelloTipiTurno: React.FC<PannelloTipiTurnoProps> = ({
                             <span className="mr-1">{m.emoji || '🎖️'}</span>
                             {m.nome}
                           </span>
-                          <span className="px-2 py-0.5 rounded-md bg-indigo-950 text-indigo-300 border border-indigo-500/40 font-mono text-[10px] font-black whitespace-nowrap shrink-0 tabular-nums">
-                            Min {m.minimo} · Max {m.massimo}
-                          </span>
+                          <div className="flex items-center gap-1 shrink-0">
+                            {m.minimo === 0 && (
+                              <span className="px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 border border-slate-700 text-[9px] font-bold uppercase">
+                                Facolt.
+                              </span>
+                            )}
+                            <span className={`px-2 py-0.5 rounded-md font-mono text-[10px] font-black whitespace-nowrap tabular-nums border ${
+                              m.minimo === 0
+                                ? 'bg-slate-900 text-slate-300 border-slate-700'
+                                : 'bg-indigo-950 text-indigo-300 border-indigo-500/40'
+                            }`}>
+                              Min {m.minimo} · Max {m.massimo}
+                            </span>
+                          </div>
                         </div>
                       ))
                     )}
@@ -484,15 +495,15 @@ export const PannelloTipiTurno: React.FC<PannelloTipiTurnoProps> = ({
                 </div>
               </div>
 
-              {/* Mansioni Obbligatorie Selezionate con MIN e MAX */}
+              {/* Mansioni Associate con MIN (da 0 = facoltativa) e MAX */}
               <div className="p-3.5 rounded-2xl bg-slate-950 border border-indigo-500/40 space-y-2.5">
                 <div className="flex items-center justify-between gap-2 flex-wrap">
                   <span className="text-[11px] font-black uppercase text-indigo-300 flex items-center gap-1.5">
                     <Users className="w-4 h-4" />
-                    <span>Mansioni Obbligatorie Associate ({formMansioni.length})</span>
+                    <span>Mansioni Associate ({formMansioni.length})</span>
                   </span>
                   <span className="text-[10.5px] text-slate-400">
-                    Imposta per ogni mansione il numero <strong className="text-white">Minimo</strong> e <strong className="text-white">Massimo</strong> di persone
+                    <strong className="text-teal-300">Min 0</strong> = facoltativa (non blocca la copertura del turno) · <strong className="text-white">Min ≥ 1</strong> = obbligatoria
                   </span>
                 </div>
 
@@ -508,9 +519,18 @@ export const PannelloTipiTurno: React.FC<PannelloTipiTurnoProps> = ({
                         className="p-2.5 rounded-xl bg-slate-900 border border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5"
                       >
                         <div className="min-w-0 flex-1">
-                          <div className="font-bold text-white text-xs truncate">
-                            <span className="mr-1.5">{m.emoji || '🎖️'}</span>
-                            {m.nome}
+                          <div className="font-bold text-white text-xs truncate flex items-center gap-1.5">
+                            <span>{m.emoji || '🎖️'}</span>
+                            <span className="truncate">{m.nome}</span>
+                            {m.minimo === 0 ? (
+                              <span className="px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 border border-slate-700 text-[9px] font-black uppercase shrink-0">
+                                Facoltativa
+                              </span>
+                            ) : (
+                              <span className="px-1.5 py-0.5 rounded bg-indigo-950 text-indigo-300 border border-indigo-500/40 text-[9px] font-black uppercase shrink-0">
+                                Obbligatoria
+                              </span>
+                            )}
                           </div>
                           {m.categoria && (
                             <span className="text-[10px] text-slate-400">{m.categoria}</span>
@@ -518,20 +538,20 @@ export const PannelloTipiTurno: React.FC<PannelloTipiTurnoProps> = ({
                         </div>
 
                         <div className="flex items-center gap-2 sm:gap-3 flex-wrap justify-between sm:justify-end">
-                          {/* Controllo Minimo */}
+                          {/* Controllo Minimo (da 0) */}
                           <div className="flex items-center gap-1 bg-slate-950 px-2 py-1 rounded-lg border border-slate-700">
                             <span className="text-[10px] font-black uppercase text-teal-400 mr-1">Min</span>
                             <button
                               type="button"
                               onClick={() => aggiornaMinMaxMansione(m.id, 'minimo', m.minimo - 1)}
-                              disabled={m.minimo <= 1}
+                              disabled={m.minimo <= 0}
                               className="w-6 h-6 rounded bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-white flex items-center justify-center cursor-pointer"
                             >
                               <Minus className="w-3 h-3" />
                             </button>
                             <input
                               type="number"
-                              min={1}
+                              min={0}
                               max={50}
                               required
                               value={m.minimo}
@@ -553,14 +573,14 @@ export const PannelloTipiTurno: React.FC<PannelloTipiTurnoProps> = ({
                             <button
                               type="button"
                               onClick={() => aggiornaMinMaxMansione(m.id, 'massimo', m.massimo - 1)}
-                              disabled={m.massimo <= 1}
+                              disabled={m.massimo <= Math.max(1, m.minimo)}
                               className="w-6 h-6 rounded bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-white flex items-center justify-center cursor-pointer"
                             >
                               <Minus className="w-3 h-3" />
                             </button>
                             <input
                               type="number"
-                              min={m.minimo}
+                              min={Math.max(1, m.minimo)}
                               max={50}
                               required
                               value={m.massimo}
