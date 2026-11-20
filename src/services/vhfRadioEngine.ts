@@ -397,17 +397,13 @@ class VhfRadioEngine {
   private emergencyLoadPromise: Promise<AudioBuffer | null> | null = null;
   private activeEmergencyCancel: (() => void) | null = null;
 
-  // Background Radio Reception Keep-Alive (MediaStreamAudioDestinationNode -> HTMLAudioElement + fallback WAV dither)
+  // Background Radio Reception Keep-Alive (DOM-mounted looping WAV dither + MediaSession reale + ctx.destination diretto)
   private masterBus: GainNode | null = null;
-  private mediaStreamDest: MediaStreamAudioDestinationNode | null = null;
-  private bgStreamAudio: HTMLAudioElement | null = null;
-  private bgComfortOsc: OscillatorNode | null = null;
-  private bgComfortGain: GainNode | null = null;
-  private isRoutedToMediaStream: boolean = false;
   private bgKeepAliveAudio: HTMLAudioElement | null = null;
   private bgKeepAliveBlobUrl: string | null = null;
   private bgReceptionArmed: boolean = false;
   private bgVisibilityHooked: boolean = false;
+  private bgKeepAliveWatchdog: any = null;
   private pendingRxPackets: Array<{
     speakerId?: string;
     codec?: RadioAudioCodec;
@@ -415,7 +411,9 @@ class VhfRadioEngine {
     pcm16Base64?: string;
     sampleRate?: number;
   }> = [];
+  private pendingRxFallbackTimer: any = null;
   private activeVoiceClipAudio: HTMLAudioElement | null = null;
+  private activeFallbackWavUrl: string | null = null;
 
   public subscribeTxLevel(cb: (level: number) => void): () => void {
     this.txLevelListeners.add(cb);
@@ -503,10 +501,6 @@ class VhfRadioEngine {
       this.rxChainInput = null;
       this.rxWorkletNode = null;
       this.masterBus = null;
-      this.mediaStreamDest = null;
-      this.bgComfortOsc = null;
-      this.bgComfortGain = null;
-      this.isRoutedToMediaStream = false;
       this.workletLoadingPromise = null;
       const createdCtx = this.audioCtx;
       if (createdCtx) {
@@ -530,45 +524,24 @@ class VhfRadioEngine {
     return this.audioCtx;
   }
 
-  // Bus master unificato: instrada voce RX e toni verso lo stream HTMLAudioElement in background (MediaSession reale)
-  // o direttamente a ctx.destination se lo stream background non è ancora avviato
+  // Bus master unificato: SEMPRE connesso direttamente a ctx.destination per evitare il bug di silenziamento
+  // MediaStreamAudioDestinationNode su Android Chrome / iOS Safari e Bluetooth.
   private getMasterOutput(ctx: AudioContext): GainNode {
     if (this.masterBus) return this.masterBus;
     const bus = ctx.createGain();
     bus.gain.value = 1.0;
     bus.connect(ctx.destination);
     this.masterBus = bus;
-    this.isRoutedToMediaStream = false;
     return bus;
   }
 
-  private switchMasterOutputToMediaStream(ctx: AudioContext, dest: MediaStreamAudioDestinationNode) {
-    const bus = this.getMasterOutput(ctx);
-    if (this.isRoutedToMediaStream) return;
-    try {
-      bus.disconnect();
-    } catch {}
-    bus.connect(dest);
-    this.isRoutedToMediaStream = true;
-  }
-
-  private switchMasterOutputToDirect(ctx: AudioContext) {
-    const bus = this.getMasterOutput(ctx);
-    if (!this.isRoutedToMediaStream) return;
-    try {
-      bus.disconnect();
-    } catch {}
-    bus.connect(ctx.destination);
-    this.isRoutedToMediaStream = false;
-  }
-
-  // Genera un file WAV PCM da 1 secondo con micro-dither impercettibile (~ -66 dB) come fallback keep-alive
+  // Genera un file WAV PCM da 6 secondi con micro-dither impercettibile (~ -66 dB) per mantenere attivo AudioFocus + MediaSession a schermo spento
   private createSilentWavBlobUrl(): string | null {
     if (this.bgKeepAliveBlobUrl) return this.bgKeepAliveBlobUrl;
     if (typeof Blob === 'undefined' || typeof URL === 'undefined') return null;
     try {
       const sampleRate = 8000;
-      const numSamples = sampleRate; // 1 secondo
+      const numSamples = sampleRate * 6; // 6 secondi: loop fluido e stabile su Android Doze / iOS AVAudioSession
       const dataSize = numSamples; // 8-bit mono unsigned PCM
       const buffer = new ArrayBuffer(44 + dataSize);
       const view = new DataView(buffer);
@@ -579,17 +552,17 @@ class VhfRadioEngine {
       view.setUint32(4, 36 + dataSize, true);
       writeStr(8, 'WAVE');
       writeStr(12, 'fmt ');
-      view.setUint32(16, 16, true); // PCM chunk size
-      view.setUint16(20, 1, true); // PCM format
-      view.setUint16(22, 1, true); // mono
+      view.setUint32(16, 16, true);
+      view.setUint16(20, 1, true);
+      view.setUint16(22, 1, true);
       view.setUint32(24, sampleRate, true);
-      view.setUint32(28, sampleRate, true); // byte rate
-      view.setUint16(32, 1, true); // block align
-      view.setUint16(34, 8, true); // 8 bits per sample
+      view.setUint32(28, sampleRate, true);
+      view.setUint16(32, 1, true);
+      view.setUint16(34, 8, true);
       writeStr(36, 'data');
       view.setUint32(40, dataSize, true);
       const bytes = new Uint8Array(buffer, 44);
-      // Micro-dither non-zero (±1 LSB a 25Hz, totalmente inudibile ma evita sospensione "pure silence" di Android/iOS)
+      // Micro-dither non-zero (±1 LSB a 25Hz, totalmente inudibile ma impedisce lo standby "pure silence" di Android/iOS)
       for (let i = 0; i < dataSize; i++) {
         bytes[i] = i % 320 === 0 ? 129 : i % 320 === 160 ? 127 : 128;
       }
@@ -599,6 +572,130 @@ class VhfRadioEngine {
     } catch {
       return null;
     }
+  }
+
+  // Converte campioni Float32 decodificati in un WAV PCM 16-bit riproducibile via <audio> anche se AudioContext è sospeso in background
+  private encodeFloat32ToWavBlobUrl(samples: Float32Array, sampleRate: number): string | null {
+    if (!samples || samples.length === 0 || typeof Blob === 'undefined' || typeof URL === 'undefined') return null;
+    try {
+      const dataSize = samples.length * 2;
+      const buffer = new ArrayBuffer(44 + dataSize);
+      const view = new DataView(buffer);
+      const writeStr = (offset: number, s: string) => {
+        for (let i = 0; i < s.length; i++) view.setUint8(offset + i, s.charCodeAt(i));
+      };
+      writeStr(0, 'RIFF');
+      view.setUint32(4, 36 + dataSize, true);
+      writeStr(8, 'WAVE');
+      writeStr(12, 'fmt ');
+      view.setUint32(16, 16, true);
+      view.setUint16(20, 1, true); // PCM
+      view.setUint16(22, 1, true); // mono
+      view.setUint32(24, sampleRate, true);
+      view.setUint32(28, sampleRate * 2, true);
+      view.setUint16(32, 2, true);
+      view.setUint16(34, 16, true);
+      writeStr(36, 'data');
+      view.setUint32(40, dataSize, true);
+      let offset = 44;
+      for (let i = 0; i < samples.length; i++) {
+        const s = Math.max(-1, Math.min(1, samples[i] * 1.18));
+        view.setInt16(offset, s < 0 ? Math.round(s * 0x8000) : Math.round(s * 0x7fff), true);
+        offset += 2;
+      }
+      const blob = new Blob([buffer], { type: 'audio/wav' });
+      return URL.createObjectURL(blob);
+    } catch {
+      return null;
+    }
+  }
+
+  // Decodifica sincrona di un pacchetto ADPCM24 o PCM16 in Float32 per fallback WAV HTMLAudioElement
+  private decodePacketToFloat32Sync(packet: {
+    codec?: RadioAudioCodec;
+    payloadBase64?: string;
+    pcm16Base64?: string;
+    sampleRate?: number;
+  }): { samples: Float32Array; sampleRate: number } | null {
+    const b64 = packet.payloadBase64 || packet.pcm16Base64;
+    if (!b64) return null;
+    const codec: RadioAudioCodec = packet.codec || 'pcm16';
+    if (codec === 'adpcm24') {
+      const bytes = base64ToBytes(b64);
+      const floats = decodeImaAdpcmBlock(bytes);
+      return floats.length > 0 ? { samples: floats, sampleRate: packet.sampleRate || this.ADPCM_SAMPLE_RATE } : null;
+    }
+    if (codec === 'pcm16') {
+      const pcm16 = base64ToInt16(b64);
+      if (!pcm16 || pcm16.length === 0) return null;
+      const floats = new Float32Array(pcm16.length);
+      for (let i = 0; i < pcm16.length; i++) floats[i] = pcm16[i] / 32768;
+      return { samples: floats, sampleRate: packet.sampleRate || 16000 };
+    }
+    return null;
+  }
+
+  private playChunksViaHtmlAudioWav(
+    chunks: Array<{
+      codec?: RadioAudioCodec;
+      payloadBase64?: string;
+      pcm16Base64?: string;
+      sampleRate?: number;
+    }>
+  ): Promise<boolean> {
+    return new Promise((resolve) => {
+      try {
+        const decodedParts: Float32Array[] = [];
+        let targetRate = this.ADPCM_SAMPLE_RATE;
+        let totalLen = 0;
+        for (const ch of chunks) {
+          const dec = this.decodePacketToFloat32Sync(ch);
+          if (!dec) continue;
+          const aligned =
+            dec.sampleRate === targetRate ? dec.samples : resampleFloat32(dec.samples, dec.sampleRate, targetRate);
+          decodedParts.push(aligned);
+          totalLen += aligned.length;
+        }
+        if (totalLen === 0) {
+          resolve(false);
+          return;
+        }
+        const merged = new Float32Array(totalLen);
+        let pos = 0;
+        for (const part of decodedParts) {
+          merged.set(part, pos);
+          pos += part.length;
+        }
+        const wavUrl = this.encodeFloat32ToWavBlobUrl(merged, targetRate);
+        if (!wavUrl) {
+          resolve(false);
+          return;
+        }
+        if (this.activeFallbackWavUrl) {
+          try { URL.revokeObjectURL(this.activeFallbackWavUrl); } catch {}
+        }
+        this.activeFallbackWavUrl = wavUrl;
+        this.playAudioDataUrl(wavUrl).then(resolve).catch(() => resolve(false));
+      } catch {
+        resolve(false);
+      }
+    });
+  }
+
+  // Monta l'elemento <audio> nel DOM (invisibile ma non display:none, necessario su iOS Safari e Android Chrome)
+  private attachHiddenAudioElement(el: HTMLAudioElement, id: string) {
+    if (typeof document === 'undefined' || !document.body) return;
+    if (el.isConnected) return;
+    el.id = id;
+    el.setAttribute('aria-hidden', 'true');
+    el.style.position = 'fixed';
+    el.style.left = '-9999px';
+    el.style.top = '-9999px';
+    el.style.width = '1px';
+    el.style.height = '1px';
+    el.style.opacity = '0.001';
+    el.style.pointerEvents = 'none';
+    document.body.appendChild(el);
   }
 
   public updateMediaSessionState(info?: { title?: string; artist?: string; isEmergency?: boolean }) {
@@ -624,8 +721,10 @@ class VhfRadioEngine {
           this.armBackgroundReception().catch(() => {});
         });
         ms.setActionHandler('pause', () => {
-          // Mantiene la ricezione radio pronta
           this.ensureAudioContext();
+          if (this.bgKeepAliveAudio && this.bgKeepAliveAudio.paused) {
+            this.bgKeepAliveAudio.play().catch(() => {});
+          }
         });
       } catch {}
     } catch {}
@@ -642,6 +741,7 @@ class VhfRadioEngine {
           await ctx.resume();
         } catch {}
       }
+      this.getMasterOutput(ctx);
       this.preloadEmergencyAnnouncement().catch(() => {});
       this.ensureWorkletsLoaded(ctx).catch(() => {});
     }
@@ -654,110 +754,84 @@ class VhfRadioEngine {
         if (c && c.state === 'suspended') {
           c.resume().catch(() => {});
         }
-        if (this.bgStreamAudio && this.bgStreamAudio.paused) {
-          this.bgStreamAudio.play().catch(() => {
-            if (c) this.switchMasterOutputToDirect(c);
-          });
-        } else if (this.bgKeepAliveAudio && this.bgKeepAliveAudio.paused) {
+        if (this.bgKeepAliveAudio && this.bgKeepAliveAudio.paused) {
           this.bgKeepAliveAudio.play().catch(() => {});
         }
       });
     }
 
-    // Strategia primaria: MediaStreamAudioDestinationNode -> HTMLAudioElement live con portante sub-udibile (-69 dB)
-    // Mantiene attivo AudioFocus + MediaSession reale su Android Chrome / iOS Safari anche a schermo spento
-    if (ctx && typeof (ctx as any).createMediaStreamDestination === 'function') {
-      try {
-        if (!this.mediaStreamDest) {
-          this.mediaStreamDest = ctx.createMediaStreamDestination();
+    // Watchdog leggero: se l'OS mette in pausa AudioContext o il keep-alive WAV mentre siamo armati, tenta subito il ripristino
+    if (!this.bgKeepAliveWatchdog) {
+      this.bgKeepAliveWatchdog = setInterval(() => {
+        if (!this.bgReceptionArmed) return;
+        if (this.audioCtx && this.audioCtx.state === 'suspended') {
+          this.audioCtx.resume().catch(() => {});
         }
-        if (!this.bgComfortOsc) {
-          const osc = ctx.createOscillator();
-          const gain = ctx.createGain();
-          osc.type = 'sine';
-          osc.frequency.value = 24; // sub-udibile 24 Hz
-          gain.gain.value = 0.00035; // ~ -69 dB: impercettibile all'orecchio, ma impedisce lo standby OS
-          osc.connect(gain);
-          gain.connect(this.mediaStreamDest);
-          osc.start();
-          this.bgComfortOsc = osc;
-          this.bgComfortGain = gain;
+        if (this.bgKeepAliveAudio && this.bgKeepAliveAudio.paused) {
+          this.bgKeepAliveAudio.play().catch(() => {});
         }
-        if (!this.bgStreamAudio) {
-          const streamEl = document.createElement('audio');
-          streamEl.srcObject = this.mediaStreamDest.stream;
-          streamEl.autoplay = true;
-          streamEl.volume = 1.0;
-          (streamEl as any).playsInline = true;
-          streamEl.setAttribute('playsinline', 'true');
-          streamEl.addEventListener('pause', () => {
-            if (this.audioCtx) {
-              this.switchMasterOutputToDirect(this.audioCtx);
-            }
-          });
-          streamEl.addEventListener('playing', () => {
-            if (this.audioCtx && this.mediaStreamDest) {
-              this.switchMasterOutputToMediaStream(this.audioCtx, this.mediaStreamDest);
-            }
-          });
-          this.bgStreamAudio = streamEl;
-        }
-        if (this.bgStreamAudio.paused) {
-          await this.bgStreamAudio.play();
-        }
-        this.switchMasterOutputToMediaStream(ctx, this.mediaStreamDest);
-        this.updateMediaSessionState(label ? { title: label } : undefined);
-        return true;
-      } catch {
-        this.switchMasterOutputToDirect(ctx);
-      }
+      }, 15000);
     }
 
-    // Fallback: elemento <audio> WAV loop con micro-dither
+    // Elemento <audio> montato nel DOM con WAV micro-dither continuo (6s loop) + MediaSession reale:
+    // Mantiene attivo AudioFocus + CPU + WebSocket + AudioContext su Android Chrome, iOS Safari e PC anche a schermo spento,
+    // lasciando tutta l'uscita vocale HD su ctx.destination (zero rischio di silenzio MediaStream).
     try {
       if (!this.bgKeepAliveAudio) {
         const blobUrl = this.createSilentWavBlobUrl();
         if (blobUrl) {
-          const audio = new Audio(blobUrl);
+          const audio = document.createElement('audio');
+          audio.src = blobUrl;
           audio.loop = true;
-          audio.volume = 0.02;
+          audio.volume = 0.015;
           audio.preload = 'auto';
           (audio as any).playsInline = true;
           audio.setAttribute('playsinline', 'true');
+          audio.setAttribute('webkit-playsinline', 'true');
+          this.attachHiddenAudioElement(audio, 'croce-oro-radio-keepalive');
           this.bgKeepAliveAudio = audio;
         }
       }
-      if (this.bgKeepAliveAudio && this.bgKeepAliveAudio.paused) {
-        await this.bgKeepAliveAudio.play();
+      if (this.bgKeepAliveAudio) {
+        this.attachHiddenAudioElement(this.bgKeepAliveAudio, 'croce-oro-radio-keepalive');
+        if (this.bgKeepAliveAudio.paused) {
+          await this.bgKeepAliveAudio.play();
+        }
       }
       this.updateMediaSessionState(label ? { title: label } : undefined);
-      return true;
+      return Boolean(this.bgKeepAliveAudio && !this.bgKeepAliveAudio.paused);
     } catch {
       // L'autoplay potrà completarsi al primo gesto utente successivo
-      return false;
+      return Boolean(ctx && ctx.state === 'running');
     }
   }
 
   public isBackgroundReceptionArmed(): boolean {
-    const streamPlaying = Boolean(this.bgStreamAudio && !this.bgStreamAudio.paused);
     const wavPlaying = Boolean(this.bgKeepAliveAudio && !this.bgKeepAliveAudio.paused);
-    return this.bgReceptionArmed && (streamPlaying || wavPlaying);
+    const ctxRunning = Boolean(this.audioCtx && this.audioCtx.state === 'running');
+    return this.bgReceptionArmed && (wavPlaying || ctxRunning);
   }
 
   public async playAudioDataUrl(dataUrl: string): Promise<boolean> {
     if (!dataUrl || typeof window === 'undefined') return false;
     try {
-      if (this.activeVoiceClipAudio) {
+      if (!this.activeVoiceClipAudio) {
+        const el = document.createElement('audio');
+        el.volume = 1.0;
+        (el as any).playsInline = true;
+        el.setAttribute('playsinline', 'true');
+        el.setAttribute('webkit-playsinline', 'true');
+        this.attachHiddenAudioElement(el, 'croce-oro-radio-clip');
+        this.activeVoiceClipAudio = el;
+      } else {
         try {
           this.activeVoiceClipAudio.pause();
-          this.activeVoiceClipAudio.src = '';
         } catch {}
       }
-      const audio = new Audio(dataUrl);
-      audio.volume = 1.0;
-      (audio as any).playsInline = true;
-      this.activeVoiceClipAudio = audio;
-      await audio.play();
+      this.attachHiddenAudioElement(this.activeVoiceClipAudio, 'croce-oro-radio-clip');
+      this.activeVoiceClipAudio.src = dataUrl;
+      this.activeVoiceClipAudio.currentTime = 0;
+      await this.activeVoiceClipAudio.play();
       return true;
     } catch {
       return false;
@@ -772,7 +846,7 @@ class VhfRadioEngine {
       pcm16Base64?: string;
       sampleRate?: number;
     }>,
-    options?: { isEmergency?: boolean; speakerName?: string }
+    options?: { isEmergency?: boolean; speakerName?: string; playIntroTone?: boolean }
   ): Promise<boolean> {
     if (!Array.isArray(chunks) || chunks.length === 0) return false;
     await this.armBackgroundReception(
@@ -781,22 +855,29 @@ class VhfRadioEngine {
         : `📻 RADIO: ${options?.speakerName || 'Trasmissione'}`
     );
     const ctx = this.ensureAudioContext();
-    if (!ctx) return false;
-    if (ctx.state === 'suspended') {
+    if (ctx && ctx.state === 'suspended') {
       try {
         await ctx.resume();
       } catch {}
     }
-    this.interruptPlayback();
-    if (options?.isEmergency) {
-      this.playItalianPoliceSelcall('emergency');
-    } else {
-      this.playVhfKeyUp('normal');
+
+    // Se AudioContext è attivo, usa la pipeline HD WebAudio; se sospeso (risveglio background), usa fallback WAV HTMLAudioElement
+    if (ctx && ctx.state === 'running') {
+      if (options?.playIntroTone !== false) {
+        if (options?.isEmergency) {
+          this.playItalianPoliceSelcall('emergency');
+        } else {
+          this.playVhfKeyUp('normal');
+        }
+      }
+      chunks.forEach((pkt) => {
+        this.enqueueEncodedChunk(pkt);
+      });
+      return true;
     }
-    chunks.forEach((pkt) => {
-      this.enqueueEncodedChunk(pkt);
-    });
-    return true;
+
+    // Fallback diretto HTMLAudioElement WAV per dispositivi risvegliati dal background con AudioContext sospeso
+    return this.playChunksViaHtmlAudioWav(chunks);
   }
 
   private flushPendingRxPackets() {
@@ -1830,18 +1911,35 @@ class VhfRadioEngine {
       if (!ctx) return;
       if (ctx.state !== 'running') {
         // Non scartare l'audio in background: accoda i pacchetti mentre AudioContext si risveglia
-        if (this.pendingRxPackets.length >= 45) {
+        if (this.pendingRxPackets.length >= 60) {
           this.pendingRxPackets.shift();
         }
         this.pendingRxPackets.push(packet);
         ctx
           .resume()
           .then(() => {
+            if (this.pendingRxFallbackTimer) {
+              clearTimeout(this.pendingRxFallbackTimer);
+              this.pendingRxFallbackTimer = null;
+            }
             this.flushPendingRxPackets();
           })
           .catch(() => {});
         if (this.bgKeepAliveAudio && this.bgKeepAliveAudio.paused) {
           this.bgKeepAliveAudio.play().catch(() => {});
+        }
+        // Se AudioContext resta sospeso dopo 450ms (es. background mobile), riproduci via WAV HTMLAudioElement
+        if (!this.pendingRxFallbackTimer) {
+          this.pendingRxFallbackTimer = setTimeout(() => {
+            this.pendingRxFallbackTimer = null;
+            if (this.pendingRxPackets.length === 0) return;
+            if (this.audioCtx && this.audioCtx.state === 'running') {
+              this.flushPendingRxPackets();
+              return;
+            }
+            const batch = this.pendingRxPackets.splice(0, this.pendingRxPackets.length);
+            this.playChunksViaHtmlAudioWav(batch).catch(() => {});
+          }, 450);
         }
         return;
       }
@@ -1899,6 +1997,10 @@ class VhfRadioEngine {
   public interruptPlayback() {
     this.nextPlaybackTime = 0;
     this.pendingRxPackets = [];
+    if (this.pendingRxFallbackTimer) {
+      clearTimeout(this.pendingRxFallbackTimer);
+      this.pendingRxFallbackTimer = null;
+    }
     this.closeOpusDecoder();
     if (this.rxWorkletNode) {
       try {

@@ -23,11 +23,49 @@ export function isRunningInEmbeddedIframe(): boolean {
   }
 }
 
+let currentPushEndpoint: string = '';
+
+export function getCurrentPushEndpoint(): string {
+  if (currentPushEndpoint) return currentPushEndpoint;
+  if (typeof window !== 'undefined') {
+    try {
+      const saved = localStorage.getItem('CROCE_ORO_PUSH_ENDPOINT') || '';
+      if (saved) {
+        currentPushEndpoint = saved;
+        return saved;
+      }
+    } catch {}
+  }
+  return '';
+}
+
+function saveCurrentPushEndpoint(endpoint: string) {
+  currentPushEndpoint = endpoint || '';
+  if (typeof window !== 'undefined') {
+    try {
+      if (endpoint) {
+        localStorage.setItem('CROCE_ORO_PUSH_ENDPOINT', endpoint);
+      } else {
+        localStorage.removeItem('CROCE_ORO_PUSH_ENDPOINT');
+      }
+    } catch {}
+  }
+}
+
+function uint8ArraysEqual(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
 export async function getPushSubscriptionStatus(): Promise<{
   supported: boolean;
   permission: NotificationPermission;
   subscribed: boolean;
   inIframe: boolean;
+  endpoint?: string;
 }> {
   const inIframe = isRunningInEmbeddedIframe();
   if (typeof window === 'undefined' || !('serviceWorker' in navigator) || !('Notification' in window)) {
@@ -40,7 +78,10 @@ export async function getPushSubscriptionStatus(): Promise<{
   try {
     const reg = await navigator.serviceWorker.getRegistration('/');
     const sub = reg ? await reg.pushManager.getSubscription() : null;
-    return { supported: true, permission, subscribed: Boolean(sub), inIframe };
+    if (sub?.endpoint) {
+      saveCurrentPushEndpoint(sub.endpoint);
+    }
+    return { supported: true, permission, subscribed: Boolean(sub), inIframe, endpoint: sub?.endpoint };
   } catch {
     return { supported: true, permission, subscribed: false, inIframe };
   }
@@ -49,12 +90,14 @@ export async function getPushSubscriptionStatus(): Promise<{
 export async function attivaServiceWorkerEPush(
   ruolo: 'volontario' | 'admin',
   volontarioId?: string,
-  volontarioNome?: string
+  volontarioNome?: string,
+  options?: { silentOnly?: boolean }
 ): Promise<{
   supported: boolean;
   permission: NotificationPermission;
   subscribed: boolean;
   inIframe?: boolean;
+  endpoint?: string;
   reason?: string;
 }> {
   const inIframe = isRunningInEmbeddedIframe();
@@ -77,9 +120,9 @@ export async function attivaServiceWorkerEPush(
     return { supported: false, permission: 'denied', subscribed: false, inIframe, reason: 'not_supported' };
   }
 
-  // 2. Richiesta autorizzazione Notifiche se non già garantita
+  // 2. Richiesta autorizzazione Notifiche se non già garantita (salta prompt se silentOnly)
   let permission = Notification.permission;
-  if (permission !== 'granted') {
+  if (permission !== 'granted' && !options?.silentOnly) {
     try {
       permission = await Notification.requestPermission();
     } catch (e) {
@@ -137,10 +180,22 @@ export async function attivaServiceWorkerEPush(
       };
     }
 
-    // 5. Verifica o crea la sottoscrizione Push
+    // 5. Verifica o crea la sottoscrizione Push (controllando che la chiave VAPID coincida!)
+    const convertedVapidKey = urlBase64ToUint8Array(vapidKey);
     let subscription = await registration.pushManager.getSubscription();
+    if (subscription) {
+      try {
+        const existingKeyBuf = subscription.options?.applicationServerKey;
+        if (existingKeyBuf) {
+          const existingBytes = new Uint8Array(existingKeyBuf);
+          if (!uint8ArraysEqual(existingBytes, convertedVapidKey)) {
+            await subscription.unsubscribe().catch(() => {});
+            subscription = null;
+          }
+        }
+      } catch {}
+    }
     if (!subscription) {
-      const convertedVapidKey = urlBase64ToUint8Array(vapidKey);
       subscription = await registration.pushManager.subscribe({
         userVisibleOnly: true,
         applicationServerKey: convertedVapidKey as unknown as BufferSource
@@ -149,6 +204,7 @@ export async function attivaServiceWorkerEPush(
 
     // 6. Invia la sottoscrizione al backend Push (e al server locale se diverso)
     if (subscription) {
+      saveCurrentPushEndpoint(subscription.endpoint);
       const subBody = JSON.stringify({
         role: ruolo,
         volontarioId: effectiveVolId,
@@ -157,12 +213,13 @@ export async function attivaServiceWorkerEPush(
       });
 
       const registerTargets = Array.from(
-        new Set([activePushBase, pushBackendBase].filter((x) => typeof x === 'string'))
+        new Set([activePushBase, pushBackendBase, realtime.getApiBaseUrl()].filter((x) => typeof x === 'string'))
       );
       let registeredOk = false;
       for (const base of registerTargets) {
         try {
-          const resp = await fetch(`${base}/api/push-subscribe`, {
+          const cleanBase = base.replace(/\/$/, '');
+          const resp = await fetch(`${cleanBase}/api/push-subscribe`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: subBody,
@@ -173,13 +230,36 @@ export async function attivaServiceWorkerEPush(
       }
 
       console.log(`[Push] Sottoscrizione Push registrata (${registeredOk ? 'OK' : 'WARN'}) per ruolo: ${ruolo}${effectiveVolId ? ` (volId: ${effectiveVolId})` : ''}`);
-      return { supported: true, permission, subscribed: registeredOk, inIframe };
+      return { supported: true, permission, subscribed: registeredOk, inIframe, endpoint: subscription.endpoint };
     }
   } catch (err) {
     console.error('[Push] Errore durante registrazione push:', err);
   }
 
   return { supported: true, permission, subscribed: false, inIframe, reason: 'subscribe_error' };
+}
+
+export async function inviaTestPushRadioLocale(): Promise<{ ok: boolean; error?: string }> {
+  const endpoint = getCurrentPushEndpoint();
+  if (!endpoint) {
+    return { ok: false, error: 'Sottoscrizione Push non ancora registrata su questo dispositivo.' };
+  }
+  const pushBase = realtime.getPushBackendBaseUrl().replace(/\/$/, '');
+  try {
+    const res = await fetch(`${pushBase}/api/push-test`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ endpoint }),
+      cache: 'no-store',
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok || !json?.success) {
+      return { ok: false, error: json?.error || `Errore server Push (${res.status})` };
+    }
+    return { ok: true };
+  } catch (err: any) {
+    return { ok: false, error: err?.message || 'Impossibile contattare il server Push.' };
+  }
 }
 
 // Mostra una notifica nativa di sistema immediata

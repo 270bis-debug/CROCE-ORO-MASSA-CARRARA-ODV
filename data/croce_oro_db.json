@@ -41,7 +41,8 @@
       "dataRichiestaResetPassword": "16/11/2026 13:42",
       "richiedeResetPassword": true,
       "indirizzoResidenza": "Via Roma 1, 54100 Massa (MS)",
-      "resetToken": "rst-1794832952041-3ryw6dq"
+      "resetToken": "rst-1794832952041-3ryw6dq",
+      "loggatoUpdatedAt": 1795216423724
     },
     {
       "id": "vol-1790806001919",
@@ -192,7 +193,8 @@
       ],
       "sezioneAppartenenzaId": "sede-carrara-fossone",
       "mansione": "Autista",
-      "esenteQuotaAssociativa": false
+      "esenteQuotaAssociativa": false,
+      "loggatoUpdatedAt": 1795217221790
     },
     {
       "id": "vol-1792318394496",
@@ -2848,11 +2850,11 @@
     "timestamp": 0
   },
   "gpsPosition": {
-    "lat": 44.1290863,
-    "lng": 9.9420489,
-    "accuratezza": 2.4200000762939453,
-    "velocita": 38,
-    "orario": "09:38:22"
+    "lat": 44.063836,
+    "lng": 10.0493779,
+    "accuratezza": 15.303999900817871,
+    "velocita": null,
+    "orario": "00:26:12"
   },
   "activeShift": {
     "attivo": false
@@ -3673,6 +3675,42 @@
       "orario": "22:09:49",
       "testo": "🔕 SUONERIA SILENZIATA dall'operatore.",
       "tipo": "sistema"
+    },
+    {
+      "id": "notif-1795216628320-1-vrj2",
+      "orario": "00:17:08",
+      "testo": "📡 RADIO DIRETTA VHF/UHF ATTIVATA da Centrale Sim: canale PTT aperto a tutti i terminali loggati.",
+      "tipo": "centrale"
+    },
+    {
+      "id": "notif-1795216629451-2-cj33",
+      "orario": "00:17:09",
+      "testo": "🚨 EMERGENZA RADIO CENTRALE (Centrale Remote): Test Emergenza",
+      "tipo": "allarme"
+    },
+    {
+      "id": "notif-1795216629655-3-bc37",
+      "orario": "00:17:09",
+      "testo": "🔇 RADIO DIRETTA VHF/UHF DISATTIVATA da Centrale Sim: trasmissioni PTT in diretta sospese.",
+      "tipo": "centrale"
+    },
+    {
+      "id": "notif-1795217420828-1-kh9m",
+      "orario": "00:30:20",
+      "testo": "🚨 EMERGENZA RADIO CENTRALE (Operatore Centrale): ALLERTA EMERGENZA GENERALE DALLA CENTRALE OPERATIVA",
+      "tipo": "allarme"
+    },
+    {
+      "id": "notif-1795217422257-2-0fp1",
+      "orario": "00:30:22",
+      "testo": "📡 RADIO DIRETTA VHF/UHF ATTIVATA da Operatore Centrale: canale PTT aperto a tutti i terminali loggati.",
+      "tipo": "centrale"
+    },
+    {
+      "id": "notif-1795217422542-3-yhk0",
+      "orario": "00:30:22",
+      "testo": "🔇 RADIO DIRETTA VHF/UHF DISATTIVATA da Operatore Centrale: trasmissioni PTT in diretta sospese.",
+      "tipo": "centrale"
     }
   ],
   "serviziArchivio": [],
@@ -4116,6 +4154,8 @@
   "promemoriaCompleanniInviati": {},
   "timbrature": [],
   "bacheca": [],
+  "bachecaEliminatiIds": [],
+  "notificheBachecaRecenti": [],
   "giornaleBordo": [],
   "codiciEliminati": [
     "CO-VET-ROSSO-2026-001"
@@ -4123,7 +4163,22 @@
   "magazzinoParti": [],
   "magazzinoMezzi": [],
   "corsiFormazione": [],
-  "loggedSessions": {},
+  "loggedSessions": {
+    "vol-admin": {
+      "loggato": true,
+      "updatedAt": 1795216423724,
+      "volontarioNome": "Amministratore Centrale",
+      "mezzoScelto": ""
+    },
+    "vol-1790806001919": {
+      "loggato": true,
+      "updatedAt": 1795217221790,
+      "volontarioNome": "Claudio Simonini",
+      "mezzoScelto": "",
+      "orarioInizio": "09:49:53"
+    }
+  },
+  "pushSubscribers": [],
   "indirizziCollezionati": [
     {
       "id": "ind-1794523662855-iq3m",
@@ -4142,36 +4197,17 @@
   ],
   "radioPtt": {
     "enabled": false,
-    "activeSpeaker": null
+    "toggledBy": "Operatore Centrale",
+    "toggledAt": 1795217422542,
+    "activeSpeaker": null,
+    "codecMode": "adpcm-24k"
   },
   "radioGroups": [],
   "radioEmergency": {
-    "active": false
+    "active": false,
+    "triggeredBy": "Operatore Centrale",
+    "triggeredAt": 1795217421306,
+    "message": ""
   },
-  "publicAppUrl": "",
-  "sollecitoFirmaPin": {
-    "id": "sollecito-firma-pin-1795077782286",
-    "createdAt": 1795077782286,
-    "dataOra": "19/11/2026 09:43:02",
-    "inviatoDa": "Amministratore Centrale",
-    "titolo": "✍️ Firma Digitale Obbligatoria & Controllo PIN",
-    "messaggio": "Sul tuo profilo non risulta ancora caricata la firma digitale. Se hai già effettuato l'accesso in App, esci subito facendo LOGOUT e rientra facendo LOGIN (oppure fai accesso se non l'hai ancora fatto): al login dovrai obbligatoriamente caricare la tua firma e cambiare il PIN se hai ancora 0000.",
-    "targetIds": [
-      "vol-1792318394496",
-      "vol-1794869841576",
-      "vol-1794870045470",
-      "vol-1794870211638",
-      "vol-1794870342488",
-      "vol-1794870489636",
-      "vol-1794870745034",
-      "vol-1794870910544",
-      "vol-1794871225631",
-      "vol-1794871529532",
-      "vol-1794871687566",
-      "vol-1794872032009"
-    ],
-    "includiTuttiSenzaFirma": true,
-    "totaleDestinatari": 12,
-    "emailsInviateCount": 10
-  }
+  "publicAppUrl": ""
 }

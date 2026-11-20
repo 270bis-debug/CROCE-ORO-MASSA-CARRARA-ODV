@@ -263,15 +263,57 @@ class RealtimeService {
   }
 
   private wsKeepAliveTimer: any = null;
+  private lastWsMessageAt: number = 0;
+  private awaitingPongSince: number = 0;
+
+  private getSavedPushEndpoint(): string | undefined {
+    if (typeof window === 'undefined') return undefined;
+    try {
+      const ep = localStorage.getItem('CROCE_ORO_PUSH_ENDPOINT') || '';
+      return ep.startsWith('https://') ? ep : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  public forceReconnectWebSocket() {
+    if (this.ws) {
+      try {
+        this.ws.onopen = null;
+        this.ws.onmessage = null;
+        this.ws.onerror = null;
+        this.ws.onclose = null;
+        this.ws.close();
+      } catch {}
+      this.ws = null;
+    }
+    this.wsConnected = false;
+    this.awaitingPongSince = 0;
+    this.connect();
+  }
 
   public ensureConnected() {
-    if (this.isServerlessStaticHost()) return;
     if (!this.ws || (this.ws.readyState !== WebSocket.OPEN && this.ws.readyState !== WebSocket.CONNECTING)) {
       this.connect();
-    } else if (this.ws.readyState === WebSocket.OPEN) {
+      return;
+    }
+    if (this.ws.readyState === WebSocket.OPEN) {
+      const now = Date.now();
+      // Se il socket non ha dato segni di vita da > 22s o ha un PING senza PONG da > 6.5s, è uno zombie (es. cambio rete 4G <-> Wi-Fi): riconnetti subito!
+      if (
+        (this.awaitingPongSince > 0 && now - this.awaitingPongSince > 6500) ||
+        (this.lastWsMessageAt > 0 && now - this.lastWsMessageAt > 25000)
+      ) {
+        this.forceReconnectWebSocket();
+        return;
+      }
       try {
+        this.awaitingPongSince = now;
+        this.ws.send(JSON.stringify({ type: 'PING', data: { ts: now } }));
         this.ws.send(JSON.stringify({ type: 'PTT_CLIENT_CAPS', data: this.localRadioClientMeta }));
-      } catch {}
+      } catch {
+        this.forceReconnectWebSocket();
+      }
     }
   }
 
@@ -297,22 +339,45 @@ class RealtimeService {
       }
     };
 
-    // Heartbeat leggero ogni 20s per mantenere aperta la portante WebSocket radio anche in background
+    // Heartbeat attivo ogni 10s con rilevamento zombie-socket (PONG watchdog) per mantenere viva la portante radio su 4G/5G e Wi-Fi
     if (!this.wsKeepAliveTimer) {
       this.wsKeepAliveTimer = setInterval(() => {
-        if (this.isServerlessStaticHost()) return;
+        const now = Date.now();
         if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+          if (this.awaitingPongSince > 0 && now - this.awaitingPongSince > 6500) {
+            this.forceReconnectWebSocket();
+            return;
+          }
           try {
-            this.ws.send(JSON.stringify({ type: 'PING', data: { ts: Date.now() } }));
-          } catch {}
+            if (!this.awaitingPongSince) {
+              this.awaitingPongSince = now;
+            }
+            this.ws.send(JSON.stringify({ type: 'PING', data: { ts: now } }));
+          } catch {
+            this.forceReconnectWebSocket();
+          }
         } else if (!this.ws || this.ws.readyState === WebSocket.CLOSED) {
           this.connect();
         }
-      }, 20000);
+      }, 10000);
+    }
+
+    // Rileva immediatamente cambi di rete mobile (Wi-Fi <-> 4G/5G) su Android/Chrome e forza il ripristino della portante radio
+    const navConn = (navigator as any)?.connection;
+    if (navConn && typeof navConn.addEventListener === 'function') {
+      try {
+        navConn.addEventListener('change', () => {
+          this.forceReconnectWebSocket();
+          this.emit('NETWORK_CHANGED', { ts: Date.now() });
+        });
+      } catch {}
     }
 
     window.addEventListener('pagehide', flushPending);
-    window.addEventListener('online', wakeTransport);
+    window.addEventListener('online', () => {
+      this.forceReconnectWebSocket();
+      wakeTransport();
+    });
     window.addEventListener('focus', wakeTransport);
     window.addEventListener('pageshow', wakeTransport);
     document.addEventListener('visibilitychange', () => {
@@ -1826,7 +1891,7 @@ class RealtimeService {
   }
 
   public getWebSocketUrl(): string {
-    const baseUrl = this.getApiBaseUrl();
+    const baseUrl = this.isServerlessStaticHost() ? this.getPushBackendBaseUrl() : this.getApiBaseUrl();
     if (!baseUrl) return '';
     if (baseUrl.startsWith('https:')) {
       return baseUrl.replace(/^https:/, 'wss:');
@@ -1857,13 +1922,6 @@ class RealtimeService {
   public connect() {
     if (typeof window === 'undefined') return;
 
-    // Su Vercel / hosting statici senza server WebSocket configurato manualmente, evita loop WS inutili
-    if (this.isServerlessStaticHost()) {
-      this.wsConnected = false;
-      this.recomputeConnectionStatus();
-      return;
-    }
-
     if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
       return;
     }
@@ -1875,22 +1933,35 @@ class RealtimeService {
 
     try {
       const url = this.getWebSocketUrl();
+      if (!url) return;
       this.ws = new WebSocket(url);
 
       this.ws.onopen = () => {
         this.wsConnected = true;
+        this.lastWsMessageAt = Date.now();
+        this.awaitingPongSince = 0;
         if (this.reconnectTimer) {
           clearTimeout(this.reconnectTimer);
           this.reconnectTimer = null;
         }
         this.recomputeConnectionStatus();
+        // Invia subito identità client prima ancora del check async Opus così i gruppi radio sono immediatamente autorizzati!
+        try {
+          this.ws?.send(JSON.stringify({ type: 'PTT_CLIENT_CAPS', data: { ...this.localRadioClientMeta } }));
+        } catch {}
         this.reportOpusCapability();
+        this.emit('WS_RECONNECTED', { ts: Date.now() });
       };
 
       this.ws.onmessage = (event) => {
+        this.lastWsMessageAt = Date.now();
+        this.awaitingPongSince = 0;
         try {
           const payload = JSON.parse(event.data);
           if (payload && payload.type) {
+            if (payload.type === 'PONG') {
+              return;
+            }
             if (payload.type === 'INIT_SYNC' && payload.state) {
               const mergedState = this.mergeIncomingExpressState(payload.state);
               this.emit('INIT_SYNC', { ...payload, state: mergedState });
@@ -2198,7 +2269,7 @@ class RealtimeService {
 
       if (!this.wsConnected || pollCount % 4 === 0) {
         try {
-          const baseUrl = this.getApiBaseUrl();
+          const baseUrl = this.isServerlessStaticHost() ? this.getPushBackendBaseUrl() : this.getApiBaseUrl();
           const res = await fetch(`${baseUrl}/api/sync`, {
             headers: { Accept: 'application/json' },
             cache: 'no-store',
@@ -3262,12 +3333,15 @@ class RealtimeService {
     }
 
     // 3. Invio HTTP ridondante verso Express / Push Backend
-    // Gli eventi radio critici (Emergenza, Accensione Canale Tutti/Gruppo, PTT, Messaggi Radio) vengono SEMPRE
-    // recapitati anche al Push Backend (incluso da host serverless Vercel/croceoro.org) per risvegliare i device a schermo spento.
+    // Tutti gli eventi radio critici (Emergenza, Canale Tutti/Gruppi, Creazione/Aggiornamento Gruppi, PTT, Messaggi Radio)
+    // vengono SEMPRE recapitati anche al Push Backend (incluso da host serverless Vercel/croceoro.org) per risvegliare i device a schermo spento.
     const isRadioCritical =
       type === 'TRIGGER_RADIO_EMERGENCY' ||
       type === 'TOGGLE_RADIO_PTT_LIVE' ||
       type === 'TOGGLE_RADIO_GROUP_LIVE' ||
+      type === 'CREATE_RADIO_GROUP' ||
+      type === 'UPDATE_RADIO_GROUP_MEMBERS' ||
+      type === 'DELETE_RADIO_GROUP' ||
       type === 'PTT_START' ||
       type === 'PTT_STOP' ||
       type === 'SEND_RADIO_MESSAGE';
@@ -3844,6 +3918,7 @@ class RealtimeService {
     return this.send('SEND_RADIO_MESSAGE', {
       mittente,
       testo,
+      senderEndpoint: this.getSavedPushEndpoint(),
       ...(extra || {}),
     });
   }
@@ -3854,6 +3929,7 @@ class RealtimeService {
       role,
       operatorName,
       volontarioId: this.localRadioClientMeta.volontarioId || undefined,
+      senderEndpoint: this.getSavedPushEndpoint(),
     });
   }
 
@@ -3894,7 +3970,8 @@ class RealtimeService {
     groupId: string,
     enabled: boolean,
     operatorName: string,
-    role: 'admin' | 'volontario'
+    role: 'admin' | 'volontario',
+    groupSnapshot?: { id: string; name: string; memberIds: string[]; enabled?: boolean }
   ) {
     return this.send('TOGGLE_RADIO_GROUP_LIVE', {
       groupId,
@@ -3902,6 +3979,8 @@ class RealtimeService {
       operatorName,
       role,
       volontarioId: this.localRadioClientMeta.volontarioId || undefined,
+      senderEndpoint: this.getSavedPushEndpoint(),
+      ...(groupSnapshot ? { groupSnapshot } : {}),
     });
   }
 
@@ -3924,6 +4003,7 @@ class RealtimeService {
       role,
       message,
       volontarioId: this.localRadioClientMeta.volontarioId || undefined,
+      senderEndpoint: this.getSavedPushEndpoint(),
     });
   }
 
@@ -3970,7 +4050,12 @@ class RealtimeService {
     speakerId: string,
     speakerName: string,
     role: 'admin' | 'volontario',
-    options?: { channelId?: string; volontarioId?: string; isEmergency?: boolean }
+    options?: {
+      channelId?: string;
+      volontarioId?: string;
+      isEmergency?: boolean;
+      groupSnapshot?: { id: string; name: string; memberIds: string[]; enabled?: boolean };
+    }
   ) {
     return this.send('PTT_START', {
       speakerId,
@@ -3979,6 +4064,8 @@ class RealtimeService {
       channelId: options?.channelId || 'general',
       volontarioId: options?.volontarioId || this.localRadioClientMeta.volontarioId,
       isEmergency: Boolean(options?.isEmergency),
+      senderEndpoint: this.getSavedPushEndpoint(),
+      ...(options?.groupSnapshot ? { groupSnapshot: options.groupSnapshot } : {}),
     });
   }
 
