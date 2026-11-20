@@ -46,6 +46,8 @@ import {
   UserPlus,
   Search,
   ChevronRight,
+  ChevronDown,
+  SlidersHorizontal,
   Mail,
   Folder,
   FolderArchive,
@@ -184,6 +186,10 @@ import {
   getTipologieMezzoCatalogo,
   applicaTipologieMezzoDaSync,
 } from './utils/tipologieMezzo';
+import {
+  getTipiTurnoCatalogo,
+  applicaTipiTurnoDaSync,
+} from './utils/tipiTurno';
 import { AdminTopNavbar } from './components/admin/AdminTopNavbar';
 import { SezioneVolontari } from './components/admin/SezioneVolontari';
 import { SezioneMezzi } from './components/admin/SezioneMezzi';
@@ -4362,6 +4368,26 @@ export default function App() {
   const [infoConnessione, setInfoConnessione] = useState<ConnectionInfo>(() => realtime.getConnectionInfo());
   const [modalConnessioneAperta, setModalConnessioneAperta] = useState(false);
   const [modalAccessoWebAperta, setModalAccessoWebAperta] = useState(false);
+  const [menuHeaderAzioniAperto, setMenuHeaderAzioniAperto] = useState(false);
+  const menuHeaderAzioniRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!menuHeaderAzioniAperto) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (menuHeaderAzioniRef.current && !menuHeaderAzioniRef.current.contains(e.target as Node)) {
+        setMenuHeaderAzioniAperto(false);
+      }
+    };
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setMenuHeaderAzioniAperto(false);
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [menuHeaderAzioniAperto]);
 
   // Caricamento immediato all'avvio dal server cloud persistente (allinea subito entrambi i telefoni)
   useEffect(() => {
@@ -10322,6 +10348,9 @@ KM TOTALI: ${kmTot} KM`;
         if (Array.isArray(s.tipologieMezzo) && s.tipologieMezzo.length > 0) {
           applicaTipologieMezzoDaSync(s.tipologieMezzo, s.tipologieMezzoUpdatedAt);
         }
+        if (Array.isArray(s.tipiTurno)) {
+          applicaTipiTurnoDaSync(s.tipiTurno, s.tipiTurnoUpdatedAt);
+        }
         if (Array.isArray(s.rubricaNumeriUtili)) {
           applicaRubricaNumeriUtiliDaSync(s.rubricaNumeriUtili, s.rubricaNumeriUtiliUpdatedAt);
         }
@@ -10529,6 +10558,9 @@ KM TOTALI: ${kmTot} KM`;
         }
         if (Array.isArray(s.tipologieMezzo) && s.tipologieMezzo.length > 0) {
           applicaTipologieMezzoDaSync(s.tipologieMezzo, s.tipologieMezzoUpdatedAt);
+        }
+        if (Array.isArray(s.tipiTurno)) {
+          applicaTipiTurnoDaSync(s.tipiTurno, s.tipiTurnoUpdatedAt);
         }
         if (Array.isArray(s.rubricaNumeriUtili)) {
           applicaRubricaNumeriUtiliDaSync(s.rubricaNumeriUtili, s.rubricaNumeriUtiliUpdatedAt);
@@ -12563,6 +12595,11 @@ KM TOTALI: ${kmTot} KM`;
           applicaTipologieMezzoDaSync(payload.tipologieMezzo, payload.updatedAt);
         }
       }),
+      realtime.on('TIPI_TURNO_UPDATED', (payload: any) => {
+        if (Array.isArray(payload?.tipiTurno)) {
+          applicaTipiTurnoDaSync(payload.tipiTurno, payload.updatedAt);
+        }
+      }),
       realtime.on('RUBRICA_NUMERI_UTILI_UPDATED', (payload: any) => {
         if (Array.isArray(payload?.rubrica)) {
           applicaRubricaNumeriUtiliDaSync(payload.rubrica, payload.updatedAt);
@@ -12626,6 +12663,7 @@ KM TOTALI: ${kmTot} KM`;
           catalogoMansioni: getMansioniCatalogo(),
           categorieMansioni: getCategorieMansioni(),
           tipologieMezzo: getTipologieMezzoCatalogo(),
+          tipiTurno: getTipiTurnoCatalogo(),
           nomiDatabase: getNomiDatabaseSyncPayload(),
           rubricaNumeriUtili: getRubricaNumeriUtili(),
           rubricaNumeriUtiliUpdatedAt: getRubricaNumeriUtiliUpdatedAt(),
@@ -13050,6 +13088,7 @@ KM TOTALI: ${kmTot} KM`;
               catalogoMansioni: getMansioniCatalogo(),
               categorieMansioni: getCategorieMansioni(),
               tipologieMezzo: getTipologieMezzoCatalogo(),
+              tipiTurno: getTipiTurnoCatalogo(),
               mezziFlotta,
               nomiDatabase: getNomiDatabaseSyncPayload(),
               rubricaNumeriUtili: getRubricaNumeriUtili(),
@@ -13096,11 +13135,11 @@ KM TOTALI: ${kmTot} KM`;
 
   return (
     <div
-      className={isWeb ? "min-h-screen bg-white text-slate-900 flex flex-col font-sans" : "min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans"}
+      className={isWeb ? "min-h-[100dvh] w-full max-w-[100vw] overflow-x-hidden bg-white text-slate-900 flex flex-col font-sans" : "min-h-[100dvh] w-full max-w-[100vw] overflow-x-hidden bg-slate-950 text-slate-100 flex flex-col font-sans"}
       style={isWeb ? { backgroundColor: '#ffffff', color: '#0f172a' } : undefined}
     >
       {mapsQuotaExceeded && (
-        <div className="bg-amber-50 border-b border-amber-200 text-amber-900 px-4 py-2.5 text-xs md:text-sm text-center sticky top-0 z-50 shadow-sm">
+        <div className="bg-amber-50 border-b border-amber-200 text-amber-900 px-3 py-1.5 text-xs text-center z-50 shadow-sm">
           <span>
             Google Maps Platform quota reached. If you are the app owner, visit{' '}
             <a
@@ -13120,463 +13159,677 @@ KM TOTALI: ${kmTot} KM`;
       {/* BANNER NOTIFICA SQUILLO IN CORSO (VISIBILE OVUNQUE QUANDO SQUILLA) */}
       {/* ----------------------------------------------------------------- */}
       {isPhoneRinging && (
-        <div className="bg-red-600 text-white px-4 py-3 flex items-center justify-between shadow-2xl sticky top-0 z-50 animate-bounce" style={{ backgroundColor: '#dc2626', color: '#ffffff' }}>
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-full bg-white/20 flex items-center justify-center animate-spin">
-              <BellRing className="w-6 h-6 text-white" />
+        <div className="bg-red-600 text-white px-3 py-2 flex flex-wrap items-center justify-between gap-2 shadow-2xl sticky top-0 z-50" style={{ backgroundColor: '#dc2626', color: '#ffffff' }}>
+          <div className="flex items-center gap-2 min-w-0">
+            <div className="w-8 h-8 rounded-full bg-white/20 flex items-center justify-center animate-spin shrink-0">
+              <BellRing className="w-4 h-4 text-white" />
             </div>
-            <div>
-              <div className="font-black text-sm uppercase tracking-wide flex items-center gap-2">
-                <span>📞 TELEFONO IN SQUILLO ATTIVO!</span>
-                <span className="text-xs px-2 py-0.5 rounded-full bg-white text-red-700 font-bold">
+            <div className="min-w-0">
+              <div className="font-black text-xs sm:text-sm uppercase tracking-wide flex items-center gap-1.5 flex-wrap">
+                <span>TELEFONO IN SQUILLO ATTIVO</span>
+                <span className="text-[10px] px-2 py-0.5 rounded-full bg-white text-red-700 font-bold">
                   {ringingSource}
                 </span>
               </div>
-              <p className="text-xs text-red-100">
+              <p className="text-[11px] text-red-100 hidden sm:block">
                 Suoneria acustica d'emergenza in corso su terminale e postazione.
               </p>
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
-            <button
-              onClick={arrestaSuoneria}
-              className="px-4 py-2 rounded-xl bg-white hover:bg-slate-100 text-red-700 font-black text-xs uppercase flex items-center gap-2 shadow-lg transition-transform active:scale-95 border-2 border-red-800"
-              style={{ backgroundColor: '#ffffff', color: '#b91c1c', borderColor: '#991b1b' }}
-            >
-              <BellOff className="w-4 h-4" />
-              Silenzia / Rispondi
-            </button>
-          </div>
+          <button
+            onClick={arrestaSuoneria}
+            className="px-3 py-1.5 rounded-lg bg-white hover:bg-slate-100 text-red-700 font-black text-xs uppercase flex items-center gap-1.5 shadow-lg transition-transform active:scale-95 border-2 border-red-800 shrink-0 whitespace-nowrap"
+            style={{ backgroundColor: '#ffffff', color: '#b91c1c', borderColor: '#991b1b' }}
+          >
+            <BellOff className="w-3.5 h-3.5" />
+            <span>Silenzia</span>
+          </button>
         </div>
       )}
 
-      {/* Intestazione Principale Croce Oro (mostrata per Amministratore / Centrale Operativa e per Volontario) */}
-      {ruolo && (
-        <header
-          className={isWeb ? "border-b-2 border-slate-300 bg-white sticky top-0 z-40 px-3 sm:px-6 py-2.5 flex flex-wrap items-center justify-between gap-3 shadow-md" : "border-b border-slate-800 bg-slate-900/90 backdrop-blur-md sticky top-0 z-40 px-3 sm:px-6 py-2.5 flex flex-wrap items-center justify-between gap-3 shadow-md"}
-          style={isWeb ? { backgroundColor: '#ffffff', borderColor: '#cbd5e1', color: '#0f172a' } : undefined}
-        >
-        <div className="flex items-center gap-3">
-          <CroceOroLogo size="md" className="shadow-md shadow-amber-500/20" />
-          <div>
-            <div className="flex items-center gap-2">
-              <h1 className={`text-sm sm:text-base font-black tracking-wider uppercase ${isWeb ? 'text-[#1d1a60]' : 'text-amber-400'}`}>
-                Croce Oro Massa Carrara OdV
-              </h1>
-              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border font-mono ${isWeb ? 'bg-amber-100 text-amber-950 border-amber-300 font-black' : 'bg-amber-500/20 text-amber-300 border border-amber-500/40'}`}>
-                {APP_VERSION_LABEL}
-              </span>
-            </div>
-            <p className={`text-[11px] font-bold ${isWeb ? 'text-slate-600' : 'text-white font-medium'}`}>
-              Associazione Volontari del Soccorso & Protezione Civile
-            </p>
-          </div>
-        </div>
+      {/* Intestazione Principale Compatta & Adattiva (Mobile, Tablet, Desktop) */}
+      {ruolo && (() => {
+        const isAdminAttivoInHeader = ruolo === 'admin' && isCentraleAdmin;
+        const puoVedereDatabaseAccount =
+          ruolo === 'admin' && (isCentraleAdmin || sezioniAbilitateUtente.includes('volontari'));
 
-        {/* Pulsanti Rapidi Comuni Unificati (Allarmi, Rubrica, Notifiche Radio, Permessi, Ruolo) */}
-        <div className="flex items-center flex-wrap gap-2">
-          
-          {/* PULSANTE INSTALLAZIONE PWA (AUTOMATICAMENTE NASCOSTO IN STANDALONE) */}
-          <PWAInstallButton />
-
-          {/* BADGE STATO SINCRONIZZAZIONE LIVE MULTI-DEVICE */}
-          <button
-            onClick={() => setModalConnessioneAperta(true)}
-            className={`px-2.5 py-1.5 rounded-xl border text-xs font-bold flex items-center gap-1.5 shadow-sm active:scale-95 transition-all cursor-pointer ${
-              infoConnessione.connected
-                ? (isWeb ? 'bg-emerald-100 border-2 border-emerald-500 text-emerald-950 font-black' : 'bg-emerald-950/70 border-emerald-500/40 text-emerald-300 hover:bg-emerald-900/80')
-                : infoConnessione.status === 'polling' || infoConnessione.status === 'auth_required'
-                ? (isWeb ? 'bg-amber-100 border-2 border-amber-500 text-amber-950 font-black' : 'bg-amber-950/70 border-amber-500/40 text-amber-300 hover:bg-amber-900/80')
-                : (isWeb ? 'bg-red-100 border-2 border-red-500 text-red-950 font-black animate-pulse' : 'bg-red-950/70 border-red-500/40 text-red-300 hover:bg-red-900/80 animate-pulse')
-            }`}
-            title="Stato sincronizzazione in tempo reale con Centrale / Terminali"
-          >
-            <span className={`w-2 h-2 rounded-full ${
-              infoConnessione.connected
-                ? 'bg-emerald-500 animate-pulse'
-                : infoConnessione.status === 'polling' || infoConnessione.status === 'auth_required'
-                ? 'bg-amber-500'
-                : 'bg-red-500'
-            }`} />
-            <span className="hidden sm:inline">
-              {infoConnessione.connected
-                ? 'Sincronizzato Live'
-                : infoConnessione.status === 'polling'
-                ? 'Sync HTTP'
-                : infoConnessione.status === 'auth_required'
-                ? 'Attiva Sync Cloud'
-                : 'Non Sincronizzato'}
-            </span>
-            <span className="sm:hidden font-mono text-[10px]">
-              {infoConnessione.connected ? 'Live' : infoConnessione.status === 'auth_required' ? 'Cloud' : 'Sync'}
-            </span>
-          </button>
-
-          {/* TASTI SQUILLO & ALLARME EMERGENZA (ACCESSIBILE DA TUTTI I DISPOSITIVI) */}
-          <div className={`flex items-center p-1 rounded-xl border ${isWeb ? 'bg-slate-100 border-slate-300' : 'bg-slate-950/90 border-slate-800'}`}>
-            <button
-              onClick={() => faiSuonareTelefono(ruolo === 'admin' ? 'Centrale Operativa' : 'Volontario Bordo', 'telefono')}
-              className="px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs flex items-center gap-1.5 shadow-sm active:scale-95 transition-all border border-amber-700"
-              style={{ backgroundColor: '#f59e0b', color: '#020617', borderColor: '#b45309' }}
-              title="Fai squillare il telefono con suoneria bitonale a massimo volume"
-            >
-              <BellRing className="w-4 h-4 text-slate-950" />
-              <span>Fai Squillare</span>
-            </button>
-            <button
-              onClick={() => faiSuonareTelefono(ruolo === 'admin' ? 'Centrale (Allarme Sirena)' : 'Bordo (Allarme Sirena)', 'sirena')}
-              className="ml-1 px-2.5 py-1.5 rounded-lg bg-red-600 hover:bg-red-500 text-white font-black text-xs flex items-center gap-1 shadow-sm active:scale-95 transition-all border border-red-800"
-              style={{ backgroundColor: '#dc2626', color: '#ffffff', borderColor: '#991b1b' }}
-              title="Attiva allarme acustico a sirena"
-            >
-              <Volume2 className="w-3.5 h-3.5 text-white" />
-              <span className="hidden sm:inline">Sirena</span>
-            </button>
-          </div>
-
-
-          {/* TASTO NOTIFICHE RADIO CON CONTEGGIO E INDICATORE PTT LIVE */}
-          <button
-            onClick={() => {
-              vhfRadioEngine.unlockAudio();
-              setModalNotificheAperta(true);
-            }}
-            className={`px-3 py-1.5 rounded-xl font-bold text-xs flex items-center gap-2 relative transition-colors shadow-sm border ${
-              radioPttState.activeSpeaker
-                ? 'bg-red-600 hover:bg-red-500 text-white border-red-400 ring-2 ring-red-400/50 animate-pulse'
-                : isWeb
-                ? 'bg-slate-100 hover:bg-slate-200 text-slate-800 border-slate-300'
-                : 'bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-700'
-            }`}
-            style={
-              radioPttState.activeSpeaker
-                ? undefined
-                : isWeb
-                ? { backgroundColor: '#f1f5f9', color: '#0f172a', borderColor: '#cbd5e1' }
-                : undefined
-            }
-            title="Apri Notifiche Radio, Messaggi Audio e Ricetrasmittente Diretta VHF/UHF PTT"
-          >
-            <Radio className={`w-4 h-4 ${radioPttState.activeSpeaker ? 'text-white animate-spin' : 'text-emerald-500'}`} />
-            <span>{radioPttState.activeSpeaker ? `LIVE: ${radioPttState.activeSpeaker.speakerName}` : 'Notifiche Radio'}</span>
-            <span className={`w-5 h-5 rounded-full border text-[10px] flex items-center justify-center font-mono font-bold ${
-              radioPttState.activeSpeaker
-                ? 'bg-white text-red-700 border-red-300 font-black'
-                : isWeb
-                ? 'bg-emerald-100 text-emerald-900 border-emerald-400 font-black'
-                : 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40'
-            }`}>
-              {notificheCentrale.length}
-            </span>
-          </button>
-
-          {/* TASTO CENTRO NOTIFICHE ARCHIVIO COMPLETO ACCOUNT */}
-          <button
-            type="button"
-            onClick={() => setModalCentroNotificheAperta(true)}
-            className={`px-3 py-1.5 rounded-xl font-bold text-xs flex items-center gap-2 relative transition-all shadow-sm border ${
-              isWeb ? 'bg-slate-100 hover:bg-slate-200 text-slate-800 border-slate-300' : 'bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-700'
-            }`}
-            style={isWeb ? { backgroundColor: '#f1f5f9', color: '#0f172a', borderColor: '#cbd5e1' } : undefined}
-            title="Centro Notifiche: archivio permanente di tutte le notifiche ricevute"
-          >
-            <Bell className={`w-4 h-4 ${conteggioNotificheNonLette > 0 ? 'text-amber-500 animate-bounce' : 'text-slate-400'}`} />
-            <span className="hidden sm:inline">Notifiche</span>
-            {conteggioNotificheNonLette > 0 ? (
-              <span className="px-1.5 py-0.2 min-w-[20px] h-5 rounded-full bg-red-600 text-white text-[10px] font-black flex items-center justify-center font-mono shadow-sm">
-                {conteggioNotificheNonLette > 99 ? '99+' : conteggioNotificheNonLette}
-              </span>
-            ) : (
-              <span className={`w-5 h-5 rounded-full border text-[10px] flex items-center justify-center font-mono font-medium ${
-                isWeb ? 'bg-slate-200 text-slate-600 border-slate-300' : 'bg-slate-700/50 text-slate-400 border-slate-600'
-              }`}>
-                {notificheRicevuteAccount.length}
-              </span>
-            )}
-          </button>
-
-          {/* TASTO STATO AUTORIZZAZIONI (MOSTRATO SOLO SE SONO DA RIABILITARE) */}
-          {permessiDaRiabilitare && (
-            <button
-              onClick={() => setModalSetupPermessiAperta(true)}
-              className="px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs flex items-center gap-1.5 shadow-md active:scale-95 transition-all animate-pulse cursor-pointer border-2 border-amber-700"
-              style={{ backgroundColor: '#f59e0b', color: '#020617', borderColor: '#b45309' }}
-              title="Clicca per riabilitare le autorizzazioni (Notifiche Push, Sblocco Audio, GPS, Schermo Acceso)"
-            >
-              <Shield className="w-3.5 h-3.5 text-slate-950" />
-              <span>Abilita Permessi</span>
-              <span className="w-2 h-2 rounded-full bg-red-600 animate-ping" />
-            </button>
-          )}
-
-          {/* TASTO APRI DATABASE GESTIONE ACCOUNT VOLONTARI & OPERATORI (SEMPRE ACCESSIBILE) */}
-          <button
-            type="button"
-            onClick={() => setModalDatabaseVolontariAperta(true)}
-            className="px-2.5 sm:px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs flex items-center gap-1.5 shadow-md active:scale-95 transition-all cursor-pointer border-2 border-amber-700"
-            style={{ backgroundColor: '#f59e0b', color: '#020617', borderColor: '#b45309' }}
-            title="Apri il Database Gestione Account Volontari e Operatore Centrale (PIN, Ruoli, Tesseramento, Vestiario)"
-          >
-            <Users className="w-4 h-4 text-slate-950" />
-            <span className="hidden lg:inline">Database Volontari & Operatori</span>
-            <span className="hidden sm:inline lg:hidden">Database Account</span>
-            <span className="sm:hidden">Database</span>
-            <span className="w-5 h-5 rounded-full bg-slate-950/25 text-slate-950 text-[10px] font-black flex items-center justify-center font-mono">
-              {volontari.length}
-            </span>
-          </button>
-
-          {/* TASTO ACCESSO WEB DA COMPUTER PER AMMINISTRATORE */}
-          {isCentraleAdmin && (
-            <button
-              type="button"
-              onClick={() => setModalAccessoWebAperta(true)}
-              className={`px-2.5 sm:px-3 py-1.5 rounded-xl font-bold text-xs flex items-center gap-1.5 shadow-sm active:scale-95 transition-all cursor-pointer border ${
-                isWeb ? 'bg-sky-100 hover:bg-sky-200 text-sky-950 border-sky-400' : 'bg-slate-800 hover:bg-slate-700 text-sky-300 hover:text-white border-sky-500/40'
-              }`}
-              style={isWeb ? { backgroundColor: '#e0f2fe', color: '#0369a1', borderColor: '#38bdf8' } : undefined}
-              title="Indirizzo Web e Guida per accedere all'applicazione da qualsiasi computer o browser"
-            >
-              <Globe className="w-3.5 h-3.5 text-sky-600" />
-              <span className="hidden md:inline">Accesso Web PC</span>
-              <span className="md:hidden">Web PC</span>
-            </button>
-          )}
-
-          {/* TASTO SALVATAGGIO / SYNC SERVER WWW.CROCEORO.ORG (10 GB) */}
-          {isCentraleAdmin && (
-            <button
-              type="button"
-              onClick={() => setModalSyncServerAperta(true)}
-              className={`px-2.5 sm:px-3 py-1.5 rounded-xl font-bold text-xs flex items-center gap-1.5 shadow-sm active:scale-95 transition-all cursor-pointer border ${
-                isWeb ? 'bg-amber-100 hover:bg-amber-200 text-amber-950 border-amber-400 font-black' : 'bg-amber-950/60 hover:bg-amber-900/80 text-amber-300 hover:text-white border-amber-500/40'
-              }`}
-              style={isWeb ? { backgroundColor: '#fef3c7', color: '#78350f', borderColor: '#f59e0b' } : undefined}
-              title="Salva e sincronizza i dati dell'applicazione sui 10 GB di spazio hosting di www.croceoro.org"
-            >
-              <Server className="w-3.5 h-3.5 text-amber-500" />
-              <span className="hidden md:inline">Server 10 GB</span>
-              <span className="md:hidden">10 GB</span>
-            </button>
-          )}
-
-          {/* TASTO ALLARME BLOCCO PIN PER AMMINISTRATORE */}
-          {isCentraleAdmin && accountBloccati.length > 0 && (
-            <button
-              type="button"
-              onClick={() => setModalDecisioneSbloccoAperta(true)}
-              className="px-2.5 sm:px-3 py-1.5 rounded-xl bg-red-600 hover:bg-red-500 text-white font-black text-xs flex items-center gap-1.5 shadow-lg shadow-red-600/30 animate-pulse active:scale-95 transition-all cursor-pointer border-2 border-red-800"
-              style={{ backgroundColor: '#dc2626', color: '#ffffff', borderColor: '#991b1b' }}
-              title="Notifica Sicurezza: Account bloccati per 3 tentativi errati di PIN. Clicca per decidere se azzerare gli sbagli o inviare invito reset."
-            >
-              <AlertTriangle className="w-4 h-4 text-white animate-bounce" />
-              <span>{accountBloccati.length} Bloccati</span>
-            </button>
-          )}
-
-          {/* TASTO ALLERTA PATENTI IN SCADENZA (7 GIORNI) PER AMMINISTRATORE */}
-          {isCentraleAdmin && (() => {
-            const scadenzaCount = volontari.filter(v => {
+        const scadenzaPatentiCount = isAdminAttivoInHeader
+          ? volontari.filter(v => {
               if (!v.patente?.inPossesso || !v.patente?.dataScadenza) return false;
               const st = calcolaStatoScadenzaPatente(v.patente.dataScadenza);
               return !!(st?.inScadenza7Giorni || st?.scaduta);
-            }).length;
-            if (scadenzaCount === 0) return null;
-            return (
-              <button
-                type="button"
-                onClick={() => setModalDatabaseVolontariAperta(true)}
-                className="px-2.5 sm:px-3 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-black text-xs flex items-center gap-1.5 shadow-lg shadow-rose-600/30 animate-pulse active:scale-95 transition-all cursor-pointer border-2 border-rose-800"
-                style={{ backgroundColor: '#e11d48', color: '#ffffff', borderColor: '#9f1239' }}
-                title="Notifica Amministratore: Patenti di guida in scadenza entro 7 giorni. Clicca per visualizzare l'archivio."
-              >
-                <AlertTriangle className="w-4 h-4 text-white animate-bounce" />
-                <span>{scadenzaCount} Patenti Scadenza</span>
-              </button>
-            );
-          })()}
+            }).length
+          : 0;
 
-          {/* Tasto Numeri Utili Unificato in alto nella barra principale */}
-          <button
-            type="button"
-            onClick={() => setRubricaAperta(true)}
-            className={`px-2.5 py-1.5 rounded-xl font-bold text-xs flex items-center gap-1.5 shadow-sm active:scale-95 transition-all cursor-pointer border ${
-              isWeb ? 'bg-amber-100 hover:bg-amber-200 text-amber-950 border-amber-400 font-black' : 'bg-[#bfa353]/20 hover:bg-[#bfa353]/30 text-[#bfa353] border border-[#bfa353]/40'
-            }`}
-            style={isWeb ? { backgroundColor: '#fef3c7', color: '#78350f', borderColor: '#f59e0b' } : undefined}
-            title="Apri Rubrica Numeri Utili e Ospedali"
-          >
-            <Phone className="w-3.5 h-3.5 text-amber-600" />
-            <span>Numeri Utili</span>
-          </button>
-
-          {/* GESTIONE E SWITCH RUOLO UNIFICATA (STATO RUOLO + ACCESSO + CAMBIA RUOLO) */}
-          <div
-            className={`flex items-center gap-1.5 p-1 pl-2.5 rounded-xl border ${
-              isWeb ? 'bg-slate-100 border-slate-300 text-slate-900' : 'bg-slate-950/90 border-slate-800'
-            }`}
-            style={isWeb ? { backgroundColor: '#f1f5f9', color: '#0f172a', borderColor: '#cbd5e1' } : undefined}
-          >
-            <div className="flex items-center gap-1.5">
-              {ruolo === 'admin' ? <Unlock className="w-3.5 h-3.5 text-emerald-600" /> : <Lock className="w-3.5 h-3.5 text-amber-600" />}
-              <span className={`text-xs font-black uppercase ${
-                isWeb
-                  ? (ruolo === 'admin' ? 'text-emerald-800' : 'text-amber-800')
-                  : (ruolo === 'admin' ? 'text-emerald-400' : 'text-amber-400')
-              }`}>
-                {ruolo === 'admin'
-                  ? (utenteCentrale?.caricaConsiglioDirettivo?.toLowerCase().includes('presidente')
-                      ? 'Centrale (Presidente)'
-                      : utenteCentrale?.isAdmin
-                        ? 'Centrale (Admin)'
-                        : `Centrale (${utenteCentrale?.nome || 'Operatore'})`)
-                  : 'Volontario'}
-              </span>
-            </div>
-            {(ruolo === 'admin' || (() => {
-              if (volontarioLoggatoCorrente) {
-                return haAccessoCentraleODatabase(volontarioLoggatoCorrente);
-              }
-              if (utenteCentrale) {
-                if (utenteCentrale.isAdmin || utenteCentrale.pin === '4451') return true;
-                const volMatch = utenteCentrale.id ? volontari.find(v => v.id === utenteCentrale.id) : null;
-                return haAccessoCentraleODatabase(volMatch);
-              }
-              return false;
-            })()) && (
-              <button
-                onClick={handleCambiaRuolo}
-                className="text-[11px] px-2.5 py-1 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-black transition-all shadow-sm active:scale-95 border border-amber-700 cursor-pointer"
-                style={{ backgroundColor: '#f59e0b', color: '#020617', borderColor: '#b45309' }}
-                title={ruolo === 'admin' ? 'Passa ad Accesso Volontario' : 'Accesso Avanzato — Database e Sottosezioni Abilitate'}
-              >
-                {ruolo === 'admin' ? 'Accesso Volontario' : 'Accesso Avanzato'}
-              </button>
-            )}
-            {ruolo === 'admin' && (() => {
-              const centraleOpIdBtn = utenteCentrale?.id || 'admin-centrale-root';
-              const centraleOpNomeBtn = utenteCentrale?.nome
-                ? `${utenteCentrale.nome} ${utenteCentrale.cognome || ''}`.trim().toLowerCase()
-                : 'amministratore centrale';
-              const timbCentraleAttivaBtn = timbratureVolontari.some(
-                t =>
-                  !t.orarioUscita &&
-                  ((centraleOpIdBtn && t.volontarioId === centraleOpIdBtn) ||
-                    (centraleOpNomeBtn && t.volontarioNome?.trim().toLowerCase() === centraleOpNomeBtn))
-              );
-              return (
-                <button
-                  type="button"
-                  onClick={() => setModalTimbraturaCentraleAperta(true)}
-                  className={`text-[11px] px-2.5 py-1 rounded-lg font-black transition-all shadow-sm active:scale-95 border flex items-center gap-1 cursor-pointer ${
-                    timbCentraleAttivaBtn
-                      ? 'bg-emerald-600 hover:bg-emerald-500 text-white border-emerald-400'
-                      : 'bg-teal-500/20 hover:bg-teal-500/30 text-teal-200 border-teal-500/40'
-                  }`}
-                  title="Timbra Entrata o Uscita come Operatore di Centrale senza perdere il login Centrale"
-                >
-                  <Clock className="w-3.5 h-3.5 shrink-0" />
-                  <span>{timbCentraleAttivaBtn ? 'Timbrato' : 'Timbratura'}</span>
-                </button>
-              );
-            })()}
-            <button
-              type="button"
-              onClick={async () => {
-                if ('caches' in window) {
-                  try {
-                    const keys = await caches.keys();
-                    await Promise.all(keys.map(k => caches.delete(k)));
-                  } catch {}
-                }
-                window.location.reload();
-              }}
-              className="p-1.5 rounded-lg bg-slate-800/80 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700 transition-colors cursor-pointer"
-              title="Aggiorna all'ultima versione (pulisce cache e ricarica il dispositivo)"
-            >
-              <RefreshCw className="w-3.5 h-3.5 text-amber-400" />
-            </button>
-            {ruolo === 'admin' && (
-              <button
-                onClick={handleLogoutCentrale}
-                className={`px-2 py-1 rounded-lg transition-colors flex items-center gap-1 cursor-pointer text-xs font-bold border ${
-                  isWeb ? 'bg-red-100 hover:bg-red-200 text-red-900 border-red-400' : 'text-red-300 hover:text-white hover:bg-red-950/60 border-red-500/30'
-                }`}
-                style={isWeb ? { backgroundColor: '#fee2e2', color: '#7f1d1d', borderColor: '#f87171' } : undefined}
-                title="Logout operatore / centrale e ritorno alla schermata iniziale"
-              >
-                <LogOut className="w-3.5 h-3.5 text-red-600" />
-                <span className="hidden sm:inline text-[11px] font-bold">Logout Centrale</span>
-              </button>
-            )}
-          </div>
-
-          {/* Selettore layout (visibile solo ad Amministratore / Centrale) */}
-          {ruolo === 'admin' && (
-            <div className="hidden lg:flex items-center p-1 bg-slate-950 rounded-xl border border-slate-800 text-xs">
-              <button
-                onClick={() => setLayoutView('both')}
-                className={`px-2 py-1 rounded-lg font-medium transition-colors ${layoutView === 'both' ? 'bg-slate-800 text-amber-400' : 'text-slate-400 hover:text-white'}`}
-              >
-                Diviso
-              </button>
-              <button
-                onClick={() => setLayoutView('smartphone')}
-                className={`px-2 py-1 rounded-lg font-medium transition-colors ${(layoutView as string) === 'smartphone' ? 'bg-slate-800 text-amber-400' : 'text-slate-400 hover:text-white'}`}
-              >
-                Solo Smartphone
-              </button>
-              <button
-                onClick={() => setLayoutView('centrale')}
-                className={`px-2 py-1 rounded-lg font-medium transition-colors ${layoutView === 'centrale' ? 'bg-slate-800 text-amber-400' : 'text-slate-400 hover:text-white'}`}
-              >
-                Solo Centrale
-              </button>
-            </div>
-          )}
-        </div>
-      </header>
-      )}
-
-      {/* BARRA DI NAVIGAZIONE SUPERIORE AMMINISTRATORE */}
-      {ruolo === 'admin' && (() => {
-        const centraleOpIdNav = utenteCentrale?.id || 'admin-centrale-root';
-        const centraleOpNomeNav = utenteCentrale?.nome
+        const centraleOpIdBtn = utenteCentrale?.id || 'admin-centrale-root';
+        const centraleOpNomeBtn = utenteCentrale?.nome
           ? `${utenteCentrale.nome} ${utenteCentrale.cognome || ''}`.trim().toLowerCase()
           : 'amministratore centrale';
-        const timbCentraleAttivaNav = timbratureVolontari.some(
+        const timbCentraleAttivaBtn = ruolo === 'admin' && timbratureVolontari.some(
           t =>
             !t.orarioUscita &&
-            ((centraleOpIdNav && t.volontarioId === centraleOpIdNav) ||
-              (centraleOpNomeNav && t.volontarioNome?.trim().toLowerCase() === centraleOpNomeNav))
+            ((centraleOpIdBtn && t.volontarioId === centraleOpIdBtn) ||
+              (centraleOpNomeBtn && t.volontarioNome?.trim().toLowerCase() === centraleOpNomeBtn))
         );
+
+        const canSwitchRuolo =
+          ruolo === 'admin' ||
+          (() => {
+            if (volontarioLoggatoCorrente) {
+              return haAccessoCentraleODatabase(volontarioLoggatoCorrente);
+            }
+            if (utenteCentrale) {
+              if (utenteCentrale.isAdmin || utenteCentrale.pin === '4451') return true;
+              const volMatch = utenteCentrale.id ? volontari.find(v => v.id === utenteCentrale.id) : null;
+              return haAccessoCentraleODatabase(volMatch);
+            }
+            return false;
+          })();
+
+        const totaleAllerteStrumenti =
+          (permessiDaRiabilitare ? 1 : 0) +
+          (isAdminAttivoInHeader && accountBloccati.length > 0 ? accountBloccati.length : 0) +
+          scadenzaPatentiCount;
+
         return (
-          <AdminTopNavbar
-            currentSection={adminSection}
-            onSelectSection={handleSelectAdminSection}
-            operatoreNome={utenteCentrale?.nome ? `${utenteCentrale.nome} ${utenteCentrale.cognome || ''}` : 'Amministratore'}
-            isPresidente={!!utenteCentrale?.caricaConsiglioDirettivo?.toLowerCase().includes('presidente')}
-            isAdmin={isCentraleAdmin}
-            allowedSections={sezioniAbilitateUtente}
-            onLogout={handleLogoutCentrale}
-            onApriSyncServer={() => setModalSyncServerAperta(true)}
-            onApriTimbraturaCentrale={() => setModalTimbraturaCentraleAperta(true)}
-            timbraturaCentraleAttiva={timbCentraleAttivaNav}
-            onSwitchToSmartphone={(!isCentraleAdmin || (utenteCentrale?.id && utenteCentrale.id !== 'admin-centrale-root')) ? () => {
-              if (ruolo === 'admin') {
-                handleCambiaRuolo();
-              } else {
-                handleSelectAdminSection('centrale');
-                setLayoutView('smartphone');
-              }
-            } : undefined}
-          />
+          <header
+            className={
+              isWeb
+                ? "border-b-2 border-slate-300 bg-white relative z-40 px-2 sm:px-4 py-1.5 shadow-sm w-full max-w-full"
+                : "border-b border-slate-800 bg-slate-900/95 backdrop-blur-md relative z-40 px-2 sm:px-4 py-1.5 shadow-md w-full max-w-full"
+            }
+            style={isWeb ? { backgroundColor: '#ffffff', borderColor: '#cbd5e1', color: '#0f172a' } : undefined}
+          >
+            <div className="max-w-[1440px] mx-auto flex flex-col gap-1.5 w-full">
+
+              {/* RIGA 1: Intestazione istituzionale stile v4.9.1 (Logo + Nome Associazione + Pill Versione a destra + Sottotitolo) + Controlli rapidi (su riga dedicata mobile/tablet, a destra su desktop xl+) */}
+              <div className="flex flex-col xl:flex-row xl:items-center xl:justify-between gap-2 w-full min-w-0">
+                <div
+                  onClick={
+                    ruolo === 'admin'
+                      ? () => {
+                          handleSelectAdminSection('dashboard');
+                          window.scrollTo({ top: 0, behavior: 'smooth' });
+                        }
+                      : undefined
+                  }
+                  role={ruolo === 'admin' ? 'button' : undefined}
+                  tabIndex={ruolo === 'admin' ? 0 : undefined}
+                  onKeyDown={
+                    ruolo === 'admin'
+                      ? (e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            handleSelectAdminSection('dashboard');
+                            window.scrollTo({ top: 0, behavior: 'smooth' });
+                          }
+                        }
+                      : undefined
+                  }
+                  title={ruolo === 'admin' ? 'Torna alla Home dell\'App (Portale Principale)' : undefined}
+                  className={`flex items-center gap-2.5 sm:gap-3 min-w-0 flex-1 ${
+                    ruolo === 'admin' ? 'cursor-pointer group' : ''
+                  }`}
+                >
+                  <CroceOroLogo
+                    size="md"
+                    className="shrink-0 shadow-md shadow-amber-500/20"
+                  />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-start sm:items-center justify-between xl:justify-start gap-2 min-w-0">
+                      <h1
+                        className={`text-[15px] sm:text-lg font-black tracking-wide uppercase leading-tight ${
+                          isWeb ? 'text-[#1d1a60]' : 'text-amber-400 group-hover:text-amber-300'
+                        }`}
+                      >
+                        Croce Oro Massa Carrara ODV
+                      </h1>
+                      <span
+                        className={`text-[11px] sm:text-xs font-bold px-2.5 sm:px-3 py-1 rounded-full border font-mono whitespace-nowrap shrink-0 tabular-nums ${
+                          isWeb
+                            ? 'bg-amber-100 text-amber-950 border-amber-400 font-black'
+                            : 'bg-amber-500/15 text-amber-300 border-amber-500/50'
+                        }`}
+                      >
+                        {APP_VERSION_LABEL}
+                      </span>
+                    </div>
+                    <p
+                      className={`text-[11px] sm:text-xs font-semibold leading-snug mt-0.5 ${
+                        isWeb ? 'text-slate-700' : 'text-white/95'
+                      }`}
+                    >
+                      Associazione Volontari del Soccorso & Protezione Civile
+                    </p>
+                  </div>
+                </div>
+
+                {/* Controlli rapidi sempre visibili in 1 riga — mai sovrapposti alla versione e mai tagliati */}
+                <div className={`flex items-center justify-between xl:justify-end gap-1.5 shrink-0 pt-1.5 xl:pt-0 border-t xl:border-t-0 ${isWeb ? 'border-slate-200' : 'border-slate-800/80'}`}>
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <PWAInstallButton />
+
+                    {/* Stato Sync Live */}
+                    <button
+                      type="button"
+                      onClick={() => setModalConnessioneAperta(true)}
+                      className={`px-2 py-1 rounded-lg border text-[10.5px] sm:text-[11px] font-bold flex items-center gap-1.5 shadow-sm active:scale-95 transition-all cursor-pointer whitespace-nowrap shrink-0 ${
+                        infoConnessione.connected
+                          ? (isWeb ? 'bg-emerald-100 border-emerald-500 text-emerald-950 font-black' : 'bg-emerald-950/70 border-emerald-500/40 text-emerald-300 hover:bg-emerald-900/80')
+                          : infoConnessione.status === 'polling' || infoConnessione.status === 'auth_required'
+                          ? (isWeb ? 'bg-amber-100 border-amber-500 text-amber-950 font-black' : 'bg-amber-950/70 border-amber-500/40 text-amber-300 hover:bg-amber-900/80')
+                          : (isWeb ? 'bg-red-100 border-red-500 text-red-950 font-black animate-pulse' : 'bg-red-950/70 border-red-500/40 text-red-300 hover:bg-red-900/80 animate-pulse')
+                      }`}
+                      title="Stato sincronizzazione in tempo reale"
+                    >
+                      <span
+                        className={`w-2 h-2 rounded-full shrink-0 ${
+                          infoConnessione.connected
+                            ? 'bg-emerald-500 animate-pulse'
+                            : infoConnessione.status === 'polling' || infoConnessione.status === 'auth_required'
+                            ? 'bg-amber-500'
+                            : 'bg-red-500'
+                        }`}
+                      />
+                      <span className="hidden sm:inline">
+                        {infoConnessione.connected
+                          ? 'Live'
+                          : infoConnessione.status === 'polling'
+                          ? 'Sync'
+                          : infoConnessione.status === 'auth_required'
+                          ? 'Cloud'
+                          : 'Offline'}
+                      </span>
+                    </button>
+
+                    {/* Radio PTT */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        vhfRadioEngine.unlockAudio();
+                        setModalNotificheAperta(true);
+                      }}
+                      className={`px-2 py-1 rounded-lg font-bold text-[10.5px] sm:text-[11px] flex items-center gap-1 transition-colors shadow-sm border whitespace-nowrap shrink-0 cursor-pointer ${
+                        radioPttState.activeSpeaker
+                          ? 'bg-red-600 hover:bg-red-500 text-white border-red-400 animate-pulse'
+                          : isWeb
+                          ? 'bg-slate-100 hover:bg-slate-200 text-slate-800 border-slate-300'
+                          : 'bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-700'
+                      }`}
+                      style={
+                        radioPttState.activeSpeaker
+                          ? undefined
+                          : isWeb
+                          ? { backgroundColor: '#f1f5f9', color: '#0f172a', borderColor: '#cbd5e1' }
+                          : undefined
+                      }
+                      title="Notifiche Radio e Ricetrasmittente VHF/UHF PTT"
+                    >
+                      <Radio className={`w-3.5 h-3.5 shrink-0 ${radioPttState.activeSpeaker ? 'text-white animate-spin' : 'text-emerald-500'}`} />
+                      <span className="hidden md:inline">
+                        {radioPttState.activeSpeaker ? `LIVE: ${radioPttState.activeSpeaker.speakerName}` : 'Radio'}
+                      </span>
+                      <span className="text-[10px] font-mono font-black tabular-nums text-emerald-400">
+                        {notificheCentrale.length}
+                      </span>
+                    </button>
+
+                    {/* Centro Notifiche */}
+                    <button
+                      type="button"
+                      onClick={() => setModalCentroNotificheAperta(true)}
+                      className={`px-2 py-1 rounded-lg font-bold text-[10.5px] sm:text-[11px] flex items-center gap-1 transition-all shadow-sm border whitespace-nowrap shrink-0 cursor-pointer ${
+                        isWeb ? 'bg-slate-100 hover:bg-slate-200 text-slate-800 border-slate-300' : 'bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-700'
+                      }`}
+                      style={isWeb ? { backgroundColor: '#f1f5f9', color: '#0f172a', borderColor: '#cbd5e1' } : undefined}
+                      title="Centro Notifiche account"
+                    >
+                      <Bell className={`w-3.5 h-3.5 shrink-0 ${conteggioNotificheNonLette > 0 ? 'text-amber-500 animate-bounce' : 'text-slate-400'}`} />
+                      <span className="hidden md:inline">Notifiche</span>
+                      {conteggioNotificheNonLette > 0 ? (
+                        <span className="px-1.5 min-w-[18px] h-4 rounded-full bg-red-600 text-white text-[9px] font-black flex items-center justify-center font-mono tabular-nums">
+                          {conteggioNotificheNonLette > 99 ? '99+' : conteggioNotificheNonLette}
+                        </span>
+                      ) : (
+                        <span className="text-[10px] font-mono text-slate-400 tabular-nums">
+                          {notificheRicevuteAccount.length}
+                        </span>
+                      )}
+                    </button>
+                  </div>
+
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    {/* Aggiorna versione / cache */}
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        if ('caches' in window) {
+                          try {
+                            const keys = await caches.keys();
+                            await Promise.all(keys.map(k => caches.delete(k)));
+                          } catch {}
+                        }
+                        window.location.reload();
+                      }}
+                      className="p-1.5 rounded-lg bg-slate-800/80 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700 transition-colors cursor-pointer shrink-0"
+                      title="Aggiorna dispositivo all'ultima versione"
+                    >
+                      <RefreshCw className="w-3.5 h-3.5 text-amber-400" />
+                    </button>
+
+                    {/* PULSANTE LOGOUT CENTRALE — SEMPRE VISIBILE E MAI TAGLIATO */}
+                    {ruolo === 'admin' && (
+                      <button
+                        type="button"
+                        onClick={handleLogoutCentrale}
+                        className={`px-2 sm:px-2.5 py-1 rounded-lg transition-colors flex items-center gap-1 cursor-pointer text-[10.5px] sm:text-[11px] font-black border whitespace-nowrap shrink-0 active:scale-95 ${
+                          isWeb
+                            ? 'bg-red-100 hover:bg-red-200 text-red-900 border-red-400'
+                            : 'bg-red-950/70 hover:bg-red-600 text-red-200 hover:text-white border-red-500/60'
+                        }`}
+                        style={isWeb ? { backgroundColor: '#fee2e2', color: '#7f1d1d', borderColor: '#f87171' } : undefined}
+                        title="Logout operatore / centrale e ritorno alla schermata iniziale"
+                      >
+                        <LogOut className="w-3.5 h-3.5 shrink-0" />
+                        <span>Esci</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* RIGA 2: Ruolo + UNICO pulsante Accesso Volontario + Timbratura (sinistra) | Strumenti a tendina (mobile/tablet) o inline (desktop) */}
+              <div className={`flex items-center justify-between gap-1.5 pt-1.5 border-t w-full min-w-0 ${isWeb ? 'border-slate-200' : 'border-slate-800/80'}`}>
+                {/* Gruppo sinistro: Ruolo (sm+) + UNICO Accesso Volontario + Timbratura */}
+                <div className="flex items-center gap-1.5 flex-wrap min-w-0">
+                  <div className="hidden sm:flex items-center gap-1 min-w-0">
+                    {ruolo === 'admin' ? (
+                      <Unlock className="w-3 h-3 text-emerald-500 shrink-0" />
+                    ) : (
+                      <Lock className="w-3 h-3 text-amber-500 shrink-0" />
+                    )}
+                    <span
+                      className={`text-[10px] sm:text-[11px] font-black uppercase truncate max-w-[140px] md:max-w-[200px] ${
+                        isWeb
+                          ? ruolo === 'admin'
+                            ? 'text-emerald-800'
+                            : 'text-amber-800'
+                          : ruolo === 'admin'
+                          ? 'text-emerald-400'
+                          : 'text-amber-400'
+                      }`}
+                    >
+                      {ruolo === 'admin'
+                        ? utenteCentrale?.caricaConsiglioDirettivo?.toLowerCase().includes('presidente')
+                          ? 'Centrale (Presidente)'
+                          : utenteCentrale?.isAdmin
+                          ? 'Centrale (Admin)'
+                          : `Centrale (${utenteCentrale?.nome || 'Op.'})`
+                        : 'Volontario'}
+                    </span>
+                  </div>
+
+                  {/* UNICO PULSANTE ACCESSO VOLONTARIO / AVANZATO */}
+                  {canSwitchRuolo && (
+                    <button
+                      type="button"
+                      onClick={handleCambiaRuolo}
+                      className="text-[10.5px] sm:text-[11px] px-2 sm:px-2.5 py-1 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-black transition-all shadow-sm active:scale-95 border border-amber-700 cursor-pointer whitespace-nowrap shrink-0"
+                      style={{ backgroundColor: '#f59e0b', color: '#020617', borderColor: '#b45309' }}
+                      title={ruolo === 'admin' ? 'Passa ad Accesso Volontario' : 'Accesso Avanzato — Database e Sottosezioni Abilitate'}
+                    >
+                      {ruolo === 'admin' ? 'Accesso Volontario' : 'Accesso Avanzato'}
+                    </button>
+                  )}
+
+                  {/* UNICO PULSANTE TIMBRATURA CENTRALE */}
+                  {ruolo === 'admin' && (
+                    <button
+                      type="button"
+                      onClick={() => setModalTimbraturaCentraleAperta(true)}
+                      className={`text-[10.5px] sm:text-[11px] px-2 sm:px-2.5 py-1 rounded-lg font-black transition-all shadow-sm active:scale-95 border flex items-center gap-1 cursor-pointer whitespace-nowrap shrink-0 ${
+                        timbCentraleAttivaBtn
+                          ? 'bg-emerald-600 hover:bg-emerald-500 text-white border-emerald-400'
+                          : 'bg-teal-500/20 hover:bg-teal-500/30 text-teal-200 border-teal-500/40'
+                      }`}
+                      title="Timbra Entrata o Uscita come Operatore di Centrale"
+                    >
+                      <Clock className="w-3 h-3 shrink-0" />
+                      <span>{timbCentraleAttivaBtn ? 'Timbrato' : 'Timbratura'}</span>
+                    </button>
+                  )}
+                </div>
+
+                {/* Gruppo destro: su MOBILE/TABLET (< xl) Menù a tendina "Strumenti ▾" | su DESKTOP (xl+) Pulsanti inline */}
+                <div className="flex items-center gap-1.5 shrink-0">
+                  {/* MOBILE & TABLET: Menù a tendina compatto per tutti gli strumenti operativi */}
+                  <div className="relative xl:hidden" ref={menuHeaderAzioniRef}>
+                    <button
+                      type="button"
+                      onClick={() => setMenuHeaderAzioniAperto(prev => !prev)}
+                      aria-expanded={menuHeaderAzioniAperto}
+                      className={`px-2 sm:px-2.5 py-1 rounded-lg border text-[10.5px] sm:text-[11px] font-black flex items-center gap-1 transition-all cursor-pointer whitespace-nowrap shrink-0 ${
+                        isWeb
+                          ? 'bg-slate-100 hover:bg-slate-200 text-slate-900 border-slate-300'
+                          : 'bg-slate-800 hover:bg-slate-700 text-slate-100 border-slate-700'
+                      }`}
+                    >
+                      <SlidersHorizontal className="w-3 h-3 text-amber-400 shrink-0" />
+                      <span>Strumenti</span>
+                      {totaleAllerteStrumenti > 0 && (
+                        <span className="px-1 min-w-[16px] h-4 rounded-full bg-red-600 text-white text-[9px] font-black flex items-center justify-center font-mono">
+                          {totaleAllerteStrumenti}
+                        </span>
+                      )}
+                      <ChevronDown className={`w-3 h-3 text-amber-400 transition-transform ${menuHeaderAzioniAperto ? 'rotate-180' : ''}`} />
+                    </button>
+
+                    {menuHeaderAzioniAperto && (
+                      <div className="absolute right-0 mt-1.5 w-64 max-w-[calc(100vw-1rem)] bg-slate-950 border border-slate-700 rounded-xl shadow-2xl p-2 z-50 max-h-[70dvh] overflow-y-auto space-y-1.5">
+                        {/* Allarmi acustici */}
+                        <div className="grid grid-cols-2 gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setMenuHeaderAzioniAperto(false);
+                              faiSuonareTelefono(ruolo === 'admin' ? 'Centrale Operativa' : 'Volontario Bordo', 'telefono');
+                            }}
+                            className="px-2.5 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-[11px] flex items-center justify-center gap-1 cursor-pointer"
+                            style={{ backgroundColor: '#f59e0b', color: '#020617' }}
+                          >
+                            <BellRing className="w-3.5 h-3.5 shrink-0" />
+                            <span>Squilla</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setMenuHeaderAzioniAperto(false);
+                              faiSuonareTelefono(ruolo === 'admin' ? 'Centrale (Allarme Sirena)' : 'Bordo (Allarme Sirena)', 'sirena');
+                            }}
+                            className="px-2.5 py-2 rounded-lg bg-red-600 hover:bg-red-500 text-white font-black text-[11px] flex items-center justify-center gap-1 cursor-pointer"
+                            style={{ backgroundColor: '#dc2626', color: '#ffffff' }}
+                          >
+                            <Volume2 className="w-3.5 h-3.5 shrink-0" />
+                            <span>Sirena</span>
+                          </button>
+                        </div>
+
+                        <div className="border-t border-slate-800 my-1" />
+
+                        {puoVedereDatabaseAccount && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setMenuHeaderAzioniAperto(false);
+                              setModalDatabaseVolontariAperta(true);
+                            }}
+                            className="w-full px-2.5 py-2 rounded-lg bg-slate-900 hover:bg-slate-800 text-amber-300 border border-amber-500/30 font-bold text-xs flex items-center justify-between cursor-pointer"
+                          >
+                            <span className="flex items-center gap-2">
+                              <Users className="w-4 h-4 text-amber-400 shrink-0" />
+                              <span>Database Account</span>
+                            </span>
+                            <span className="font-mono font-black text-[11px] tabular-nums">{volontari.length}</span>
+                          </button>
+                        )}
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setMenuHeaderAzioniAperto(false);
+                            setRubricaAperta(true);
+                          }}
+                          className="w-full px-2.5 py-2 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-200 border border-slate-800 font-bold text-xs flex items-center gap-2 cursor-pointer"
+                        >
+                          <Phone className="w-4 h-4 text-amber-400 shrink-0" />
+                          <span>Numeri Utili & Ospedali</span>
+                        </button>
+
+                        {isAdminAttivoInHeader && (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setMenuHeaderAzioniAperto(false);
+                                setModalAccessoWebAperta(true);
+                              }}
+                              className="w-full px-2.5 py-2 rounded-lg bg-slate-900 hover:bg-slate-800 text-sky-300 border border-sky-500/30 font-bold text-xs flex items-center gap-2 cursor-pointer"
+                            >
+                              <Globe className="w-4 h-4 text-sky-400 shrink-0" />
+                              <span>Accesso Web PC</span>
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setMenuHeaderAzioniAperto(false);
+                                setModalSyncServerAperta(true);
+                              }}
+                              className="w-full px-2.5 py-2 rounded-lg bg-slate-900 hover:bg-slate-800 text-amber-300 border border-amber-500/30 font-bold text-xs flex items-center gap-2 cursor-pointer"
+                            >
+                              <Server className="w-4 h-4 text-amber-400 shrink-0" />
+                              <span>Server Backup (10 GB)</span>
+                            </button>
+                          </>
+                        )}
+
+                        {permessiDaRiabilitare && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setMenuHeaderAzioniAperto(false);
+                              setModalSetupPermessiAperta(true);
+                            }}
+                            className="w-full px-2.5 py-2 rounded-lg bg-amber-500 text-slate-950 font-black text-xs flex items-center gap-2 cursor-pointer"
+                            style={{ backgroundColor: '#f59e0b', color: '#020617' }}
+                          >
+                            <Shield className="w-4 h-4 shrink-0" />
+                            <span>Abilita Permessi Device</span>
+                          </button>
+                        )}
+
+                        {isAdminAttivoInHeader && accountBloccati.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setMenuHeaderAzioniAperto(false);
+                              setModalDecisioneSbloccoAperta(true);
+                            }}
+                            className="w-full px-2.5 py-2 rounded-lg bg-red-600 text-white font-black text-xs flex items-center justify-between cursor-pointer"
+                            style={{ backgroundColor: '#dc2626', color: '#ffffff' }}
+                          >
+                            <span className="flex items-center gap-2">
+                              <AlertTriangle className="w-4 h-4 shrink-0" />
+                              <span>Account Bloccati PIN</span>
+                            </span>
+                            <span className="font-mono">{accountBloccati.length}</span>
+                          </button>
+                        )}
+
+                        {scadenzaPatentiCount > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setMenuHeaderAzioniAperto(false);
+                              setModalDatabaseVolontariAperta(true);
+                            }}
+                            className="w-full px-2.5 py-2 rounded-lg bg-rose-600 text-white font-black text-xs flex items-center justify-between cursor-pointer"
+                            style={{ backgroundColor: '#e11d48', color: '#ffffff' }}
+                          >
+                            <span className="flex items-center gap-2">
+                              <AlertTriangle className="w-4 h-4 shrink-0" />
+                              <span>Patenti in Scadenza</span>
+                            </span>
+                            <span className="font-mono">{scadenzaPatentiCount}</span>
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* DESKTOP (xl+): Pulsanti rapidi compatti in 1 riga */}
+                  <div className="hidden xl:flex items-center gap-1.5 flex-wrap justify-end">
+                    <div className={`flex items-center p-0.5 rounded-lg border ${isWeb ? 'bg-slate-100 border-slate-300' : 'bg-slate-950/90 border-slate-800'}`}>
+                      <button
+                        type="button"
+                        onClick={() => faiSuonareTelefono(ruolo === 'admin' ? 'Centrale Operativa' : 'Volontario Bordo', 'telefono')}
+                        className="px-2 py-1 rounded-md bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-[11px] flex items-center gap-1 transition-all cursor-pointer whitespace-nowrap"
+                        style={{ backgroundColor: '#f59e0b', color: '#020617' }}
+                        title="Fai squillare il telefono"
+                      >
+                        <BellRing className="w-3 h-3 shrink-0" />
+                        <span>Squilla</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => faiSuonareTelefono(ruolo === 'admin' ? 'Centrale (Allarme Sirena)' : 'Bordo (Allarme Sirena)', 'sirena')}
+                        className="ml-0.5 px-2 py-1 rounded-md bg-red-600 hover:bg-red-500 text-white font-black text-[11px] flex items-center gap-1 transition-all cursor-pointer whitespace-nowrap"
+                        style={{ backgroundColor: '#dc2626', color: '#ffffff' }}
+                        title="Attiva allarme acustico a sirena"
+                      >
+                        <Volume2 className="w-3 h-3 shrink-0" />
+                        <span>Sirena</span>
+                      </button>
+                    </div>
+
+                    {permessiDaRiabilitare && (
+                      <button
+                        type="button"
+                        onClick={() => setModalSetupPermessiAperta(true)}
+                        className="px-2 py-1 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-[11px] flex items-center gap-1 animate-pulse cursor-pointer whitespace-nowrap"
+                        style={{ backgroundColor: '#f59e0b', color: '#020617' }}
+                      >
+                        <Shield className="w-3 h-3 shrink-0" />
+                        <span>Permessi</span>
+                      </button>
+                    )}
+
+                    {puoVedereDatabaseAccount && (
+                      <button
+                        type="button"
+                        onClick={() => setModalDatabaseVolontariAperta(true)}
+                        className="px-2 py-1 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-[11px] flex items-center gap-1 cursor-pointer border border-amber-700 whitespace-nowrap"
+                        style={{ backgroundColor: '#f59e0b', color: '#020617', borderColor: '#b45309' }}
+                        title="Database Account Volontari e Operatori"
+                      >
+                        <Users className="w-3.5 h-3.5 shrink-0" />
+                        <span>Database</span>
+                        <span className="font-mono text-[10px] px-1 rounded bg-slate-950/20 tabular-nums">{volontari.length}</span>
+                      </button>
+                    )}
+
+                    {isAdminAttivoInHeader && (
+                      <button
+                        type="button"
+                        onClick={() => setModalAccessoWebAperta(true)}
+                        className={`px-2 py-1 rounded-lg font-bold text-[11px] flex items-center gap-1 cursor-pointer border whitespace-nowrap ${
+                          isWeb ? 'bg-sky-100 hover:bg-sky-200 text-sky-950 border-sky-400' : 'bg-slate-800 hover:bg-slate-700 text-sky-300 border-sky-500/40'
+                        }`}
+                        style={isWeb ? { backgroundColor: '#e0f2fe', color: '#0369a1', borderColor: '#38bdf8' } : undefined}
+                      >
+                        <Globe className="w-3 h-3 shrink-0" />
+                        <span>Web PC</span>
+                      </button>
+                    )}
+
+                    {isAdminAttivoInHeader && (
+                      <button
+                        type="button"
+                        onClick={() => setModalSyncServerAperta(true)}
+                        className={`px-2 py-1 rounded-lg font-bold text-[11px] flex items-center gap-1 cursor-pointer border whitespace-nowrap ${
+                          isWeb ? 'bg-amber-100 hover:bg-amber-200 text-amber-950 border-amber-400' : 'bg-amber-950/60 hover:bg-amber-900/80 text-amber-300 border-amber-500/40'
+                        }`}
+                        style={isWeb ? { backgroundColor: '#fef3c7', color: '#78350f', borderColor: '#f59e0b' } : undefined}
+                      >
+                        <Server className="w-3 h-3 shrink-0" />
+                        <span>10 GB</span>
+                      </button>
+                    )}
+
+                    {isAdminAttivoInHeader && accountBloccati.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setModalDecisioneSbloccoAperta(true)}
+                        className="px-2 py-1 rounded-lg bg-red-600 hover:bg-red-500 text-white font-black text-[11px] flex items-center gap-1 animate-pulse cursor-pointer whitespace-nowrap"
+                        style={{ backgroundColor: '#dc2626', color: '#ffffff' }}
+                      >
+                        <AlertTriangle className="w-3 h-3 shrink-0" />
+                        <span>{accountBloccati.length} Bloccati</span>
+                      </button>
+                    )}
+
+                    {scadenzaPatentiCount > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setModalDatabaseVolontariAperta(true)}
+                        className="px-2 py-1 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-black text-[11px] flex items-center gap-1 animate-pulse cursor-pointer whitespace-nowrap"
+                        style={{ backgroundColor: '#e11d48', color: '#ffffff' }}
+                      >
+                        <AlertTriangle className="w-3 h-3 shrink-0" />
+                        <span>{scadenzaPatentiCount} Patenti</span>
+                      </button>
+                    )}
+
+                    <button
+                      type="button"
+                      onClick={() => setRubricaAperta(true)}
+                      className={`px-2 py-1 rounded-lg font-bold text-[11px] flex items-center gap-1 cursor-pointer border whitespace-nowrap ${
+                        isWeb ? 'bg-amber-100 hover:bg-amber-200 text-amber-950 border-amber-400' : 'bg-[#bfa353]/20 hover:bg-[#bfa353]/30 text-[#bfa353] border-[#bfa353]/40'
+                      }`}
+                      style={isWeb ? { backgroundColor: '#fef3c7', color: '#78350f', borderColor: '#f59e0b' } : undefined}
+                    >
+                      <Phone className="w-3 h-3 shrink-0" />
+                      <span>Numeri Utili</span>
+                    </button>
+
+                    {ruolo === 'admin' && adminSection === 'centrale' && (
+                      <div className="flex items-center p-0.5 bg-slate-950 rounded-lg border border-slate-800 text-[10.5px]">
+                        <button
+                          type="button"
+                          onClick={() => setLayoutView('both')}
+                          className={`px-1.5 py-0.5 rounded font-bold transition-colors whitespace-nowrap ${layoutView === 'both' ? 'bg-slate-800 text-amber-400' : 'text-slate-400 hover:text-white'}`}
+                        >
+                          Diviso
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setLayoutView('smartphone')}
+                          className={`px-1.5 py-0.5 rounded font-bold transition-colors whitespace-nowrap ${(layoutView as string) === 'smartphone' ? 'bg-slate-800 text-amber-400' : 'text-slate-400 hover:text-white'}`}
+                        >
+                          Smartphone
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setLayoutView('centrale')}
+                          className={`px-1.5 py-0.5 rounded font-bold transition-colors whitespace-nowrap ${layoutView === 'centrale' ? 'bg-slate-800 text-amber-400' : 'text-slate-400 hover:text-white'}`}
+                        >
+                          Centrale
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </header>
         );
       })()}
 
-      {/* Contenitore Principale */}
-      <main className={`flex-1 flex flex-col ${ruolo === 'admin' && adminSection !== 'centrale' ? 'items-center p-3 sm:p-6' : 'xl:flex-row items-start justify-center p-1 sm:p-5'} gap-6 w-full max-w-full`}>
+      {/* BARRA DI NAVIGAZIONE SUPERIORE AMMINISTRATORE (SENZA DUPLICATI) */}
+      {ruolo === 'admin' && (
+        <AdminTopNavbar
+          currentSection={adminSection}
+          onSelectSection={handleSelectAdminSection}
+          operatoreNome={utenteCentrale?.nome ? `${utenteCentrale.nome} ${utenteCentrale.cognome || ''}` : 'Amministratore'}
+          isPresidente={!!utenteCentrale?.caricaConsiglioDirettivo?.toLowerCase().includes('presidente')}
+          isAdmin={isCentraleAdmin}
+          allowedSections={sezioniAbilitateUtente}
+        />
+      )}
+
+      {/* Contenitore Principale Adattivo (Zero scroll orizzontale) */}
+      <main className={`flex-1 flex flex-col w-full max-w-full overflow-x-hidden ${ruolo === 'admin' && adminSection !== 'centrale' ? 'items-center p-2 sm:p-3 lg:p-4' : 'xl:flex-row items-start justify-center p-1.5 sm:p-3 lg:p-4'} gap-3 sm:gap-4`}>
 
         {/* VISTA 1: DASHBOARD PORTALE AMMINISTRATORE */}
         {ruolo === 'admin' && adminSection === 'dashboard' && (
@@ -13793,52 +14046,33 @@ KM TOTALI: ${kmTot} KM`;
 
         {/* 1. SEZIONE BORDO MEZZO (SIMULATORE SMARTPHONE / TERMINALE BORDO) */}
         {(ruolo === 'volontario' || (ruolo === 'admin' && adminSection === 'centrale')) && (layoutView === 'both' || layoutView === 'smartphone') && (
-          <div className="w-full xl:w-auto flex flex-col items-center">
-            <div className={`w-full ${layoutView === 'smartphone' ? 'max-w-xl' : 'max-w-[390px]'}`}>
+          <div className="w-full xl:w-auto flex-1 xl:flex-none flex flex-col items-center min-h-0">
+            <div className={`w-full flex-1 flex flex-col ${layoutView === 'smartphone' ? 'max-w-xl' : 'max-w-[390px]'}`}>
               
-              {/* Scocca Smartphone */}
-              <div className={`w-full bg-[#1d1a60] ${layoutView === 'smartphone' ? 'rounded-2xl sm:rounded-3xl p-1 sm:p-2.5' : 'rounded-[36px] p-2.5'} shadow-2xl border-2 sm:border-4 border-[#bfa353] relative`}>
+              {/* Scocca Smartphone Adattiva */}
+              <div className={`w-full flex-1 flex flex-col bg-[#1d1a60] ${layoutView === 'smartphone' ? 'rounded-2xl p-1 sm:p-2' : 'rounded-[32px] p-2'} shadow-2xl border-2 border-[#bfa353] relative`}>
                 
-                {/* Schermo Interno */}
-                <div className={`w-full bg-white text-slate-800 ${layoutView === 'smartphone' ? 'rounded-xl sm:rounded-2xl' : 'rounded-[26px]'} flex flex-col min-h-[740px] relative shadow-inner`}>
+                {/* Schermo Interno (adattivo al viewport senza min-h fisso esagerato) */}
+                <div className={`w-full flex-1 bg-white text-slate-800 ${layoutView === 'smartphone' ? 'rounded-xl sm:rounded-2xl' : 'rounded-[24px]'} flex flex-col relative shadow-inner overflow-hidden`}>
                   
-                  {/* STRISCIA BLU SUPERIORE INTEGRATA DEL TERMINALE DI BORDO (COMPATTA E OTTIMIZZATA IN ALTEZZA) */}
-                  <div className="bg-[#1d1a60] border-b-4 border-[#bfa353] text-white p-2 sm:p-2.5 shadow-md relative z-20 space-y-1.5">
-                    
-                    {/* SEZIONE TESTATA UFFICIALE: CENTRATA ORIZZONTALMENTE */}
-                    <div className="flex flex-col items-center justify-center text-center w-full">
-                      <div className="flex items-center justify-center gap-2 flex-wrap">
-                        <CroceOroLogo size="sm" className="shrink-0 w-8 h-8 sm:w-9 sm:h-9 shadow-md shadow-amber-500/20" />
-                        <h2 className="text-xs sm:text-sm md:text-base font-black tracking-wide text-amber-400 uppercase whitespace-nowrap drop-shadow-sm">
-                          CROCE ORO MASSA CARRARA ODV
-                        </h2>
-                        <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 font-mono whitespace-nowrap">
-                          {APP_VERSION_LABEL}
-                        </span>
-                      </div>
-                      <p className="text-[10px] sm:text-[11px] text-white font-medium tracking-normal leading-tight mt-0.5 text-center">
-                        Associazione Volontari del Soccorso & Protezione Civile
-                      </p>
-                    </div>
+                  {/* BARRA COMPATTA STATO TERMINALE DI BORDO (SENZA SECONDA INTESTAZIONE CON LOGO) */}
+                  <div className="bg-[#1d1a60] border-b-2 border-[#bfa353] text-white px-2.5 py-1.5 shadow-sm relative z-20 flex items-center justify-between gap-2">
+                    <p
+                      onClick={() => {
+                        if (ruolo === 'volontario') {
+                          handleCambiaRuolo();
+                        } else {
+                          setModalAdminPass(true);
+                        }
+                      }}
+                      className="text-[10px] text-amber-300 font-black uppercase tracking-wide flex items-center gap-1 select-none truncate cursor-pointer"
+                    >
+                      <Compass className="w-3 h-3 text-amber-400 shrink-0" />
+                      <span className="truncate">Terminale di Bordo</span>
+                    </p>
 
-                    {/* RIGA SEPARATRICE: TERMINALE DI BORDO MEZZO A SINISTRA (CON BACK DOOR PIN SEGRETA AL CLICK) + ATTESA SERVIZIO TUTTA A DESTRA */}
-                    <div className="flex items-center justify-between gap-2 pt-1 border-t border-white/10">
-                      <p 
-                        onClick={() => {
-                          if (ruolo === 'volontario') {
-                            handleCambiaRuolo();
-                          } else {
-                            setModalAdminPass(true);
-                          }
-                        }}
-                        className="text-[9px] sm:text-[10px] text-amber-300 font-bold uppercase tracking-wider flex items-center gap-1 select-none"
-                      >
-                        <Compass className="w-3 h-3 text-amber-400 shrink-0" />
-                        <span>TERMINALE DI BORDO MEZZO</span>
-                      </p>
-
-                      {/* Badge Stato Missione / Attesa Servizio (tutta a destra sulla stessa riga) */}
-                      <div className={`px-2 py-0.5 rounded-xl text-[10px] sm:text-xs font-black uppercase tracking-wide border shadow-sm flex items-center gap-1.5 shrink-0 ${
+                    <div
+                      className={`px-2 py-0.5 rounded-lg text-[10px] font-black uppercase tracking-wide border shadow-sm flex items-center gap-1 shrink-0 whitespace-nowrap ${
                         missione
                           ? missione.urgenza === 'ROSSO'
                             ? 'bg-red-600 text-white border-red-400 animate-pulse'
@@ -13846,14 +14080,13 @@ KM TOTALI: ${kmTot} KM`;
                             ? 'bg-amber-400 text-slate-950 border-amber-300'
                             : 'bg-emerald-600 text-white border-emerald-400'
                           : 'bg-slate-900/80 text-amber-300 border-amber-500/30 font-mono'
-                      }`}>
-                        <span className={`w-1.5 h-1.5 rounded-full ${missione ? 'bg-white animate-ping' : 'bg-amber-400 animate-pulse'}`} />
-                        <span>
-                          {missione ? `${missione.urgenza} • ${missione.codice}` : 'ATTESA SERVIZIO...'}
-                        </span>
-                      </div>
+                      }`}
+                    >
+                      <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${missione ? 'bg-white animate-ping' : 'bg-amber-400 animate-pulse'}`} />
+                      <span>
+                        {missione ? `${missione.urgenza} · ${missione.codice}` : 'Attesa Servizio'}
+                      </span>
                     </div>
-
                   </div>
 
                   {/* Avviso Permessi Persi a Centro Schermata (mostrato SOLO se l'app rileva di aver perso qualche autorizzazione) */}
@@ -14162,38 +14395,28 @@ KM TOTALI: ${kmTot} KM`;
                         }}
                       />
 
-                      {/* Telemetria GPS in Tempo Reale Bordo Mezzo */}
-                      <div className="bg-slate-100 px-3 py-1.5 border-b border-slate-200 flex items-center justify-between text-[10px] text-slate-600 z-10">
-                        <div className="flex items-center gap-1.5">
-                          <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-                          <span className="font-bold text-[#1d1a60]">GPS Bordo:</span>
-                          <span className="font-mono font-semibold text-slate-700">
+                      {/* Telemetria GPS in Tempo Reale Bordo Mezzo (senza pulsante Servizio Autonomo duplicato) */}
+                      <div className="bg-slate-100 px-2.5 py-1 border-b border-slate-200 flex items-center justify-between gap-2 text-[10px] text-slate-600 z-10">
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse shrink-0" />
+                          <span className="font-bold text-[#1d1a60] shrink-0">GPS:</span>
+                          <span className="font-mono font-semibold text-slate-700 truncate tabular-nums">
                             {posizioneVolontario.lat.toFixed(4)}, {posizioneVolontario.lng.toFixed(4)}
                           </span>
                         </div>
-                        <div className="flex items-center gap-1.5">
-                          <button
-                            type="button"
-                            onClick={() => setModalNuovoServizioAutonomoAperta(true)}
-                            className="text-[9.5px] font-black text-white bg-gradient-to-r from-indigo-700 via-indigo-600 to-blue-600 hover:from-indigo-600 hover:to-blue-500 px-2 py-0.5 rounded-md shadow-sm border border-indigo-400/80 flex items-center gap-1 cursor-pointer active:scale-95"
-                            title="Avvia autonomamente un servizio di istituto o protezione civile"
-                          >
-                            <span>➕ Servizio Autonomo</span>
-                          </button>
-                          <button
-                            type="button"
-                            onClick={simulaSpostamentoGPS}
-                            className="text-[9px] font-bold text-amber-700 hover:text-amber-800 bg-amber-500/15 hover:bg-amber-500/25 px-1.5 py-0.5 rounded border border-amber-500/30 flex items-center gap-1"
-                            title="Simula o aggiorna coordinate GPS"
-                          >
-                            <RefreshCw className="w-2.5 h-2.5" />
-                            <span>Aggiorna</span>
-                          </button>
-                        </div>
+                        <button
+                          type="button"
+                          onClick={simulaSpostamentoGPS}
+                          className="text-[9.5px] font-bold text-amber-700 hover:text-amber-800 bg-amber-500/15 hover:bg-amber-500/25 px-2 py-0.5 rounded border border-amber-500/30 flex items-center gap-1 shrink-0 cursor-pointer whitespace-nowrap"
+                          title="Aggiorna coordinate GPS"
+                        >
+                          <RefreshCw className="w-2.5 h-2.5 shrink-0" />
+                          <span>GPS</span>
+                        </button>
                       </div>
 
                       {/* Contenuto Scheda con Watermark Logo Associazione nitido e non invasivo */}
-                      <div className="flex-1 p-3.5 flex flex-col overflow-y-auto space-y-2 text-xs relative">
+                      <div className="flex-1 p-2.5 sm:p-3 flex flex-col overflow-y-auto space-y-2 text-xs relative">
                     
                     {/* Watermark Logo Associazione: visibilità nitida nelle proporzioni originali */}
                     <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-0 overflow-hidden p-6">
@@ -15719,120 +15942,89 @@ KM TOTALI: ${kmTot} KM`;
                         )}
                       </>
                     ) : (
-                      <div className="flex-1 flex flex-col items-center justify-start text-center p-2 sm:p-3 space-y-3 w-full">
-                        {/* PULSANTE DEDICATO: TABELLONE TURNI SETTIMANALE PER OGNI SEZIONE */}
-                        <div className="w-full max-w-md p-3.5 rounded-2xl bg-gradient-to-r from-teal-950/80 via-slate-900 to-teal-950/80 border-2 border-teal-500/50 shadow-xl text-left flex flex-col sm:flex-row sm:items-center justify-between gap-3 animate-in fade-in">
-                          <div className="flex items-center gap-3 min-w-0">
-                            <div className="w-11 h-11 rounded-2xl bg-teal-500/20 border border-teal-400/40 text-teal-300 flex items-center justify-center shrink-0 shadow-lg shadow-teal-500/10">
-                              <Calendar className="w-6 h-6" />
-                            </div>
-                            <div className="min-w-0">
-                              <div className="flex items-center gap-1.5">
-                                <span className="px-1.5 py-0.2 rounded-full bg-teal-900/90 text-teal-300 border border-teal-700/60 text-[9px] font-black uppercase">
-                                  Pianificazione Turni
-                                </span>
-                              </div>
-                              <h4 className="text-xs font-black uppercase text-white truncate mt-0.5">
-                                Tabellone Turni Settimanale
-                              </h4>
-                              <p className="text-[10px] text-slate-300 leading-tight">
-                                Consulta la vista settimanale, orari e mezzi assegnati per ogni sezione
-                              </p>
-                            </div>
-                          </div>
+                      <div className="flex-1 flex flex-col items-center justify-between text-center p-1 sm:p-2 gap-2.5 w-full">
+                        {/* Griglia compatta a 2 colonne: Tabellone Turni & Bacheca di Sezione (senza duplicati) */}
+                        <div className="grid grid-cols-2 gap-2 w-full">
                           <button
                             type="button"
                             onClick={() => setModalTabelloneTurniVolontario(true)}
-                            className="w-full sm:w-auto px-4 py-2.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white font-black text-xs uppercase flex items-center justify-center gap-1.5 shadow-lg shadow-teal-600/30 active:scale-95 transition-all cursor-pointer shrink-0 border border-teal-400/50"
+                            className="p-2.5 sm:p-3 rounded-xl bg-gradient-to-b from-teal-950/90 to-slate-900 border border-teal-500/60 hover:border-teal-400 shadow-md text-left flex flex-col justify-between gap-2 active:scale-[0.98] transition-all cursor-pointer"
                           >
-                            <Calendar className="w-4 h-4 text-teal-200" />
-                            <span>Apri Tabellone</span>
-                          </button>
-                        </div>
-
-                        {/* PULSANTE DEDICATO: BACHECA DI SEZIONE (COMUNICAZIONI AI VOLONTARI) */}
-                        <div className="w-full max-w-md p-3.5 rounded-2xl bg-gradient-to-r from-violet-950/80 via-slate-900 to-violet-950/80 border-2 border-violet-500/50 shadow-xl text-left flex flex-col sm:flex-row sm:items-center justify-between gap-3 animate-in fade-in">
-                          <div className="flex items-center gap-3 min-w-0">
-                            <div className="w-11 h-11 rounded-2xl bg-violet-500/20 border border-violet-400/40 text-violet-300 flex items-center justify-center shrink-0 shadow-lg shadow-violet-500/10">
-                              <Megaphone className="w-6 h-6 text-violet-300" />
+                            <div className="flex items-center justify-between gap-1">
+                              <div className="w-8 h-8 rounded-lg bg-teal-500/20 border border-teal-400/40 text-teal-300 flex items-center justify-center shrink-0">
+                                <Calendar className="w-4 h-4" />
+                              </div>
+                              <span className="text-[9px] font-black uppercase text-teal-300">Turni</span>
                             </div>
                             <div className="min-w-0">
-                              <div className="flex items-center gap-1.5 flex-wrap">
-                                <span className="px-1.5 py-0.2 rounded-full bg-violet-900/90 text-violet-300 border border-violet-700/60 text-[9px] font-black uppercase">
-                                  Circolari & Avvisi
-                                </span>
-                                {comunicazioniBacheca.filter(c => c.attiva && c.priorita === 'Urgente').length > 0 && (
-                                  <span className="px-1.5 py-0.2 rounded-full bg-red-950 text-red-300 border border-red-700/60 text-[9px] font-black uppercase animate-pulse">
-                                    🚨 {comunicazioniBacheca.filter(c => c.attiva && c.priorita === 'Urgente').length} Urgenti
-                                  </span>
-                                )}
-                              </div>
-                              <h4 className="text-xs font-black uppercase text-white truncate mt-0.5">
-                                Bacheca di Sezione
+                              <h4 className="text-[11px] sm:text-xs font-black uppercase text-white leading-tight">
+                                Tabellone Turni
                               </h4>
-                              <p className="text-[10px] text-slate-300 leading-tight">
-                                Consulta circolari, disposizioni operative e avvisi dalla Direzione
+                              <p className="text-[9.5px] text-slate-300 leading-tight mt-0.5 line-clamp-2">
+                                Orari e mezzi settimanali per sezione
                               </p>
                             </div>
-                          </div>
+                          </button>
+
                           <button
                             type="button"
                             onClick={() => setModalBachecaVolontarioAperta(true)}
-                            className="w-full sm:w-auto px-4 py-2.5 rounded-xl bg-violet-600 hover:bg-violet-500 text-white font-black text-xs uppercase flex items-center justify-center gap-1.5 shadow-lg shadow-violet-600/30 active:scale-95 transition-all cursor-pointer shrink-0 border border-violet-400/50"
+                            className="p-2.5 sm:p-3 rounded-xl bg-gradient-to-b from-violet-950/90 to-slate-900 border border-violet-500/60 hover:border-violet-400 shadow-md text-left flex flex-col justify-between gap-2 active:scale-[0.98] transition-all cursor-pointer"
                           >
-                            <Megaphone className="w-4 h-4 text-violet-200" />
-                            <span>Apri Bacheca ({totaleElementiBachecaAttivi})</span>
+                            <div className="flex items-center justify-between gap-1">
+                              <div className="w-8 h-8 rounded-lg bg-violet-500/20 border border-violet-400/40 text-violet-300 flex items-center justify-center shrink-0">
+                                <Megaphone className="w-4 h-4" />
+                              </div>
+                              <span className="text-[10px] font-mono font-black px-1.5 py-0.5 rounded bg-violet-900/90 text-violet-200 tabular-nums">
+                                {totaleElementiBachecaAttivi}
+                              </span>
+                            </div>
+                            <div className="min-w-0">
+                              <h4 className="text-[11px] sm:text-xs font-black uppercase text-white leading-tight flex items-center gap-1">
+                                <span className="truncate">Bacheca</span>
+                                {comunicazioniBacheca.filter(c => c.attiva && c.priorita === 'Urgente').length > 0 && (
+                                  <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse shrink-0" />
+                                )}
+                              </h4>
+                              <p className="text-[9.5px] text-slate-300 leading-tight mt-0.5 line-clamp-2">
+                                Avvisi, circolari e prossimi corsi
+                              </p>
+                            </div>
                           </button>
                         </div>
 
-                        <div className="w-14 h-14 rounded-full bg-slate-100 flex items-center justify-center text-[#1d1a60] border-2 border-dashed border-[#bfa353] mt-1">
-                          <Radio className="w-7 h-7 text-[#1d1a60] animate-pulse" />
+                        {/* Stato Attesa Centrale compatto */}
+                        <div className="flex flex-col items-center justify-center py-1 space-y-1">
+                          <div className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center text-[#1d1a60] border-2 border-dashed border-[#bfa353]">
+                            <Radio className="w-5 h-5 text-[#1d1a60] animate-pulse" />
+                          </div>
+                          <h3 className="text-xs sm:text-sm font-black text-[#1d1a60]">
+                            In attesa di servizio dalla Centrale
+                          </h3>
+                          <p className="text-[10.5px] text-slate-500 leading-snug max-w-[270px]">
+                            Terminale collegato. La prossima missione verrà trasmessa automaticamente qui.
+                          </p>
                         </div>
-                        <h3 className="text-sm font-bold text-[#1d1a60]">
-                          In attesa di servizio / scheda dalla Centrale
-                        </h3>
-                        <p className="text-xs text-slate-500 leading-relaxed max-w-[260px]">
-                          Il mezzo è pronto e collegato. La Centrale Operativa trasmetterà qui la prossima missione e farà squillare il telefono.
-                        </p>
-                        
-                        {/* Card Avvio Servizio Autonomo (Istituto o Protezione Civile) */}
-                        <div className="w-full max-w-[280px] bg-gradient-to-r from-blue-950 via-slate-900 to-indigo-950 border-2 border-indigo-400/80 rounded-2xl p-3 shadow-xl space-y-2 text-center mt-1">
-                          <div className="flex items-center justify-center gap-2">
-                            <span className="text-xl">🚑</span>
-                            <div className="text-left">
-                              <span className="text-[10px] font-black uppercase text-amber-300 block">
+
+                        {/* UNICO pulsante Avvio Servizio Autonomo */}
+                        <div className="w-full bg-gradient-to-r from-blue-950 via-slate-900 to-indigo-950 border border-indigo-400/70 rounded-xl p-2.5 shadow-md space-y-2 text-center">
+                          <div className="flex items-center justify-between gap-2 text-left">
+                            <div className="min-w-0">
+                              <span className="text-[9.5px] font-black uppercase text-amber-300 block">
                                 Iniziativa Autonoma Equipaggio
                               </span>
-                              <span className="text-xs font-black text-white block">
-                                Servizio d'Istituto o PC
+                              <span className="text-xs font-black text-white block truncate">
+                                Servizio d'Istituto o Protezione Civile
                               </span>
                             </div>
                           </div>
-                          <p className="text-[10px] text-slate-300 leading-tight">
-                            Puoi inserire autonomamente il servizio senza attendere la Centrale. La Centrale verrà allertata in tempo reale con sirena che il mezzo si sta spostando.
-                          </p>
                           <button
                             type="button"
                             onClick={() => setModalNuovoServizioAutonomoAperta(true)}
-                            className="w-full py-2.5 px-3 rounded-xl bg-gradient-to-r from-amber-500 via-amber-400 to-amber-500 hover:from-amber-400 hover:to-amber-300 text-slate-950 font-black text-xs uppercase flex items-center justify-center gap-2 shadow-lg shadow-amber-500/30 active:scale-95 transition-all cursor-pointer border border-amber-600"
+                            className="w-full py-2 px-3 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs uppercase flex items-center justify-center gap-1.5 shadow active:scale-95 transition-all cursor-pointer border border-amber-600"
+                            style={{ backgroundColor: '#f59e0b', color: '#020617' }}
                           >
                             <span>➕ Avvia Servizio Autonomo</span>
-                          </button>
-                        </div>
-
-                        <div className="flex flex-col gap-2 w-full max-w-[220px] mt-1">
-                          <button
-                            onClick={() => faiSuonareTelefono('Volontario (Test Bordo)', 'telefono')}
-                            className="py-2 px-3 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs flex items-center justify-center gap-1.5 shadow-sm active:scale-95 transition-all cursor-pointer"
-                          >
-                            <BellRing className="w-4 h-4" /> Prova Squillo Telefono
-                          </button>
-
-                          <button
-                            onClick={() => setModalNotificheAperta(true)}
-                            className="py-2 px-3 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-xs flex items-center justify-center gap-1.5 border border-slate-700 active:scale-95 transition-all cursor-pointer"
-                          >
-                            <Radio className="w-4 h-4 text-emerald-400" /> Apri Notifiche Radio
                           </button>
                         </div>
                       </div>
@@ -20893,6 +21085,7 @@ KM TOTALI: ${kmTot} KM`;
             catalogoMansioni: getMansioniCatalogo(),
             categorieMansioni: getCategorieMansioni(),
             tipologieMezzo: getTipologieMezzoCatalogo(),
+            tipiTurno: getTipiTurnoCatalogo(),
             mezziFlotta,
             nomiDatabase: getNomiDatabaseSyncPayload(),
             rubricaNumeriUtili: getRubricaNumeriUtili(),

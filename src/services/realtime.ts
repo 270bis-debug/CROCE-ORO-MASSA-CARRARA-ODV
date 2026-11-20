@@ -50,6 +50,7 @@ import { LEGACY_MOCK_CORSI_IDS } from '../data/adminMockData';
 import { applicaMansioniConfigDaSync, getMansioniConfigUpdatedAt } from '../utils/mansioniVolontari';
 import { applicaNomiDatabaseDaSync, getNomiDatabaseUpdatedAt } from '../constants/macroCategorie';
 import { applicaTipologieMezzoDaSync, getTipologieMezzoUpdatedAt } from '../utils/tipologieMezzo';
+import { applicaTipiTurnoDaSync, getTipiTurnoUpdatedAt } from '../utils/tipiTurno';
 import { applicaMetodiPagamentoDaSync } from '../utils/metodiPagamentoStore';
 import { applicaRegolaNotificaScadenzeDaSync } from '../utils/avvisiManutenzioneMezzi';
 import { applicaRubricaNumeriUtiliDaSync, getRubricaNumeriUtiliUpdatedAt } from '../utils/rubricaNumeriUtiliStore';
@@ -710,6 +711,17 @@ class RealtimeService {
           updatedAt: payload.tipologieMezzoUpdatedAt,
         });
       }
+      if (Array.isArray(payload.tipiTurno)) {
+        this.cloudState.tipiTurno = payload.tipiTurno;
+        if (payload.tipiTurnoUpdatedAt) {
+          this.cloudState.tipiTurnoUpdatedAt = payload.tipiTurnoUpdatedAt;
+        }
+        applicaTipiTurnoDaSync(payload.tipiTurno, payload.tipiTurnoUpdatedAt);
+        this.emit('TIPI_TURNO_UPDATED', {
+          tipiTurno: payload.tipiTurno,
+          updatedAt: payload.tipiTurnoUpdatedAt,
+        });
+      }
       if (Array.isArray(payload.metodiPagamentoCustom)) {
         this.cloudState.metodiPagamentoCustom = payload.metodiPagamentoCustom;
         if (payload.metodiPagamentoCustomUpdatedAt) {
@@ -1106,6 +1118,8 @@ class RealtimeService {
           nomiDatabaseUpdatedAt: this.cloudState.nomiDatabaseUpdatedAt || undefined,
           tipologieMezzo: Array.isArray(this.cloudState.tipologieMezzo) ? this.cloudState.tipologieMezzo : undefined,
           tipologieMezzoUpdatedAt: this.cloudState.tipologieMezzoUpdatedAt || undefined,
+          tipiTurno: Array.isArray(this.cloudState.tipiTurno) ? this.cloudState.tipiTurno : undefined,
+          tipiTurnoUpdatedAt: this.cloudState.tipiTurnoUpdatedAt || undefined,
           rubricaNumeriUtili: Array.isArray(this.cloudState.rubricaNumeriUtili) ? this.cloudState.rubricaNumeriUtili : undefined,
           rubricaNumeriUtiliUpdatedAt: this.cloudState.rubricaNumeriUtiliUpdatedAt || undefined,
           modelliAttestatiCategoria:
@@ -1339,6 +1353,7 @@ class RealtimeService {
           (Array.isArray(snapshot.catalogoMansioni) && snapshot.catalogoMansioni.length > 0) ||
           (Array.isArray(snapshot.categorieMansioni) && snapshot.categorieMansioni.length > 0) ||
           (Array.isArray(snapshot.tipologieMezzo) && snapshot.tipologieMezzo.length > 0) ||
+          (Array.isArray(snapshot.tipiTurno) && snapshot.tipiTurno.length > 0) ||
           Boolean(snapshot.nomiDatabase && Object.keys(snapshot.nomiDatabase).length > 0) ||
           (Array.isArray(snapshot.rubricaNumeriUtili) && snapshot.rubricaNumeriUtili.length > 0) ||
           Boolean(getConfiguredPublicUrl()),
@@ -1352,6 +1367,8 @@ class RealtimeService {
           mansioniConfigUpdatedAt: getMansioniConfigUpdatedAt() || Date.now(),
           tipologieMezzo: snapshot.tipologieMezzo,
           tipologieMezzoUpdatedAt: getTipologieMezzoUpdatedAt() || Date.now(),
+          tipiTurno: snapshot.tipiTurno,
+          tipiTurnoUpdatedAt: getTipiTurnoUpdatedAt() || Date.now(),
           nomiDatabase: snapshot.nomiDatabase,
           nomiDatabaseUpdatedAt: getNomiDatabaseUpdatedAt() || Date.now(),
           rubricaNumeriUtili: snapshot.rubricaNumeriUtili,
@@ -1482,6 +1499,8 @@ class RealtimeService {
           mansioniConfigUpdatedAt: getMansioniConfigUpdatedAt() || Date.now(),
           tipologieMezzo: snapshot.tipologieMezzo ?? this.cloudState.tipologieMezzo,
           tipologieMezzoUpdatedAt: getTipologieMezzoUpdatedAt() || Date.now(),
+          tipiTurno: snapshot.tipiTurno ?? this.cloudState.tipiTurno,
+          tipiTurnoUpdatedAt: getTipiTurnoUpdatedAt() || Date.now(),
           nomiDatabase: snapshot.nomiDatabase ?? this.cloudState.nomiDatabase,
           nomiDatabaseUpdatedAt: getNomiDatabaseUpdatedAt() || Date.now(),
           rubricaNumeriUtili: snapshot.rubricaNumeriUtili ?? this.cloudState.rubricaNumeriUtili,
@@ -1676,6 +1695,10 @@ class RealtimeService {
               this.cloudState.tipologieMezzo = payload.tipologieMezzo;
               if (payload.updatedAt) this.cloudState.tipologieMezzoUpdatedAt = payload.updatedAt;
               applicaTipologieMezzoDaSync(payload.tipologieMezzo, payload.updatedAt);
+            } else if (payload.type === 'TIPI_TURNO_UPDATED' && Array.isArray(payload.tipiTurno)) {
+              this.cloudState.tipiTurno = payload.tipiTurno;
+              if (payload.updatedAt) this.cloudState.tipiTurnoUpdatedAt = payload.updatedAt;
+              applicaTipiTurnoDaSync(payload.tipiTurno, payload.updatedAt);
             } else if (payload.type === 'METODI_PAGAMENTO_UPDATED' && Array.isArray(payload.metodi)) {
               this.cloudState.metodiPagamentoCustom = payload.metodi;
               if (payload.updatedAt) this.cloudState.metodiPagamentoCustomUpdatedAt = payload.updatedAt;
@@ -1784,6 +1807,9 @@ class RealtimeService {
     }
     if (Array.isArray(this.cloudState.tipologieMezzo) && this.cloudState.tipologieMezzo.length > 0) {
       applicaTipologieMezzoDaSync(this.cloudState.tipologieMezzo, this.cloudState.tipologieMezzoUpdatedAt);
+    }
+    if (Array.isArray(this.cloudState.tipiTurno)) {
+      applicaTipiTurnoDaSync(this.cloudState.tipiTurno, this.cloudState.tipiTurnoUpdatedAt);
     }
     if (Array.isArray(this.cloudState.metodiPagamentoCustom)) {
       applicaMetodiPagamentoDaSync(this.cloudState.metodiPagamentoCustom, this.cloudState.metodiPagamentoCustomUpdatedAt);
@@ -2722,6 +2748,14 @@ class RealtimeService {
           this.scheduleShardWrite('config', {
             tipologieMezzo: data.tipologieMezzo,
             tipologieMezzoUpdatedAt: data?.updatedAt || Date.now(),
+          });
+        }
+        break;
+      case 'UPDATE_TIPI_TURNO':
+        if (Array.isArray(data?.tipiTurno)) {
+          this.scheduleShardWrite('config', {
+            tipiTurno: data.tipiTurno,
+            tipiTurnoUpdatedAt: data?.updatedAt || Date.now(),
           });
         }
         break;
@@ -4043,6 +4077,13 @@ class RealtimeService {
   public syncTipologieMezzo(tipologieMezzo: any[]) {
     const updatedAt = getTipologieMezzoUpdatedAt() || Date.now();
     this.send('UPDATE_TIPOLOGIE_MEZZO', { tipologieMezzo, updatedAt });
+  }
+
+  public syncTipiTurno(tipiTurno: any[]) {
+    const updatedAt = getTipiTurnoUpdatedAt() || Date.now();
+    this.cloudState.tipiTurno = tipiTurno;
+    this.cloudState.tipiTurnoUpdatedAt = updatedAt;
+    this.send('UPDATE_TIPI_TURNO', { tipiTurno, updatedAt });
   }
 
   public syncRubricaNumeriUtili(rubrica: any[]) {

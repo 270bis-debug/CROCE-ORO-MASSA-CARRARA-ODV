@@ -232,7 +232,7 @@ export const SchermataSceltaRuolo: React.FC<SchermataSceltaRuoloProps> = ({
 
   return (
     <div
-      className={isWeb ? "min-h-screen flex flex-col justify-between p-4 sm:p-6 lg:p-8 relative overflow-y-auto overflow-x-hidden font-sans" : "min-h-screen bg-slate-950 text-slate-100 flex flex-col justify-between p-4 sm:p-6 lg:p-8 relative overflow-y-auto overflow-x-hidden font-sans"}
+      className={isWeb ? "min-h-[100dvh] flex flex-col justify-between p-2.5 sm:p-5 lg:p-6 relative overflow-y-auto overflow-x-hidden font-sans w-full max-w-[100vw]" : "min-h-[100dvh] bg-slate-950 text-slate-100 flex flex-col justify-between p-2.5 sm:p-5 lg:p-6 relative overflow-y-auto overflow-x-hidden font-sans w-full max-w-[100vw]"}
       style={isWeb ? { backgroundColor: '#ffffff', color: '#0f172a' } : undefined}
     >
       {/* Elementi grafici di sfondo (solo in modalità scura, disattivati su web per massima visibilità) */}
@@ -244,35 +244,35 @@ export const SchermataSceltaRuolo: React.FC<SchermataSceltaRuoloProps> = ({
       )}
 
       {/* Header con Logo e Titolo Associazione */}
-      <div className="relative z-10 max-w-4xl mx-auto w-full text-center pt-2 sm:pt-4">
-        <div className="flex flex-col items-center justify-center gap-3 mb-3">
-          <div className={isWeb ? "p-2 rounded-2xl bg-white border-2 border-slate-200 shadow-md" : ""}>
-            <CroceOroLogo size="xl" className="w-24 h-24 sm:w-28 sm:h-28 shadow-2xl shadow-amber-500/20" />
+      <div className="relative z-10 max-w-4xl mx-auto w-full text-center pt-1 sm:pt-2">
+        <div className="flex flex-col items-center justify-center gap-1.5 sm:gap-2.5 mb-2">
+          <div className={isWeb ? "p-1.5 rounded-2xl bg-white border-2 border-slate-200 shadow-md" : ""}>
+            <CroceOroLogo size="xl" className="w-14 h-14 sm:w-20 sm:h-20 lg:w-24 lg:h-24 shadow-2xl shadow-amber-500/20" />
           </div>
-          <div>
-            <div className="flex items-center justify-center gap-2">
-              <h1 className={`text-xl sm:text-2xl lg:text-3xl font-black tracking-wider uppercase ${
+          <div className="w-full">
+            <div className="flex items-center justify-center gap-2 flex-wrap">
+              <h1 className={`text-base sm:text-xl lg:text-2xl font-black tracking-wider uppercase ${
                 isWeb ? 'text-[#1d1a60]' : 'text-amber-400'
               }`}>
                 Croce Oro Massa Carrara OdV
               </h1>
-              <span className={`text-xs font-bold px-2.5 py-0.5 rounded-full border ${
+              <span className={`text-[10px] sm:text-xs font-bold px-2 py-0.5 rounded-full border whitespace-nowrap shrink-0 font-mono ${
                 isWeb ? 'bg-amber-100 text-amber-900 border-amber-300 font-black' : 'bg-amber-500/20 text-amber-300 border-amber-500/40'
               }`}>
                 {APP_VERSION_LABEL}
               </span>
             </div>
-            <p className={`text-xs sm:text-sm font-bold tracking-wide mt-1 ${
+            <p className={`text-[11px] sm:text-xs font-bold tracking-wide mt-0.5 ${
               isWeb ? 'text-slate-700' : 'text-white font-medium'
             }`}>
               Associazione Volontari del Soccorso & Protezione Civile
             </p>
 
-            <div className="flex items-center justify-center gap-2 mt-2 flex-wrap">
+            <div className="flex items-center justify-center gap-1.5 mt-1.5 flex-wrap">
               <button
                 type="button"
                 onClick={() => onApriConnessione?.()}
-                className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-bold shadow-sm border transition-all cursor-pointer active:scale-95 ${
+                className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] sm:text-[11px] font-bold shadow-sm border transition-all cursor-pointer active:scale-95 ${
                   connInfo.firestoreActive
                     ? (isWeb ? 'bg-emerald-50 border-emerald-400 text-emerald-900 hover:bg-emerald-100' : 'bg-emerald-950/80 border-emerald-500/50 text-emerald-300 hover:bg-emerald-900/80')
                     : connInfo.firebaseStatus === 'pending_approval' || connInfo.firebaseStatus === 'signed_out' || connInfo.status === 'auth_required'
@@ -283,12 +283,12 @@ export const SchermataSceltaRuolo: React.FC<SchermataSceltaRuoloProps> = ({
                 }`}
                 title="Clicca per aprire lo stato sincronizzazione Cloud multi-dispositivo"
               >
-                <span className={`w-2 h-2 rounded-full ${
+                <span className={`w-2 h-2 rounded-full shrink-0 ${
                   connInfo.firestoreActive || connInfo.connected
                     ? 'bg-emerald-500 animate-pulse'
                     : 'bg-amber-500'
                 }`} />
-                <span>
+                <span className="truncate max-w-[260px] sm:max-w-none">
                   {connInfo.firestoreActive
                     ? `Cloud Multi-Device Attivo (${volontari.length} profili)`
                     : connInfo.firebaseStatus === 'pending_approval'
@@ -307,121 +307,125 @@ export const SchermataSceltaRuolo: React.FC<SchermataSceltaRuoloProps> = ({
 
         {/* Avviso Account in Attivazione salvato su questo device */}
         {operatoreInAttesaLocale && onMostraAccountInAttivazione && (
-          <div className={`max-w-2xl mx-auto mt-3 p-3 rounded-2xl border text-xs flex items-center justify-between gap-3 shadow-lg ${
+          <div className={`max-w-2xl mx-auto mt-2 p-2.5 rounded-xl border text-xs flex items-center justify-between gap-2 shadow-lg ${
             isWeb ? 'bg-amber-50 border-2 border-amber-400 text-amber-950 font-medium' : 'bg-amber-500/15 border-amber-500/40 text-amber-200'
           }`}>
-            <div className="flex items-center gap-2.5 text-left">
+            <div className="flex items-center gap-2 text-left min-w-0">
               <Clock className="w-4 h-4 text-amber-500 shrink-0 animate-pulse" />
-              <div>
-                <strong className={`block ${isWeb ? 'text-amber-900 font-black' : 'text-amber-300'}`}>Richiesta Operatore Centrale registrata su questo device:</strong>
-                <span>{operatoreInAttesaLocale.nome} {operatoreInAttesaLocale.cognome} (PIN: {operatoreInAttesaLocale.pin})</span>
+              <div className="min-w-0 truncate">
+                <strong className={`block truncate ${isWeb ? 'text-amber-900 font-black' : 'text-amber-300'}`}>Richiesta Operatore in attivazione:</strong>
+                <span className="truncate">{operatoreInAttesaLocale.nome} {operatoreInAttesaLocale.cognome}</span>
               </div>
             </div>
             <button
               type="button"
               onClick={() => onMostraAccountInAttivazione(operatoreInAttesaLocale)}
-              className="px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-[11px] uppercase shrink-0 transition-all cursor-pointer shadow border border-amber-600"
+              className="px-2.5 py-1 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-[10px] uppercase shrink-0 transition-all cursor-pointer shadow border border-amber-600"
             >
               Vedi Stato
             </button>
           </div>
         )}
 
-        <div className={`mt-4 sm:mt-5 rounded-2xl p-4 sm:p-5 shadow-md max-w-2xl mx-auto border-2 ${
+        <div className={`mt-2 sm:mt-3 rounded-xl px-3 py-2 sm:p-3.5 shadow-sm max-w-2xl mx-auto border ${
           isWeb ? 'bg-white border-slate-300 text-slate-900' : 'bg-slate-900/80 border-slate-800 text-white'
         }`}>
-          <h2 className={`text-base sm:text-lg font-black ${isWeb ? 'text-[#1d1a60]' : 'text-white'}`}>
+          <h2 className={`text-xs sm:text-base font-black ${isWeb ? 'text-[#1d1a60]' : 'text-white'}`}>
             Seleziona la modalità di accesso per questo dispositivo
           </h2>
-          <p className={`text-xs sm:text-sm mt-1 ${isWeb ? 'text-slate-600 font-medium' : 'text-slate-400'}`}>
+          <p className={`hidden sm:block text-xs mt-0.5 ${isWeb ? 'text-slate-600 font-medium' : 'text-slate-400'}`}>
             Scegli il tuo ruolo per caricare esclusivamente l'interfaccia adatta alle tue mansioni:
           </p>
         </div>
       </div>
 
       {/* Griglia delle due scelte: Volontario vs Centrale */}
-      <div className="relative z-10 max-w-4xl mx-auto w-full my-6 sm:my-8 grid grid-cols-1 md:grid-cols-2 gap-5 sm:gap-6">
+      <div className="relative z-10 max-w-4xl mx-auto w-full my-2.5 sm:my-4 grid grid-cols-1 md:grid-cols-2 gap-2.5 sm:gap-5">
         
         {/* OPZIONE 1: VOLONTARIO / TERMINALE BORDO MEZZO */}
         <div
-          className={isWeb ? "bg-white border-2 border-emerald-600 rounded-3xl p-5 sm:p-7 flex flex-col justify-between shadow-xl relative overflow-hidden" : "bg-gradient-to-b from-slate-900/90 to-slate-950/90 border-2 border-emerald-500/40 hover:border-emerald-400 rounded-3xl p-5 sm:p-7 flex flex-col justify-between shadow-2xl transition-all hover:scale-[1.01] relative overflow-hidden group"}
+          className={isWeb ? "bg-white border-2 border-emerald-600 rounded-2xl p-3.5 sm:p-5 flex flex-col justify-between shadow-lg relative overflow-hidden" : "bg-gradient-to-b from-slate-900/90 to-slate-950/90 border-2 border-emerald-500/40 hover:border-emerald-400 rounded-2xl p-3.5 sm:p-5 flex flex-col justify-between shadow-xl transition-all hover:scale-[1.01] relative overflow-hidden group"}
           style={isWeb ? { backgroundColor: '#ffffff', color: '#0f172a', borderColor: '#059669' } : undefined}
         >
           <div
-            className={isWeb ? "absolute top-0 right-0 bg-emerald-100 border-b-2 border-l-2 border-emerald-500 text-emerald-900 text-[11px] font-black uppercase px-3 py-1 rounded-bl-2xl" : "absolute top-0 right-0 bg-emerald-500/10 border-b border-l border-emerald-500/30 text-emerald-400 text-[11px] font-black uppercase px-3 py-1 rounded-bl-2xl"}
+            className={isWeb ? "absolute top-0 right-0 bg-emerald-100 border-b border-l border-emerald-500 text-emerald-900 text-[10px] font-black uppercase px-2.5 py-0.5 rounded-bl-xl" : "absolute top-0 right-0 bg-emerald-500/10 border-b border-l border-emerald-500/30 text-emerald-400 text-[10px] font-black uppercase px-2.5 py-0.5 rounded-bl-xl"}
             style={isWeb ? { backgroundColor: '#d1fae5', color: '#064e3b', borderColor: '#10b981' } : undefined}
           >
-            Consigliato su Smartphone
+            Smartphone
           </div>
 
-          <div>
+          <div className="flex items-start gap-3 sm:block">
             <div
-              className={isWeb ? "w-14 h-14 rounded-2xl bg-emerald-600 border-2 border-emerald-700 flex items-center justify-center text-white mb-4 shadow-md" : "w-14 h-14 rounded-2xl bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center text-emerald-400 mb-4 shadow-lg group-hover:scale-110 transition-transform"}
+              className={isWeb ? "w-10 h-10 sm:w-12 sm:h-12 rounded-xl bg-emerald-600 border border-emerald-700 flex items-center justify-center text-white sm:mb-3 shadow-md shrink-0" : "w-10 h-10 sm:w-12 sm:h-12 rounded-xl bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center text-emerald-400 sm:mb-3 shadow-md shrink-0 group-hover:scale-105 transition-transform"}
               style={isWeb ? { backgroundColor: '#059669', color: '#ffffff', borderColor: '#047857' } : undefined}
             >
-              <Car className="w-8 h-8 text-white" />
+              <Car className="w-5 h-5 sm:w-7 sm:h-7 text-white" />
             </div>
 
-            <h3 className={`text-xl font-black flex items-center gap-2 ${isWeb ? 'text-slate-950' : 'text-white'}`}>
-              <span>Volontario / Soccorritore</span>
-            </h3>
-            <p className={`text-xs font-black uppercase tracking-wide mt-0.5 ${isWeb ? 'text-emerald-800' : 'text-emerald-400'}`}>
-              Terminale di Bordo Mezzo
-            </p>
+            <div className="min-w-0">
+              <h3 className={`text-base sm:text-lg font-black flex items-center gap-2 ${isWeb ? 'text-slate-950' : 'text-white'}`}>
+                <span>Volontario / Soccorritore</span>
+              </h3>
+              <p className={`text-[10px] sm:text-xs font-black uppercase tracking-wide mt-0.5 ${isWeb ? 'text-emerald-800' : 'text-emerald-400'}`}>
+                Terminale di Bordo Mezzo
+              </p>
 
-            <p className={`text-xs mt-3 leading-relaxed font-medium ${isWeb ? 'text-slate-700' : 'text-slate-300'}`}>
-              Interfaccia dedicata per chi opera a bordo delle ambulanze e veicoli di protezione civile.
-            </p>
+              <p className={`text-[11px] sm:text-xs mt-1.5 leading-snug font-medium ${isWeb ? 'text-slate-700' : 'text-slate-300'}`}>
+                Interfaccia dedicata per chi opera a bordo delle ambulanze e veicoli di protezione civile.
+              </p>
+            </div>
           </div>
 
-          <div className={`mt-6 pt-4 border-t ${isWeb ? 'border-slate-300' : 'border-slate-800'}`}>
+          <div className={`mt-3 sm:mt-4 pt-2.5 sm:pt-3 border-t ${isWeb ? 'border-slate-300' : 'border-slate-800'}`}>
             <button
               type="button"
               onClick={onSelectVolontario}
-              className="w-full py-3.5 px-4 rounded-2xl bg-emerald-600 hover:bg-emerald-700 text-white font-black text-sm uppercase flex items-center justify-center gap-2 shadow-lg border-2 border-emerald-800 active:scale-95 transition-all cursor-pointer"
+              className="w-full py-2.5 sm:py-3 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs sm:text-sm uppercase flex items-center justify-center gap-2 shadow-md border-2 border-emerald-800 active:scale-95 transition-all cursor-pointer"
               style={{ backgroundColor: '#059669', color: '#ffffff', borderColor: '#047857' }}
             >
-              <Car className="w-5 h-5 text-white" />
+              <Car className="w-4 h-4 sm:w-5 sm:h-5 text-white shrink-0" />
               <span>Entra come Volontario</span>
-              <ChevronRight className="w-4 h-4 text-white" />
+              <ChevronRight className="w-4 h-4 text-white shrink-0" />
             </button>
           </div>
         </div>
 
         {/* OPZIONE 2: CENTRALE (AMMINISTRATORE + OPERATORI CENTRALE) */}
         <div
-          className={isWeb ? "bg-white border-2 border-amber-600 rounded-3xl p-5 sm:p-7 flex flex-col justify-between shadow-xl relative overflow-hidden" : "bg-gradient-to-b from-slate-900/90 to-slate-950/90 border-2 border-amber-500/40 hover:border-amber-400 rounded-3xl p-5 sm:p-7 flex flex-col justify-between shadow-2xl transition-all hover:scale-[1.01] relative overflow-hidden group"}
+          className={isWeb ? "bg-white border-2 border-amber-600 rounded-2xl p-3.5 sm:p-5 flex flex-col justify-between shadow-lg relative overflow-hidden" : "bg-gradient-to-b from-slate-900/90 to-slate-950/90 border-2 border-amber-500/40 hover:border-amber-400 rounded-2xl p-3.5 sm:p-5 flex flex-col justify-between shadow-xl transition-all hover:scale-[1.01] relative overflow-hidden group"}
           style={isWeb ? { backgroundColor: '#ffffff', color: '#0f172a', borderColor: '#d97706' } : undefined}
         >
           <div
-            className={isWeb ? "absolute top-0 right-0 bg-amber-100 border-b-2 border-l-2 border-amber-500 text-amber-950 text-[11px] font-black uppercase px-3 py-1 rounded-bl-2xl" : "absolute top-0 right-0 bg-amber-500/10 border-b border-l border-amber-500/30 text-amber-400 text-[11px] font-black uppercase px-3 py-1 rounded-bl-2xl"}
+            className={isWeb ? "absolute top-0 right-0 bg-amber-100 border-b border-l border-amber-500 text-amber-950 text-[10px] font-black uppercase px-2.5 py-0.5 rounded-bl-xl" : "absolute top-0 right-0 bg-amber-500/10 border-b border-l border-amber-500/30 text-amber-400 text-[10px] font-black uppercase px-2.5 py-0.5 rounded-bl-xl"}
             style={isWeb ? { backgroundColor: '#fef3c7', color: '#78350f', borderColor: '#f59e0b' } : undefined}
           >
             Accesso con PIN
           </div>
 
-          <div>
+          <div className="flex items-start gap-3 sm:block">
             <div
-              className={isWeb ? "w-14 h-14 rounded-2xl bg-amber-500 border-2 border-amber-600 flex items-center justify-center text-slate-950 mb-4 shadow-md" : "w-14 h-14 rounded-2xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-400 mb-4 shadow-lg group-hover:scale-110 transition-transform"}
+              className={isWeb ? "w-10 h-10 sm:w-12 sm:h-12 rounded-xl bg-amber-500 border border-amber-600 flex items-center justify-center text-slate-950 sm:mb-3 shadow-md shrink-0" : "w-10 h-10 sm:w-12 sm:h-12 rounded-xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-400 sm:mb-3 shadow-md shrink-0 group-hover:scale-105 transition-transform"}
               style={isWeb ? { backgroundColor: '#f59e0b', color: '#020617', borderColor: '#d97706' } : undefined}
             >
-              <Radio className="w-8 h-8 text-slate-950" />
+              <Radio className="w-5 h-5 sm:w-7 sm:h-7 text-slate-950" />
             </div>
 
-            <h3 className={`text-xl font-black flex items-center gap-2 ${isWeb ? 'text-slate-950' : 'text-white'}`}>
-              <span>Centrale</span>
-            </h3>
-            <p className={`text-xs font-black uppercase tracking-wide mt-0.5 ${isWeb ? 'text-amber-800' : 'text-amber-400'}`}>
-              Centrale Operativa & Coordinamento
-            </p>
+            <div className="min-w-0">
+              <h3 className={`text-base sm:text-lg font-black flex items-center gap-2 ${isWeb ? 'text-slate-950' : 'text-white'}`}>
+                <span>Centrale</span>
+              </h3>
+              <p className={`text-[10px] sm:text-xs font-black uppercase tracking-wide mt-0.5 ${isWeb ? 'text-amber-800' : 'text-amber-400'}`}>
+                Centrale Operativa & Coordinamento
+              </p>
 
-            <p className={`text-xs mt-3 leading-relaxed font-medium ${isWeb ? 'text-slate-700' : 'text-slate-300'}`}>
-              Postazione per gestione chiamate, assegnazione mezzi, mappa GPS e coordinamento operativo.
-            </p>
+              <p className={`text-[11px] sm:text-xs mt-1.5 leading-snug font-medium ${isWeb ? 'text-slate-700' : 'text-slate-300'}`}>
+                Postazione per gestione chiamate, assegnazione mezzi, mappa GPS e coordinamento operativo.
+              </p>
+            </div>
           </div>
 
           {/* Form o Pulsanti Accesso Centrale */}
-          <div className={`mt-6 pt-4 border-t space-y-3 ${isWeb ? 'border-slate-300' : 'border-slate-800'}`}>
+          <div className={`mt-3 sm:mt-4 pt-2.5 sm:pt-3 border-t space-y-2.5 ${isWeb ? 'border-slate-300' : 'border-slate-800'}`}>
             {modalitaCentrale === 'chiuso' && (
               <div className="space-y-2.5">
                 {/* Tasto Unificato: Entra come Operatore di Centrale */}

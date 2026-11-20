@@ -581,12 +581,36 @@ export interface CandidaturaTurno {
   note?: string;
 }
 
+export interface MansioneTipoTurno {
+  id: string; // ID univoco della mansione (es. 'ruolo-autista' o ID dal catalogo Mansioni & Competenze)
+  nome: string; // Nome visualizzato della mansione
+  emoji?: string; // Emoji / icona della mansione
+  ruoloTurno?: RuoloTurno; // Mappatura opzionale ai 7 ruoli base
+  mansioneCatalogoId?: string; // Riferimento opzionale al catalogo Gestione Volontari -> Mansioni & Competenze
+  categoria?: string; // Categoria mansione
+  minimo: number; // Numero minimo obbligatorio di persone (>= 1)
+  massimo: number; // Numero massimo di persone (>= minimo)
+}
+
+export interface TipoTurnoConfig {
+  id: string;
+  nome: string;
+  descrizione?: string;
+  icona?: string;
+  mansioniObbligatorie: MansioneTipoTurno[];
+  dataCreazione?: string;
+  predefinito?: boolean;
+}
+
 export interface TurnoSedeOperativa {
   id: string;
   serieId?: string; // Identificativo condiviso tra i turni creati come serie ripetuta
   sedeId: string;
   sedeNome: string;
-  nomeTurno?: string; // Campo libero per nome/tipo turno personalizzato
+  nomeTurno?: string; // Nome del turno (obbligatorio e sempre editabile)
+  tipoTurnoId?: string; // ID del Tipo di Turno selezionato dalla sottosezione Tipi di Turni
+  tipoTurnoNome?: string; // Nome del Tipo di Turno selezionato
+  mansioniRichieste?: MansioneTipoTurno[]; // Mansioni obbligatorie con numero minimo e massimo previste dal tipo turno
   data: string; // YYYY-MM-DD
   fasciaOraria: 'Mattina (08:00 - 14:00)' | 'Pomeriggio (14:00 - 20:00)' | 'Notte (20:00 - 08:00)' | 'Reperibilità H24' | 'Servizio Ordinario Programmato' | string;
   orarioInizio: string; // HH:mm

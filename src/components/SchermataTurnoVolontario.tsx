@@ -536,111 +536,91 @@ export const SchermataTurnoVolontario: React.FC<SchermataTurnoVolontarioProps> =
     setErrore('');
   };
 
-  // Se la sessione è attiva, mostra il badge riassuntivo in testa al terminale:
+  // Se la sessione è attiva, mostra il badge riassuntivo compatto in testa al terminale:
   // distingue chiaramente "LOGGATO" (senza timbratura) vs "DI TURNO" (con timbratura attiva)
+  // senza duplicare Notifiche, Timbra Ora, Bacheca o Tabellone Turni
   if (sessione.attivo) {
-    const mostraInvitoAvvio = !timbraturaAttiva && !invitoAvvioDismissed;
+    const haMissioneAttivaInCorso = Boolean(
+      missioneAttiva && !missioneAttiva.archiviata && !missioneAttiva.annullata
+    );
     return (
       <div className="flex flex-col">
-        <div className={`${
-          timbraturaAttiva ? 'bg-emerald-950/80 border-emerald-500/40' : 'bg-sky-950/80 border-sky-500/40'
-        } border-b px-3 py-2 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2 shadow-md`}>
-          <div className="flex items-center gap-2 min-w-0">
-            <div className={`w-2.5 h-2.5 rounded-full shrink-0 ${
-              timbraturaAttiva ? 'bg-emerald-400 animate-pulse' : 'bg-sky-400'
-            }`} />
-            <div className="min-w-0">
-              <div className="flex items-center gap-1.5 flex-wrap">
+        <div
+          className={`${
+            timbraturaAttiva ? 'bg-emerald-950/85 border-emerald-500/40' : 'bg-sky-950/85 border-sky-500/40'
+          } border-b px-2.5 py-2 text-xs flex items-center justify-between gap-2 shadow-sm`}
+        >
+          <div className="flex items-center gap-2 min-w-0 flex-1">
+            <div
+              className={`w-2.5 h-2.5 rounded-full shrink-0 ${
+                timbraturaAttiva ? 'bg-emerald-400 animate-pulse' : 'bg-sky-400'
+              }`}
+            />
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-1.5 min-w-0">
                 <span className="font-bold text-white text-xs truncate">
-                  {timbraturaAttiva ? '🟢' : '🔵'} {sessione.volontarioNome} • <span className={timbraturaAttiva ? 'text-emerald-300 font-semibold' : 'text-sky-300 font-semibold'}>{sessione.qualificaTurno}</span>
+                  {sessione.volontarioNome}
                 </span>
-                <span className={`text-[9px] font-black uppercase px-1.5 py-0.2 rounded-full border ${
-                  timbraturaAttiva
-                    ? 'bg-emerald-500/20 text-emerald-300 border-emerald-400/50'
-                    : 'bg-sky-500/20 text-sky-200 border-sky-400/50'
-                }`}>
-                  {timbraturaAttiva ? 'Di Turno (Timbrato)' : 'Loggato (Non di Turno)'}
+                <span
+                  className={`text-[9px] font-black uppercase px-1.5 py-0.5 rounded-full border whitespace-nowrap shrink-0 ${
+                    timbraturaAttiva
+                      ? 'bg-emerald-500/20 text-emerald-300 border-emerald-400/50'
+                      : 'bg-sky-500/20 text-sky-200 border-sky-400/50'
+                  }`}
+                >
+                  {timbraturaAttiva ? 'Di Turno' : 'Loggato'}
                 </span>
               </div>
               <span className="text-[10px] text-slate-300 block truncate">
                 {sessione.mezzoScelto ? (
                   <>
-                    Mezzo in servizio: <strong className="text-amber-400">{sessione.mezzoScelto}</strong> •{' '}
+                    Mezzo: <strong className="text-amber-400">{sessione.mezzoScelto}</strong> ·{' '}
                   </>
                 ) : null}
-                {timbraturaAttiva ? `In turno dalle ${sessione.orarioInizio}` : `Accesso dalle ${sessione.orarioInizio} • Timbra per entrare in turno`}
+                {timbraturaAttiva
+                  ? `Dalle ${sessione.orarioInizio}`
+                  : `Dalle ${sessione.orarioInizio} · Timbra per entrare in turno`}
               </span>
             </div>
           </div>
 
-          <div className="flex items-center flex-wrap gap-1.5 shrink-0">
+          <div className="flex items-center gap-1.5 shrink-0">
             {onApriTimbratura && (
               <button
                 type="button"
                 onClick={onApriTimbratura}
-                className={`px-2.5 py-1 rounded-lg font-bold text-[11px] flex items-center gap-1.5 shadow-sm transition-transform active:scale-95 cursor-pointer border ${
+                className={`px-2.5 py-1.5 rounded-lg font-black text-[11px] flex items-center gap-1 shadow-sm transition-transform active:scale-95 cursor-pointer border whitespace-nowrap ${
                   timbraturaAttiva
                     ? 'bg-emerald-600 hover:bg-emerald-500 text-white border-emerald-300'
-                    : 'bg-amber-500 hover:bg-amber-400 text-slate-950 border-amber-300 font-black'
+                    : 'bg-amber-500 hover:bg-amber-400 text-slate-950 border-amber-300'
                 }`}
-                title="Apri sezione Timbratura Presenza GPS & Ore di Servizio"
+                title="Apri Timbratura Presenza GPS & Ore di Servizio"
               >
-                <Paintbrush className={`w-3.5 h-3.5 ${timbraturaAttiva ? 'text-white' : 'text-slate-950'}`} />
-                <span>{timbraturaAttiva ? 'Timbrato (Uscita)' : 'Timbra Ingresso'}</span>
-                {timbraturaAttiva && (
-                  <span className="w-2 h-2 rounded-full bg-emerald-200 animate-ping shrink-0" />
-                )}
+                <Paintbrush className={`w-3.5 h-3.5 shrink-0 ${timbraturaAttiva ? 'text-white' : 'text-slate-950'}`} />
+                <span>{timbraturaAttiva ? 'Timbrato' : 'Timbra'}</span>
               </button>
             )}
 
-            {onApriCentroNotifiche && (
-              <button
-                type="button"
-                onClick={onApriCentroNotifiche}
-                className={`px-2.5 py-1 rounded-lg text-white font-bold text-[11px] flex items-center gap-1 shadow-sm transition-transform active:scale-95 cursor-pointer border ${
-                  conteggioNotificheNonLette > 0
-                    ? 'bg-gradient-to-r from-violet-600 to-indigo-600 border-violet-400 animate-pulse'
-                    : 'bg-slate-800/90 hover:bg-slate-700 text-slate-200 border-slate-700'
-                }`}
-                title="Centro Notifiche Ricevute (Archivio Permanente)"
-              >
-                <Bell className={`w-3.5 h-3.5 ${conteggioNotificheNonLette > 0 ? 'text-amber-300' : 'text-slate-300'}`} />
-                <span className="hidden sm:inline">Notifiche</span>
-                {conteggioNotificheNonLette > 0 && (
-                  <span className="px-1.5 py-0.2 rounded-full bg-red-600 text-white text-[9px] font-black border border-red-400">
-                    {conteggioNotificheNonLette}
-                  </span>
-                )}
-              </button>
-            )}
-
-            {onApriBacheca && (
+            {/* Durante una missione attiva le card home sono nascoste: offri accesso rapido a Bacheca e Turni */}
+            {haMissioneAttivaInCorso && onApriBacheca && (
               <button
                 type="button"
                 onClick={onApriBacheca}
-                className="px-2.5 py-1 rounded-lg bg-violet-600/90 hover:bg-violet-500 text-white font-bold text-[11px] flex items-center gap-1 shadow-sm transition-transform active:scale-95 cursor-pointer"
-                title="Apri Bacheca di Sezione e Comunicazioni Ufficiali"
+                className="p-1.5 rounded-lg bg-violet-600/90 hover:bg-violet-500 text-white font-bold text-[11px] flex items-center gap-1 shadow-sm active:scale-95 cursor-pointer"
+                title="Apri Bacheca di Sezione"
               >
-                <Megaphone className="w-3.5 h-3.5 text-violet-200" />
-                <span className="hidden sm:inline">Bacheca</span>
-                {typeof conteggioBacheca === 'number' && conteggioBacheca > 0 && (
-                  <span className="px-1.5 py-0.2 rounded-full bg-violet-950 text-violet-200 text-[9px] font-black border border-violet-400/40">
-                    {conteggioBacheca}
-                  </span>
-                )}
+                <Megaphone className="w-3.5 h-3.5 text-violet-100 shrink-0" />
               </button>
             )}
 
-            {onApriTabelloneTurni && (
+            {haMissioneAttivaInCorso && onApriTabelloneTurni && (
               <button
                 type="button"
                 onClick={onApriTabelloneTurni}
-                className="px-2.5 py-1 rounded-lg bg-teal-600/90 hover:bg-teal-500 text-white font-bold text-[11px] flex items-center gap-1 shadow-sm transition-transform active:scale-95 cursor-pointer"
-                title="Apri Tabellone Turni Settimanale Sezioni Territoriali"
+                className="p-1.5 rounded-lg bg-teal-600/90 hover:bg-teal-500 text-white font-bold text-[11px] flex items-center gap-1 shadow-sm active:scale-95 cursor-pointer"
+                title="Apri Tabellone Turni"
               >
-                <Calendar className="w-3.5 h-3.5 text-teal-200" />
-                <span className="hidden sm:inline">Tabellone Turni</span>
-                <span className="sm:hidden">Turni</span>
+                <Calendar className="w-3.5 h-3.5 text-teal-100 shrink-0" />
               </button>
             )}
 
@@ -648,65 +628,30 @@ export const SchermataTurnoVolontario: React.FC<SchermataTurnoVolontarioProps> =
               <button
                 type="button"
                 onClick={() => onApriChecklistInCorso()}
-                className="px-2.5 py-1 rounded-lg bg-amber-600/90 hover:bg-amber-500 text-white font-bold text-[11px] flex items-center gap-1 shadow-sm transition-transform active:scale-95 cursor-pointer"
+                className="px-2 py-1.5 rounded-lg bg-amber-600/90 hover:bg-amber-500 text-white font-bold text-[11px] flex items-center gap-1 shadow-sm active:scale-95 cursor-pointer whitespace-nowrap"
                 title="Consulta o compila la Checklist Mezzo"
               >
-                <ClipboardCheck className="w-3.5 h-3.5 text-amber-200" />
-                <span className="hidden sm:inline">Checklist Mezzo</span>
-                <span className="sm:hidden">Checklist</span>
+                <ClipboardCheck className="w-3.5 h-3.5 text-amber-100 shrink-0" />
+                <span className="hidden sm:inline">Checklist</span>
               </button>
             )}
           </div>
         </div>
-
-        {/* Invito rapido per chi è loggato ma non ha ancora timbrato l'ingresso */}
-        {mostraInvitoAvvio && (
-          <div className="bg-amber-500/15 border-b border-amber-500/40 px-3 py-2 flex flex-wrap items-center justify-between gap-2 text-[11px] text-amber-100">
-            <div className="flex items-center gap-2 min-w-0">
-              <Clock className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-              <span className="font-bold truncate">
-                🔵 Sei loggato ma non ancora di turno: effettua la Timbratura di ingresso per entrare in turno
-              </span>
-            </div>
-            <div className="flex items-center gap-1.5 shrink-0">
-              {onApriTimbratura && (
-                <button
-                  type="button"
-                  onClick={onApriTimbratura}
-                  className="px-2.5 py-1 rounded-lg font-black text-[10px] uppercase flex items-center gap-1 cursor-pointer transition-all bg-amber-500 hover:bg-amber-400 text-slate-950 shadow"
-                >
-                  <span>Timbra Ora</span>
-                </button>
-              )}
-              {onDismissInvitoAvvio && (
-                <button
-                  type="button"
-                  onClick={onDismissInvitoAvvio}
-                  className="p-1 rounded-lg text-slate-300 hover:text-white hover:bg-slate-800 cursor-pointer"
-                  title="Nascondi promemoria"
-                >
-                  <X className="w-3.5 h-3.5" />
-                </button>
-              )}
-            </div>
-          </div>
-        )}
       </div>
     );
   }
 
-  // Schermata di blocco / Accesso Inizio Turno con PIN personale
+  // Schermata di blocco / Accesso Inizio Turno con PIN personale (compatta e senza secondo logo)
   return (
-    <div className="p-4 sm:p-5 flex flex-col flex-1 justify-center space-y-4 max-w-sm mx-auto w-full text-slate-800">
+    <div className="p-3 sm:p-4 flex flex-col flex-1 justify-center space-y-2.5 max-w-sm mx-auto w-full text-slate-800">
       
-      {/* Header Accesso Account Volontario con Logo Ufficiale Croce Oro */}
-      <div className="text-center space-y-1">
-        <CroceOroLogo size="xl" className="w-20 h-20 sm:w-24 sm:h-24 mx-auto mb-2 shadow-lg shadow-amber-500/10" />
-        <h3 className="text-base font-black text-[#1d1a60] uppercase tracking-wide">
+      {/* Intestazione Accesso Account Volontario compatta */}
+      <div className="text-center space-y-0.5">
+        <h3 className="text-sm sm:text-base font-black text-[#1d1a60] uppercase tracking-wide">
           Accesso Terminale Volontario
         </h3>
-        <p className="text-xs text-slate-500">
-          Seleziona il tuo nome e inserisci il tuo PIN a 4 cifre per effettuare il login (entrerai in turno dopo la timbratura)
+        <p className="text-[11px] text-slate-500 leading-snug">
+          Seleziona il tuo nome e inserisci il PIN a 4 cifre
         </p>
       </div>
 

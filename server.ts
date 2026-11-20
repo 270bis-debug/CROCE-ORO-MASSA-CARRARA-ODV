@@ -424,6 +424,8 @@ export interface ServerState {
   mezziFlottaUpdatedAt?: number;
   tipologieMezzo?: any[];
   tipologieMezzoUpdatedAt?: number;
+  tipiTurno?: any[];
+  tipiTurnoUpdatedAt?: number;
   metodiPagamentoCustom?: any[];
   metodiPagamentoCustomUpdatedAt?: number;
   regolaScadenzeMezzi?: any;
@@ -912,6 +914,8 @@ function loadPersistedState(): ServerState {
           mezziFlottaUpdatedAt: typeof parsed.mezziFlottaUpdatedAt === 'number' ? parsed.mezziFlottaUpdatedAt : undefined,
           tipologieMezzo: Array.isArray(parsed.tipologieMezzo) ? parsed.tipologieMezzo : undefined,
           tipologieMezzoUpdatedAt: typeof parsed.tipologieMezzoUpdatedAt === 'number' ? parsed.tipologieMezzoUpdatedAt : undefined,
+          tipiTurno: Array.isArray(parsed.tipiTurno) ? parsed.tipiTurno : undefined,
+          tipiTurnoUpdatedAt: typeof parsed.tipiTurnoUpdatedAt === 'number' ? parsed.tipiTurnoUpdatedAt : undefined,
           metodiPagamentoCustom: Array.isArray(parsed.metodiPagamentoCustom) ? parsed.metodiPagamentoCustom : undefined,
           metodiPagamentoCustomUpdatedAt: typeof parsed.metodiPagamentoCustomUpdatedAt === 'number' ? parsed.metodiPagamentoCustomUpdatedAt : undefined,
           regolaScadenzeMezzi: parsed.regolaScadenzeMezzi && typeof parsed.regolaScadenzeMezzi === 'object' ? parsed.regolaScadenzeMezzi : undefined,
@@ -5054,6 +5058,22 @@ async function startServer() {
                 type: 'TIPOLOGIE_MEZZO_UPDATED',
                 tipologieMezzo: state.tipologieMezzo,
                 updatedAt: state.tipologieMezzoUpdatedAt
+              });
+            }
+            break;
+          }
+
+          case 'UPDATE_TIPI_TURNO': {
+            const incomingTs = typeof data?.updatedAt === 'number' && Number.isFinite(data.updatedAt) ? data.updatedAt : Date.now();
+            const currTs = typeof state.tipiTurnoUpdatedAt === 'number' ? state.tipiTurnoUpdatedAt : 0;
+            if (Array.isArray(data?.tipiTurno) && (currTs === 0 || incomingTs >= currTs)) {
+              state.tipiTurno = data.tipiTurno;
+              state.tipiTurnoUpdatedAt = incomingTs;
+              persistState();
+              broadcast({
+                type: 'TIPI_TURNO_UPDATED',
+                tipiTurno: state.tipiTurno,
+                updatedAt: state.tipiTurnoUpdatedAt
               });
             }
             break;

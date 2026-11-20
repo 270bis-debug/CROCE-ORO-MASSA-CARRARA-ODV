@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Grid,
   Headphones,
@@ -9,16 +9,9 @@ import {
   Package,
   Building2,
   Calendar,
-  Shield,
-  Smartphone,
-  Radio,
-  ChevronRight,
   Megaphone,
-  BookUser,
-  Server,
-  Clock
+  BookUser
 } from 'lucide-react';
-import { CroceOroLogo } from '../CroceOroLogo';
 import { AdminSectionId } from './AdminPortalDashboard';
 import { LISTA_MACRO_CATEGORIE, getNomiDatabaseCustom, getTitoloDatabase } from '../../constants/macroCategorie';
 
@@ -36,19 +29,28 @@ interface AdminTopNavbarProps {
   timbraturaCentraleAttiva?: boolean;
 }
 
+const GRID_COLS_CLASS: Record<number, string> = {
+  1: 'grid-cols-1',
+  2: 'grid-cols-2',
+  3: 'grid-cols-3',
+  4: 'grid-cols-4',
+  5: 'grid-cols-5',
+  6: 'grid-cols-3 lg:grid-cols-6',
+  7: 'grid-cols-4 lg:grid-cols-7',
+  8: 'grid-cols-4 lg:grid-cols-8',
+  9: 'grid-cols-5 xl:grid-cols-9',
+  10: 'grid-cols-5 xl:grid-cols-10'
+};
+
 export const AdminTopNavbar: React.FC<AdminTopNavbarProps> = ({
   currentSection,
   onSelectSection,
   operatoreNome,
   isPresidente,
   isAdmin = true,
-  allowedSections,
-  onSwitchToSmartphone,
-  onApriSyncServer,
-  onApriTimbraturaCentrale,
-  timbraturaCentraleAttiva = false
+  allowedSections
 }) => {
-  const tabMetaMap: Record<string, { label: string; icona: any }> = {
+  const tabMetaMap: Record<string, { label: string; icona: React.ComponentType<{ className?: string }> }> = {
     centrale: { label: 'Centrale', icona: Headphones },
     volontari: { label: 'Volontari', icona: Users },
     mezzi: { label: 'Mezzi', icona: Ambulance },
@@ -61,9 +63,9 @@ export const AdminTopNavbar: React.FC<AdminTopNavbarProps> = ({
     contatti: { label: 'Contatti', icona: BookUser }
   };
 
-  const [nomiDatabaseCustom, setNomiDatabaseCustom] = React.useState<Record<string, string>>(() => getNomiDatabaseCustom());
+  const [nomiDatabaseCustom, setNomiDatabaseCustom] = useState<Record<string, string>>(() => getNomiDatabaseCustom());
 
-  React.useEffect(() => {
+  useEffect(() => {
     const refresh = () => setNomiDatabaseCustom(getNomiDatabaseCustom());
     window.addEventListener('croceoro_nomi_db_updated', refresh);
     window.addEventListener('storage', refresh);
@@ -73,7 +75,7 @@ export const AdminTopNavbar: React.FC<AdminTopNavbarProps> = ({
     };
   }, []);
 
-  const tabs: { id: AdminSectionId; numero: string; label: string; icona: any }[] = React.useMemo(
+  const tabs = React.useMemo(
     () =>
       LISTA_MACRO_CATEGORIE.map((cat, idx) => ({
         id: cat.id as AdminSectionId,
@@ -91,94 +93,16 @@ export const AdminTopNavbar: React.FC<AdminTopNavbarProps> = ({
     return tabs.filter(t => allowedSections.includes(t.id));
   }, [tabs, isAdmin, allowedSections]);
 
-  const numeroScelteVisibili = isAdmin ? tabs.length : tabsVisibili.length;
+  const gridColsClass = GRID_COLS_CLASS[tabsVisibili.length] || 'grid-cols-5 xl:grid-cols-10';
 
   return (
-    <div className="bg-slate-950/95 backdrop-blur-md border-b-2 border-slate-800 sticky top-0 z-40 px-3 sm:px-5 py-2 shadow-xl">
-      <div className="max-w-7xl mx-auto flex flex-col gap-2">
-
-        {/* Riga Superiore: Brand & Azioni Profilo */}
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="flex items-center gap-2.5 min-w-0">
-            <CroceOroLogo size="sm" className="shrink-0" />
-            <div className="text-left leading-tight">
-              <span className="text-[10px] uppercase font-bold text-slate-400 block">Croce Oro Massa Carrara</span>
-              <span className="text-xs font-black text-white block">Gestionale Amministratore</span>
-            </div>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2 shrink-0">
-            {onApriTimbraturaCentrale && (
-              <button
-                type="button"
-                onClick={onApriTimbraturaCentrale}
-                className={`px-2.5 py-1 rounded-xl border text-xs font-black flex items-center gap-1.5 transition-all shadow cursor-pointer active:scale-95 ${
-                  timbraturaCentraleAttiva
-                    ? 'bg-emerald-600 hover:bg-emerald-500 text-white border-emerald-300'
-                    : 'bg-teal-500/15 hover:bg-teal-500 text-teal-200 hover:text-slate-950 border-teal-500/40'
-                }`}
-                title="Timbra Entrata o Uscita per l'Operatore di Centrale senza uscire dal login Centrale"
-              >
-                <Clock className="w-3.5 h-3.5 shrink-0" />
-                <span>{timbraturaCentraleAttiva ? 'Timbratura Attiva' : 'Timbratura'}</span>
-                {timbraturaCentraleAttiva && (
-                  <span className="w-2 h-2 rounded-full bg-emerald-200 animate-ping shrink-0" />
-                )}
-              </button>
-            )}
-
-            {onApriSyncServer && (
-              <button
-                type="button"
-                onClick={onApriSyncServer}
-                className="px-2.5 py-1 rounded-xl bg-amber-500/15 hover:bg-amber-500 text-amber-300 hover:text-slate-950 border border-amber-500/40 text-xs font-black flex items-center gap-1.5 transition-all shadow cursor-pointer active:scale-95 group"
-                title="Salva e sincronizza i dati sui 10 GB di spazio del dominio www.croceoro.org"
-              >
-                <Server className="w-3.5 h-3.5 text-amber-400 group-hover:text-slate-950" />
-                <span className="hidden sm:inline">Backup Server (10 GB)</span>
-                <span className="sm:hidden">10 GB</span>
-              </button>
-            )}
-
-            <div className="text-right hidden sm:block leading-tight">
-              <div className="text-[9px] uppercase font-bold text-slate-400">
-                {isPresidente ? 'Presidente' : (!isAdmin ? 'Operatore Delegato' : 'Amministratore')}
-              </div>
-              <div className="text-xs font-black text-amber-400 truncate max-w-[160px]">
-                {operatoreNome}
-              </div>
-            </div>
-
-            {onSwitchToSmartphone && (
-              <button
-                type="button"
-                onClick={onSwitchToSmartphone}
-                className="px-2.5 py-1 rounded-xl bg-blue-950 hover:bg-blue-900 text-blue-300 border border-blue-800 text-xs font-bold flex items-center gap-1 transition-colors cursor-pointer"
-                title="Passa ad Accesso Volontario"
-              >
-                <Smartphone className="w-3.5 h-3.5" />
-                <span>Accesso Volontario</span>
-              </button>
-            )}
-          </div>
-        </div>
-
-        {/* Riga/e Navigazione Rapida: Portale Scelte + Tutte le Macro Categorie su più righe se necessario */}
-        <div className="flex flex-wrap items-center gap-1.5 pt-1.5 border-t border-slate-800/70">
-          <button
-            type="button"
-            onClick={() => onSelectSection('dashboard')}
-            className={`px-3 py-1.5 rounded-xl font-black text-[11px] uppercase flex items-center gap-1.5 transition-all cursor-pointer border shadow-md active:scale-95 shrink-0 ${
-              currentSection === 'dashboard'
-                ? 'bg-amber-500 text-slate-950 border-amber-400'
-                : 'bg-slate-900 hover:bg-slate-800 text-amber-400 border-amber-500/40 hover:border-amber-400'
-            }`}
-            title={`Torna alla schermata principale con le ${numeroScelteVisibili} macro scelte`}
-          >
-            <Grid className="w-3.5 h-3.5 shrink-0" />
-            <span className="tracking-wide whitespace-nowrap">Portale {numeroScelteVisibili} Scelte</span>
-          </button>
-
+    <nav
+      aria-label="Navigazione database gestionali"
+      className="bg-slate-950/95 border-b border-slate-800 px-2 sm:px-4 py-1.5 shadow-md w-full max-w-full relative z-30"
+    >
+      <div className="max-w-[1440px] mx-auto flex items-center justify-between gap-2 w-full min-w-0">
+        {/* TUTTI I DATABASE DIRETTI IN 1 RIGA (desktop) O MASSIMO 2 RIGHE (mobile/tablet) — SENZA MENÙ A TENDINA E SENZA PULSANTI HOME */}
+        <div className={`grid ${gridColsClass} gap-1 flex-1 min-w-0`}>
           {tabsVisibili.map((tab) => {
             const Icona = tab.icona;
             const isAttivo = currentSection === tab.id;
@@ -187,25 +111,31 @@ export const AdminTopNavbar: React.FC<AdminTopNavbarProps> = ({
                 key={tab.id}
                 type="button"
                 onClick={() => onSelectSection(tab.id)}
-                className={`px-2.5 py-1.5 rounded-xl font-bold text-[11px] uppercase flex items-center gap-1.5 transition-all whitespace-nowrap cursor-pointer shrink-0 border ${
+                title={`${tab.numero}. ${tab.label}`}
+                className={`px-1 sm:px-2 py-1.5 sm:py-1.5 rounded-lg font-bold uppercase flex flex-col sm:flex-row items-center justify-center gap-0.5 sm:gap-1 min-w-0 transition-all cursor-pointer border active:scale-95 ${
                   isAttivo
-                    ? 'bg-amber-500 text-slate-950 border-amber-400 shadow-md shadow-amber-500/20 font-black'
-                    : 'bg-slate-900/80 hover:bg-slate-800 text-slate-300 border-slate-800 hover:text-white'
+                    ? 'bg-amber-500 text-slate-950 border-amber-400 shadow-sm font-black'
+                    : 'bg-slate-900/90 hover:bg-slate-800 text-slate-300 border-slate-800 hover:border-slate-700 hover:text-white'
                 }`}
               >
-                <span className={`w-4 h-4 rounded-full text-[9px] font-black flex items-center justify-center shrink-0 ${
-                  isAttivo ? 'bg-slate-950 text-amber-400' : 'bg-slate-800 text-slate-400'
-                }`}>
-                  {tab.numero}
+                <Icona className="w-3.5 h-3.5 sm:w-3 sm:h-3 shrink-0" />
+                <span className="text-[9px] sm:text-[10px] leading-none truncate max-w-full">
+                  {tab.label}
                 </span>
-                <Icona className="w-3.5 h-3.5 shrink-0" />
-                <span>{tab.label}</span>
               </button>
             );
           })}
         </div>
 
+        <div className="hidden 2xl:block text-right leading-tight shrink-0 pl-2 border-l border-slate-800">
+          <div className="text-[9px] uppercase font-bold text-slate-400 whitespace-nowrap">
+            {isPresidente ? 'Presidente' : (!isAdmin ? 'Operatore Delegato' : 'Amministratore')}
+          </div>
+          <div className="text-[11px] font-black text-amber-400 truncate max-w-[140px]">
+            {operatoreNome}
+          </div>
+        </div>
       </div>
-    </div>
+    </nav>
   );
 };

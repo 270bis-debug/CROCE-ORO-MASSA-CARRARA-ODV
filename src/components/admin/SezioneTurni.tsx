@@ -52,6 +52,8 @@ import {
   getDettaglioTipoGiorno
 } from '../../utils/festivitaItaliane';
 import { puoCoprireRuoloTurno, getMansioniVolontario } from '../../utils/mansioniVolontari';
+import { useTipiTurno } from '../../utils/tipiTurno';
+import { PannelloTipiTurno } from './PannelloTipiTurno';
 import { addDaysISODate, formatDateItaly, formatISODateItaly, formatTimeItaly } from '../../utils/italianTime';
 
 const addMonthsISODate = (iso: string, months: number): string => {
@@ -99,6 +101,13 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
 }) => {
   const nomiSubCustom = useNomiSottosezioniCustom();
   const canShowSubtab = (id: string) => !allowedSubtabs || allowedSubtabs.includes(id);
+  const tipiTurno = useTipiTurno();
+  const [vistaSottosezione, setVistaSottosezione] = useState<'calendario' | 'candidature' | 'tipi_turno'>(() => {
+    if (!allowedSubtabs || allowedSubtabs.includes('calendario')) return 'calendario';
+    if (allowedSubtabs.includes('candidature')) return 'candidature';
+    if (allowedSubtabs.includes('tipi_turno')) return 'tipi_turno';
+    return 'calendario';
+  });
   // Filtri
   const [dataSelezionata, setDataSelezionata] = useState(() => formatISODateItaly());
   const [filtroSedeId, setFiltroSedeId] = useState('tutte');
@@ -109,6 +118,7 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
   const [turnoInModifica, setTurnoInModifica] = useState<TurnoSedeOperativa | null>(null);
   const [formSedeId, setFormSedeId] = useState(sedi[1]?.id || sedi[0]?.id || '');
   const [formData, setFormData] = useState(() => formatISODateItaly());
+  const [formTipoTurnoId, setFormTipoTurnoId] = useState('');
   const [formNomeTurno, setFormNomeTurno] = useState('');
   const [formFascia, setFormFascia] = useState<TurnoSedeOperativa['fasciaOraria']>('Mattina (08:00 - 14:00)');
   const [formInizio, setFormInizio] = useState('08:00');
@@ -121,6 +131,7 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
   const [formCentraleId, setFormCentraleId] = useState('');
   const [formCentralinistaId, setFormCentralinistaId] = useState('');
   const [formOsservatoreId, setFormOsservatoreId] = useState('');
+  const [mostraModificaEquipaggioEsistente, setMostraModificaEquipaggioEsistente] = useState(false);
   const [formNote, setFormNote] = useState('');
   const [mostraPannelloCandidature, setMostraPannelloCandidature] = useState(true);
   const [modificaModalitaSerie, setModificaModalitaSerie] = useState<'singolo' | 'serie_futura'>('singolo');
@@ -574,7 +585,7 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
       .map((d) => d.data);
 
     if (dateValideDaCreare.length === 0) {
-      alert('Nessuna data valida disponibile per creare i turni duplicati con i filtri selezionati.');
+      mostraAvviso('Nessuna data valida disponibile per creare i turni duplicati con i filtri selezionati.');
       return;
     }
 
@@ -596,12 +607,15 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
     );
 
     // Creazione nuovi turni duplicati
-    // NOTA VINCOLANTE: Il mezzo assegnato (mezzoAssegnato) e il nome del turno (nomeTurno) rimangono identici all'originale
+    // NOTA VINCOLANTE: Il mezzo assegnato (mezzoAssegnato), il nome del turno (nomeTurno) e il tipo di turno rimangono identici all'originale
     const nuoviTurniGenerati: TurnoSedeOperativa[] = dateValideDaCreare.map((dataStr, idx) => ({
       id: `turno-dupl-${Date.now()}-${idx}-${Math.random().toString(36).substr(2, 5)}`,
       sedeId: t.sedeId,
       sedeNome: t.sedeNome,
       nomeTurno: t.nomeTurno, // Mezzo e nome rimangono esattamente lo stesso
+      tipoTurnoId: t.tipoTurnoId,
+      tipoTurnoNome: t.tipoTurnoNome,
+      mansioniRichieste: t.mansioniRichieste ? t.mansioniRichieste.map((m) => ({ ...m })) : undefined,
       mezzoAssegnato: t.mezzoAssegnato, // Mezzo assegnato preservato
       data: dataStr,
       fasciaOraria: t.fasciaOraria,
@@ -652,6 +666,7 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
   // ---------------------------------------------------------------------------
   const [modaleTurniRipetutiAperta, setModaleTurniRipetutiAperta] = useState(false);
   const [ripSedeId, setRipSedeId] = useState(sedi[0]?.id || '');
+  const [ripTipoTurnoId, setRipTipoTurnoId] = useState('');
   const [ripNomeTurno, setRipNomeTurno] = useState('');
   const [ripFascia, setRipFascia] = useState<TurnoSedeOperativa['fasciaOraria']>('Mattina (08:00 - 14:00)');
   const [ripInizio, setRipInizio] = useState('08:00');
@@ -702,6 +717,7 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
   const avviaProgrammazioneTurniRipetuti = (turnoBase?: TurnoSedeOperativa) => {
     if (turnoBase) {
       setRipSedeId(turnoBase.sedeId);
+      setRipTipoTurnoId(turnoBase.tipoTurnoId || tipiTurno[0]?.id || '');
       setRipNomeTurno(turnoBase.nomeTurno || '');
       setRipFascia(turnoBase.fasciaOraria);
       setRipInizio(turnoBase.orarioInizio);
@@ -715,17 +731,18 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
         setRipDataFine(addDaysISODate(formatISODateItaly(), 30));
         setRipGiorniSettimana([1, 2, 3, 4, 5]);
       }
-      setRipAutistaId(turnoBase.autista?.id || '');
-      setRipCapoId(turnoBase.caposervizio?.id || '');
-      setRipSocc2Id(turnoBase.soccorritore2?.id || '');
-      setRipTerzoId(turnoBase.terzoSoccorritore?.id || '');
-      setRipCentraleId(turnoBase.operatoreCentrale?.id || '');
-      setRipCentralinistaId(turnoBase.centralinista?.id || '');
-      setRipOsservatoreId(turnoBase.osservatore?.id || '');
+      setRipAutistaId('');
+      setRipCapoId('');
+      setRipSocc2Id('');
+      setRipTerzoId('');
+      setRipCentraleId('');
+      setRipCentralinistaId('');
+      setRipOsservatoreId('');
       setRipNote(turnoBase.note || '');
-      setRipDuplicaDisponibilita(Boolean(turnoBase.autista || turnoBase.caposervizio));
+      setRipDuplicaDisponibilita(false);
     } else {
       setRipSedeId(sedi[0]?.id || '');
+      setRipTipoTurnoId(tipiTurno[0]?.id || '');
       setRipNomeTurno('');
       setRipFascia('Mattina (08:00 - 14:00)');
       setRipInizio('08:00');
@@ -753,26 +770,22 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
 
   const handleConfermaTurniRipetuti = (e: React.FormEvent) => {
     e.preventDefault();
+    const nomeTurnoPulito = ripNomeTurno.trim();
+    if (!nomeTurnoPulito) {
+      mostraAvviso('⚠️ Inserisci il Nome Turno (campo obbligatorio).');
+      return;
+    }
+    const tipoSelezionato = tipiTurno.find((tp) => tp.id === ripTipoTurnoId);
+    if (tipiTurno.length > 0 && !tipoSelezionato) {
+      mostraAvviso('⚠️ Seleziona un Tipo di Turno prima di generare la serie.');
+      return;
+    }
     if (dateRipetutePreview.length === 0) {
       mostraAvviso('⚠️ Nessun giorno valido corrisponde ai criteri selezionati nel periodo.');
       return;
     }
 
     const sedeObj = sedi.find((s) => s.id === ripSedeId) || sedi[0];
-    const autistaObj = volontari.find((v) => v.id === ripAutistaId);
-    const capoObj = volontari.find((v) => v.id === ripCapoId);
-    // Se non viene inserita e compilata la voce Caposervizio, assegna il ruolo automaticamente all'autista
-    const capoEffettivo = capoObj || (ripAutistaId ? autistaObj : undefined);
-    const socc2Obj = volontari.find((v) => v.id === ripSocc2Id);
-    const terzoObj = volontari.find((v) => v.id === ripTerzoId);
-    const centraleObj = volontari.find((v) => v.id === ripCentraleId);
-    const centralinistaObj = volontari.find((v) => v.id === ripCentralinistaId);
-    const osservatoreObj = volontari.find((v) => v.id === ripOsservatoreId);
-
-    const statoCopertura = ripDuplicaDisponibilita
-      ? calcolaStatoCopertura(ripAutistaId, capoEffettivo?.id, ripSocc2Id)
-      : 'Scoperto';
-
     const mezzoValido = ripMezzo && !sigleInManutenzione.has(ripMezzo.trim().toUpperCase())
       ? ripMezzo.trim()
       : undefined;
@@ -782,33 +795,32 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
         ? `serie-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
         : undefined;
 
+    const mansioniSnapshot = tipoSelezionato
+      ? tipoSelezionato.mansioniObbligatorie.map((m) => ({ ...m }))
+      : undefined;
+
     const nuoviTurniGenerati: TurnoSedeOperativa[] = dateRipetutePreview.map((dStr, idx) => ({
       id: `turno-${Date.now()}-${idx}-${Math.random().toString(36).substr(2, 5)}`,
       serieId: serieIdCondiviso,
       sedeId: sedeObj?.id || 'sede-massa-lejare',
       sedeNome: sedeObj?.nome || 'Sede Operativa Massa',
-      nomeTurno: ripNomeTurno.trim() || undefined,
+      nomeTurno: nomeTurnoPulito,
+      tipoTurnoId: tipoSelezionato?.id,
+      tipoTurnoNome: tipoSelezionato?.nome,
+      mansioniRichieste: mansioniSnapshot,
       data: dStr,
       fasciaOraria: ripFascia,
       orarioInizio: ripInizio,
       orarioFine: ripFine,
       mezzoAssegnato: mezzoValido,
-      statoCopertura,
-      autista: (ripDuplicaDisponibilita && autistaObj) ? { id: autistaObj.id, nome: `${autistaObj.nome} ${autistaObj.cognome}` } : undefined,
-      caposervizio: (ripDuplicaDisponibilita && capoEffettivo) ? { id: capoEffettivo.id, nome: `${capoEffettivo.nome} ${capoEffettivo.cognome}` } : undefined,
-      soccorritore2: (ripDuplicaDisponibilita && socc2Obj) ? { id: socc2Obj.id, nome: `${socc2Obj.nome} ${socc2Obj.cognome}` } : undefined,
-      terzoSoccorritore: (ripDuplicaDisponibilita && terzoObj) ? { id: terzoObj.id, nome: `${terzoObj.nome} ${terzoObj.cognome}` } : undefined,
-      operatoreCentrale: (ripDuplicaDisponibilita && centraleObj) ? { id: centraleObj.id, nome: `${centraleObj.nome} ${centraleObj.cognome}` } : undefined,
-      centralinista: (ripDuplicaDisponibilita && centralinistaObj) ? { id: centralinistaObj.id, nome: `${centralinistaObj.nome} ${centralinistaObj.cognome}` } : undefined,
-      osservatore: (ripDuplicaDisponibilita && osservatoreObj) ? { id: osservatoreObj.id, nome: `${osservatoreObj.nome} ${osservatoreObj.cognome}` } : undefined,
+      statoCopertura: 'Scoperto',
+      richiesteIscrizione: [],
       note: ripNote
     }));
 
     onAggiornaTurni([...turni, ...nuoviTurniGenerati]);
     onNotificaRadio?.(
-      `🔁 TURNI RIPETUTI: Generati ${nuoviTurniGenerati.length} turni ripetuti${ripNomeTurno.trim() ? ` (${ripNomeTurno.trim()})` : ''} per ${sedeObj?.nome} fino al ${ripDataFine} (${
-        ripDuplicaDisponibilita ? 'con disponibilità duplicate' : 'aperti per disponibilità'
-      })`,
+      `🔁 TURNI RIPETUTI: Generati ${nuoviTurniGenerati.length} turni ripetuti (${nomeTurnoPulito}${tipoSelezionato ? ` · ${tipoSelezionato.nome}` : ''}) per ${sedeObj?.nome} fino al ${ripDataFine}`,
       'sistema'
     );
     mostraAvviso(`✓ Generati con successo ${nuoviTurniGenerati.length} turni ripetuti fino al ${ripDataFine}.`);
@@ -858,67 +870,77 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
   // Salva Turno
   const handleSalvaTurno = (e: React.FormEvent) => {
     e.preventDefault();
+    const nomeTurnoPulito = formNomeTurno.trim();
+    if (!nomeTurnoPulito) {
+      mostraAvviso('⚠️ Inserisci il Nome Turno (campo obbligatorio).');
+      return;
+    }
+
+    const tipoSelezionato = tipiTurno.find((tp) => tp.id === formTipoTurnoId);
+    if (!turnoInModifica && tipiTurno.length > 0 && !tipoSelezionato) {
+      mostraAvviso('⚠️ Seleziona un Tipo di Turno prima di salvare.');
+      return;
+    }
+
     const sedeObj = sedi.find((s) => s.id === formSedeId) || sedi[0];
-    const autistaObj = volontari.find((v) => v.id === formAutistaId);
-    const capoObj = volontari.find((v) => v.id === formCapoId);
-    // Se non viene inserita e compilata la voce Caposervizio / Soccorritore Avanzato nei turni, assegna il ruolo di caposervizio automaticamente all'autista
-    const capoEffettivo = capoObj || (formAutistaId ? autistaObj : undefined);
-    const socc2Obj = volontari.find((v) => v.id === formSoccorritore2Id);
-    const terzoObj = volontari.find((v) => v.id === formTerzoSoccorritoreId);
-    const centraleObj = volontari.find((v) => v.id === formCentraleId);
-    const centralinistaObj = volontari.find((v) => v.id === formCentralinistaId);
-    const osservatoreObj = volontari.find((v) => v.id === formOsservatoreId);
-
-    // Verifica abilitazione mansione: ogni volontario può essere inserito solo nelle mansioni assegnate
-    if (autistaObj) {
-      const vAut = puoCoprireRuoloTurno(autistaObj, 'autista');
-      if (!vAut.idoneo) {
-        alert(`⛔ ASSEGNAZIONE NON CONSENTITA: ${autistaObj.nome} ${autistaObj.cognome} non possiede la mansione di Autista.\n\n${vAut.motivo}`);
-        return;
-      }
-    }
-    if (capoObj) {
-      const vCapo = puoCoprireRuoloTurno(capoObj, 'caposervizio');
-      if (!vCapo.idoneo) {
-        alert(`⛔ ASSEGNAZIONE NON CONSENTITA: ${capoObj.nome} ${capoObj.cognome} non possiede la mansione di Caposervizio.\n\n${vCapo.motivo}`);
-        return;
-      }
-    }
-    if (socc2Obj) {
-      const vSocc2 = puoCoprireRuoloTurno(socc2Obj, 'soccorritore2');
-      if (!vSocc2.idoneo) {
-        alert(`⛔ ASSEGNAZIONE NON CONSENTITA: ${socc2Obj.nome} ${socc2Obj.cognome} non possiede la mansione di 2° Soccorritore.\n\n${vSocc2.motivo}`);
-        return;
-      }
-    }
-    if (terzoObj) {
-      const vTerzo = puoCoprireRuoloTurno(terzoObj, 'terzosoccorritore');
-      if (!vTerzo.idoneo) {
-        alert(`⛔ ASSEGNAZIONE NON CONSENTITA: ${terzoObj.nome} ${terzoObj.cognome} non possiede la mansione richiesta per 3° Soccorritore.\n\n${vTerzo.motivo}`);
-        return;
-      }
-    }
-    if (centraleObj) {
-      const vCent = puoCoprireRuoloTurno(centraleObj, 'operatorecentrale');
-      if (!vCent.idoneo) {
-        alert(`⛔ ASSEGNAZIONE NON CONSENTITA: ${centraleObj.nome} ${centraleObj.cognome} non possiede la mansione di Operatore Centrale.\n\n${vCent.motivo}`);
-        return;
-      }
-    }
-    if (centralinistaObj) {
-      const vCentr = puoCoprireRuoloTurno(centralinistaObj, 'centralinista');
-      if (!vCentr.idoneo) {
-        alert(`⛔ ASSEGNAZIONE NON CONSENTITA: ${centralinistaObj.nome} ${centralinistaObj.cognome} non possiede la mansione di Centralinista.\n\n${vCentr.motivo}`);
-        return;
-      }
-    }
-
-    const statoCopertura = calcolaStatoCopertura(formAutistaId, capoEffettivo?.id, formSoccorritore2Id);
     const mezzoValido = formMezzo && !sigleInManutenzione.has(formMezzo.trim().toUpperCase())
       ? formMezzo.trim()
       : undefined;
 
     if (turnoInModifica) {
+      const autistaObj = volontari.find((v) => v.id === formAutistaId);
+      const capoObj = volontari.find((v) => v.id === formCapoId);
+      const capoEffettivo = capoObj || (formAutistaId ? autistaObj : undefined);
+      const socc2Obj = volontari.find((v) => v.id === formSoccorritore2Id);
+      const terzoObj = volontari.find((v) => v.id === formTerzoSoccorritoreId);
+      const centraleObj = volontari.find((v) => v.id === formCentraleId);
+      const centralinistaObj = volontari.find((v) => v.id === formCentralinistaId);
+      const osservatoreObj = volontari.find((v) => v.id === formOsservatoreId);
+
+      if (autistaObj) {
+        const vAut = puoCoprireRuoloTurno(autistaObj, 'autista');
+        if (!vAut.idoneo) {
+          mostraAvviso(`⛔ ${autistaObj.nome} ${autistaObj.cognome} non possiede la mansione di Autista.`);
+          return;
+        }
+      }
+      if (capoObj) {
+        const vCapo = puoCoprireRuoloTurno(capoObj, 'caposervizio');
+        if (!vCapo.idoneo) {
+          mostraAvviso(`⛔ ${capoObj.nome} ${capoObj.cognome} non possiede la mansione di Caposervizio.`);
+          return;
+        }
+      }
+      if (socc2Obj) {
+        const vSocc2 = puoCoprireRuoloTurno(socc2Obj, 'soccorritore2');
+        if (!vSocc2.idoneo) {
+          mostraAvviso(`⛔ ${socc2Obj.nome} ${socc2Obj.cognome} non possiede la mansione di 2° Soccorritore.`);
+          return;
+        }
+      }
+      if (terzoObj) {
+        const vTerzo = puoCoprireRuoloTurno(terzoObj, 'terzosoccorritore');
+        if (!vTerzo.idoneo) {
+          mostraAvviso(`⛔ ${terzoObj.nome} ${terzoObj.cognome} non possiede la mansione richiesta per 3° Soccorritore.`);
+          return;
+        }
+      }
+      if (centraleObj) {
+        const vCent = puoCoprireRuoloTurno(centraleObj, 'operatorecentrale');
+        if (!vCent.idoneo) {
+          mostraAvviso(`⛔ ${centraleObj.nome} ${centraleObj.cognome} non possiede la mansione di Operatore Centrale.`);
+          return;
+        }
+      }
+      if (centralinistaObj) {
+        const vCentr = puoCoprireRuoloTurno(centralinistaObj, 'centralinista');
+        if (!vCentr.idoneo) {
+          mostraAvviso(`⛔ ${centralinistaObj.nome} ${centralinistaObj.cognome} non possiede la mansione di Centralinista.`);
+          return;
+        }
+      }
+
+      const statoCopertura = calcolaStatoCopertura(formAutistaId, capoEffettivo?.id, formSoccorritore2Id);
       const targetIds = new Set<string>([turnoInModifica.id]);
       if (modificaModalitaSerie === 'serie_futura') {
         const serieFutura = trovaTurniSerie(turnoInModifica, turni).filter(
@@ -933,8 +955,12 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
             ...t,
             sedeId: sedeObj?.id || t.sedeId,
             sedeNome: sedeObj?.nome || t.sedeNome,
-            nomeTurno: formNomeTurno.trim() || undefined,
-            // Nella modifica della serie futura conserva la data propria di ciascun turno futuro
+            nomeTurno: nomeTurnoPulito,
+            tipoTurnoId: tipoSelezionato ? tipoSelezionato.id : t.tipoTurnoId,
+            tipoTurnoNome: tipoSelezionato ? tipoSelezionato.nome : t.tipoTurnoNome,
+            mansioniRichieste: tipoSelezionato
+              ? tipoSelezionato.mansioniObbligatorie.map((m) => ({ ...m }))
+              : t.mansioniRichieste,
             data: modificaModalitaSerie === 'serie_futura' && t.id !== turnoInModifica.id ? t.data : formData,
             fasciaOraria: formFascia,
             orarioInizio: formInizio,
@@ -977,38 +1003,40 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
         id: `turno-${Date.now()}`,
         sedeId: sedeObj?.id || 'sede-massa-lejare',
         sedeNome: sedeObj?.nome || 'Sede Operativa Massa',
-        nomeTurno: formNomeTurno.trim() || undefined,
+        nomeTurno: nomeTurnoPulito,
+        tipoTurnoId: tipoSelezionato?.id,
+        tipoTurnoNome: tipoSelezionato?.nome,
+        mansioniRichieste: tipoSelezionato
+          ? tipoSelezionato.mansioniObbligatorie.map((m) => ({ ...m }))
+          : undefined,
         data: formData,
         fasciaOraria: formFascia,
         orarioInizio: formInizio,
         orarioFine: formFine,
         mezzoAssegnato: mezzoValido,
-        statoCopertura,
-        autista: autistaObj ? { id: autistaObj.id, nome: `${autistaObj.nome} ${autistaObj.cognome}` } : undefined,
-        caposervizio: capoEffettivo ? { id: capoEffettivo.id, nome: `${capoEffettivo.nome} ${capoEffettivo.cognome}` } : undefined,
-        soccorritore2: socc2Obj ? { id: socc2Obj.id, nome: `${socc2Obj.nome} ${socc2Obj.cognome}` } : undefined,
-        terzoSoccorritore: terzoObj ? { id: terzoObj.id, nome: `${terzoObj.nome} ${terzoObj.cognome}` } : undefined,
-        operatoreCentrale: centraleObj ? { id: centraleObj.id, nome: `${centraleObj.nome} ${centraleObj.cognome}` } : undefined,
-        centralinista: centralinistaObj ? { id: centralinistaObj.id, nome: `${centralinistaObj.nome} ${centralinistaObj.cognome}` } : undefined,
-        osservatore: osservatoreObj ? { id: osservatoreObj.id, nome: `${osservatoreObj.nome} ${osservatoreObj.cognome}` } : undefined,
+        statoCopertura: 'Scoperto',
         richiesteIscrizione: [],
         note: formNote
       };
       onAggiornaTurni([...turni, nuovo]);
-      onNotificaRadio?.(`📅 CALENDARIO TURNI: Inserito nuovo turno per ${nuovo.sedeNome} in data ${nuovo.data}`, 'sistema');
+      onNotificaRadio?.(
+        `📅 CALENDARIO TURNI: Inserito nuovo turno "${nomeTurnoPulito}"${tipoSelezionato ? ` (${tipoSelezionato.nome})` : ''} per ${nuovo.sedeNome} in data ${nuovo.data}`,
+        'sistema'
+      );
       if (!isAdmin) {
         inviaNotificaModificaAdmin(
           'turni',
           'Nuovo turno programmato inserito',
-          `Creato nuovo turno per sede "${nuovo.sedeNome}" del ${nuovo.data} (${nuovo.orarioInizio}-${nuovo.orarioFine})`,
+          `Creato nuovo turno "${nomeTurnoPulito}" per sede "${nuovo.sedeNome}" del ${nuovo.data} (${nuovo.orarioInizio}-${nuovo.orarioFine})`,
           operatoreCorrente
         );
       }
-      mostraAvviso(`Nuovo turno programmato inserito.`);
+      mostraAvviso(`Nuovo turno "${nomeTurnoPulito}" programmato con successo.`);
     }
     setModaleTurnoAperta(false);
     setTurnoInModifica(null);
     setModificaModalitaSerie('singolo');
+    setMostraModificaEquipaggioEsistente(false);
   };
 
   // Elimina / Gestisci Turno (apre modale dedicata con 6 opzioni se il turno fa parte di una serie)
@@ -1053,6 +1081,7 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
     setTurnoInModifica(turno);
     setFormSedeId(turno.sedeId);
     setFormData(turno.data);
+    setFormTipoTurnoId(turno.tipoTurnoId || '');
     setFormNomeTurno(turno.nomeTurno || '');
     setFormFascia(turno.fasciaOraria);
     setFormInizio(turno.orarioInizio);
@@ -1065,6 +1094,7 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
     setFormCentraleId(turno.operatoreCentrale?.id || '');
     setFormCentralinistaId(turno.centralinista?.id || '');
     setFormOsservatoreId(turno.osservatore?.id || '');
+    setMostraModificaEquipaggioEsistente(false);
     setFormNote(turno.note || '');
     setModaleTurnoAperta(true);
   };
@@ -1207,6 +1237,7 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
               setTurnoInModifica(null);
               setFormSedeId(sedi[1]?.id || sedi[0]?.id || '');
               setFormData(dataSelezionata);
+              setFormTipoTurnoId(tipiTurno[0]?.id || '');
               setFormNomeTurno('');
               setFormFascia('Mattina (08:00 - 14:00)');
               setFormInizio('08:00');
@@ -1219,6 +1250,7 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
               setFormCentraleId('');
               setFormCentralinistaId('');
               setFormOsservatoreId('');
+              setMostraModificaEquipaggioEsistente(false);
               setFormNote('');
               setModaleTurnoAperta(true);
             }}
@@ -1231,21 +1263,81 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
         )}
       </div>
 
-      {/* Indicatori Sottosezioni Attive */}
+      {/* Navigazione Sottosezioni Database Calendario Turni */}
       <div className="flex items-center gap-2 flex-wrap">
         {canShowSubtab('calendario') && (
-          <span className="px-3 py-1 rounded-xl bg-teal-950/80 border border-teal-500/40 text-teal-200 text-xs font-black uppercase">
+          <button
+            type="button"
+            onClick={() => setVistaSottosezione('calendario')}
+            className={`px-3 py-1.5 rounded-xl border text-xs font-black uppercase transition-all cursor-pointer active:scale-95 ${
+              vistaSottosezione === 'calendario'
+                ? 'bg-teal-500 text-slate-950 border-teal-300 shadow-md shadow-teal-500/20'
+                : 'bg-teal-950/80 hover:bg-teal-900/80 border-teal-500/40 text-teal-200'
+            }`}
+          >
             1. {getTitoloSottosezione('turni', 'calendario', 'Calendario Turni & Equipaggi', nomiSubCustom)}
-          </span>
+          </button>
         )}
         {canShowSubtab('candidature') && (
-          <span className="px-3 py-1 rounded-xl bg-amber-950/80 border border-amber-500/40 text-amber-200 text-xs font-black uppercase">
+          <button
+            type="button"
+            onClick={() => setVistaSottosezione('candidature')}
+            className={`px-3 py-1.5 rounded-xl border text-xs font-black uppercase transition-all cursor-pointer active:scale-95 ${
+              vistaSottosezione === 'candidature'
+                ? 'bg-amber-500 text-slate-950 border-amber-300 shadow-md shadow-amber-500/20'
+                : 'bg-amber-950/80 hover:bg-amber-900/80 border-amber-500/40 text-amber-200'
+            }`}
+          >
             2. {getTitoloSottosezione('turni', 'candidature', 'Gestione Candidature Turni', nomiSubCustom)} ({tutteCandidatureInAttesa.length})
-          </span>
+          </button>
+        )}
+        {canShowSubtab('tipi_turno') && (
+          <button
+            type="button"
+            onClick={() => setVistaSottosezione('tipi_turno')}
+            className={`px-3 py-1.5 rounded-xl border text-xs font-black uppercase transition-all cursor-pointer active:scale-95 flex items-center gap-1.5 ${
+              vistaSottosezione === 'tipi_turno'
+                ? 'bg-indigo-500 text-white border-indigo-300 shadow-md shadow-indigo-500/20'
+                : 'bg-indigo-950/80 hover:bg-indigo-900/80 border-indigo-500/40 text-indigo-200'
+            }`}
+          >
+            <Layers className="w-3.5 h-3.5" />
+            <span>3. {getTitoloSottosezione('turni', 'tipi_turno', 'Tipi di Turni', nomiSubCustom)} ({tipiTurno.length})</span>
+          </button>
         )}
       </div>
 
+      {/* Alert Notifica */}
+      {avviso && (
+        <div className="bg-emerald-950/80 border border-emerald-500 text-emerald-200 px-4 py-2.5 rounded-2xl text-xs font-bold flex items-center gap-2 animate-in fade-in">
+          <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+          <span>{avviso}</span>
+        </div>
+      )}
+
+      {/* SOTTOSEZIONE 3: TIPI DI TURNI */}
+      {vistaSottosezione === 'tipi_turno' && canShowSubtab('tipi_turno') && (
+        <PannelloTipiTurno
+          tipiTurno={tipiTurno}
+          operatoreCorrente={operatoreCorrente}
+          isAdmin={isAdmin}
+          onAvviso={mostraAvviso}
+        />
+      )}
+
+      {/* SOTTOSEZIONE 2: GESTIONE CANDIDATURE (VISTA DEDICATA) */}
+      {vistaSottosezione === 'candidature' && canShowSubtab('candidature') && tutteCandidatureInAttesa.length === 0 && (
+        <div className="bg-slate-950 p-10 rounded-3xl border border-slate-800 text-center space-y-2">
+          <CheckCircle2 className="w-10 h-10 text-emerald-400 mx-auto" />
+          <div className="text-sm font-black text-white uppercase">Nessuna candidatura in attesa di approvazione</div>
+          <p className="text-xs text-slate-400">
+            Tutte le richieste dei volontari sui turni programmati risultano già gestite.
+          </p>
+        </div>
+      )}
+
       {/* BOX ESCLUSIVO AMMINISTRATORE: LINK DIRETTO AL TABELLONE TURNI SENZA LOGIN */}
+      {vistaSottosezione === 'calendario' && (
       <div className="bg-gradient-to-r from-slate-900 via-indigo-950/70 to-slate-900 p-4 sm:p-5 rounded-3xl border-2 border-indigo-500/60 shadow-xl space-y-3">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div className="flex items-center gap-3">
@@ -1309,9 +1401,10 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
           🔒 Riservatezza: Questo link non è visibile nella schermata dei volontari né nei menu pubblici. È consultabile solo dall'amministratore per monitor di postazione o condivisione interna ai responsabili di sede.
         </p>
       </div>
+      )}
 
       {/* BANNER NOTIFICA CANDIDATURE VOLONTARI IN ATTESA DI APPROVAZIONE */}
-      {canShowSubtab('candidature') && tutteCandidatureInAttesa.length > 0 && (
+      {vistaSottosezione !== 'tipi_turno' && canShowSubtab('candidature') && tutteCandidatureInAttesa.length > 0 && (
         <div className="bg-gradient-to-r from-amber-950/90 via-slate-900 to-amber-950/90 p-4 rounded-3xl border-2 border-amber-500 shadow-xl space-y-3 animate-in fade-in">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div className="flex items-center gap-3">
@@ -1384,15 +1477,9 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
         </div>
       )}
 
-      {/* Alert Notifica */}
-      {avviso && (
-        <div className="bg-emerald-950/80 border border-emerald-500 text-emerald-200 px-4 py-2.5 rounded-2xl text-xs font-bold flex items-center gap-2 animate-in fade-in">
-          <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-          <span>{avviso}</span>
-        </div>
-      )}
-
       {/* Barra Navigazione Calendario & Filtri */}
+      {vistaSottosezione === 'calendario' && (
+      <>
       <div className="bg-slate-900 p-4 rounded-2xl border border-slate-800 flex flex-col md:flex-row items-center justify-between gap-4">
         {/* Navigatore Data Giorno */}
         <div className="flex items-center gap-2 w-full md:w-auto justify-between md:justify-start">
@@ -1507,6 +1594,7 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
               setTurnoInModifica(null);
               setFormSedeId(sedi[1]?.id || sedi[0]?.id || '');
               setFormData(dataSelezionata);
+              setFormTipoTurnoId(tipiTurno[0]?.id || '');
               setFormNomeTurno('');
               setFormFascia('Mattina (08:00 - 14:00)');
               setFormInizio('08:00');
@@ -1519,6 +1607,7 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
               setFormCentraleId('');
               setFormCentralinistaId('');
               setFormOsservatoreId('');
+              setMostraModificaEquipaggioEsistente(false);
               setFormNote('');
               setModaleTurnoAperta(true);
             }}
@@ -1557,12 +1646,30 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
                           <span>{t.nomeTurno}</span>
                         </div>
                       )}
+                      {t.tipoTurnoNome && (
+                        <div className="mt-1 inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-indigo-950/90 border border-indigo-500/40 text-indigo-200 text-[10px] font-bold">
+                          <Layers className="w-3 h-3 text-indigo-400 shrink-0" />
+                          <span>Tipo: {t.tipoTurnoNome}</span>
+                        </div>
+                      )}
                       <h4 className="font-black text-white text-sm mt-0.5">{t.fasciaOraria}</h4>
                       <div className="flex items-center gap-1.5 text-[11px] text-slate-400 font-mono mt-0.5">
                         <Clock className="w-3 h-3 text-amber-400" />
                         <span>{t.orarioInizio} — {t.orarioFine}</span>
                         {t.mezzoAssegnato && <span>• Mezzo: <strong className="text-amber-300">{t.mezzoAssegnato}</strong></span>}
                       </div>
+                      {Array.isArray(t.mansioniRichieste) && t.mansioniRichieste.length > 0 && (
+                        <div className="mt-1.5 flex items-center gap-1 flex-wrap">
+                          {t.mansioniRichieste.map((mr) => (
+                            <span
+                              key={mr.id}
+                              className="px-1.5 py-0.5 rounded bg-slate-900 border border-slate-700 text-[10px] text-slate-200 font-semibold"
+                            >
+                              {mr.emoji || '🎖️'} {mr.nome} <span className="text-indigo-300 font-mono">({mr.minimo === mr.massimo ? mr.minimo : `${mr.minimo}–${mr.massimo}`})</span>
+                            </span>
+                          ))}
+                        </div>
+                      )}
                     </div>
 
                     <span className={`px-2.5 py-1 rounded-full text-[10px] font-black uppercase border shrink-0 ${
@@ -1732,6 +1839,7 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
                       setTurnoInModifica(t);
                       setFormSedeId(t.sedeId);
                       setFormData(t.data);
+                      setFormTipoTurnoId(t.tipoTurnoId || '');
                       setFormNomeTurno(t.nomeTurno || '');
                       setFormFascia(t.fasciaOraria);
                       setFormInizio(t.orarioInizio);
@@ -1744,6 +1852,7 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
                       setFormCentraleId(t.operatoreCentrale?.id || '');
                       setFormCentralinistaId(t.centralinista?.id || '');
                       setFormOsservatoreId(t.osservatore?.id || '');
+                      setMostraModificaEquipaggioEsistente(false);
                       setFormNote(t.note || '');
                       setModaleTurnoAperta(true);
                     }}
@@ -1767,6 +1876,8 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
             );
           })}
         </div>
+      )}
+      </>
       )}
 
       {/* MODALE NUOVO / MODIFICA TURNO */}
@@ -1831,12 +1942,73 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
                 </div>
               </div>
 
+              {/* Selezione Tipo di Turno */}
               <div>
-                <label className="block text-slate-400 font-bold mb-1">
-                  Nome / Tipo Turno (Campo Libero Personalizzato)
+                <div className="flex items-center justify-between gap-2 mb-1">
+                  <label className="block text-slate-300 font-bold">
+                    Tipo di Turno {tipiTurno.length > 0 && <span className="text-red-400">*</span>}
+                  </label>
+                  {canShowSubtab('tipi_turno') && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setModaleTurnoAperta(false);
+                        setVistaSottosezione('tipi_turno');
+                      }}
+                      className="text-[10.5px] font-bold text-indigo-400 hover:text-indigo-300 underline cursor-pointer"
+                    >
+                      Gestisci Tipi di Turni
+                    </button>
+                  )}
+                </div>
+                <select
+                  required={!turnoInModifica && tipiTurno.length > 0}
+                  value={formTipoTurnoId}
+                  onChange={(e) => setFormTipoTurnoId(e.target.value)}
+                  className="w-full p-2.5 rounded-xl bg-slate-950 border border-indigo-500/50 text-white font-bold focus:border-indigo-400 focus:outline-none"
+                >
+                  <option value="">-- Seleziona Tipo di Turno --</option>
+                  {tipiTurno.map((tp) => (
+                    <option key={tp.id} value={tp.id}>
+                      {tp.icona || '📅'} {tp.nome} ({tp.mansioniObbligatorie.length} mansioni)
+                    </option>
+                  ))}
+                </select>
+
+                {/* Riepilogo Mansioni Obbligatorie del Tipo di Turno selezionato */}
+                {(() => {
+                  const tipoSel = tipiTurno.find((tp) => tp.id === formTipoTurnoId);
+                  if (!tipoSel || tipoSel.mansioniObbligatorie.length === 0) return null;
+                  return (
+                    <div className="mt-2 p-2.5 rounded-xl bg-indigo-950/40 border border-indigo-500/40 space-y-1.5">
+                      <div className="text-[10px] font-black uppercase text-indigo-300">
+                        Mansioni obbligatorie previste ({tipoSel.nome}):
+                      </div>
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        {tipoSel.mansioniObbligatorie.map((m) => (
+                          <span
+                            key={m.id}
+                            className="px-2 py-0.5 rounded-lg bg-slate-950 border border-indigo-500/30 text-[10.5px] text-slate-200 font-semibold"
+                          >
+                            {m.emoji || '🎖️'} {m.nome}{' '}
+                            <strong className="text-indigo-300 font-mono">
+                              (Min {m.minimo} – Max {m.massimo})
+                            </strong>
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })()}
+              </div>
+
+              <div>
+                <label className="block text-slate-300 font-bold mb-1">
+                  Nome Turno <span className="text-red-400">*</span>
                 </label>
                 <input
                   type="text"
+                  required
                   value={formNomeTurno}
                   onChange={(e) => setFormNomeTurno(e.target.value)}
                   placeholder="es. Turno Emergenza 118, Servizio Manifestazione, Trasporto Dialisi..."
@@ -1915,136 +2087,128 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
                 )}
               </div>
 
-              {/* Assegnazione Equipaggio */}
-              <div className="space-y-3 pt-2 border-t border-slate-800">
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1">
-                  <span className="text-[10px] uppercase font-bold text-slate-400 block">Composizione Equipaggio e Ruoli:</span>
-                  <span className="text-[10px] text-teal-400 font-semibold bg-teal-950/60 px-2 py-0.5 rounded border border-teal-700/40">
-                    💡 Gli autisti possono ricoprire anche il ruolo di soccorritore
-                  </span>
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-slate-300 font-semibold mb-1">🚑 1. Autista Soccorritore</label>
-                    <select
-                      value={formAutistaId}
-                      onChange={(e) => setFormAutistaId(e.target.value)}
-                      className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white"
-                    >
-                      <option value="">-- Seleziona Autista --</option>
-                      {volontari.map((v) => (
-                        <option key={v.id} value={v.id}>
-                          {v.nome} {v.cognome} ({v.qualifica || 'Volontario'})
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div>
-                    <div className="flex items-center justify-between mb-1">
-                      <label className="block text-slate-300 font-semibold">👨‍⚕️ 2. Caposervizio / Soccorritore Avanzato</label>
-                      {!formCapoId && formAutistaId && (
-                        <span className="text-[10px] text-amber-400 font-semibold bg-amber-950/60 px-2 py-0.5 rounded border border-amber-600/40">
-                          Auto: Autista
-                        </span>
-                      )}
+              {/* In modifica di un turno già esistente è possibile espandere le assegnazioni manuali; in creazione nuovo turno è completamente rimosso */}
+              {turnoInModifica && (
+                <div className="pt-2 border-t border-slate-800 space-y-2">
+                  <button
+                    type="button"
+                    onClick={() => setMostraModificaEquipaggioEsistente((v) => !v)}
+                    className="w-full px-3 py-2 rounded-xl bg-slate-950 hover:bg-slate-800 border border-slate-700 text-slate-300 font-bold text-[11px] flex items-center justify-between cursor-pointer"
+                  >
+                    <span>Modifica Volontari Assegnati al Turno</span>
+                    <span className="text-teal-400">{mostraModificaEquipaggioEsistente ? 'Nascondi ▲' : 'Mostra ▼'}</span>
+                  </button>
+                  {mostraModificaEquipaggioEsistente && (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                      <div>
+                        <label className="block text-slate-300 font-semibold mb-1">🚑 Autista Soccorritore</label>
+                        <select
+                          value={formAutistaId}
+                          onChange={(e) => setFormAutistaId(e.target.value)}
+                          className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white"
+                        >
+                          <option value="">-- Nessuno --</option>
+                          {volontari.map((v) => (
+                            <option key={v.id} value={v.id}>
+                              {v.nome} {v.cognome} ({v.qualifica || 'Volontario'})
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-slate-300 font-semibold mb-1">👨‍⚕️ Caposervizio</label>
+                        <select
+                          value={formCapoId}
+                          onChange={(e) => setFormCapoId(e.target.value)}
+                          className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white"
+                        >
+                          <option value="">-- Nessuno --</option>
+                          {volontari.map((v) => (
+                            <option key={v.id} value={v.id}>
+                              {v.nome} {v.cognome} ({v.qualifica || 'Volontario'})
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-slate-300 font-semibold mb-1">🧑‍⚕️ Secondo Soccorritore</label>
+                        <select
+                          value={formSoccorritore2Id}
+                          onChange={(e) => setFormSoccorritore2Id(e.target.value)}
+                          className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white"
+                        >
+                          <option value="">-- Nessuno --</option>
+                          {volontari.map((v) => (
+                            <option key={v.id} value={v.id}>
+                              {v.nome} {v.cognome} ({v.qualifica || 'Volontario'})
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-slate-300 font-semibold mb-1">🧑‍⚕️ Terzo Soccorritore</label>
+                        <select
+                          value={formTerzoSoccorritoreId}
+                          onChange={(e) => setFormTerzoSoccorritoreId(e.target.value)}
+                          className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white"
+                        >
+                          <option value="">-- Nessuno --</option>
+                          {volontari.map((v) => (
+                            <option key={v.id} value={v.id}>
+                              {v.nome} {v.cognome} ({v.qualifica || 'Volontario'})
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-slate-300 font-semibold mb-1">🎧 Operatore Centrale</label>
+                        <select
+                          value={formCentraleId}
+                          onChange={(e) => setFormCentraleId(e.target.value)}
+                          className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white"
+                        >
+                          <option value="">-- Nessuno --</option>
+                          {volontari.map((v) => (
+                            <option key={v.id} value={v.id}>
+                              {v.nome} {v.cognome} ({v.qualifica || 'Volontario'})
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-slate-300 font-semibold mb-1">📞 Centralinista</label>
+                        <select
+                          value={formCentralinistaId}
+                          onChange={(e) => setFormCentralinistaId(e.target.value)}
+                          className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white"
+                        >
+                          <option value="">-- Nessuno --</option>
+                          {volontari.map((v) => (
+                            <option key={v.id} value={v.id}>
+                              {v.nome} {v.cognome} ({v.qualifica || 'Volontario'})
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="sm:col-span-2">
+                        <label className="block text-slate-300 font-semibold mb-1">👁️ Osservatore</label>
+                        <select
+                          value={formOsservatoreId}
+                          onChange={(e) => setFormOsservatoreId(e.target.value)}
+                          className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white"
+                        >
+                          <option value="">-- Nessuno --</option>
+                          {volontari.map((v) => (
+                            <option key={v.id} value={v.id}>
+                              {v.nome} {v.cognome} ({v.qualifica || 'Volontario'})
+                            </option>
+                          ))}
+                        </select>
+                      </div>
                     </div>
-                    <select
-                      value={formCapoId}
-                      onChange={(e) => setFormCapoId(e.target.value)}
-                      className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white"
-                    >
-                      <option value="">-- Seleziona Caposervizio (Default automatico: Autista) --</option>
-                      {volontari.map((v) => (
-                        <option key={v.id} value={v.id}>
-                          {v.nome} {v.cognome} ({v.qualifica === 'Autista' ? 'Autista • Idoneo Soccorritore' : (v.qualifica || 'Volontario')})
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="block text-slate-300 font-semibold mb-1">🧑‍⚕️ 3. Secondo Soccorritore</label>
-                    <select
-                      value={formSoccorritore2Id}
-                      onChange={(e) => setFormSoccorritore2Id(e.target.value)}
-                      className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white"
-                    >
-                      <option value="">-- Seleziona Secondo Soccorritore --</option>
-                      {volontari.map((v) => (
-                        <option key={v.id} value={v.id}>
-                          {v.nome} {v.cognome} ({v.qualifica === 'Autista' ? 'Autista • Idoneo Soccorritore' : (v.qualifica || 'Volontario')})
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="block text-slate-300 font-semibold mb-1">🧑‍⚕️ 4. Terzo Soccorritore</label>
-                    <select
-                      value={formTerzoSoccorritoreId}
-                      onChange={(e) => setFormTerzoSoccorritoreId(e.target.value)}
-                      className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white"
-                    >
-                      <option value="">-- Seleziona Terzo Soccorritore (Opzionale) --</option>
-                      {volontari.map((v) => (
-                        <option key={v.id} value={v.id}>
-                          {v.nome} {v.cognome} ({v.qualifica === 'Autista' ? 'Autista • Idoneo Soccorritore' : (v.qualifica || 'Volontario')})
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="block text-slate-300 font-semibold mb-1">🎧 5. Operatore Centrale / Sala Radio</label>
-                    <select
-                      value={formCentraleId}
-                      onChange={(e) => setFormCentraleId(e.target.value)}
-                      className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white"
-                    >
-                      <option value="">-- Seleziona Operatore Centrale (Opzionale) --</option>
-                      {volontari.map((v) => (
-                        <option key={v.id} value={v.id}>
-                          {v.nome} {v.cognome} ({v.qualifica || 'Volontario'})
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="block text-slate-300 font-semibold mb-1">📞 6. Centralinista</label>
-                    <select
-                      value={formCentralinistaId}
-                      onChange={(e) => setFormCentralinistaId(e.target.value)}
-                      className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white"
-                    >
-                      <option value="">-- Seleziona Centralinista (Opzionale) --</option>
-                      {volontari.map((v) => (
-                        <option key={v.id} value={v.id}>
-                          {v.nome} {v.cognome} ({v.qualifica || 'Volontario'})
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div className="sm:col-span-2">
-                    <label className="block text-slate-300 font-semibold mb-1">👁️ 7. Osservatore (In Formazione / Tirocinante)</label>
-                    <select
-                      value={formOsservatoreId}
-                      onChange={(e) => setFormOsservatoreId(e.target.value)}
-                      className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white"
-                    >
-                      <option value="">-- Seleziona Osservatore (Opzionale) --</option>
-                      {volontari.map((v) => (
-                        <option key={v.id} value={v.id}>
-                          {v.nome} {v.cognome} ({v.qualifica || 'Volontario'})
-                        </option>
-                      ))}
-                    </select>
-                  </div>
+                  )}
                 </div>
-              </div>
+              )}
 
               <div>
                 <label className="block text-slate-400 font-bold mb-1">Note Operative del Turno</label>
@@ -2068,32 +2232,21 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
                   type="button"
                   onClick={() => {
                     const sedeObj = sedi.find((s) => s.id === formSedeId) || sedi[0];
-                    const autistaObj = volontari.find((v) => v.id === formAutistaId);
-                    const capoObj = volontari.find((v) => v.id === formCapoId);
-                    const capoEffettivo = capoObj || (formAutistaId ? autistaObj : undefined);
-                    const soccObj = volontari.find((v) => v.id === formSoccorritore2Id);
-                    const terzoObj = volontari.find((v) => v.id === formTerzoSoccorritoreId);
-                    const centraleObj = volontari.find((v) => v.id === formCentraleId);
-                    const centralinistaObj = volontari.find((v) => v.id === formCentralinistaId);
-                    const osservatoreObj = volontari.find((v) => v.id === formOsservatoreId);
+                    const tipoSel = tipiTurno.find((tp) => tp.id === formTipoTurnoId);
                     const mockTurno: TurnoSedeOperativa = {
                       id: `temp-${Date.now()}`,
                       sedeId: formSedeId,
                       sedeNome: sedeObj?.nome || 'Sede',
                       nomeTurno: formNomeTurno.trim() || undefined,
+                      tipoTurnoId: tipoSel?.id,
+                      tipoTurnoNome: tipoSel?.nome,
+                      mansioniRichieste: tipoSel?.mansioniObbligatorie.map((m) => ({ ...m })),
                       data: formData,
                       fasciaOraria: formFascia,
                       orarioInizio: formInizio,
                       orarioFine: formFine,
                       mezzoAssegnato: formMezzo,
-                      statoCopertura: calcolaStatoCopertura(formAutistaId, capoEffettivo?.id, formSoccorritore2Id),
-                      autista: autistaObj ? { id: autistaObj.id, nome: `${autistaObj.nome} ${autistaObj.cognome}` } : undefined,
-                      caposervizio: capoEffettivo ? { id: capoEffettivo.id, nome: `${capoEffettivo.nome} ${capoEffettivo.cognome}` } : undefined,
-                      soccorritore2: soccObj ? { id: soccObj.id, nome: `${soccObj.nome} ${soccObj.cognome}` } : undefined,
-                      terzoSoccorritore: terzoObj ? { id: terzoObj.id, nome: `${terzoObj.nome} ${terzoObj.cognome}` } : undefined,
-                      operatoreCentrale: centraleObj ? { id: centraleObj.id, nome: `${centraleObj.nome} ${centraleObj.cognome}` } : undefined,
-                      centralinista: centralinistaObj ? { id: centralinistaObj.id, nome: `${centralinistaObj.nome} ${centralinistaObj.cognome}` } : undefined,
-                      osservatore: osservatoreObj ? { id: osservatoreObj.id, nome: `${osservatoreObj.nome} ${osservatoreObj.cognome}` } : undefined,
+                      statoCopertura: 'Scoperto',
                       note: formNote
                     };
                     setModaleTurnoAperta(false);
@@ -3157,18 +3310,79 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
                 </div>
               </div>
 
-              {/* Nome / Tipo Turno (Campo Libero Personalizzato) */}
-              <div>
-                <label className="block text-slate-400 font-bold mb-1">
-                  Nome / Tipo Turno (Campo Libero Personalizzato)
-                </label>
-                <input
-                  type="text"
-                  value={ripNomeTurno}
-                  onChange={(e) => setRipNomeTurno(e.target.value)}
-                  placeholder="es. Turno Emergenza 118, Protezione Civile, Servizio Manifestazione, Trasporto Dialisi..."
-                  className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-700 text-teal-300 font-bold placeholder-slate-500 text-xs focus:border-teal-500 focus:outline-none"
-                />
+              {/* Tipo di Turno + Nome Turno (obbligatorio e sempre editabile) */}
+              <div className="space-y-3">
+                <div>
+                  <div className="flex items-center justify-between gap-2 mb-1">
+                    <label className="block text-slate-300 font-bold">
+                      Tipo di Turno {tipiTurno.length > 0 && <span className="text-red-400">*</span>}
+                    </label>
+                    {canShowSubtab('tipi_turno') && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setModaleTurniRipetutiAperta(false);
+                          setVistaSottosezione('tipi_turno');
+                        }}
+                        className="text-[10.5px] font-bold text-indigo-400 hover:text-indigo-300 underline cursor-pointer"
+                      >
+                        Gestisci Tipi di Turni
+                      </button>
+                    )}
+                  </div>
+                  <select
+                    required={tipiTurno.length > 0}
+                    value={ripTipoTurnoId}
+                    onChange={(e) => setRipTipoTurnoId(e.target.value)}
+                    className="w-full p-2.5 rounded-xl bg-slate-950 border border-indigo-500/50 text-white font-bold focus:border-indigo-400 focus:outline-none"
+                  >
+                    <option value="">-- Seleziona Tipo di Turno --</option>
+                    {tipiTurno.map((tp) => (
+                      <option key={tp.id} value={tp.id}>
+                        {tp.icona || '📅'} {tp.nome} ({tp.mansioniObbligatorie.length} mansioni)
+                      </option>
+                    ))}
+                  </select>
+
+                  {(() => {
+                    const tipoSel = tipiTurno.find((tp) => tp.id === ripTipoTurnoId);
+                    if (!tipoSel || tipoSel.mansioniObbligatorie.length === 0) return null;
+                    return (
+                      <div className="mt-2 p-2.5 rounded-xl bg-indigo-950/40 border border-indigo-500/40 space-y-1.5">
+                        <div className="text-[10px] font-black uppercase text-indigo-300">
+                          Mansioni obbligatorie previste per ogni turno ({tipoSel.nome}):
+                        </div>
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          {tipoSel.mansioniObbligatorie.map((m) => (
+                            <span
+                              key={m.id}
+                              className="px-2 py-0.5 rounded-lg bg-slate-950 border border-indigo-500/30 text-[10.5px] text-slate-200 font-semibold"
+                            >
+                              {m.emoji || '🎖️'} {m.nome}{' '}
+                              <strong className="text-indigo-300 font-mono">
+                                (Min {m.minimo} – Max {m.massimo})
+                              </strong>
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })()}
+                </div>
+
+                <div>
+                  <label className="block text-slate-300 font-bold mb-1">
+                    Nome Turno <span className="text-red-400">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={ripNomeTurno}
+                    onChange={(e) => setRipNomeTurno(e.target.value)}
+                    placeholder="es. Turno Emergenza 118, Protezione Civile, Servizio Manifestazione, Trasporto Dialisi..."
+                    className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-700 text-teal-300 font-bold placeholder-slate-500 text-xs focus:border-teal-500 focus:outline-none"
+                  />
+                </div>
               </div>
 
               {/* Fascia Oraria e Orari */}
@@ -3374,189 +3588,7 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
                 </div>
               </div>
 
-              {/* ------------------------------------------------------------- */}
-              {/* DISPONIBILITA VOLONTARI E ASSEGNAZIONE EQUIPAGGIO             */}
-              {/* ------------------------------------------------------------- */}
-              <div className="p-3.5 rounded-2xl bg-slate-950 border border-slate-800 space-y-3">
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1">
-                  <span className="text-[11px] font-bold uppercase text-slate-300 block">
-                    Equipaggio Modello per la Serie (Opzionale):
-                  </span>
-                  <span className="text-[10px] text-teal-400 font-semibold bg-teal-950/60 px-2 py-0.5 rounded border border-teal-700/40">
-                    💡 Gli autisti possono essere assegnati anche come soccorritori
-                  </span>
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                  <div>
-                    <label className="block text-slate-400 font-bold mb-0.5 text-[10.5px]">🚑 Autista</label>
-                    <select
-                      value={ripAutistaId}
-                      onChange={(e) => setRipAutistaId(e.target.value)}
-                      className="w-full p-2 rounded-xl bg-slate-900 border border-slate-700 text-white text-xs"
-                    >
-                      <option value="">— Nessun Autista —</option>
-                      {volontari.map((v) => (
-                        <option key={v.id} value={v.id}>
-                          {v.nome} {v.cognome} ({v.qualifica})
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div>
-                    <div className="flex items-center justify-between mb-0.5">
-                      <label className="block text-slate-400 font-bold text-[10.5px]">👨‍⚕️ Caposervizio</label>
-                      {!ripCapoId && ripAutistaId && (
-                        <span className="text-[9.5px] text-amber-400 font-medium">
-                          (Auto: Autista)
-                        </span>
-                      )}
-                    </div>
-                    <select
-                      value={ripCapoId}
-                      onChange={(e) => setRipCapoId(e.target.value)}
-                      className="w-full p-2 rounded-xl bg-slate-900 border border-slate-700 text-white text-xs"
-                    >
-                      <option value="">— Nessun Caposervizio (Default: Autista) —</option>
-                      {volontari.map((v) => (
-                        <option key={v.id} value={v.id}>
-                          {v.nome} {v.cognome} ({v.qualifica === 'Autista' ? 'Autista • Idoneo Soccorritore' : v.qualifica})
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="block text-slate-400 font-bold mb-0.5 text-[10.5px]">🧑‍⚕️ 2° Soccorritore</label>
-                    <select
-                      value={ripSocc2Id}
-                      onChange={(e) => setRipSocc2Id(e.target.value)}
-                      className="w-full p-2 rounded-xl bg-slate-900 border border-slate-700 text-white text-xs"
-                    >
-                      <option value="">— Nessun 2° Soccorritore —</option>
-                      {volontari.map((v) => (
-                        <option key={v.id} value={v.id}>
-                          {v.nome} {v.cognome} ({v.qualifica === 'Autista' ? 'Autista • Idoneo Soccorritore' : v.qualifica})
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="block text-slate-400 font-bold mb-0.5 text-[10.5px]">🧑‍⚕️ 3° Soccorritore</label>
-                    <select
-                      value={ripTerzoId}
-                      onChange={(e) => setRipTerzoId(e.target.value)}
-                      className="w-full p-2 rounded-xl bg-slate-900 border border-slate-700 text-white text-xs"
-                    >
-                      <option value="">— Nessun 3° Soccorritore —</option>
-                      {volontari.map((v) => (
-                        <option key={v.id} value={v.id}>
-                          {v.nome} {v.cognome} ({v.qualifica === 'Autista' ? 'Autista • Idoneo Soccorritore' : v.qualifica})
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="block text-slate-400 font-bold mb-0.5 text-[10.5px]">🎧 Operatore Centrale / Sala Radio</label>
-                    <select
-                      value={ripCentraleId}
-                      onChange={(e) => setRipCentraleId(e.target.value)}
-                      className="w-full p-2 rounded-xl bg-slate-900 border border-slate-700 text-white text-xs"
-                    >
-                      <option value="">— Nessun Operatore Centrale —</option>
-                      {volontari.map((v) => (
-                        <option key={v.id} value={v.id}>
-                          {v.nome} {v.cognome} ({v.qualifica})
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="block text-slate-400 font-bold mb-0.5 text-[10.5px]">📞 Centralinista</label>
-                    <select
-                      value={ripCentralinistaId}
-                      onChange={(e) => setRipCentralinistaId(e.target.value)}
-                      className="w-full p-2 rounded-xl bg-slate-900 border border-slate-700 text-white text-xs"
-                    >
-                      <option value="">— Nessun Centralinista —</option>
-                      {volontari.map((v) => (
-                        <option key={v.id} value={v.id}>
-                          {v.nome} {v.cognome} ({v.qualifica})
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div className="sm:col-span-2">
-                    <label className="block text-slate-400 font-bold mb-0.5 text-[10.5px]">👁️ Osservatore</label>
-                    <select
-                      value={ripOsservatoreId}
-                      onChange={(e) => setRipOsservatoreId(e.target.value)}
-                      className="w-full p-2 rounded-xl bg-slate-900 border border-slate-700 text-white text-xs"
-                    >
-                      <option value="">— Nessun Osservatore —</option>
-                      {volontari.map((v) => (
-                        <option key={v.id} value={v.id}>
-                          {v.nome} {v.cognome} ({v.qualifica})
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-
-                {/* OPZIONE FONDAMENTALE PER TURNI RIPETUTI: DUPLICA DISPONIBILITA */}
-                <div
-                  className={`p-3.5 rounded-2xl border-2 transition-all cursor-pointer mt-2 ${
-                    ripDuplicaDisponibilita
-                      ? 'bg-teal-950/40 border-teal-500/80 shadow-md shadow-teal-950/20'
-                      : 'bg-slate-900 border-slate-700 hover:border-slate-600'
-                  }`}
-                  onClick={() => setRipDuplicaDisponibilita(!ripDuplicaDisponibilita)}
-                >
-                  <div className="flex items-start gap-3">
-                    <input
-                      type="checkbox"
-                      checked={ripDuplicaDisponibilita}
-                      onChange={(e) => setRipDuplicaDisponibilita(e.target.checked)}
-                      className="mt-0.5 w-5 h-5 rounded text-teal-500 bg-slate-900 border-slate-700 focus:ring-teal-500 cursor-pointer shrink-0"
-                      onClick={(e) => e.stopPropagation()}
-                    />
-                    <div className="space-y-0.5 min-w-0 flex-1">
-                      <div className="flex items-center justify-between gap-2 flex-wrap">
-                        <span className="text-xs font-black text-white uppercase tracking-wide">
-                          Duplica le disponibilità dei volontari nei turni ripetuti
-                        </span>
-                        <span
-                          className={`px-2 py-0.5 rounded-full text-[9px] font-black uppercase shrink-0 ${
-                            ripDuplicaDisponibilita
-                              ? 'bg-teal-400 text-slate-950'
-                              : 'bg-slate-800 text-slate-400 border border-slate-700'
-                          }`}
-                        >
-                          {ripDuplicaDisponibilita ? '✓ Volontari Assegnati a Tutti i Turni' : '✗ Turni Aperti (Disponibilità da raccogliere)'}
-                        </span>
-                      </div>
-                      <p className="text-[11px] text-slate-300 leading-snug">
-                        {ripDuplicaDisponibilita ? (
-                          <>
-                            I volontari selezionati verranno <strong>automaticamente assegnati</strong> come equipaggio fisso a
-                            tutti i turni della serie ripetuta.
-                          </>
-                        ) : (
-                          <>
-                            Tutti i turni della serie verranno generati con <strong>equipaggio vuoto ("Da Assegnare / Scoperto")</strong>,
-                            lasciando aperta la raccolta delle disponibilità da parte dei singoli volontari.
-                          </>
-                        )}
-                      </p>
-                    </div>
-                  </div>
-                </div>
-              </div>
+              {/* Composizione equipaggio gestita tramite Tipo di Turno selezionato */}
 
               {/* ------------------------------------------------------------- */}
               {/* LIVE ANTEPRIMA DEL NUMERO DI TURNI GENERATI                   */}

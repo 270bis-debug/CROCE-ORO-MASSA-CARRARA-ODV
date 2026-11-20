@@ -168,6 +168,7 @@ export const SOTTOSEZIONI_PER_DATABASE: Record<MacroCategoriaId, InfoSottosezion
   turni: [
     { id: 'calendario', numero: '1', titoloDefault: 'Calendario Turni & Equipaggi' },
     { id: 'candidature', numero: '2', titoloDefault: 'Gestione Candidature Turni' },
+    { id: 'tipi_turno', numero: '3', titoloDefault: 'Tipi di Turni' },
   ],
   bacheca: [
     { id: 'elenco', numero: '1', titoloDefault: 'Consultazione Bacheca & Avvisi' },
