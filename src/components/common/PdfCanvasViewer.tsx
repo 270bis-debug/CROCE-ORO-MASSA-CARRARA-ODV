@@ -12,6 +12,7 @@ export interface PdfCanvasViewerProps {
   pdfUrl?: string | null;
   className?: string;
   protectedMode?: boolean;
+  autoHeight?: boolean;
   emptyMessage?: string;
 }
 
@@ -20,6 +21,7 @@ export const PdfCanvasViewer: React.FC<PdfCanvasViewerProps> = ({
   pdfUrl,
   className = '',
   protectedMode = false,
+  autoHeight = false,
   emptyMessage = 'Anteprima PDF non ancora disponibile.'
 }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -29,6 +31,7 @@ export const PdfCanvasViewer: React.FC<PdfCanvasViewerProps> = ({
   const [zoom, setZoom] = useState<number>(1);
   const [numPages, setNumPages] = useState<number>(0);
   const [loading, setLoading] = useState<boolean>(false);
+  const [hasRenderedOnce, setHasRenderedOnce] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
 
   // Misura la larghezza reale del contenitore per adattare perfettamente il PDF su smartphone e PC
@@ -39,7 +42,7 @@ export const PdfCanvasViewer: React.FC<PdfCanvasViewerProps> = ({
     const updateWidth = () => {
       const w = Math.floor(el.clientWidth);
       if (w > 60) {
-        setContainerWidth((prev) => (Math.abs(prev - w) >= 8 ? w : prev));
+        setContainerWidth((prev) => (prev === 0 || Math.abs(prev - w) >= 16 ? w : prev));
       }
     };
 
@@ -59,6 +62,7 @@ export const PdfCanvasViewer: React.FC<PdfCanvasViewerProps> = ({
     const hasUrl = Boolean(pdfUrl);
     if (!hasBytes && !hasUrl) {
       setNumPages(0);
+      setHasRenderedOnce(false);
       setError(null);
       if (pagesHostRef.current) pagesHostRef.current.replaceChildren();
       return;
@@ -84,13 +88,12 @@ export const PdfCanvasViewer: React.FC<PdfCanvasViewerProps> = ({
         const total = pdfDoc.numPages;
         setNumPages(total);
 
-        const host = pagesHostRef.current;
-        if (!host) return;
-        host.replaceChildren();
-
-        const fallbackW = typeof window !== 'undefined' ? Math.min(window.innerWidth - 40, 760) : 600;
-        const availableW = Math.max(220, (containerWidth || fallbackW) - 20);
+        const fallbackW = typeof window !== 'undefined' ? Math.min(window.innerWidth - 36, 760) : 600;
+        const measuredW = containerRef.current?.clientWidth || containerWidth || fallbackW;
+        const availableW = Math.max(220, measuredW - 16);
         const dpr = typeof window !== 'undefined' ? Math.min(window.devicePixelRatio || 1, 2.2) : 1;
+
+        const fragment = document.createDocumentFragment();
 
         for (let pageNum = 1; pageNum <= total; pageNum++) {
           if (cancelled) break;
@@ -136,7 +139,12 @@ export const PdfCanvasViewer: React.FC<PdfCanvasViewerProps> = ({
             wrapper.appendChild(label);
           }
 
-          host.appendChild(wrapper);
+          fragment.appendChild(wrapper);
+        }
+
+        if (!cancelled && pagesHostRef.current) {
+          pagesHostRef.current.replaceChildren(fragment);
+          setHasRenderedOnce(true);
         }
       } catch (err: any) {
         if (!cancelled) {
@@ -224,10 +232,16 @@ export const PdfCanvasViewer: React.FC<PdfCanvasViewerProps> = ({
         </div>
       </div>
 
-      {/* Area Scrollabile Pagine Renderizzate */}
-      <div className="relative flex-1 overflow-auto p-2.5 sm:p-3 bg-slate-900/70 min-h-[260px]">
-        {loading && (
-          <div className="absolute inset-0 z-10 bg-slate-950/75 backdrop-blur-[1px] flex flex-col items-center justify-center gap-2 text-xs text-slate-300 font-bold">
+      {/* Area Pagine Renderizzate */}
+      <div
+        className={`relative p-2 sm:p-3 bg-slate-900/70 ${
+          autoHeight
+            ? 'overflow-x-auto min-h-[340px]'
+            : 'flex-1 overflow-auto min-h-[260px]'
+        }`}
+      >
+        {loading && !hasRenderedOnce && (
+          <div className="py-16 flex flex-col items-center justify-center gap-2 text-xs text-slate-300 font-bold">
             <Loader2 className="w-6 h-6 animate-spin text-indigo-400" />
             <span>Rendering pagine PDF in corso...</span>
           </div>
@@ -241,7 +255,12 @@ export const PdfCanvasViewer: React.FC<PdfCanvasViewerProps> = ({
         ) : !hasSource ? (
           <div className="p-6 text-center text-xs text-slate-400">{emptyMessage}</div>
         ) : (
-          <div ref={pagesHostRef} className="flex flex-col items-center gap-3 min-w-fit" />
+          <div
+            ref={pagesHostRef}
+            className={`flex flex-col items-center gap-3 min-w-fit transition-opacity duration-150 ${
+              loading && hasRenderedOnce ? 'opacity-70' : 'opacity-100'
+            }`}
+          />
         )}
       </div>
     </div>
