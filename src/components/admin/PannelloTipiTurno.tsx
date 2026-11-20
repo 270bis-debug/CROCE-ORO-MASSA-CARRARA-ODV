@@ -17,12 +17,15 @@ import { TipoTurnoConfig, MansioneTipoTurno } from '../../types/adminTypes';
 import {
   getTutteMansioniDisponibiliPerTipoTurno,
   OpzioneMansioneTurno,
+  risolviMansioniTipoTurnoLive,
   salvaTipiTurnoCatalogo
 } from '../../utils/tipiTurno';
 import { getMansioniCatalogo, MansioneOperativa } from '../../utils/mansioniVolontari';
 import { realtime } from '../../services/realtime';
 import { formatDateItaly } from '../../utils/italianTime';
 import { inviaNotificaModificaAdmin } from '../../utils/notificaModificaAdmin';
+import { IconaEmoji } from '../IconaEmoji';
+import { EmojiIconPicker } from '../EmojiIconPicker';
 
 interface PannelloTipiTurnoProps {
   tipiTurno: TipoTurnoConfig[];
@@ -30,8 +33,6 @@ interface PannelloTipiTurnoProps {
   isAdmin?: boolean;
   onAvviso?: (msg: string) => void;
 }
-
-const ICONE_SUGGERITE = ['🚑', '🚐', '🎧', '🛡️', '🏥', '📋', '⚡', '🩺', '🚒', '📞'];
 
 export const PannelloTipiTurno: React.FC<PannelloTipiTurnoProps> = ({
   tipiTurno,
@@ -88,7 +89,9 @@ export const PannelloTipiTurno: React.FC<PannelloTipiTurnoProps> = ({
     setFormNome(tipo.nome);
     setFormDescrizione(tipo.descrizione || '');
     setFormIcona(tipo.icona || '🚑');
-    setFormMansioni(tipo.mansioniObbligatorie.map((m) => ({ ...m })));
+    setFormMansioni(
+      risolviMansioniTipoTurnoLive(tipo.mansioniObbligatorie, catalogoMansioniVolontari).map((m) => ({ ...m }))
+    );
     setFiltroMansioni('');
     setErroreForm(null);
     setModaleAperta(true);
@@ -97,7 +100,9 @@ export const PannelloTipiTurno: React.FC<PannelloTipiTurnoProps> = ({
   const aggiungiMansione = (opt: OpzioneMansioneTurno) => {
     setErroreForm(null);
     setFormMansioni((prev) => {
-      if (prev.some((m) => m.id === opt.id)) return prev;
+      if (prev.some((m) => m.id === opt.id || (opt.mansioneCatalogoId && m.mansioneCatalogoId === opt.mansioneCatalogoId))) {
+        return prev;
+      }
       return [
         ...prev,
         {
@@ -105,7 +110,7 @@ export const PannelloTipiTurno: React.FC<PannelloTipiTurnoProps> = ({
           nome: opt.nome,
           emoji: opt.emoji,
           ruoloTurno: opt.ruoloTurno,
-          mansioneCatalogoId: opt.mansioneCatalogoId,
+          mansioneCatalogoId: opt.mansioneCatalogoId || opt.id,
           categoria: opt.categoria,
           minimo: 0,
           massimo: 1,
@@ -115,7 +120,7 @@ export const PannelloTipiTurno: React.FC<PannelloTipiTurnoProps> = ({
   };
 
   const rimuoviMansione = (id: string) => {
-    setFormMansioni((prev) => prev.filter((m) => m.id !== id));
+    setFormMansioni((prev) => prev.filter((m) => m.id !== id && m.mansioneCatalogoId !== id));
   };
 
   const aggiornaMinMaxMansione = (id: string, campo: 'minimo' | 'massimo', valoreRaw: number) => {
@@ -144,11 +149,10 @@ export const PannelloTipiTurno: React.FC<PannelloTipiTurnoProps> = ({
       return;
     }
     if (formMansioni.length === 0) {
-      setErroreForm('Associa almeno una mansione per comporre l\'equipaggio.');
+      setErroreForm("Associa almeno una mansione per comporre l'equipaggio.");
       return;
     }
 
-    // Controllo duplicati nome (case-insensitive)
     const duplicato = tipiTurno.find(
       (t) => t.nome.trim().toLowerCase() === nomePulito.toLowerCase() && t.id !== tipoInModifica?.id
     );
@@ -157,11 +161,14 @@ export const PannelloTipiTurno: React.FC<PannelloTipiTurnoProps> = ({
       return;
     }
 
-    const mansioniPulite: MansioneTipoTurno[] = formMansioni.map((m) => {
-      const minimo = Math.max(0, Math.floor(Number.isFinite(m.minimo) ? m.minimo : 0));
-      const massimo = Math.max(Math.max(1, minimo), Math.floor(Number.isFinite(m.massimo) ? m.massimo : 1));
-      return { ...m, minimo, massimo };
-    });
+    const mansioniPulite: MansioneTipoTurno[] = risolviMansioniTipoTurnoLive(
+      formMansioni.map((m) => {
+        const minimo = Math.max(0, Math.floor(Number.isFinite(m.minimo) ? m.minimo : 0));
+        const massimo = Math.max(Math.max(1, minimo), Math.floor(Number.isFinite(m.massimo) ? m.massimo : 1));
+        return { ...m, minimo, massimo };
+      }),
+      catalogoMansioniVolontari
+    );
 
     let aggiornati: TipoTurnoConfig[];
     if (tipoInModifica) {
@@ -196,7 +203,7 @@ export const PannelloTipiTurno: React.FC<PannelloTipiTurnoProps> = ({
       inviaNotificaModificaAdmin(
         'turni',
         tipoInModifica ? 'Modifica Tipo di Turno' : 'Creazione Tipo di Turno',
-        `${tipoInModifica ? 'Modificato' : 'Creato'} tipo di turno "${nomePulito}" con ${mansioniPulite.length} mansioni obbligatorie`,
+        `${tipoInModifica ? 'Modificato' : 'Creato'} tipo di turno "${nomePulito}" con ${mansioniPulite.length} ruoli equipaggio`,
         operatoreCorrente
       );
     }
@@ -220,25 +227,33 @@ export const PannelloTipiTurno: React.FC<PannelloTipiTurnoProps> = ({
     setTipoDaEliminare(null);
   };
 
-  // Raggruppamento opzioni mansioni per il selettore
-  const { ruoliBaseFiltrati, mansioniExtraPerCategoria } = useMemo(() => {
+  // Raggruppamento unificato di tutti i Ruoli Equipaggio direttamente da Mansioni & Competenze (Gestione Volontari)
+  const mansioniPerCategoria = useMemo(() => {
     const q = filtroMansioni.trim().toLowerCase();
-    const base = tutteMansioniDisponibili.filter(
-      (o) => o.isRuoloBase && (!q || o.nome.toLowerCase().includes(q) || (o.descrizione || '').toLowerCase().includes(q))
-    );
-    const extra = tutteMansioniDisponibili.filter(
-      (o) => !o.isRuoloBase && (!q || o.nome.toLowerCase().includes(q) || o.categoria.toLowerCase().includes(q))
+    const filtrate = tutteMansioniDisponibili.filter(
+      (o) =>
+        !q ||
+        o.nome.toLowerCase().includes(q) ||
+        o.categoria.toLowerCase().includes(q) ||
+        (o.descrizione || '').toLowerCase().includes(q)
     );
     const byCat: Record<string, OpzioneMansioneTurno[]> = {};
-    extra.forEach((opt) => {
+    filtrate.forEach((opt) => {
       const cat = opt.categoria || 'Altre Mansioni';
       if (!byCat[cat]) byCat[cat] = [];
       byCat[cat].push(opt);
     });
-    return { ruoliBaseFiltrati: base, mansioniExtraPerCategoria: byCat };
+    return byCat;
   }, [tutteMansioniDisponibili, filtroMansioni]);
 
-  const idsSelezionati = useMemo(() => new Set(formMansioni.map((m) => m.id)), [formMansioni]);
+  const idsSelezionati = useMemo(() => {
+    const set = new Set<string>();
+    formMansioni.forEach((m) => {
+      set.add(m.id);
+      if (m.mansioneCatalogoId) set.add(m.mansioneCatalogoId);
+    });
+    return set;
+  }, [formMansioni]);
 
   return (
     <div className="space-y-4 animate-in fade-in duration-200">
@@ -253,7 +268,7 @@ export const PannelloTipiTurno: React.FC<PannelloTipiTurnoProps> = ({
               Tipi di Turni & Equipaggi
             </h3>
             <p className="text-xs text-slate-300 mt-0.5">
-              Crea e configura i tipi di turno selezionabili nella programmazione di turni singoli o ripetuti. Imposta il numero minimo (da 0 = facoltativa) e massimo di persone per ciascuna mansione. Il badge Capo Servizio si assegna direttamente sui turni a qualsiasi volontario presente.
+              I Ruoli Equipaggio sono sincronizzati automaticamente con <strong>Mansioni &amp; Competenze (Database Gestione Volontari)</strong>. Imposta il minimo (0 = facoltativa) e massimo di persone per ciascuna mansione. Il badge Capo Servizio si assegna direttamente sui turni a qualsiasi volontario presente.
             </p>
           </div>
         </div>
@@ -274,7 +289,7 @@ export const PannelloTipiTurno: React.FC<PannelloTipiTurnoProps> = ({
           <Layers className="w-12 h-12 text-slate-600 mx-auto" />
           <div className="text-base font-bold text-white">Nessun Tipo di Turno configurato</div>
           <p className="text-xs text-slate-400 max-w-md mx-auto">
-            Crea il primo Tipo di Turno associando le mansioni obbligatorie e il numero minimo/massimo di volontari per ogni mansione.
+            Crea il primo Tipo di Turno associando le mansioni previste da Mansioni &amp; Competenze e il numero minimo/massimo di volontari per ogni ruolo.
           </p>
           <button
             type="button"
@@ -288,8 +303,9 @@ export const PannelloTipiTurno: React.FC<PannelloTipiTurnoProps> = ({
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {tipiTurno.map((tipo) => {
-            const totMin = tipo.mansioniObbligatorie.reduce((acc, m) => acc + (typeof m.minimo === 'number' ? m.minimo : 0), 0);
-            const totMax = tipo.mansioniObbligatorie.reduce((acc, m) => acc + (m.massimo || Math.max(1, m.minimo || 0)), 0);
+            const mansioniLive = risolviMansioniTipoTurnoLive(tipo.mansioniObbligatorie, catalogoMansioniVolontari);
+            const totMin = mansioniLive.reduce((acc, m) => acc + (typeof m.minimo === 'number' ? m.minimo : 0), 0);
+            const totMax = mansioniLive.reduce((acc, m) => acc + (m.massimo || Math.max(1, m.minimo || 0)), 0);
 
             return (
               <div
@@ -301,7 +317,7 @@ export const PannelloTipiTurno: React.FC<PannelloTipiTurnoProps> = ({
                   <div className="flex items-start justify-between gap-2">
                     <div className="flex items-center gap-2.5 min-w-0">
                       <span className="w-10 h-10 rounded-xl bg-indigo-950/80 border border-indigo-500/40 text-xl flex items-center justify-center shrink-0">
-                        {tipo.icona || '📅'}
+                        <IconaEmoji value={tipo.icona} fallback="📅" />
                       </span>
                       <div className="min-w-0">
                         <h4 className="font-black text-white text-sm leading-tight break-words">
@@ -321,22 +337,22 @@ export const PannelloTipiTurno: React.FC<PannelloTipiTurnoProps> = ({
                     </span>
                   </div>
 
-                  {/* Mansioni Associate */}
+                  {/* Ruoli Equipaggio / Mansioni Associate */}
                   <div className="space-y-1.5 p-3 rounded-xl bg-slate-900/90 border border-slate-800">
                     <div className="text-[10px] uppercase font-black text-slate-400 tracking-wide mb-1">
-                      Mansioni Previste ({tipo.mansioniObbligatorie.length}):
+                      Ruoli Equipaggio Previsti ({mansioniLive.length}):
                     </div>
-                    {tipo.mansioniObbligatorie.length === 0 ? (
+                    {mansioniLive.length === 0 ? (
                       <div className="text-[11px] text-amber-400 italic">Nessuna mansione associata</div>
                     ) : (
-                      tipo.mansioniObbligatorie.map((m) => (
+                      mansioniLive.map((m) => (
                         <div
                           key={m.id}
                           className="flex items-center justify-between gap-2 py-1 px-2 rounded-lg bg-slate-950/80 border border-slate-800/80 text-xs"
                         >
-                          <span className="font-semibold text-slate-200 truncate">
-                            <span className="mr-1">{m.emoji || '🎖️'}</span>
-                            {m.nome}
+                          <span className="font-semibold text-slate-200 truncate flex items-center gap-1.5">
+                            <IconaEmoji value={m.emoji} fallback="🎖️" />
+                            <span className="truncate">{m.nome}</span>
                           </span>
                           <div className="flex items-center gap-1 shrink-0">
                             {m.minimo === 0 && (
@@ -385,7 +401,7 @@ export const PannelloTipiTurno: React.FC<PannelloTipiTurnoProps> = ({
 
       {/* MODALE CONFERMA ELIMINAZIONE (IN-APP) */}
       {tipoDaEliminare && (
-        <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in">
+        <div className="fixed inset-0 z-[120] bg-black/80 flex items-center justify-center p-3 sm:p-4 backdrop-blur-sm animate-in fade-in">
           <div className="bg-slate-900 border-2 border-red-500/60 rounded-3xl max-w-md w-full p-5 shadow-2xl space-y-4">
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 rounded-2xl bg-red-500/20 border border-red-500/40 text-red-400 flex items-center justify-center shrink-0">
@@ -394,7 +410,7 @@ export const PannelloTipiTurno: React.FC<PannelloTipiTurnoProps> = ({
               <div>
                 <h4 className="text-sm font-black text-white uppercase">Elimina Tipo di Turno</h4>
                 <p className="text-xs text-slate-300 mt-0.5">
-                  Confermi di voler eliminare il tipo di turno <strong className="text-amber-300">"{tipoDaEliminare.nome}"</strong>? I turni già programmati nel calendario non verranno cancellati.
+                  Confermi di voler eliminare il tipo di turno <strong className="text-amber-300">&ldquo;{tipoDaEliminare.nome}&rdquo;</strong>? I turni già programmati nel calendario non verranno cancellati.
                 </p>
               </div>
             </div>
@@ -418,11 +434,15 @@ export const PannelloTipiTurno: React.FC<PannelloTipiTurnoProps> = ({
         </div>
       )}
 
-      {/* MODALE CREA / MODIFICA TIPO DI TURNO */}
+      {/* MODALE CREA / MODIFICA TIPO DI TURNO (Header e Footer fissi, Corpo scrollabile) */}
       {modaleAperta && (
-        <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-3 sm:p-4 backdrop-blur-sm animate-in fade-in">
-          <div className="bg-slate-900 border-2 border-indigo-500/60 rounded-3xl max-w-3xl w-full p-4 sm:p-5 shadow-2xl text-slate-200 space-y-4 max-h-[92vh] overflow-y-auto">
-            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+        <div className="fixed inset-0 z-[120] bg-black/80 flex items-center justify-center p-2 sm:p-4 backdrop-blur-sm animate-in fade-in">
+          <form
+            onSubmit={handleSalvaTipo}
+            className="bg-slate-900 border-2 border-indigo-500/60 rounded-3xl max-w-3xl w-full max-h-[92dvh] flex flex-col overflow-hidden shadow-2xl text-slate-200"
+          >
+            {/* Header Fisso */}
+            <div className="p-4 bg-slate-950 border-b border-slate-800 flex items-center justify-between shrink-0">
               <div className="flex items-center gap-2.5">
                 <Layers className="w-5 h-5 text-indigo-400" />
                 <h3 className="text-base font-black text-white uppercase">
@@ -438,7 +458,8 @@ export const PannelloTipiTurno: React.FC<PannelloTipiTurnoProps> = ({
               </button>
             </div>
 
-            <form onSubmit={handleSalvaTipo} className="space-y-4 text-xs">
+            {/* Corpo Scrollabile */}
+            <div className="p-4 sm:p-5 space-y-4 text-xs flex-1 min-h-0 overflow-y-auto overscroll-contain">
               {erroreForm && (
                 <div className="p-3 rounded-xl bg-red-950/80 border border-red-500/60 text-red-200 font-bold flex items-center gap-2">
                   <AlertTriangle className="w-4 h-4 text-red-400 shrink-0" />
@@ -446,9 +467,9 @@ export const PannelloTipiTurno: React.FC<PannelloTipiTurnoProps> = ({
                 </div>
               )}
 
-              {/* Nome, Icona, Descrizione */}
+              {/* Nome, Descrizione, Icona */}
               <div className="grid grid-cols-1 sm:grid-cols-12 gap-3">
-                <div className="sm:col-span-7">
+                <div className="sm:col-span-6">
                   <label className="block text-slate-300 font-bold mb-1">
                     Nome Tipo di Turno <span className="text-red-400">*</span>
                   </label>
@@ -464,26 +485,7 @@ export const PannelloTipiTurno: React.FC<PannelloTipiTurnoProps> = ({
                     className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white font-bold focus:border-indigo-500 focus:outline-none"
                   />
                 </div>
-                <div className="sm:col-span-5">
-                  <label className="block text-slate-300 font-bold mb-1">Icona</label>
-                  <div className="flex items-center gap-1 flex-wrap p-1.5 rounded-xl bg-slate-950 border border-slate-700">
-                    {ICONE_SUGGERITE.map((ico) => (
-                      <button
-                        key={ico}
-                        type="button"
-                        onClick={() => setFormIcona(ico)}
-                        className={`w-7 h-7 rounded-lg text-sm flex items-center justify-center transition-all cursor-pointer ${
-                          formIcona === ico
-                            ? 'bg-indigo-600 ring-2 ring-indigo-300 scale-105'
-                            : 'hover:bg-slate-800'
-                        }`}
-                      >
-                        {ico}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-                <div className="sm:col-span-12">
+                <div className="sm:col-span-6">
                   <label className="block text-slate-400 font-bold mb-1">Descrizione (Opzionale)</label>
                   <input
                     type="text"
@@ -493,6 +495,16 @@ export const PannelloTipiTurno: React.FC<PannelloTipiTurnoProps> = ({
                     className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-700 text-slate-200 focus:border-indigo-500 focus:outline-none"
                   />
                 </div>
+                <div className="sm:col-span-12">
+                  <label className="block text-slate-300 font-bold mb-1">Icona Emoji / Archivio .ico</label>
+                  <EmojiIconPicker
+                    value={formIcona}
+                    onChange={setFormIcona}
+                    fallback="🚑"
+                    accent="indigo"
+                    compact
+                  />
+                </div>
               </div>
 
               {/* Mansioni Associate con MIN (da 0 = facoltativa) e MAX */}
@@ -500,7 +512,7 @@ export const PannelloTipiTurno: React.FC<PannelloTipiTurnoProps> = ({
                 <div className="flex items-center justify-between gap-2 flex-wrap">
                   <span className="text-[11px] font-black uppercase text-indigo-300 flex items-center gap-1.5">
                     <Users className="w-4 h-4" />
-                    <span>Mansioni Associate ({formMansioni.length})</span>
+                    <span>Ruoli Equipaggio Associati ({formMansioni.length})</span>
                   </span>
                   <span className="text-[10.5px] text-slate-400">
                     <strong className="text-teal-300">Min 0</strong> = facoltativa (non blocca la copertura del turno) · <strong className="text-white">Min ≥ 1</strong> = obbligatoria
@@ -509,7 +521,7 @@ export const PannelloTipiTurno: React.FC<PannelloTipiTurnoProps> = ({
 
                 {formMansioni.length === 0 ? (
                   <div className="p-4 rounded-xl bg-slate-900/70 border border-dashed border-slate-700 text-center text-slate-400 text-xs">
-                    Nessuna mansione ancora aggiunta. Seleziona una o più mansioni dall'elenco sottostante.
+                    Nessuna mansione ancora aggiunta. Seleziona una o più mansioni dall&apos;elenco sottostante.
                   </div>
                 ) : (
                   <div className="space-y-2">
@@ -520,7 +532,7 @@ export const PannelloTipiTurno: React.FC<PannelloTipiTurnoProps> = ({
                       >
                         <div className="min-w-0 flex-1">
                           <div className="font-bold text-white text-xs truncate flex items-center gap-1.5">
-                            <span>{m.emoji || '🎖️'}</span>
+                            <IconaEmoji value={m.emoji} fallback="🎖️" />
                             <span className="truncate">{m.nome}</span>
                             {m.minimo === 0 ? (
                               <span className="px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 border border-slate-700 text-[9px] font-black uppercase shrink-0">
@@ -611,69 +623,38 @@ export const PannelloTipiTurno: React.FC<PannelloTipiTurnoProps> = ({
                 )}
               </div>
 
-              {/* Catalogo Mansioni Selezionabili (7 Ruoli Base + Mansioni & Competenze Volontari) */}
+              {/* Catalogo Unificato Ruoli Equipaggio === Mansioni & Competenze (Gestione Volontari) */}
               <div className="p-3.5 rounded-2xl bg-slate-950 border border-slate-800 space-y-3">
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                  <span className="text-[11px] font-black uppercase text-slate-300">
-                    Aggiungi Mansioni all'Equipaggio:
-                  </span>
+                  <div>
+                    <span className="text-[11px] font-black uppercase text-amber-300 block">
+                      Ruoli Equipaggio — Mansioni &amp; Competenze (Database Gestione Volontari)
+                    </span>
+                    <span className="text-[10px] text-slate-400">
+                      Elenco sincronizzato automaticamente con Gestione Volontari → Mansioni &amp; Competenze
+                    </span>
+                  </div>
                   <div className="relative w-full sm:w-64">
                     <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
                     <input
                       type="text"
                       value={filtroMansioni}
                       onChange={(e) => setFiltroMansioni(e.target.value)}
-                      placeholder="Cerca mansione o ruolo..."
+                      placeholder="Cerca mansione o categoria..."
                       className="w-full pl-8 pr-3 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-xs text-white placeholder-slate-500 focus:border-indigo-500 focus:outline-none"
                     />
                   </div>
                 </div>
 
-                {/* 1. Ruoli Equipaggio Base (1-7) */}
-                {ruoliBaseFiltrati.length > 0 && (
-                  <div className="space-y-1.5">
-                    <div className="text-[10px] font-black uppercase text-teal-400 tracking-wide">
-                      Ruoli Equipaggio Standard
-                    </div>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
-                      {ruoliBaseFiltrati.map((opt) => {
-                        const aggiunta = idsSelezionati.has(opt.id);
-                        return (
-                          <button
-                            key={opt.id}
-                            type="button"
-                            onClick={() => (aggiunta ? rimuoviMansione(opt.id) : aggiungiMansione(opt))}
-                            className={`px-2.5 py-2 rounded-xl border text-left text-xs font-bold flex items-center justify-between gap-2 transition-all cursor-pointer ${
-                              aggiunta
-                                ? 'bg-indigo-600/30 border-indigo-400 text-white'
-                                : 'bg-slate-900 hover:bg-slate-800 border-slate-800 text-slate-300'
-                            }`}
-                          >
-                            <span className="truncate">
-                              <span className="mr-1.5">{opt.emoji}</span>
-                              {opt.nome}
-                            </span>
-                            {aggiunta ? (
-                              <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-                            ) : (
-                              <PlusCircle className="w-4 h-4 text-slate-500 shrink-0" />
-                            )}
-                          </button>
-                        );
-                      })}
-                    </div>
+                {Object.keys(mansioniPerCategoria).length === 0 ? (
+                  <div className="p-4 rounded-xl bg-slate-900/70 border border-slate-800 text-center text-slate-400 text-xs">
+                    Nessuna mansione trovata con il filtro applicato.
                   </div>
-                )}
-
-                {/* 2. Altre Mansioni dal Database Gestione Volontari -> Mansioni & Competenze */}
-                {Object.keys(mansioniExtraPerCategoria).length > 0 && (
-                  <div className="space-y-2.5 pt-2 border-t border-slate-800">
-                    <div className="text-[10px] font-black uppercase text-amber-400 tracking-wide">
-                      Mansioni & Competenze (Database Gestione Volontari)
-                    </div>
-                    {Object.entries(mansioniExtraPerCategoria).map(([cat, items]) => (
-                      <div key={cat} className="space-y-1">
-                        <div className="text-[10px] font-bold text-slate-400 uppercase">{cat}</div>
+                ) : (
+                  <div className="space-y-3">
+                    {Object.entries(mansioniPerCategoria).map(([cat, items]) => (
+                      <div key={cat} className="space-y-1.5">
+                        <div className="text-[10px] font-black text-teal-400 uppercase tracking-wide">{cat}</div>
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
                           {items.map((opt) => {
                             const aggiunta = idsSelezionati.has(opt.id);
@@ -684,13 +665,13 @@ export const PannelloTipiTurno: React.FC<PannelloTipiTurnoProps> = ({
                                 onClick={() => (aggiunta ? rimuoviMansione(opt.id) : aggiungiMansione(opt))}
                                 className={`px-2.5 py-2 rounded-xl border text-left text-xs font-bold flex items-center justify-between gap-2 transition-all cursor-pointer ${
                                   aggiunta
-                                    ? 'bg-amber-500/20 border-amber-400 text-white'
+                                    ? 'bg-indigo-600/30 border-indigo-400 text-white'
                                     : 'bg-slate-900 hover:bg-slate-800 border-slate-800 text-slate-300'
                                 }`}
                               >
-                                <span className="truncate">
-                                  <span className="mr-1.5">{opt.emoji}</span>
-                                  {opt.nome}
+                                <span className="truncate flex items-center gap-1.5">
+                                  <IconaEmoji value={opt.emoji} fallback="🎖️" />
+                                  <span className="truncate">{opt.nome}</span>
                                 </span>
                                 {aggiunta ? (
                                   <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
@@ -706,26 +687,26 @@ export const PannelloTipiTurno: React.FC<PannelloTipiTurnoProps> = ({
                   </div>
                 )}
               </div>
+            </div>
 
-              {/* Footer Bottoni */}
-              <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-800">
-                <button
-                  type="button"
-                  onClick={() => setModaleAperta(false)}
-                  className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold cursor-pointer"
-                >
-                  Annulla
-                </button>
-                <button
-                  type="submit"
-                  className="px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-black uppercase flex items-center gap-2 shadow-lg active:scale-95 transition-all cursor-pointer border border-indigo-400/50"
-                >
-                  <Save className="w-4 h-4" />
-                  <span>{tipoInModifica ? 'Salva Modifiche' : 'Salva Tipo di Turno'}</span>
-                </button>
-              </div>
-            </form>
-          </div>
+            {/* Footer Fisso */}
+            <div className="p-3.5 sm:p-4 bg-slate-950 border-t border-slate-800 flex items-center justify-end gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={() => setModaleAperta(false)}
+                className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs cursor-pointer"
+              >
+                Annulla
+              </button>
+              <button
+                type="submit"
+                className="px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-black text-xs uppercase flex items-center gap-2 shadow-lg active:scale-95 transition-all cursor-pointer border border-indigo-400/50"
+              >
+                <Save className="w-4 h-4" />
+                <span>{tipoInModifica ? 'Salva Modifiche' : 'Salva Tipo di Turno'}</span>
+              </button>
+            </div>
+          </form>
         </div>
       )}
     </div>

@@ -28,7 +28,8 @@ import {
   normalizzaListaSediAssociative,
   normalizzaListaLuoghiTimbratura,
   normalizzaTurniSedi,
-  normalizzaComunicazioniBacheca
+  normalizzaComunicazioniBacheca,
+  mergeComunicazioniBachecaSafe
 } from './src/utils/sediNormalize';
 import {
   generaPaginaHtmlResetPinAutonoma,
@@ -399,6 +400,7 @@ export interface ServerState {
   promemoriaCompleanniInviati?: Record<string, { sentAt: string; recipients: string[] } | string>;
   timbrature?: any[];
   bacheca?: any[];
+  bachecaEliminatiIds?: string[];
   notificheBachecaRecenti?: NotificaBachecaRecord[];
   giornaleBordo?: any[];
   codiciEliminati?: string[];
@@ -418,6 +420,8 @@ export interface ServerState {
   catalogoMansioni?: any[];
   categorieMansioni?: any[];
   mansioniConfigUpdatedAt?: number;
+  customEmojiIcons?: any[];
+  customEmojiIconsUpdatedAt?: number;
   nomiDatabase?: Record<string, string>;
   nomiDatabaseUpdatedAt?: number;
   mezziFlotta?: any[];
@@ -890,6 +894,7 @@ function loadPersistedState(): ServerState {
           promemoriaCompleanniInviati: parsed.promemoriaCompleanniInviati && typeof parsed.promemoriaCompleanniInviati === 'object' ? parsed.promemoriaCompleanniInviati : {},
           timbrature: Array.isArray(parsed.timbrature) ? parsed.timbrature : [],
           bacheca: Array.isArray(parsed.bacheca) ? normalizzaComunicazioniBacheca(parsed.bacheca) : [],
+          bachecaEliminatiIds: normalizeDeletedIds(parsed.bachecaEliminatiIds),
           notificheBachecaRecenti: Array.isArray(parsed.notificheBachecaRecenti) ? mergeNotificheBachecaRecenti([], parsed.notificheBachecaRecenti) : [],
           giornaleBordo: Array.isArray(parsed.giornaleBordo) ? parsed.giornaleBordo : [],
           codiciEliminati: ensureCodiciEliminati(parsed.codiciEliminati),
@@ -908,6 +913,8 @@ function loadPersistedState(): ServerState {
           catalogoMansioni: Array.isArray(parsed.catalogoMansioni) ? parsed.catalogoMansioni : undefined,
           categorieMansioni: Array.isArray(parsed.categorieMansioni) ? parsed.categorieMansioni : undefined,
           mansioniConfigUpdatedAt: typeof parsed.mansioniConfigUpdatedAt === 'number' ? parsed.mansioniConfigUpdatedAt : undefined,
+          customEmojiIcons: Array.isArray(parsed.customEmojiIcons) ? parsed.customEmojiIcons : undefined,
+          customEmojiIconsUpdatedAt: typeof parsed.customEmojiIconsUpdatedAt === 'number' ? parsed.customEmojiIconsUpdatedAt : undefined,
           nomiDatabase: parsed.nomiDatabase && typeof parsed.nomiDatabase === 'object' ? parsed.nomiDatabase : undefined,
           nomiDatabaseUpdatedAt: typeof parsed.nomiDatabaseUpdatedAt === 'number' ? parsed.nomiDatabaseUpdatedAt : undefined,
           mezziFlotta: Array.isArray(parsed.mezziFlotta) ? parsed.mezziFlotta : undefined,
@@ -1039,6 +1046,7 @@ function loadPersistedState(): ServerState {
     promemoriaCompleanniInviati: {},
     timbrature: [],
     bacheca: [],
+    bachecaEliminatiIds: [],
     notificheBachecaRecenti: [],
     giornaleBordo: [],
     codiciEliminati: ['CO-VET-ROSSO-2026-001'],
@@ -1605,6 +1613,26 @@ async function startServer() {
     const dettagli: any[] = [];
     let hasStateChanges = false;
 
+    // Raggruppa TUTTI i turni di domani per singolo account volontario:
+    // ogni account riceve UNA SOLA notifica alle ore 09:00 del giorno precedente,
+    // indipendentemente dal turno (o dal numero di turni) a cui è assegnato.
+    const perAccount = new Map<
+      string,
+      {
+        volKey: string;
+        volontarioId?: string;
+        volontarioNome: string;
+        turniAssegnati: Array<{
+          turno: any;
+          ruolo: string;
+          fascia: string;
+          sede: string;
+          dataFormatted: string;
+          mezzo: string;
+        }>;
+      }
+    >();
+
     for (const turno of turniDomani) {
       const assegnati = estraiVolontariDaTurno(turno);
       const dataFormatted = formattaDataItalianaBreve(turno.data);
@@ -1613,99 +1641,152 @@ async function startServer() {
       const mezzo = turno.mezzoAssegnato ? ` • Mezzo: ${turno.mezzoAssegnato}` : '';
 
       for (const vol of assegnati) {
-        const volKey = vol.volontarioId || vol.volontarioNome.toLowerCase().replace(/\s+/g, '_');
-        const reminderKey = `promemoria_${todayStr}_${turno.id}_${volKey}`;
-
-        if (!forzaInvio && state.promemoriaTurniInviati[reminderKey]) {
-          continue;
+        const volKey = String(
+          vol.volontarioId || vol.volontarioNome.toLowerCase().trim().replace(/\s+/g, '_')
+        ).trim();
+        if (!volKey) continue;
+        let entry = perAccount.get(volKey);
+        if (!entry) {
+          entry = {
+            volKey,
+            volontarioId: vol.volontarioId,
+            volontarioNome: vol.volontarioNome,
+            turniAssegnati: [],
+          };
+          perAccount.set(volKey, entry);
         }
-
-        // Ricerca email di registrazione del volontario nel database
-        const volRecord = (state.volontari || []).find((v: any) =>
-          (vol.volontarioId && v.id === vol.volontarioId) ||
-          (`${v.nome || ''} ${v.cognome || ''}`.toLowerCase().trim() === vol.volontarioNome.toLowerCase().trim()) ||
-          (v.nome && v.nome.toLowerCase().trim() === vol.volontarioNome.toLowerCase().trim())
-        );
-        const volEmail = volRecord?.email?.trim();
-
-        const titolo = `📅 PROMEMORIA TURNO PER DOMANI (Ore 09:00)`;
-        const testo = `Ciao ${vol.volontarioNome}, ti ricordiamo che domani ${dataFormatted} sei di turno [${fascia}] presso ${sede} (Ruolo: ${vol.ruolo}${mezzo}).`;
-
-        // 1. Invio Notifica Push su smartphone/device del volontario
-        sendPushNotificationToVolunteer(vol.volontarioId, {
-          title: titolo,
-          body: testo,
-          tag: `promemoria-turno-${turno.id}`,
-          urgenza: 'VERDE',
-          soundType: 'chiamata',
-          url: '/?tab=turni',
-          targetVolontarioId: vol.volontarioId,
-          targetVolontarioNome: vol.volontarioNome,
-          timestamp: Date.now()
-        });
-
-        // 2. Invio Email di promemoria all'indirizzo con cui il volontario si è registrato
-        if (volEmail && volEmail.includes('@')) {
-          inviaEmailPromemoriaTurno(volEmail, vol.volontarioNome, {
-            dataFormatted,
+        // Evita duplicati sullo stesso turno
+        if (!entry.turniAssegnati.some((x) => x.turno.id === turno.id)) {
+          entry.turniAssegnati.push({
+            turno,
+            ruolo: vol.ruolo,
             fascia,
             sede,
-            ruolo: vol.ruolo,
-            mezzo: turno.mezzoAssegnato,
-            note: turno.note
-          }).catch(err => {
-            console.error(`[Promemoria Turni] Errore asincrono invio email a ${volEmail}:`, err);
+            dataFormatted,
+            mezzo,
           });
         }
+      }
+    }
 
-        // 3. Notifica Radio di sistema per tracciamento in Centrale
-        const notif: RadioNotification = {
-          id: generateUniqueNotifId(),
-          orario: formatTimeItaly(),
-          testo: `📅 PROMEMORIA TURNO DOMANI (Ore 09:00): Notifica inviata su device${volEmail ? ` e via email (${volEmail})` : ''} a ${vol.volontarioNome} per turno [${fascia}] presso ${sede} (${vol.ruolo}).`,
-          tipo: 'sistema'
-        };
-        state.notifiche.push(notif);
+    for (const entry of perAccount.values()) {
+      // Chiave UNICA per account e giornata (massimo 1 notifica per account il giorno prima alle 09:00)
+      const reminderDayKey = `promemoria_giorno_${todayStr}_${entry.volKey}`;
+      // Compatibilità con vecchie chiavi per turno eventualmente già inviate oggi
+      const alreadySentLegacy = entry.turniAssegnati.some(
+        (x) => Boolean(state.promemoriaTurniInviati?.[`promemoria_${todayStr}_${x.turno.id}_${entry.volKey}`])
+      );
 
-        // 4. Broadcast in tempo reale WebSocket per i client attivi
-        broadcast({
-          type: 'PROMEMORIA_TURNO_DOMANI',
-          turnoId: turno.id,
-          turno: turno,
-          volontarioId: vol.volontarioId,
-          volontarioNome: vol.volontarioNome,
-          volontarioEmail: volEmail || undefined,
-          ruolo: vol.ruolo,
-          fascia: fascia,
-          sede: sede,
-          dataTurno: turno.data,
-          dataFormatted: dataFormatted,
-          titolo: titolo,
-          testo: testo,
-          notification: notif,
-          timestamp: Date.now()
-        });
+      if (!forzaInvio && (state.promemoriaTurniInviati[reminderDayKey] || alreadySentLegacy)) {
+        if (!state.promemoriaTurniInviati[reminderDayKey]) {
+          state.promemoriaTurniInviati[reminderDayKey] = new Date().toISOString();
+          hasStateChanges = true;
+        }
+        continue;
+      }
 
-        state.promemoriaTurniInviati[reminderKey] = new Date().toISOString();
-        hasStateChanges = true;
-        countInviati++;
-        dettagli.push({
-          volontario: vol.volontarioNome,
-          volontarioId: vol.volontarioId,
-          email: volEmail || null,
-          emailInviata: Boolean(volEmail && volEmail.includes('@')),
-          ruolo: vol.ruolo,
-          turnoId: turno.id,
-          fascia: fascia,
-          sede: sede,
-          dataDomani: tomorrowStr
+      const primo = entry.turniAssegnati[0];
+      if (!primo) continue;
+
+      const volRecord = (state.volontari || []).find(
+        (v: any) =>
+          (entry.volontarioId && v.id === entry.volontarioId) ||
+          (`${v.nome || ''} ${v.cognome || ''}`.toLowerCase().trim() === entry.volontarioNome.toLowerCase().trim()) ||
+          (v.nome && v.nome.toLowerCase().trim() === entry.volontarioNome.toLowerCase().trim())
+      );
+      const volEmail = volRecord?.email?.trim();
+
+      const titolo = `📅 PROMEMORIA TURNO PER DOMANI (Ore 09:00)`;
+      const riepilogoTurni =
+        entry.turniAssegnati.length === 1
+          ? `[${primo.fascia}] presso ${primo.sede} (Ruolo: ${primo.ruolo}${primo.mezzo})`
+          : entry.turniAssegnati
+              .map((x) => `[${x.fascia}] presso ${x.sede} (${x.ruolo}${x.mezzo})`)
+              .join(' ; ');
+      const testo = `Ciao ${entry.volontarioNome}, ti ricordiamo che domani ${primo.dataFormatted} sei di turno: ${riepilogoTurni}.`;
+
+      // 1. Invio UNICA Notifica Push su smartphone/device del volontario
+      sendPushNotificationToVolunteer(entry.volontarioId, {
+        title: titolo,
+        body: testo,
+        tag: `promemoria-turno-giorno-${todayStr}-${entry.volKey}`,
+        urgenza: 'VERDE',
+        soundType: 'chiamata',
+        url: '/?tab=turni',
+        targetVolontarioId: entry.volontarioId,
+        targetVolontarioNome: entry.volontarioNome,
+        timestamp: Date.now()
+      });
+
+      // 2. Invio UNICA Email di promemoria all'indirizzo con cui il volontario si è registrato
+      if (volEmail && volEmail.includes('@')) {
+        inviaEmailPromemoriaTurno(volEmail, entry.volontarioNome, {
+          dataFormatted: primo.dataFormatted,
+          fascia:
+            entry.turniAssegnati.length === 1
+              ? primo.fascia
+              : entry.turniAssegnati.map((x) => `${x.fascia} (${x.sede})`).join(' + '),
+          sede: primo.sede,
+          ruolo: primo.ruolo,
+          mezzo: primo.turno.mezzoAssegnato,
+          note: primo.turno.note
+        }).catch(err => {
+          console.error(`[Promemoria Turni] Errore asincrono invio email a ${volEmail}:`, err);
         });
       }
+
+      // 3. Notifica Radio di sistema per tracciamento in Centrale
+      const notif: RadioNotification = {
+        id: generateUniqueNotifId(),
+        orario: formatTimeItaly(),
+        testo: `📅 PROMEMORIA TURNO DOMANI (Ore 09:00): Notifica inviata su device${volEmail ? ` e via email (${volEmail})` : ''} a ${entry.volontarioNome} per ${riepilogoTurni}.`,
+        tipo: 'sistema'
+      };
+      state.notifiche.push(notif);
+
+      // 4. Broadcast in tempo reale WebSocket per i client attivi (1 solo evento per account/giorno)
+      broadcast({
+        type: 'PROMEMORIA_TURNO_DOMANI',
+        reminderDayKey,
+        todayStr,
+        turnoId: primo.turno.id,
+        turno: primo.turno,
+        volontarioId: entry.volontarioId,
+        volontarioNome: entry.volontarioNome,
+        volontarioEmail: volEmail || undefined,
+        ruolo: primo.ruolo,
+        fascia:
+          entry.turniAssegnati.length === 1
+            ? primo.fascia
+            : entry.turniAssegnati.map((x) => x.fascia).join(' + '),
+        sede: primo.sede,
+        dataTurno: primo.turno.data,
+        dataFormatted: primo.dataFormatted,
+        titolo,
+        testo,
+        notification: notif,
+        timestamp: Date.now()
+      });
+
+      state.promemoriaTurniInviati[reminderDayKey] = new Date().toISOString();
+      hasStateChanges = true;
+      countInviati++;
+      dettagli.push({
+        volontario: entry.volontarioNome,
+        volontarioId: entry.volontarioId,
+        email: volEmail || null,
+        emailInviata: Boolean(volEmail && volEmail.includes('@')),
+        ruolo: primo.ruolo,
+        turnoId: primo.turno.id,
+        fascia: primo.fascia,
+        sede: primo.sede,
+        dataDomani: tomorrowStr
+      });
     }
 
     if (hasStateChanges) {
       persistState();
-      console.log(`[Promemoria Turni] Inviati con successo ${countInviati} promemoria per i turni di domani (${tomorrowStr}).`);
+      console.log(`[Promemoria Turni] Inviati con successo ${countInviati} promemoria unici per i turni di domani (${tomorrowStr}).`);
     }
 
     return { countInviati, dettagli };
@@ -4649,7 +4730,12 @@ async function startServer() {
           case 'UPDATE_BACHECA': {
             const bachecaArray = Array.isArray(data?.bacheca) ? data.bacheca : (Array.isArray(data) ? data : null);
             if (bachecaArray) {
-              state.bacheca = bachecaArray;
+              const deletedIds = normalizeDeletedIds([
+                ...(Array.isArray(state.bachecaEliminatiIds) ? state.bachecaEliminatiIds : []),
+                ...(Array.isArray(data?.bachecaEliminatiIds) ? data.bachecaEliminatiIds : []),
+              ]);
+              state.bachecaEliminatiIds = deletedIds;
+              state.bacheca = mergeComunicazioniBachecaSafe(state.bacheca, bachecaArray, deletedIds);
               if (data?.notifica && (data.notifica.tipo === 'nuovo_post' || data.notifica.tipo === 'nuovo_corso')) {
                 const record: NotificaBachecaRecord = {
                   ...data.notifica,
@@ -4664,6 +4750,7 @@ async function startServer() {
               broadcast({
                 type: 'BACHECA_UPDATED',
                 bacheca: state.bacheca,
+                bachecaEliminatiIds: state.bachecaEliminatiIds,
                 notificheBachecaRecenti: state.notificheBachecaRecenti || []
               });
 
@@ -5106,19 +5193,38 @@ async function startServer() {
           case 'UPDATE_MANSIONI_CONFIG': {
             const incomingTs = typeof data?.updatedAt === 'number' && Number.isFinite(data.updatedAt) ? data.updatedAt : Date.now();
             const currTs = typeof state.mansioniConfigUpdatedAt === 'number' ? state.mansioniConfigUpdatedAt : 0;
+            const incomingIconsTs = typeof data?.customEmojiIconsUpdatedAt === 'number' && Number.isFinite(data.customEmojiIconsUpdatedAt)
+              ? data.customEmojiIconsUpdatedAt
+              : incomingTs;
+            const currIconsTs = typeof state.customEmojiIconsUpdatedAt === 'number' ? state.customEmojiIconsUpdatedAt : 0;
+            let updated = false;
+
             if (currTs === 0 || incomingTs >= currTs) {
               if (Array.isArray(data?.catalogoMansioni)) {
                 state.catalogoMansioni = data.catalogoMansioni;
+                updated = true;
               }
               if (Array.isArray(data?.categorieMansioni)) {
                 state.categorieMansioni = data.categorieMansioni;
+                updated = true;
               }
-              state.mansioniConfigUpdatedAt = incomingTs;
+              if (updated) {
+                state.mansioniConfigUpdatedAt = incomingTs;
+              }
+            }
+            if (Array.isArray(data?.customEmojiIcons) && (currIconsTs === 0 || incomingIconsTs >= currIconsTs)) {
+              state.customEmojiIcons = data.customEmojiIcons;
+              state.customEmojiIconsUpdatedAt = incomingIconsTs;
+              updated = true;
+            }
+            if (updated) {
               persistState();
               broadcast({
                 type: 'MANSIONI_CONFIG_UPDATED',
                 catalogoMansioni: state.catalogoMansioni,
                 categorieMansioni: state.categorieMansioni,
+                customEmojiIcons: state.customEmojiIcons,
+                customEmojiIconsUpdatedAt: state.customEmojiIconsUpdatedAt,
                 updatedAt: state.mansioniConfigUpdatedAt
               });
             }
@@ -5783,14 +5889,20 @@ async function startServer() {
   app.get('/api/bacheca', (_req, res) => {
     return res.json({
       success: true,
-      bacheca: state.bacheca || []
+      bacheca: state.bacheca || [],
+      bachecaEliminatiIds: state.bachecaEliminatiIds || []
     });
   });
 
   app.post('/api/bacheca', (req, res) => {
     const bacheca = Array.isArray(req.body?.bacheca) ? req.body.bacheca : (Array.isArray(req.body) ? req.body : null);
     if (bacheca) {
-      state.bacheca = bacheca;
+      const deletedIds = normalizeDeletedIds([
+        ...(Array.isArray(state.bachecaEliminatiIds) ? state.bachecaEliminatiIds : []),
+        ...(Array.isArray(req.body?.bachecaEliminatiIds) ? req.body.bachecaEliminatiIds : []),
+      ]);
+      state.bachecaEliminatiIds = deletedIds;
+      state.bacheca = mergeComunicazioniBachecaSafe(state.bacheca, bacheca, deletedIds);
       if (req.body?.notifica && (req.body.notifica.tipo === 'nuovo_post' || req.body.notifica.tipo === 'nuovo_corso')) {
         const record: NotificaBachecaRecord = {
           ...req.body.notifica,
@@ -5804,6 +5916,7 @@ async function startServer() {
       broadcast({
         type: 'BACHECA_UPDATED',
         bacheca: state.bacheca,
+        bachecaEliminatiIds: state.bachecaEliminatiIds,
         notificheBachecaRecenti: state.notificheBachecaRecenti || []
       });
 
@@ -5854,8 +5967,9 @@ async function startServer() {
 
       return res.json({
         success: true,
-        count: bacheca.length,
-        bacheca: bacheca,
+        count: (state.bacheca || []).length,
+        bacheca: state.bacheca || [],
+        bachecaEliminatiIds: state.bachecaEliminatiIds || [],
         notificheBachecaRecenti: state.notificheBachecaRecenti || []
       });
     }

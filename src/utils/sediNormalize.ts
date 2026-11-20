@@ -371,24 +371,90 @@ export function normalizzaComunicazioniBacheca(
   comunicazioni: ComunicazioneBacheca[]
 ): ComunicazioneBacheca[] {
   if (!Array.isArray(comunicazioni)) return [];
-  return comunicazioni.map((c) => {
-    if (!c) return c;
-    const titoloNorm = normalizzaNomeCarraraTesto(c.titolo);
-    const contenutoNorm = normalizzaNomeCarraraTesto(c.contenuto);
-    const targetNorm = c.sezioneTargetNome ? normalizzaNomeCarraraTesto(c.sezioneTargetNome) : c.sezioneTargetNome;
-    if (
-      titoloNorm !== c.titolo ||
-      contenutoNorm !== c.contenuto ||
-      targetNorm !== c.sezioneTargetNome
-    ) {
-      return {
-        ...c,
-        titolo: titoloNorm,
-        contenuto: contenutoNorm,
-        sezioneTargetNome: targetNorm
-      };
+  return comunicazioni
+    .filter((c): c is ComunicazioneBacheca => Boolean(c && typeof c === 'object' && c.id))
+    .map((c) => {
+      const titoloNorm = normalizzaNomeCarraraTesto(c.titolo || '');
+      const contenutoNorm = normalizzaNomeCarraraTesto(c.contenuto || '');
+      const targetNorm = c.sezioneTargetNome ? normalizzaNomeCarraraTesto(c.sezioneTargetNome) : 'Tutte le Sezioni Territoriali';
+      const attivaNorm = c.attiva !== false;
+      if (
+        titoloNorm !== c.titolo ||
+        contenutoNorm !== c.contenuto ||
+        targetNorm !== c.sezioneTargetNome ||
+        attivaNorm !== c.attiva
+      ) {
+        return {
+          ...c,
+          titolo: titoloNorm,
+          contenuto: contenutoNorm,
+          sezioneTargetNome: targetNorm,
+          attiva: attivaNorm
+        };
+      }
+      return c;
+    });
+}
+
+/**
+ * Unisce in modo sicuro due elenchi di comunicazioni bacheca (locale + remoto)
+ * impedendo che snapshot stale sovrascrivano o facciano sparire post appena pubblicati,
+ * rispettando al contempo le eliminazioni esplicite tramite `deletedIds`.
+ */
+export function mergeComunicazioniBachecaSafe(
+  base: ComunicazioneBacheca[] | null | undefined,
+  incoming: ComunicazioneBacheca[] | null | undefined,
+  deletedIds?: string[] | null
+): ComunicazioneBacheca[] {
+  const deletedSet = new Set(
+    (Array.isArray(deletedIds) ? deletedIds : []).map((id) => String(id || '').trim()).filter(Boolean)
+  );
+  const byId = new Map<string, ComunicazioneBacheca>();
+
+  const insertOrMerge = (item: ComunicazioneBacheca) => {
+    if (!item || !item.id || deletedSet.has(item.id)) return;
+    const prev = byId.get(item.id);
+    if (!prev) {
+      byId.set(item.id, item);
+      return;
     }
-    return c;
+    const prevTs = Number(prev.updatedAt || 0);
+    const nextTs = Number(item.updatedAt || 0);
+    // Unisci commenti e likes per non perdere interazioni concorrenti
+    const commentsMap = new Map<string, any>();
+    [...(prev.commenti || []), ...(item.commenti || [])].forEach((cm) => {
+      if (cm && cm.id) commentsMap.set(cm.id, cm);
+    });
+    const mergedComments = Array.from(commentsMap.values()).sort(
+      (a, b) => Number(a.timestamp || 0) - Number(b.timestamp || 0)
+    );
+    const mergedLikes = Array.from(new Set([...(prev.likes || []), ...(item.likes || [])]));
+
+    const winner = nextTs >= prevTs ? item : prev;
+    const other = nextTs >= prevTs ? prev : item;
+    byId.set(item.id, {
+      ...other,
+      ...winner,
+      immaginePostDataUrl: winner.immaginePostDataUrl ?? other.immaginePostDataUrl,
+      immaginePostNome: winner.immaginePostNome ?? other.immaginePostNome,
+      allegatoDataUrl: winner.allegatoDataUrl ?? other.allegatoDataUrl,
+      allegatoNome: winner.allegatoNome ?? other.allegatoNome,
+      allegatoTipo: winner.allegatoTipo ?? other.allegatoTipo,
+      allegatoMime: winner.allegatoMime ?? other.allegatoMime,
+      allegatoDimensione: winner.allegatoDimensione ?? other.allegatoDimensione,
+      likes: mergedLikes,
+      commenti: mergedComments,
+      updatedAt: Math.max(prevTs, nextTs),
+    });
+  };
+
+  normalizzaComunicazioniBacheca(Array.isArray(base) ? base : []).forEach(insertOrMerge);
+  normalizzaComunicazioniBacheca(Array.isArray(incoming) ? incoming : []).forEach(insertOrMerge);
+
+  return Array.from(byId.values()).sort((a, b) => {
+    const dtA = `${a.dataPubblicazione || ''} ${a.oraPubblicazione || ''}`;
+    const dtB = `${b.dataPubblicazione || ''} ${b.oraPubblicazione || ''}`;
+    return dtB.localeCompare(dtA);
   });
 }
 

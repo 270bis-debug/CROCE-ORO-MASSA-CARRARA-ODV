@@ -5,6 +5,8 @@
 // 3. Fallback decodifica PCM16 retrocompatibile
 // Pipeline AudioWorklet off-main-thread sia in cattura TX che in riproduzione RX con Adaptive Jitter Buffer circolare (zero click/scatti).
 
+import { invitaAutorizzazioneNecessaria } from '../utils/devicePermissions';
+
 export type RadioAudioCodec = 'opus' | 'adpcm24' | 'pcm16';
 
 export interface EncodedAudioPacket {
@@ -1333,10 +1335,13 @@ class VhfRadioEngine {
     } catch (err: any) {
       this.captureRequested = false;
       this.stopCapture();
-      const msg =
-        err?.name === 'NotAllowedError'
-          ? 'Permesso microfono negato. Consenti accesso al microfono nelle impostazioni del browser.'
-          : err?.message || 'Impossibile accedere al microfono per la radio PTT.';
+      const isDenied = err?.name === 'NotAllowedError' || err?.name === 'PermissionDeniedError';
+      if (isDenied) {
+        invitaAutorizzazioneNecessaria('fotocamera_microfono', 'Trasmissione Vocale Radio PTT');
+      }
+      const msg = isDenied
+        ? 'Permesso microfono negato. Consenti accesso al microfono per trasmettere via radio PTT.'
+        : err?.message || 'Impossibile accedere al microfono per la radio PTT.';
       options?.onError?.(msg);
       return false;
     }

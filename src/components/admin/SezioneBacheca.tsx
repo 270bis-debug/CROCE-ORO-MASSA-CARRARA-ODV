@@ -23,12 +23,31 @@ import {
   Sparkles,
   Share2,
   GraduationCap,
-  MapPin
+  MapPin,
+  Image as ImageIcon,
+  Paperclip,
+  FileText,
+  FileSpreadsheet,
+  Lock,
+  Upload
 } from 'lucide-react';
 import { ComunicazioneBacheca, CorsoFormazione, SedeAssociativaCompleta } from '../../types/adminTypes';
 import { CroceOroLogo } from '../CroceOroLogo';
 import { inviaNotificaModificaAdmin } from '../../utils/notificaModificaAdmin';
 import { CommentiBachecaPost } from '../bacheca/CommentiBachecaPost';
+import {
+  ImmaginePostProtetta,
+  ModalVisualizzatoreProtetto,
+  ContenutoProtettoBacheca
+} from '../bacheca/VisualizzatoreProtettoBacheca';
+import {
+  ACCEPT_ALLEGATI_BACHECA,
+  ACCEPT_IMMAGINE_POST_BACHECA,
+  TipoAllegatoBacheca,
+  elaboraImmaginePostBacheca,
+  elaboraAllegatoBacheca,
+  formatDimensioneFile
+} from '../../utils/bachecaMedia';
 import { realtime } from '../../services/realtime';
 import { formatISODateItaly, formatTimeItaly } from '../../utils/italianTime';
 import { useTitoloDatabase, useNomiSottosezioniCustom } from '../../hooks/useNomiDatabase';
@@ -42,7 +61,7 @@ import {
 
 interface SezioneBachecaProps {
   comunicazioni: ComunicazioneBacheca[];
-  onAggiornaComunicazioni: (nuove: ComunicazioneBacheca[]) => void;
+  onAggiornaComunicazioni: (nuove: ComunicazioneBacheca[], opts?: { notifica?: any; deletedId?: string }) => void;
   corsiFormazione?: CorsoFormazione[];
   sedi: SedeAssociativaCompleta[];
   operatoreCorrente: string;
@@ -88,6 +107,18 @@ export const SezioneBacheca: React.FC<SezioneBachecaProps> = ({
   const [formCategoria, setFormCategoria] = useState<ComunicazioneBacheca['categoria']>('Comunicazione Generale');
   const [formEvidenziata, setFormEvidenziata] = useState(false);
   const [formAutore, setFormAutore] = useState(operatoreCorrente || 'Direzione Operativa');
+  const [formImmaginePostDataUrl, setFormImmaginePostDataUrl] = useState<string | undefined>(undefined);
+  const [formImmaginePostNome, setFormImmaginePostNome] = useState<string | undefined>(undefined);
+  const [formAllegatoDataUrl, setFormAllegatoDataUrl] = useState<string | undefined>(undefined);
+  const [formAllegatoNome, setFormAllegatoNome] = useState<string | undefined>(undefined);
+  const [formAllegatoTipo, setFormAllegatoTipo] = useState<TipoAllegatoBacheca | undefined>(undefined);
+  const [formAllegatoMime, setFormAllegatoMime] = useState<string | undefined>(undefined);
+  const [formAllegatoDimensione, setFormAllegatoDimensione] = useState<number | undefined>(undefined);
+  const [erroreMediaForm, setErroreMediaForm] = useState<string | null>(null);
+  const [caricamentoMedia, setCaricamentoMedia] = useState(false);
+
+  // Visualizzatore protetto (no download / anti-screenshot)
+  const [contenutoProtettoAperto, setContenutoProtettoAperto] = useState<ContenutoProtettoBacheca | null>(null);
 
   // Modale conferma eliminazione
   const [idDaEliminare, setIdDaEliminare] = useState<string | null>(null);
@@ -96,7 +127,7 @@ export const SezioneBacheca: React.FC<SezioneBachecaProps> = ({
   const [avviso, setAvviso] = useState<string | null>(null);
   const mostraAvviso = (msg: string) => {
     setAvviso(msg);
-    setTimeout(() => setAvviso(null), 3500);
+    setTimeout(() => setAvviso(null), 4000);
   };
 
   // Apertura modale nuova comunicazione
@@ -109,6 +140,14 @@ export const SezioneBacheca: React.FC<SezioneBachecaProps> = ({
     setFormCategoria('Comunicazione Generale');
     setFormEvidenziata(false);
     setFormAutore(operatoreCorrente || 'Direzione Operativa');
+    setFormImmaginePostDataUrl(undefined);
+    setFormImmaginePostNome(undefined);
+    setFormAllegatoDataUrl(undefined);
+    setFormAllegatoNome(undefined);
+    setFormAllegatoTipo(undefined);
+    setFormAllegatoMime(undefined);
+    setFormAllegatoDimensione(undefined);
+    setErroreMediaForm(null);
     setModaleAperta(true);
   };
 
@@ -122,7 +161,52 @@ export const SezioneBacheca: React.FC<SezioneBachecaProps> = ({
     setFormCategoria(com.categoria);
     setFormEvidenziata(Boolean(com.evidenziata));
     setFormAutore(com.autore);
+    setFormImmaginePostDataUrl(com.immaginePostDataUrl);
+    setFormImmaginePostNome(com.immaginePostNome);
+    setFormAllegatoDataUrl(com.allegatoDataUrl);
+    setFormAllegatoNome(com.allegatoNome);
+    setFormAllegatoTipo(com.allegatoTipo);
+    setFormAllegatoMime(com.allegatoMime);
+    setFormAllegatoDimensione(com.allegatoDimensione);
+    setErroreMediaForm(null);
     setModaleAperta(true);
+  };
+
+  const handleCaricaImmaginePost = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setErroreMediaForm(null);
+    setCaricamentoMedia(true);
+    try {
+      const res = await elaboraImmaginePostBacheca(file);
+      setFormImmaginePostDataUrl(res.dataUrl);
+      setFormImmaginePostNome(res.nome);
+    } catch (err: any) {
+      setErroreMediaForm(err?.message || 'Errore nel caricamento dell\'immagine del post.');
+    } finally {
+      setCaricamentoMedia(false);
+    }
+  };
+
+  const handleCaricaAllegato = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setErroreMediaForm(null);
+    setCaricamentoMedia(true);
+    try {
+      const res = await elaboraAllegatoBacheca(file);
+      setFormAllegatoDataUrl(res.dataUrl);
+      setFormAllegatoNome(res.nome);
+      setFormAllegatoTipo(res.tipo);
+      setFormAllegatoMime(res.mime);
+      setFormAllegatoDimensione(res.dimensione);
+    } catch (err: any) {
+      setErroreMediaForm(err?.message || 'Errore nel caricamento dell\'allegato.');
+    } finally {
+      setCaricamentoMedia(false);
+    }
   };
 
   // Salvataggio form
@@ -139,6 +223,7 @@ export const SezioneBacheca: React.FC<SezioneBachecaProps> = ({
     const now = new Date();
     const dataOggi = formatISODateItaly(now);
     const oraOggi = formatTimeItaly(now, false);
+    const nowTs = Date.now();
 
     if (comunicazioneInModifica) {
       // Modifica esistente: consentita solo all'autore o all'Amministratore
@@ -148,7 +233,7 @@ export const SezioneBacheca: React.FC<SezioneBachecaProps> = ({
         (comunicazioneInModifica.autore && comunicazioneInModifica.autore.trim().toLowerCase() === operatoreCorrente.trim().toLowerCase());
 
       if (!puoModificare) {
-        alert("⛔ Operazione non autorizzata: i post in bacheca possono essere modificati o cancellati solo da chi li ha creati (l'Amministratore può modificare o cancellare qualsiasi post).");
+        mostraAvviso("⛔ Operazione non autorizzata: i post in bacheca possono essere modificati o cancellati solo da chi li ha creati (l'Amministratore può modificare o cancellare qualsiasi post).");
         return;
       }
 
@@ -163,13 +248,20 @@ export const SezioneBacheca: React.FC<SezioneBachecaProps> = ({
             priorita: formPriorita,
             categoria: formCategoria,
             evidenziata: formEvidenziata,
-            autore: formAutore.trim() || operatoreCorrente
+            autore: formAutore.trim() || operatoreCorrente,
+            updatedAt: nowTs,
+            immaginePostDataUrl: formImmaginePostDataUrl,
+            immaginePostNome: formImmaginePostNome,
+            allegatoDataUrl: formAllegatoDataUrl,
+            allegatoNome: formAllegatoNome,
+            allegatoTipo: formAllegatoTipo,
+            allegatoMime: formAllegatoMime,
+            allegatoDimensione: formAllegatoDimensione
           };
         }
         return c;
       });
       onAggiornaComunicazioni(aggiornate);
-      realtime.syncBacheca(aggiornate);
       if (!isAdmin) {
         inviaNotificaModificaAdmin(
           'bacheca',
@@ -182,7 +274,7 @@ export const SezioneBacheca: React.FC<SezioneBachecaProps> = ({
     } else {
       // Creazione nuova comunicazione
       const nuova: ComunicazioneBacheca = {
-        id: `com-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+        id: `com-${nowTs}-${Math.floor(Math.random() * 1000)}`,
         titolo: formTitolo.trim(),
         contenuto: formContenuto.trim(),
         sezioneTargetId: formSezioneTargetId,
@@ -195,25 +287,32 @@ export const SezioneBacheca: React.FC<SezioneBachecaProps> = ({
         autoreId: operatoreId,
         attiva: true,
         evidenziata: formEvidenziata,
+        updatedAt: nowTs,
+        immaginePostDataUrl: formImmaginePostDataUrl,
+        immaginePostNome: formImmaginePostNome,
+        allegatoDataUrl: formAllegatoDataUrl,
+        allegatoNome: formAllegatoNome,
+        allegatoTipo: formAllegatoTipo,
+        allegatoMime: formAllegatoMime,
+        allegatoDimensione: formAllegatoDimensione,
         likes: [],
         commenti: []
       };
 
       const aggiornate = [nuova, ...comunicazioni];
-      onAggiornaComunicazioni(aggiornate);
 
-      // Notifica SOLO in-app a tutti gli account con il titolo del post
+      // Notifica SOLO in-app a tutti gli account con il titolo del post (sincronizzata in un'unica operazione atomica)
       const notifPayload = {
-        id: `bacheca-post-${nuova.id}-${Date.now()}`,
+        id: `bacheca-post-${nuova.id}-${nowTs}`,
         tipo: 'nuovo_post' as const,
         postId: nuova.id,
         postTitolo: nuova.titolo,
         autoreCommento: nuova.autore,
         soloInApp: true,
-        createdAt: Date.now(),
+        createdAt: nowTs,
         messaggio: `Nuovo post in bacheca: "${nuova.titolo}" [${nuova.priorita}] — ${targetNome}`
       };
-      realtime.syncBacheca(aggiornate, notifPayload);
+      onAggiornaComunicazioni(aggiornate, { notifica: notifPayload });
 
       onNotificaRadio?.(
         `📢 NUOVA COMUNICAZIONE BACHECA: "${nuova.titolo}" destinata a ${targetNome} [${nuova.priorita}]`,
@@ -242,9 +341,9 @@ export const SezioneBacheca: React.FC<SezioneBachecaProps> = ({
       testoCommento: string;
     }
   ) => {
-    const aggiornate = comunicazioni.map((c) => (c.id === postAggiornato.id ? postAggiornato : c));
-    onAggiornaComunicazioni(aggiornate);
-
+    const aggiornate = comunicazioni.map((c) =>
+      c.id === postAggiornato.id ? { ...postAggiornato, updatedAt: Date.now() } : c
+    );
     if (notificaCommento) {
       const notifPayload = {
         tipo: 'nuovo_commento' as const,
@@ -256,19 +355,20 @@ export const SezioneBacheca: React.FC<SezioneBachecaProps> = ({
         destinatariVolontariIds: notificaCommento.destinatariIds,
         messaggio: `Nuovo commento di ${operatoreCorrente} su "${postAggiornato.titolo}": "${notificaCommento.testoCommento.substring(0, 80)}"`
       };
-      realtime.syncBacheca(aggiornate, notifPayload);
+      onAggiornaComunicazioni(aggiornate, { notifica: notifPayload });
     } else {
-      realtime.syncBacheca(aggiornate);
+      onAggiornaComunicazioni(aggiornate);
     }
   };
 
   // Toggle evidenziata (Pin)
   const toggleEvidenziata = (id: string) => {
+    const nowTs = Date.now();
     const aggiornate = comunicazioni.map((c) => {
       if (c.id === id) {
         const statoNuovo = !c.evidenziata;
         mostraAvviso(statoNuovo ? '📌 Comunicazione fissata in evidenza in cima alla bacheca.' : 'Comunicazione sfissata.');
-        return { ...c, evidenziata: statoNuovo };
+        return { ...c, evidenziata: statoNuovo, updatedAt: nowTs };
       }
       return c;
     });
@@ -277,29 +377,33 @@ export const SezioneBacheca: React.FC<SezioneBachecaProps> = ({
 
   // Toggle attiva / archiviata
   const toggleAttiva = (id: string) => {
+    const nowTs = Date.now();
     let postRiattivato: ComunicazioneBacheca | null = null;
     const aggiornate = comunicazioni.map((c) => {
       if (c.id === id) {
         const stato = !c.attiva;
-        if (stato) postRiattivato = { ...c, attiva: true };
+        if (stato) postRiattivato = { ...c, attiva: true, updatedAt: nowTs };
         mostraAvviso(stato ? '✓ Comunicazione riattivata e visibile ai volontari.' : '✓ Comunicazione archiviata.');
-        return { ...c, attiva: stato };
+        return { ...c, attiva: stato, updatedAt: nowTs };
       }
       return c;
     });
-    onAggiornaComunicazioni(aggiornate);
     if (postRiattivato) {
       const p: ComunicazioneBacheca = postRiattivato;
-      realtime.syncBacheca(aggiornate, {
-        id: `bacheca-post-${p.id}-${Date.now()}`,
-        tipo: 'nuovo_post' as const,
-        postId: p.id,
-        postTitolo: p.titolo,
-        autoreCommento: p.autore,
-        soloInApp: true,
-        createdAt: Date.now(),
-        messaggio: `Post pubblicato in bacheca: "${p.titolo}" [${p.priorita}] — ${p.sezioneTargetNome}`
+      onAggiornaComunicazioni(aggiornate, {
+        notifica: {
+          id: `bacheca-post-${p.id}-${nowTs}`,
+          tipo: 'nuovo_post' as const,
+          postId: p.id,
+          postTitolo: p.titolo,
+          autoreCommento: p.autore,
+          soloInApp: true,
+          createdAt: nowTs,
+          messaggio: `Post pubblicato in bacheca: "${p.titolo}" [${p.priorita}] — ${p.sezioneTargetNome}`
+        }
       });
+    } else {
+      onAggiornaComunicazioni(aggiornate);
     }
   };
 
@@ -313,13 +417,13 @@ export const SezioneBacheca: React.FC<SezioneBachecaProps> = ({
       (postDaEliminare?.autore && postDaEliminare.autore.trim().toLowerCase() === operatoreCorrente.trim().toLowerCase());
 
     if (!puoEliminare) {
-      alert("⛔ Operazione non autorizzata: i post in bacheca possono essere eliminati solo da chi li ha creati (l'Amministratore può eliminare qualsiasi post).");
+      mostraAvviso("⛔ Operazione non autorizzata: i post in bacheca possono essere eliminati solo da chi li ha creati (l'Amministratore può eliminare qualsiasi post).");
       setIdDaEliminare(null);
       return;
     }
-    const aggiornate = comunicazioni.filter((c) => c.id !== idDaEliminare);
-    onAggiornaComunicazioni(aggiornate);
-    realtime.syncBacheca(aggiornate);
+    const deletedId = idDaEliminare;
+    const aggiornate = comunicazioni.filter((c) => c.id !== deletedId);
+    onAggiornaComunicazioni(aggiornate, { deletedId });
     setIdDaEliminare(null);
     mostraAvviso('✓ Comunicazione eliminata definitivamente dalla bacheca.');
   };
@@ -830,13 +934,72 @@ export const SezioneBacheca: React.FC<SezioneBachecaProps> = ({
                 </div>
 
                 {/* Corpo Comunicazione */}
-                <div className="py-3 space-y-2">
+                <div className="py-3 space-y-3">
                   <h3 className="text-base sm:text-lg font-black text-white tracking-wide">
                     {com.titolo}
                   </h3>
                   <p className="text-xs sm:text-sm text-slate-200 leading-relaxed whitespace-pre-line font-normal">
                     {com.contenuto}
                   </p>
+
+                  {/* Immagine del post (adattata allo schermo di PC / Tablet / Smartphone) */}
+                  {com.immaginePostDataUrl && (
+                    <ImmaginePostProtetta
+                      dataUrl={com.immaginePostDataUrl}
+                      nome={com.immaginePostNome}
+                      titoloPost={com.titolo}
+                      utenteWatermark={operatoreCorrente || 'Croce Oro'}
+                      onApriProtetto={() =>
+                        setContenutoProtettoAperto({
+                          titolo: com.titolo,
+                          nomeFile: com.immaginePostNome || `${com.titolo}.jpg`,
+                          dataUrl: com.immaginePostDataUrl!,
+                          tipo: 'image',
+                        })
+                      }
+                    />
+                  )}
+
+                  {/* Allegato protetto (solo visualizzazione, nessun download) */}
+                  {com.allegatoDataUrl && com.allegatoNome && (
+                    <div className="p-2.5 rounded-xl bg-slate-950 border border-violet-500/40 flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <div className="w-8 h-8 rounded-lg bg-violet-950 border border-violet-500/40 flex items-center justify-center shrink-0">
+                          {com.allegatoTipo === 'excel' ? (
+                            <FileSpreadsheet className="w-4 h-4 text-emerald-400" />
+                          ) : com.allegatoTipo === 'image' ? (
+                            <ImageIcon className="w-4 h-4 text-sky-400" />
+                          ) : (
+                            <FileText className="w-4 h-4 text-violet-300" />
+                          )}
+                        </div>
+                        <div className="min-w-0">
+                          <div className="text-xs font-bold text-white truncate">{com.allegatoNome}</div>
+                          <div className="text-[10px] text-slate-400 flex items-center gap-1.5">
+                            <Lock className="w-2.5 h-2.5 text-rose-400" />
+                            <span>Allegato protetto (solo visione, download bloccato)</span>
+                            {com.allegatoDimensione ? <span>• {formatDimensioneFile(com.allegatoDimensione)}</span> : null}
+                          </div>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setContenutoProtettoAperto({
+                            titolo: com.titolo,
+                            nomeFile: com.allegatoNome!,
+                            dataUrl: com.allegatoDataUrl!,
+                            tipo: com.allegatoTipo || 'pdf',
+                            dimensione: com.allegatoDimensione,
+                          })
+                        }
+                        className="px-3 py-1.5 rounded-lg bg-violet-600 hover:bg-violet-500 text-white font-black text-[11px] uppercase inline-flex items-center gap-1.5 cursor-pointer shrink-0"
+                      >
+                        <Eye className="w-3.5 h-3.5" />
+                        <span>Visualizza Protetto</span>
+                      </button>
+                    </div>
+                  )}
                 </div>
 
                 {/* Footer Scheda: Autore e Azioni Amministratore */}
@@ -930,139 +1093,236 @@ export const SezioneBacheca: React.FC<SezioneBachecaProps> = ({
       {/* MODALE CREAZIONE / MODIFICA COMUNICAZIONE                     */}
       {/* ------------------------------------------------------------- */}
       {modaleAperta && (
-        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4 overflow-y-auto animate-in fade-in">
-          <div className="bg-slate-900 border-2 border-violet-500 rounded-3xl max-w-2xl w-full p-5 sm:p-6 shadow-2xl space-y-4 my-8">
-            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-              <div className="flex items-center gap-2.5">
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-2 sm:p-4 overflow-y-auto animate-in fade-in">
+          <div className="bg-slate-900 border-2 border-violet-500 rounded-3xl max-w-2xl w-full max-h-[92dvh] flex flex-col overflow-hidden shadow-2xl my-auto">
+            {/* Header Fisso */}
+            <div className="p-4 sm:p-5 bg-slate-950 border-b border-slate-800 flex items-center justify-between gap-2 shrink-0">
+              <div className="flex items-center gap-2.5 min-w-0">
                 <div className="w-10 h-10 rounded-xl bg-violet-500/20 text-violet-400 flex items-center justify-center shrink-0">
                   <Megaphone className="w-5 h-5" />
                 </div>
-                <div>
-                  <h3 className="text-base font-black text-white uppercase tracking-wide">
+                <div className="min-w-0">
+                  <h3 className="text-sm sm:text-base font-black text-white uppercase tracking-wide truncate">
                     {comunicazioneInModifica ? 'Modifica Comunicazione di Sezione' : 'Nuova Comunicazione in Bacheca'}
                   </h3>
-                  <p className="text-xs text-slate-400">
-                    I dettagli inseriti saranno visibili a tutti i volontari della sezione scelta
+                  <p className="text-[11px] text-slate-400 truncate">
+                    Puoi allegare un&apos;immagine del post e un allegato protetto (solo visione, senza download)
                   </p>
                 </div>
               </div>
               <button
                 type="button"
                 onClick={() => setModaleAperta(false)}
-                className="p-1.5 rounded-xl bg-slate-800 text-slate-400 hover:text-white"
+                className="p-1.5 rounded-xl bg-slate-800 text-slate-400 hover:text-white cursor-pointer shrink-0"
+                title="Chiudi"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
-            <form onSubmit={handleSalvaComunicazione} className="space-y-4 text-xs">
-              
-              {/* Titolo */}
-              <div>
-                <label className="block text-slate-300 font-bold mb-1">
-                  Titolo Comunicazione / Circolare <span className="text-red-400">*</span>
-                </label>
-                <input
-                  type="text"
-                  required
-                  value={formTitolo}
-                  onChange={(e) => setFormTitolo(e.target.value)}
-                  placeholder="Es. Disposizioni Operative Turni Festivi e Manovre Sanitarie..."
-                  className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white font-bold text-sm focus:ring-2 focus:ring-violet-500 focus:outline-none"
-                />
-              </div>
-
-              {/* RIGA 2: SEZIONE TARGET, CATEGORIA, PRIORITÀ */}
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                {/* Sezione Destinataria */}
+            <form onSubmit={handleSalvaComunicazione} className="flex flex-col flex-1 min-h-0 text-xs">
+              {/* Corpo Scrollabile */}
+              <div className="p-4 sm:p-5 space-y-4 flex-1 min-h-0 overflow-y-auto overscroll-contain">
+                {/* Titolo */}
                 <div>
-                  <label className="block text-slate-400 font-bold mb-1">Sezione Destinataria</label>
-                  <select
-                    value={formSezioneTargetId}
-                    onChange={(e) => setFormSezioneTargetId(e.target.value)}
-                    className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white font-semibold"
-                  >
-                    <option value="tutte">Tutte le Sezioni Territoriali</option>
-                    {sedi.map((s) => (
-                      <option key={s.id} value={s.id}>{s.nome}</option>
-                    ))}
-                  </select>
-                </div>
-
-                {/* Categoria */}
-                <div>
-                  <label className="block text-slate-400 font-bold mb-1">Categoria</label>
-                  <select
-                    value={formCategoria}
-                    onChange={(e) => setFormCategoria(e.target.value as any)}
-                    className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white font-semibold"
-                  >
-                    <option value="Comunicazione Generale">Comunicazione Generale</option>
-                    <option value="Disposizioni Operative">Disposizioni Operative</option>
-                    <option value="Formazione & Eventi">Formazione & Eventi</option>
-                    <option value="Turni & Reperibilità">Turni & Reperibilità</option>
-                    <option value="Mezzi & Dotazioni">Mezzi & Dotazioni</option>
-                  </select>
-                </div>
-
-                {/* Priorità */}
-                <div>
-                  <label className="block text-slate-400 font-bold mb-1">Livello Priorità</label>
-                  <select
-                    value={formPriorita}
-                    onChange={(e) => setFormPriorita(e.target.value as any)}
-                    className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white font-bold"
-                  >
-                    <option value="Ordinaria">🟢 Ordinaria</option>
-                    <option value="Importante">🟡 Importante</option>
-                    <option value="Urgente">🔴 Urgente (Badge in evidenza)</option>
-                  </select>
-                </div>
-              </div>
-
-              {/* Contenuto Testuale */}
-              <div>
-                <label className="block text-slate-300 font-bold mb-1">
-                  Testo della Comunicazione <span className="text-red-400">*</span>
-                </label>
-                <textarea
-                  required
-                  rows={5}
-                  value={formContenuto}
-                  onChange={(e) => setFormContenuto(e.target.value)}
-                  placeholder="Scrivi qui il testo completo della circolare o avviso operativo per i volontari..."
-                  className="w-full p-3 rounded-xl bg-slate-950 border border-slate-700 text-slate-200 text-xs focus:ring-2 focus:ring-violet-500 focus:outline-none leading-relaxed"
-                />
-              </div>
-
-              {/* RIGA 3: AUTORE & OPZIONE PIN EVIDENZIATO */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
-                <div>
-                  <label className="block text-slate-400 font-bold mb-1">Autore / Firma</label>
+                  <label className="block text-slate-300 font-bold mb-1">
+                    Titolo Comunicazione / Circolare <span className="text-red-400">*</span>
+                  </label>
                   <input
                     type="text"
-                    value={formAutore}
-                    onChange={(e) => setFormAutore(e.target.value)}
-                    placeholder="Es. Direzione Operativa / Coordinatore Sede"
-                    className="w-full p-2 rounded-xl bg-slate-950 border border-slate-700 text-white"
+                    required
+                    value={formTitolo}
+                    onChange={(e) => setFormTitolo(e.target.value)}
+                    placeholder="Es. Disposizioni Operative Turni Festivi e Manovre Sanitarie..."
+                    className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white font-bold text-sm focus:ring-2 focus:ring-violet-500 focus:outline-none"
                   />
                 </div>
 
-                <div className="flex items-center pt-5">
-                  <label className="flex items-center gap-2 cursor-pointer select-none">
-                    <input
-                      type="checkbox"
-                      checked={formEvidenziata}
-                      onChange={(e) => setFormEvidenziata(e.target.checked)}
-                      className="w-4 h-4 rounded text-violet-600 bg-slate-950 border-slate-700 focus:ring-violet-500"
-                    />
-                    <span className="text-slate-300 font-bold">Fissa in evidenza in cima alla bacheca</span>
+                {/* RIGA 2: SEZIONE TARGET, CATEGORIA, PRIORITÀ */}
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div>
+                    <label className="block text-slate-400 font-bold mb-1">Sezione Destinataria</label>
+                    <select
+                      value={formSezioneTargetId}
+                      onChange={(e) => setFormSezioneTargetId(e.target.value)}
+                      className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white font-semibold"
+                    >
+                      <option value="tutte">Tutte le Sezioni Territoriali</option>
+                      {sedi.map((s) => (
+                        <option key={s.id} value={s.id}>{s.nome}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-slate-400 font-bold mb-1">Categoria</label>
+                    <select
+                      value={formCategoria}
+                      onChange={(e) => setFormCategoria(e.target.value as any)}
+                      className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white font-semibold"
+                    >
+                      <option value="Comunicazione Generale">Comunicazione Generale</option>
+                      <option value="Disposizioni Operative">Disposizioni Operative</option>
+                      <option value="Formazione & Eventi">Formazione & Eventi</option>
+                      <option value="Turni & Reperibilità">Turni & Reperibilità</option>
+                      <option value="Mezzi & Dotazioni">Mezzi & Dotazioni</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-slate-400 font-bold mb-1">Livello Priorità</label>
+                    <select
+                      value={formPriorita}
+                      onChange={(e) => setFormPriorita(e.target.value as any)}
+                      className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white font-bold"
+                    >
+                      <option value="Ordinaria">🟢 Ordinaria</option>
+                      <option value="Importante">🟡 Importante</option>
+                      <option value="Urgente">🔴 Urgente (Badge in evidenza)</option>
+                    </select>
+                  </div>
+                </div>
+
+                {/* Contenuto Testuale */}
+                <div>
+                  <label className="block text-slate-300 font-bold mb-1">
+                    Testo della Comunicazione <span className="text-red-400">*</span>
                   </label>
+                  <textarea
+                    required
+                    rows={4}
+                    value={formContenuto}
+                    onChange={(e) => setFormContenuto(e.target.value)}
+                    placeholder="Scrivi qui il testo completo della circolare o avviso operativo per i volontari..."
+                    className="w-full p-3 rounded-xl bg-slate-950 border border-slate-700 text-slate-200 text-xs focus:ring-2 focus:ring-violet-500 focus:outline-none leading-relaxed"
+                  />
+                </div>
+
+                {/* MEDIA & ALLEGATO PROTETTO */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 p-3.5 rounded-2xl bg-slate-950 border border-violet-500/35">
+                  {/* 1. Immagine del Post */}
+                  <div className="space-y-2">
+                    <label className="block text-slate-200 font-bold flex items-center gap-1.5">
+                      <ImageIcon className="w-3.5 h-3.5 text-sky-400" />
+                      <span>Immagine del Post (Adattiva)</span>
+                    </label>
+                    <p className="text-[10px] text-slate-400 leading-snug">
+                      Si adatta automaticamente a PC, tablet e smartphone senza ingombrare tutto lo schermo. Visione protetta senza download.
+                    </p>
+                    <label className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-sky-600/20 hover:bg-sky-600/30 border border-sky-500/50 text-sky-200 font-bold text-[11px] cursor-pointer">
+                      <Upload className="w-3.5 h-3.5" />
+                      <span>{formImmaginePostDataUrl ? 'Sostituisci Immagine' : 'Carica Immagine'}</span>
+                      <input
+                        type="file"
+                        accept={ACCEPT_IMMAGINE_POST_BACHECA}
+                        onChange={handleCaricaImmaginePost}
+                        className="hidden"
+                      />
+                    </label>
+                    {formImmaginePostDataUrl && (
+                      <div className="p-2 rounded-xl bg-slate-900 border border-slate-800 space-y-1.5">
+                        <img
+                          src={formImmaginePostDataUrl}
+                          alt="Anteprima post"
+                          className="max-h-28 w-auto mx-auto rounded-lg object-contain"
+                        />
+                        <div className="flex items-center justify-between gap-2 text-[10px] text-slate-300">
+                          <span className="truncate">{formImmaginePostNome || 'Immagine allegata'}</span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setFormImmaginePostDataUrl(undefined);
+                              setFormImmaginePostNome(undefined);
+                            }}
+                            className="text-rose-400 hover:text-rose-300 font-bold shrink-0 cursor-pointer"
+                          >
+                            Rimuovi
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* 2. Allegato Protetto (solo pdf, jpeg, png, doc, docx, bmp, xls, xlsx) */}
+                  <div className="space-y-2">
+                    <label className="block text-slate-200 font-bold flex items-center gap-1.5">
+                      <Paperclip className="w-3.5 h-3.5 text-violet-400" />
+                      <span>Allegato Protetto</span>
+                    </label>
+                    <p className="text-[10px] text-slate-400 leading-snug">
+                      Formati ammessi: <strong>PDF, JPEG, PNG, DOC, DOCX, BMP, XLS, XLSX</strong>. I volontari potranno solo visualizzarlo in ambiente protetto (download e screenshot bloccati).
+                    </p>
+                    <label className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-violet-600/20 hover:bg-violet-600/30 border border-violet-500/50 text-violet-200 font-bold text-[11px] cursor-pointer">
+                      <Paperclip className="w-3.5 h-3.5" />
+                      <span>{formAllegatoDataUrl ? 'Sostituisci Allegato' : 'Allega Documento/File'}</span>
+                      <input
+                        type="file"
+                        accept={ACCEPT_ALLEGATI_BACHECA}
+                        onChange={handleCaricaAllegato}
+                        className="hidden"
+                      />
+                    </label>
+                    {formAllegatoDataUrl && formAllegatoNome && (
+                      <div className="p-2.5 rounded-xl bg-slate-900 border border-violet-500/40 flex items-center justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className="text-[11px] font-bold text-white truncate">{formAllegatoNome}</div>
+                          <div className="text-[10px] text-slate-400">
+                            {formatDimensioneFile(formAllegatoDimensione)} • Solo visione protetta
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setFormAllegatoDataUrl(undefined);
+                            setFormAllegatoNome(undefined);
+                            setFormAllegatoTipo(undefined);
+                            setFormAllegatoMime(undefined);
+                            setFormAllegatoDimensione(undefined);
+                          }}
+                          className="text-[10px] text-rose-400 hover:text-rose-300 font-bold shrink-0 cursor-pointer"
+                        >
+                          Rimuovi
+                        </button>
+                      </div>
+                    )}
+                  </div>
+
+                  {erroreMediaForm && (
+                    <div className="sm:col-span-2 p-2.5 rounded-xl bg-rose-950/70 border border-rose-500/60 text-[11px] text-rose-200 font-bold">
+                      ⚠️ {erroreMediaForm}
+                    </div>
+                  )}
+                </div>
+
+                {/* RIGA 3: AUTORE & OPZIONE PIN EVIDENZIATO */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                  <div>
+                    <label className="block text-slate-400 font-bold mb-1">Autore / Firma</label>
+                    <input
+                      type="text"
+                      value={formAutore}
+                      onChange={(e) => setFormAutore(e.target.value)}
+                      placeholder="Es. Direzione Operativa / Coordinatore Sede"
+                      className="w-full p-2 rounded-xl bg-slate-950 border border-slate-700 text-white"
+                    />
+                  </div>
+
+                  <div className="flex items-center pt-5">
+                    <label className="flex items-center gap-2 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={formEvidenziata}
+                        onChange={(e) => setFormEvidenziata(e.target.checked)}
+                        className="w-4 h-4 rounded text-violet-600 bg-slate-950 border-slate-700 focus:ring-violet-500"
+                      />
+                      <span className="text-slate-300 font-bold">Fissa in evidenza in cima alla bacheca</span>
+                    </label>
+                  </div>
                 </div>
               </div>
 
-              {/* Pulsanti Footer Modale */}
-              <div className="pt-3 border-t border-slate-800 flex items-center justify-end gap-2.5">
+              {/* Pulsanti Footer Fisso Modale */}
+              <div className="p-4 bg-slate-950 border-t border-slate-800 flex items-center justify-end gap-2.5 shrink-0">
                 <button
                   type="button"
                   onClick={() => setModaleAperta(false)}
@@ -1072,17 +1332,24 @@ export const SezioneBacheca: React.FC<SezioneBachecaProps> = ({
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2.5 rounded-xl bg-violet-600 hover:bg-violet-500 text-white font-black uppercase flex items-center gap-2 shadow-lg shadow-violet-600/30 active:scale-95 cursor-pointer"
+                  disabled={caricamentoMedia}
+                  className="px-5 py-2.5 rounded-xl bg-violet-600 hover:bg-violet-500 text-white font-black uppercase flex items-center gap-2 shadow-lg shadow-violet-600/30 active:scale-95 cursor-pointer disabled:opacity-50"
                 >
                   <Save className="w-4 h-4" />
-                  <span>{comunicazioneInModifica ? 'Salva Modifiche' : 'Pubblica Comunicazione'}</span>
+                  <span>{caricamentoMedia ? 'Elaborazione...' : comunicazioneInModifica ? 'Salva Modifiche' : 'Pubblica Comunicazione'}</span>
                 </button>
               </div>
-
             </form>
           </div>
         </div>
       )}
+
+      {/* Visualizzatore Protetto Bacheca */}
+      <ModalVisualizzatoreProtetto
+        contenuto={contenutoProtettoAperto}
+        onChiudi={() => setContenutoProtettoAperto(null)}
+        utenteLabel={operatoreCorrente || 'Operatore Croce Oro'}
+      />
 
       {/* ------------------------------------------------------------- */}
       {/* MODALE CONFERMA ELIMINAZIONE                                  */}

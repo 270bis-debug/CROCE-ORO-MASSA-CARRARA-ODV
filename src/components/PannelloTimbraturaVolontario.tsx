@@ -20,6 +20,7 @@ import {
 import { TimbraturaVolontario, SedeAssociativaCompleta, LuogoTimbratura, CorsoFormazione, TurnoSedeOperativa } from '../types/adminTypes';
 import { LUOGHI_TIMBRATURA_DEFAULT } from '../data/adminMockData';
 import { PosizioneGPS } from './MappaOperativa';
+import { invitaAutorizzazioneNecessaria } from '../utils/devicePermissions';
 import {
   formatOrarioConSecondi,
   calcolaDurataTimbratura,
@@ -419,6 +420,9 @@ export const PannelloTimbraturaVolontario: React.FC<PannelloTimbraturaVolontario
         (err) => {
           setInRilevamentoGps(false);
           setErroreGps(`Impossibile acquisire GPS: ${err.message}. Verifica le autorizzazioni di geolocalizzazione sul dispositivo.`);
+          if (err.code === 1) {
+            invitaAutorizzazioneNecessaria('gps', 'Timbratura Presenza GPS', () => rilevaGpsDispositivo());
+          }
         },
         { enableHighAccuracy: true, timeout: 8000, maximumAge: 0 }
       );

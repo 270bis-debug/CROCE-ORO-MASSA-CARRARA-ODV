@@ -344,4 +344,18 @@ body.accesso-web-sfondo-bianco .web-bg-white,
     -webkit-print-color-adjust: exact !important;
     print-color-adjust: exact !important;
   }
+  .bacheca-protetta-no-print {
+    display: none !important;
+    visibility: hidden !important;
+    opacity: 0 !important;
+  }
 }
+
+/* Protezione contenuti bacheca: blocca selezione, salvataggio rapido touch iOS/Android e trascinamento */
+.bacheca-protetta-surface {
+  -webkit-user-select: none !important;
+  user-select: none !important;
+  -webkit-touch-callout: none !important;
+  -webkit-user-drag: none !important;
+}
+

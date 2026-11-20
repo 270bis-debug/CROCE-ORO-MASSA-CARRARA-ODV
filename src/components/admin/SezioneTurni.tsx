@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   Calendar,
   Search,
@@ -53,13 +53,21 @@ import {
   isGiornoPrefestivo,
   getDettaglioTipoGiorno
 } from '../../utils/festivitaItaliane';
-import { puoCoprireRuoloTurno, getMansioniVolontario } from '../../utils/mansioniVolontari';
+import {
+  puoCoprireRuoloTurno,
+  getMansioniVolontario,
+  getMansioniCatalogo,
+  getLabelRuoloEquipaggioLive
+} from '../../utils/mansioniVolontari';
 import {
   useTipiTurno,
   calcolaCoperturaTurno,
   getCapoServizioTurno,
-  getVolontariAssegnatiTurno
+  getVolontariAssegnatiTurno,
+  risolviMansioniTipoTurnoLive
 } from '../../utils/tipiTurno';
+import { IconaEmoji } from '../IconaEmoji';
+import { formatIconaPerTesto } from '../../utils/emojiIconsArchive';
 import { PannelloTipiTurno } from './PannelloTipiTurno';
 import { addDaysISODate, formatDateItaly, formatISODateItaly, formatTimeItaly } from '../../utils/italianTime';
 
@@ -109,6 +117,12 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
   const nomiSubCustom = useNomiSottosezioniCustom();
   const canShowSubtab = (id: string) => !allowedSubtabs || allowedSubtabs.includes(id);
   const tipiTurno = useTipiTurno();
+  const [catalogoMansioni, setCatalogoMansioni] = useState(() => getMansioniCatalogo());
+  useEffect(() => {
+    const syncMansioni = () => setCatalogoMansioni(getMansioniCatalogo());
+    window.addEventListener('croceoro_mansioni_updated', syncMansioni);
+    return () => window.removeEventListener('croceoro_mansioni_updated', syncMansioni);
+  }, []);
   const [vistaSottosezione, setVistaSottosezione] = useState<'calendario' | 'candidature' | 'tipi_turno'>(() => {
     if (!allowedSubtabs || allowedSubtabs.includes('calendario')) return 'calendario';
     if (allowedSubtabs.includes('candidature')) return 'candidature';
@@ -139,6 +153,7 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
   const [formCentralinistaId, setFormCentralinistaId] = useState('');
   const [formOsservatoreId, setFormOsservatoreId] = useState('');
   const [mostraModificaEquipaggioEsistente, setMostraModificaEquipaggioEsistente] = useState(false);
+  const [formChecklistObbligatoria, setFormChecklistObbligatoria] = useState(true);
   const [formNote, setFormNote] = useState('');
   const [mostraPannelloCandidature, setMostraPannelloCandidature] = useState(true);
   const [modificaModalitaSerie, setModificaModalitaSerie] = useState<'singolo' | 'serie_futura'>('singolo');
@@ -186,18 +201,12 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
     return mezziOperativi[0]?.sigla || '';
   };
 
-  // Helper per etichette ruoli
+  // Helper per etichette ruoli sincronizzato LIVE con Mansioni & Competenze
   const getEtichettaRuolo = (ruolo: RuoloTurno): string => {
-    switch (ruolo) {
-      case 'autista': return '🚑 Autista Soccorritore';
-      case 'caposervizio': return '👨‍⚕️ Caposervizio';
-      case 'soccorritore2': return '🧑‍⚕️ 2° Soccorritore';
-      case 'terzoSoccorritore': return '🧑‍⚕️ 3° Soccorritore';
-      case 'operatoreCentrale': return '🎧 Operatore Centrale';
-      case 'centralinista': return '📞 Centralinista';
-      case 'osservatore': return '👁️ Osservatore';
-      default: return ruolo;
-    }
+    if (ruolo === 'caposervizio') return '⭐ Capo Servizio';
+    const live = getLabelRuoloEquipaggioLive(ruolo, catalogoMansioni);
+    const pref = formatIconaPerTesto(live.emoji, '🎖️');
+    return `${pref ? `${pref} ` : ''}${live.nome}`;
   };
 
   // Tutte le candidature in attesa di approvazione della centrale
@@ -221,8 +230,8 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
     if (vol) {
       const verifica = puoCoprireRuoloTurno(vol, cand.ruoloRichiesto);
       if (!verifica.idoneo) {
-        alert(
-          `⛔ IMPOSSIBILE APPROVARE: Il volontario ${cand.volontarioNome} non possiede la mansione necessaria per ${getEtichettaRuolo(cand.ruoloRichiesto)}.\n\n${verifica.motivo}`
+        mostraAvviso(
+          `⛔ IMPOSSIBILE APPROVARE: Il volontario ${cand.volontarioNome} non possiede la mansione necessaria per ${getEtichettaRuolo(cand.ruoloRichiesto)}. ${verifica.motivo}`
         );
         return;
       }
@@ -644,6 +653,7 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
       operatoreCentrale: centraleEffettivo,
       centralinista: centralinistaEffettivo,
       osservatore: osservatoreEffettivo,
+      checklistObbligatoria: t.checklistObbligatoria !== false,
       note: t.note
     }));
 
@@ -699,6 +709,7 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
   const [ripCentraleId, setRipCentraleId] = useState('');
   const [ripCentralinistaId, setRipCentralinistaId] = useState('');
   const [ripOsservatoreId, setRipOsservatoreId] = useState('');
+  const [ripChecklistObbligatoria, setRipChecklistObbligatoria] = useState(true);
   const [ripNote, setRipNote] = useState('');
 
 
@@ -753,6 +764,7 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
       setRipCentraleId('');
       setRipCentralinistaId('');
       setRipOsservatoreId('');
+      setRipChecklistObbligatoria(turnoBase.checklistObbligatoria !== false);
       setRipNote(turnoBase.note || '');
       setRipDuplicaDisponibilita(false);
     } else {
@@ -777,6 +789,7 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
       setRipCentraleId('');
       setRipCentralinistaId('');
       setRipOsservatoreId('');
+      setRipChecklistObbligatoria(true);
       setRipNote('');
       setRipDuplicaDisponibilita(false);
     }
@@ -830,6 +843,7 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
       mezzoAssegnato: mezzoValido,
       statoCopertura: 'Scoperto',
       richiesteIscrizione: [],
+      checklistObbligatoria: ripChecklistObbligatoria,
       note: ripNote
     }));
 
@@ -1007,6 +1021,7 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
             centralinista: centralinistaSlot,
             osservatore: osservatoreSlot,
             richiesteIscrizione: t.richiesteIscrizione,
+            checklistObbligatoria: formChecklistObbligatoria,
             note: formNote,
             statoCopertura: 'Scoperto'
           };
@@ -1051,6 +1066,7 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
         mezzoAssegnato: mezzoValido,
         statoCopertura: 'Scoperto',
         richiesteIscrizione: [],
+        checklistObbligatoria: formChecklistObbligatoria,
         note: formNote
       };
       onAggiornaTurni([...turni, nuovo]);
@@ -1130,6 +1146,7 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
     setFormCentralinistaId(turno.centralinista?.id || '');
     setFormOsservatoreId(turno.osservatore?.id || '');
     setMostraModificaEquipaggioEsistente(false);
+    setFormChecklistObbligatoria(turno.checklistObbligatoria !== false);
     setFormNote(turno.note || '');
     setModaleTurnoAperta(true);
   };
@@ -1285,6 +1302,7 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
               setFormCentralinistaId('');
               setFormOsservatoreId('');
               setMostraModificaEquipaggioEsistente(false);
+              setFormChecklistObbligatoria(true);
               setFormNote('');
               setModaleTurnoAperta(true);
             }}
@@ -1642,6 +1660,7 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
               setFormCentralinistaId('');
               setFormOsservatoreId('');
               setMostraModificaEquipaggioEsistente(false);
+              setFormChecklistObbligatoria(true);
               setFormNote('');
               setModaleTurnoAperta(true);
             }}
@@ -1692,14 +1711,21 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
                         <span>{t.orarioInizio} — {t.orarioFine}</span>
                         {t.mezzoAssegnato && <span>• Mezzo: <strong className="text-amber-300">{t.mezzoAssegnato}</strong></span>}
                       </div>
+                      {t.checklistObbligatoria === false && (
+                        <div className="mt-1 inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-950/90 border border-amber-500/50 text-amber-200 text-[10px] font-bold">
+                          <CheckSquare className="w-3 h-3 text-amber-400 shrink-0" />
+                          <span>Checklist non obbligatoria</span>
+                        </div>
+                      )}
                       {Array.isArray(t.mansioniRichieste) && t.mansioniRichieste.length > 0 && (
                         <div className="mt-1.5 flex items-center gap-1 flex-wrap">
-                          {t.mansioniRichieste.map((mr) => (
+                          {risolviMansioniTipoTurnoLive(t.mansioniRichieste, catalogoMansioni).map((mr) => (
                             <span
                               key={mr.id}
-                              className="px-1.5 py-0.5 rounded bg-slate-900 border border-slate-700 text-[10px] text-slate-200 font-semibold"
+                              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-slate-900 border border-slate-700 text-[10px] text-slate-200 font-semibold"
                             >
-                              {mr.emoji || '🎖️'} {mr.nome}{' '}
+                              <IconaEmoji icona={mr.emoji} fallback="🎖️" size="xs" />
+                              <span>{mr.nome}</span>
                               <span className="text-indigo-300 font-mono">
                                 ({mr.minimo === 0 ? `Facolt. 0–${mr.massimo}` : mr.minimo === mr.massimo ? mr.minimo : `${mr.minimo}–${mr.massimo}`})
                               </span>
@@ -1783,7 +1809,7 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
 
                         <div className="flex items-center justify-between gap-1">
                           <span className="text-slate-400 font-semibold flex items-center gap-1 shrink-0">
-                            <Car className="w-3.5 h-3.5 text-amber-400" /> Autista:
+                            <Car className="w-3.5 h-3.5 text-amber-400" /> {getLabelRuoloEquipaggioLive('autista', catalogoMansioni).nome}:
                           </span>
                           {t.autista ? (
                             <div className="flex items-center justify-end min-w-0">
@@ -1797,7 +1823,7 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
 
                         <div className="flex items-center justify-between gap-1">
                           <span className="text-slate-400 font-semibold flex items-center gap-1 shrink-0">
-                            <Users className="w-3.5 h-3.5 text-emerald-400" /> Soccorritore 2:
+                            <Users className="w-3.5 h-3.5 text-emerald-400" /> {getLabelRuoloEquipaggioLive('soccorritore2', catalogoMansioni).nome}:
                           </span>
                           {t.soccorritore2 ? (
                             <div className="flex items-center justify-end min-w-0">
@@ -1812,7 +1838,7 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
                         {t.terzoSoccorritore && (
                           <div className="flex items-center justify-between gap-1">
                             <span className="text-slate-400 font-semibold flex items-center gap-1 shrink-0">
-                              <Users className="w-3.5 h-3.5 text-teal-400" /> Terzo Socc.:
+                              <Users className="w-3.5 h-3.5 text-teal-400" /> {getLabelRuoloEquipaggioLive('terzoSoccorritore', catalogoMansioni).nome}:
                             </span>
                             <div className="flex items-center justify-end min-w-0">
                               <strong className="text-white font-bold truncate">{t.terzoSoccorritore.nome}</strong>
@@ -1824,7 +1850,7 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
                         {/* Centralinista */}
                         <div className="flex items-center justify-between gap-1">
                           <span className="text-slate-400 font-semibold flex items-center gap-1 shrink-0">
-                            <Users className="w-3.5 h-3.5 text-cyan-400" /> Centralinista:
+                            <Users className="w-3.5 h-3.5 text-cyan-400" /> {getLabelRuoloEquipaggioLive('centralinista', catalogoMansioni).nome}:
                           </span>
                           {t.centralinista ? (
                             <div className="flex items-center justify-end min-w-0">
@@ -1839,7 +1865,7 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
                         {/* Osservatore */}
                         <div className="flex items-center justify-between gap-1">
                           <span className="text-slate-400 font-semibold flex items-center gap-1 shrink-0">
-                            <Eye className="w-3.5 h-3.5 text-amber-400" /> Osservatore:
+                            <Eye className="w-3.5 h-3.5 text-amber-400" /> {getLabelRuoloEquipaggioLive('osservatore', catalogoMansioni).nome}:
                           </span>
                           {t.osservatore ? (
                             <div className="flex items-center justify-end min-w-0">
@@ -1854,7 +1880,7 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
                         {t.operatoreCentrale && (
                           <div className="flex items-center justify-between gap-1 pt-1 border-t border-slate-800">
                             <span className="text-slate-400 font-semibold flex items-center gap-1 shrink-0">
-                              <Headphones className="w-3.5 h-3.5 text-purple-400" /> Sala Radio:
+                              <Headphones className="w-3.5 h-3.5 text-purple-400" /> {getLabelRuoloEquipaggioLive('operatoreCentrale', catalogoMansioni).nome}:
                             </span>
                             <div className="flex items-center justify-end min-w-0">
                               <strong className="text-purple-300 font-bold truncate">{t.operatoreCentrale.nome}</strong>
@@ -1958,6 +1984,7 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
                       setFormCentralinistaId(t.centralinista?.id || '');
                       setFormOsservatoreId(t.osservatore?.id || '');
                       setMostraModificaEquipaggioEsistente(false);
+                      setFormChecklistObbligatoria(t.checklistObbligatoria !== false);
                       setFormNote(t.note || '');
                       setModaleTurnoAperta(true);
                     }}
@@ -2075,7 +2102,7 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
                   <option value="">-- Seleziona Tipo di Turno --</option>
                   {tipiTurno.map((tp) => (
                     <option key={tp.id} value={tp.id}>
-                      {tp.icona || '📅'} {tp.nome} ({tp.mansioniObbligatorie.length} mansioni)
+                      {formatIconaPerTesto(tp.icona, '📅')} {tp.nome} ({tp.mansioniObbligatorie.length} mansioni)
                     </option>
                   ))}
                 </select>
@@ -2084,18 +2111,20 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
                 {(() => {
                   const tipoSel = tipiTurno.find((tp) => tp.id === formTipoTurnoId);
                   if (!tipoSel || tipoSel.mansioniObbligatorie.length === 0) return null;
+                  const mansioniLive = risolviMansioniTipoTurnoLive(tipoSel.mansioniObbligatorie, catalogoMansioni);
                   return (
                     <div className="mt-2 p-2.5 rounded-xl bg-indigo-950/40 border border-indigo-500/40 space-y-1.5">
                       <div className="text-[10px] font-black uppercase text-indigo-300">
-                        Mansioni obbligatorie previste ({tipoSel.nome}):
+                        Mansioni previste ({tipoSel.nome}):
                       </div>
                       <div className="flex items-center gap-1.5 flex-wrap">
-                        {tipoSel.mansioniObbligatorie.map((m) => (
+                        {mansioniLive.map((m) => (
                           <span
                             key={m.id}
-                            className="px-2 py-0.5 rounded-lg bg-slate-950 border border-indigo-500/30 text-[10.5px] text-slate-200 font-semibold"
+                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-slate-950 border border-indigo-500/30 text-[10.5px] text-slate-200 font-semibold"
                           >
-                            {m.emoji || '🎖️'} {m.nome}{' '}
+                            <IconaEmoji icona={m.emoji} fallback="🎖️" size="xs" />
+                            <span>{m.nome}</span>
                             <strong className="text-indigo-300 font-mono">
                               (Min {m.minimo} – Max {m.massimo})
                             </strong>
@@ -2328,6 +2357,30 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
                 </div>
               )}
 
+              {/* Spunta per annullare l'obbligatorietà della checklist */}
+              <label className={`flex items-start gap-2.5 p-3 rounded-xl border cursor-pointer transition-colors ${
+                !formChecklistObbligatoria
+                  ? 'bg-amber-950/40 border-amber-500/60 text-amber-100'
+                  : 'bg-slate-950 border-slate-700 text-slate-300 hover:border-slate-600'
+              }`}>
+                <input
+                  type="checkbox"
+                  checked={!formChecklistObbligatoria}
+                  onChange={(e) => setFormChecklistObbligatoria(!e.target.checked)}
+                  className="mt-0.5 w-4 h-4 accent-amber-500 rounded cursor-pointer shrink-0"
+                />
+                <div className="min-w-0">
+                  <span className="font-bold text-xs block text-white">
+                    Annulla l&apos;obbligatorietà della checklist per questo turno
+                  </span>
+                  <span className="text-[10.5px] text-slate-400 block mt-0.5">
+                    {formChecklistObbligatoria
+                      ? 'Stato attuale: Checklist OBBLIGATORIA a inizio turno (impostazione predefinita).'
+                      : 'Stato attuale: Checklist NON obbligatoria per questo turno (i volontari non saranno bloccati).'}
+                  </span>
+                </div>
+              </label>
+
               <div>
                 <label className="block text-slate-400 font-bold mb-1">Note Operative del Turno</label>
                 <textarea
@@ -2365,6 +2418,7 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
                       orarioFine: formFine,
                       mezzoAssegnato: formMezzo,
                       statoCopertura: 'Scoperto',
+                      checklistObbligatoria: formChecklistObbligatoria,
                       note: formNote
                     };
                     setModaleTurnoAperta(false);
@@ -2639,6 +2693,7 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
                 setFormCentraleId(turno.operatoreCentrale?.id || '');
                 setFormCentralinistaId(turno.centralinista?.id || '');
                 setFormOsservatoreId(turno.osservatore?.id || '');
+                setFormChecklistObbligatoria(turno.checklistObbligatoria !== false);
                 setFormNote(turno.note || '');
                 setModaleTurnoAperta(true);
               }}
@@ -2667,6 +2722,7 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
                 setFormCentraleId('');
                 setFormCentralinistaId('');
                 setFormOsservatoreId('');
+                setFormChecklistObbligatoria(true);
                 setFormNote('');
                 setModaleTurnoAperta(true);
               }}
@@ -3432,7 +3488,7 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
                     <option value="">-- Seleziona Tipo di Turno --</option>
                     {tipiTurno.map((tp) => (
                       <option key={tp.id} value={tp.id}>
-                        {tp.icona || '📅'} {tp.nome} ({tp.mansioniObbligatorie.length} mansioni)
+                        {formatIconaPerTesto(tp.icona, '📅')} {tp.nome} ({tp.mansioniObbligatorie.length} mansioni)
                       </option>
                     ))}
                   </select>
@@ -3440,18 +3496,20 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
                   {(() => {
                     const tipoSel = tipiTurno.find((tp) => tp.id === ripTipoTurnoId);
                     if (!tipoSel || tipoSel.mansioniObbligatorie.length === 0) return null;
+                    const mansioniLive = risolviMansioniTipoTurnoLive(tipoSel.mansioniObbligatorie, catalogoMansioni);
                     return (
                       <div className="mt-2 p-2.5 rounded-xl bg-indigo-950/40 border border-indigo-500/40 space-y-1.5">
                         <div className="text-[10px] font-black uppercase text-indigo-300">
-                          Mansioni obbligatorie previste per ogni turno ({tipoSel.nome}):
+                          Mansioni previste per ogni turno ({tipoSel.nome}):
                         </div>
                         <div className="flex items-center gap-1.5 flex-wrap">
-                          {tipoSel.mansioniObbligatorie.map((m) => (
+                          {mansioniLive.map((m) => (
                             <span
                               key={m.id}
-                              className="px-2 py-0.5 rounded-lg bg-slate-950 border border-indigo-500/30 text-[10.5px] text-slate-200 font-semibold"
+                              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-slate-950 border border-indigo-500/30 text-[10.5px] text-slate-200 font-semibold"
                             >
-                              {m.emoji || '🎖️'} {m.nome}{' '}
+                              <IconaEmoji icona={m.emoji} fallback="🎖️" size="xs" />
+                              <span>{m.nome}</span>
                               <strong className="text-indigo-300 font-mono">
                                 (Min {m.minimo} – Max {m.massimo})
                               </strong>
@@ -3720,6 +3778,30 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
                   </span>
                 </div>
               </div>
+
+              {/* Spunta per annullare l'obbligatorietà della checklist sulla serie */}
+              <label className={`flex items-start gap-2.5 p-3 rounded-xl border cursor-pointer transition-colors ${
+                !ripChecklistObbligatoria
+                  ? 'bg-amber-950/40 border-amber-500/60 text-amber-100'
+                  : 'bg-slate-950 border-slate-700 text-slate-300 hover:border-slate-600'
+              }`}>
+                <input
+                  type="checkbox"
+                  checked={!ripChecklistObbligatoria}
+                  onChange={(e) => setRipChecklistObbligatoria(!e.target.checked)}
+                  className="mt-0.5 w-4 h-4 accent-amber-500 rounded cursor-pointer shrink-0"
+                />
+                <div className="min-w-0">
+                  <span className="font-bold text-xs block text-white">
+                    Annulla l&apos;obbligatorietà della checklist per tutti i turni della serie
+                  </span>
+                  <span className="text-[10.5px] text-slate-400 block mt-0.5">
+                    {ripChecklistObbligatoria
+                      ? 'Stato attuale: Checklist OBBLIGATORIA su tutti i turni generati (impostazione predefinita).'
+                      : 'Stato attuale: Checklist NON obbligatoria sui turni di questa serie (modificabile anche sul singolo turno).'}
+                  </span>
+                </div>
+              </label>
 
               {/* Note aggiuntive */}
               <div>

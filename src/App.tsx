@@ -187,6 +187,7 @@ import {
   getMansioniCatalogo,
   getCategorieMansioni,
   applicaMansioniConfigDaSync,
+  RinominaMansioneGlobaleDetail,
 } from './utils/mansioniVolontari';
 import {
   getTipologieMezzoCatalogo,
@@ -195,7 +196,12 @@ import {
 import {
   getTipiTurnoCatalogo,
   applicaTipiTurnoDaSync,
+  aggiornaTurniDopoModificaMansione,
 } from './utils/tipiTurno';
+import {
+  applicaCustomEmojiIconsDaSync,
+  getCustomEmojiIcons,
+} from './utils/emojiIconsArchive';
 import { AdminTopNavbar } from './components/admin/AdminTopNavbar';
 import { SezioneVolontari } from './components/admin/SezioneVolontari';
 import { SezioneMezzi } from './components/admin/SezioneMezzi';
@@ -278,6 +284,7 @@ import {
   normalizzaListaLuoghiTimbratura,
   normalizzaTurniSedi,
   normalizzaComunicazioniBacheca,
+  mergeComunicazioniBachecaSafe,
   normalizzaCorsiFormazione,
 } from './utils/sediNormalize';
 import {
@@ -285,6 +292,12 @@ import {
   applicaDatiCartaIntestataRemoti,
 } from './utils/cartaIntestataStore';
 import { ModalNumeriUtili } from './components/ModalNumeriUtili';
+import { ModalPermessiDispositivo } from './components/ModalPermessiDispositivo';
+import {
+  apriCentroPermessiDispositivo,
+  assicuraPersistenzaStorageApp,
+  invitaAutorizzazioneNecessaria,
+} from './utils/devicePermissions';
 import {
   getRubricaNumeriUtili,
   getRubricaNumeriUtiliUpdatedAt,
@@ -1952,7 +1965,20 @@ export default function App() {
     };
   }, []);
 
-  // 13. Bacheca di Sezione / Comunicazioni ai Volontari
+  // 13. Bacheca di Sezione / Comunicazioni ai Volontari (con tombstone eliminazioni e merge non distruttivo)
+  const [bachecaEliminatiIds, setBachecaEliminatiIds] = useState<string[]>(() => {
+    try {
+      const saved = localStorage.getItem('CROCE_ORO_BACHECA_ELIMINATI');
+      if (saved) return normalizeDeletedIds(JSON.parse(saved));
+    } catch {}
+    return [];
+  });
+  const bachecaEliminatiRef = useRef<string[]>(bachecaEliminatiIds);
+  useEffect(() => {
+    bachecaEliminatiRef.current = bachecaEliminatiIds;
+  }, [bachecaEliminatiIds]);
+  const lastBachecaLocalEditRef = useRef<number>(0);
+
   const [comunicazioniBacheca, setComunicazioniBacheca] = useState<ComunicazioneBacheca[]>(() => {
     try {
       const saved = localStorage.getItem('CROCE_ORO_BACHECA_COMUNICAZIONI');
@@ -1966,13 +1992,47 @@ export default function App() {
     } catch {}
     return normalizzaComunicazioniBacheca(COMUNICAZIONI_BACHECA_INIZIALI);
   });
-  const handleAggiornaComunicazioniBacheca = (nuove: ComunicazioneBacheca[]) => {
-    const norm = normalizzaComunicazioniBacheca(nuove);
+
+  const applicaBachecaRemotaSafe = useCallback((incoming: any[], incomingDeletedIds?: string[]) => {
+    const mergedDeleted = normalizeDeletedIds([
+      ...bachecaEliminatiRef.current,
+      ...(Array.isArray(incomingDeletedIds) ? incomingDeletedIds : []),
+    ]);
+    bachecaEliminatiRef.current = mergedDeleted;
+    setBachecaEliminatiIds(mergedDeleted);
+    try {
+      localStorage.setItem('CROCE_ORO_BACHECA_ELIMINATI', JSON.stringify(mergedDeleted));
+    } catch {}
+    setComunicazioniBacheca((prev) => {
+      const merged = mergeComunicazioniBachecaSafe(prev, incoming, mergedDeleted);
+      try {
+        localStorage.setItem('CROCE_ORO_BACHECA_COMUNICAZIONI', JSON.stringify(merged));
+      } catch {}
+      return merged;
+    });
+  }, []);
+
+  const handleAggiornaComunicazioniBacheca = (
+    nuove: ComunicazioneBacheca[],
+    opts?: { notifica?: any; deletedId?: string }
+  ) => {
+    lastBachecaLocalEditRef.current = Date.now();
+    let nextDeleted = bachecaEliminatiRef.current;
+    if (opts?.deletedId) {
+      nextDeleted = normalizeDeletedIds([...bachecaEliminatiRef.current, opts.deletedId]);
+      bachecaEliminatiRef.current = nextDeleted;
+      setBachecaEliminatiIds(nextDeleted);
+      try {
+        localStorage.setItem('CROCE_ORO_BACHECA_ELIMINATI', JSON.stringify(nextDeleted));
+      } catch {}
+    }
+    const deletedSet = new Set(nextDeleted);
+    const norm = normalizzaComunicazioniBacheca(nuove).filter((c) => !deletedSet.has(c.id));
     setComunicazioniBacheca(norm);
     try {
       localStorage.setItem('CROCE_ORO_BACHECA_COMUNICAZIONI', JSON.stringify(norm));
     } catch {}
-    realtime.syncBacheca(norm);
+    realtime.syncBacheca(norm, opts?.notifica, nextDeleted);
   };
 
   // Notifiche recenti della bacheca (nuovi post e corsi/formazione) per consegna garantita solo in-app a tutti gli account
@@ -3161,6 +3221,7 @@ export default function App() {
   // Promemoria Turno di Servizio per Domani (avviso il giorno prima alle ore 09:00 indipendentemente dalla fascia)
   const [promemoriaTurnoDomaniAlert, setPromemoriaTurnoDomaniAlert] = useState<{
     turnoId?: string;
+    reminderKey?: string;
     volontarioNome?: string;
     ruolo?: string;
     fascia?: string;
@@ -3169,6 +3230,7 @@ export default function App() {
     titolo?: string;
     testo?: string;
   } | null>(null);
+  const promemoriaTurnoMostratoOggiRef = useRef<Set<string>>(new Set());
 
   // Promemoria Timbratura Entrata/Uscita (-10 min standard device, +10 min diversa NON sirena) per Turni e Corsi/Formazione
   const [promemoriaTimbraturaAlert, setPromemoriaTimbraturaAlert] = useState<PromemoriaTimbraturaDue | null>(null);
@@ -5291,8 +5353,19 @@ export default function App() {
     return Boolean(hasTimbraturaApertaPerVolontario(volTarget, timbratureVolontari));
   }, [timbratureVolontari, sessioneTurno.attivo, sessioneTurno.volontarioId, sessioneTurno.volontarioNome, volontarioLoggatoCorrente]);
 
+  // Verifica se il turno attivo del volontario loggato prevede l'obbligatorietà della checklist
+  // (di default sempre obbligatoria, annullabile tramite spunta sul singolo turno o sulla serie ripetuta)
+  const checklistObbligatoriaTurnoCorrente = useMemo(() => {
+    if (!volontarioLoggatoCorrente) return true;
+    const verifica = verificaVolontarioInTurnoAdesso(volontarioLoggatoCorrente, turniSedi, timbratureVolontari);
+    if (verifica.dettaglioTurno && verifica.dettaglioTurno.checklistObbligatoria === false) {
+      return false;
+    }
+    return true;
+  }, [volontarioLoggatoCorrente, turniSedi, timbratureVolontari]);
+
   // Flusso guidato post-login: invita alla timbratura se ha un turno programmato e non ha timbrato.
-  // Non forza la checklist di un mezzo al login perché nessun mezzo è associato finché non avvia un servizio o lo riceve dalla Centrale.
+  // Non forza la checklist di un mezzo al login se disattivata sul turno o se nessun mezzo è associato.
   const handleAvviaFlussoTimbraturaPoiChecklist = useCallback(
     (vol: Volontario, mezzo: string, ruoloTurno: string, timbGiaAperta: boolean) => {
       const oggiStr = formatDateItaly();
@@ -5303,17 +5376,19 @@ export default function App() {
           (volNomeNorm && c.volontarioNome?.trim().toLowerCase() === volNomeNorm);
         return stessoVol && (c.dataOraCompilazione || '').includes(oggiStr);
       });
+      const verificaVol = verificaVolontarioInTurnoAdesso(vol, turniSedi, timbratureVolontari);
+      const isChecklistObblig = verificaVol.dettaglioTurno?.checklistObbligatoria !== false;
 
       setInvitoAvvioDismissedVolKey(null);
 
       if (!timbGiaAperta) {
         setInAttesaChecklistDopoTimbratura(
-          mezzo
+          mezzo && isChecklistObblig
             ? { mezzo, ruolo: ruoloTurno || vol.qualifica || 'Soccorritore' }
             : null
         );
         setModalTimbraturaVolontarioAperta(true);
-      } else if (mezzo && !giaCompilataOggi) {
+      } else if (mezzo && isChecklistObblig && !giaCompilataOggi) {
         setInAttesaChecklistDopoTimbratura({
           mezzo,
           ruolo: ruoloTurno || vol.qualifica || 'Soccorritore'
@@ -5323,7 +5398,7 @@ export default function App() {
         setInAttesaChecklistDopoTimbratura(null);
       }
     },
-    [checklistsCompilate]
+    [checklistsCompilate, turniSedi, timbratureVolontari]
   );
 
   // Chi ha effettuato il login e ha un turno programmato non ancora timbrato viene invitato a timbrare per entrare di turno
@@ -5335,14 +5410,17 @@ export default function App() {
 
     const verifica = verificaVolontarioInTurnoAdesso(volontarioLoggatoCorrente, turniSedi, timbratureVolontari);
     const ruoloTurnoEff = sessioneTurno.qualificaTurno || verifica.dettaglioTurno?.ruoloAssegnato || volontarioLoggatoCorrente.qualifica || 'Soccorritore';
+    const isChecklistObblig = verifica.dettaglioTurno?.checklistObbligatoria !== false;
 
     if (!haTimbraturaApertaVolontario && verifica.haTurnoProgrammato) {
       invitoAutoTriggeredRef.current = sessionKey;
       setInAttesaChecklistDopoTimbratura(
-        sessioneTurno.mezzoScelto ? { mezzo: sessioneTurno.mezzoScelto, ruolo: ruoloTurnoEff } : null
+        sessioneTurno.mezzoScelto && isChecklistObblig
+          ? { mezzo: sessioneTurno.mezzoScelto, ruolo: ruoloTurnoEff }
+          : null
       );
       setModalTimbraturaVolontarioAperta(true);
-    } else if (haTimbraturaApertaVolontario && sessioneTurno.mezzoScelto && !checklistCompilataOggiVolontario) {
+    } else if (haTimbraturaApertaVolontario && sessioneTurno.mezzoScelto && isChecklistObblig && !checklistCompilataOggiVolontario) {
       invitoAutoTriggeredRef.current = sessionKey;
       setInAttesaChecklistDopoTimbratura({ mezzo: sessioneTurno.mezzoScelto, ruolo: ruoloTurnoEff });
       setModalChecklistPostTimbraturaAperta(true);
@@ -5841,7 +5919,10 @@ export default function App() {
             time: timeStr
           });
         },
-        () => {
+        (err) => {
+          if (err && err.code === 1) {
+            invitaAutorizzazioneNecessaria('gps', 'Rilevazione Coordinate GPS Servizio');
+          }
           resolve(posizioneVolontario ? {
             lat: Number(posizioneVolontario.lat.toFixed(6)),
             lng: Number(posizioneVolontario.lng.toFixed(6)),
@@ -10480,12 +10561,10 @@ KM TOTALI: ${kmTot} KM`;
             localStorage.setItem('CROCE_ORO_CHECKLISTS_COMPILATE', JSON.stringify(s.checklistsCompilate));
           } catch {}
         }
-        if (s.bacheca && Array.isArray(s.bacheca) && s.bacheca.length > 0) {
-          const bachecaNorm = normalizzaComunicazioniBacheca(s.bacheca);
-          setComunicazioniBacheca(bachecaNorm);
-          try {
-            localStorage.setItem('CROCE_ORO_BACHECA_COMUNICAZIONI', JSON.stringify(bachecaNorm));
-          } catch {}
+        if ((s.bacheca && Array.isArray(s.bacheca)) || Array.isArray(s.bachecaEliminatiIds)) {
+          if ((Date.now() - lastBachecaLocalEditRef.current) > 2500) {
+            applicaBachecaRemotaSafe(Array.isArray(s.bacheca) ? s.bacheca : [], s.bachecaEliminatiIds);
+          }
         }
         if (Array.isArray(s.notificheBachecaRecenti) && s.notificheBachecaRecenti.length > 0) {
           applicaNotificheBachecaRecenti(s.notificheBachecaRecenti);
@@ -10580,6 +10659,9 @@ KM TOTALI: ${kmTot} KM`;
         }
         if (Array.isArray(s.catalogoMansioni) || Array.isArray(s.categorieMansioni)) {
           applicaMansioniConfigDaSync(s.catalogoMansioni, s.categorieMansioni, s.mansioniConfigUpdatedAt);
+        }
+        if (Array.isArray(s.customEmojiIcons)) {
+          applicaCustomEmojiIconsDaSync(s.customEmojiIcons, s.customEmojiIconsUpdatedAt);
         }
         if (s.nomiDatabase && typeof s.nomiDatabase === 'object' && !Array.isArray(s.nomiDatabase)) {
           applicaNomiDatabaseDaSync(s.nomiDatabase, s.nomiDatabaseUpdatedAt);
@@ -10698,12 +10780,10 @@ KM TOTALI: ${kmTot} KM`;
         if (Array.isArray(s.timbrature)) {
           syncInTurnoConTimbratureRef.current(s.timbrature.length > 0 ? s.timbrature : timbratureVolontariRef.current, false);
         }
-        if (s.bacheca && Array.isArray(s.bacheca) && s.bacheca.length > 0) {
-          const bachecaNorm = normalizzaComunicazioniBacheca(s.bacheca);
-          setComunicazioniBacheca(bachecaNorm);
-          try {
-            localStorage.setItem('CROCE_ORO_BACHECA_COMUNICAZIONI', JSON.stringify(bachecaNorm));
-          } catch {}
+        if ((s.bacheca && Array.isArray(s.bacheca)) || Array.isArray(s.bachecaEliminatiIds)) {
+          if ((Date.now() - lastBachecaLocalEditRef.current) > 2500) {
+            applicaBachecaRemotaSafe(Array.isArray(s.bacheca) ? s.bacheca : [], s.bachecaEliminatiIds);
+          }
         }
         if (Array.isArray(s.notificheBachecaRecenti) && s.notificheBachecaRecenti.length > 0) {
           applicaNotificheBachecaRecenti(s.notificheBachecaRecenti);
@@ -10791,6 +10871,9 @@ KM TOTALI: ${kmTot} KM`;
         }
         if (Array.isArray(s.catalogoMansioni) || Array.isArray(s.categorieMansioni)) {
           applicaMansioniConfigDaSync(s.catalogoMansioni, s.categorieMansioni, s.mansioniConfigUpdatedAt);
+        }
+        if (Array.isArray(s.customEmojiIcons)) {
+          applicaCustomEmojiIconsDaSync(s.customEmojiIcons, s.customEmojiIconsUpdatedAt);
         }
         if (s.nomiDatabase && typeof s.nomiDatabase === 'object' && !Array.isArray(s.nomiDatabase)) {
           applicaNomiDatabaseDaSync(s.nomiDatabase, s.nomiDatabaseUpdatedAt);
@@ -12548,7 +12631,7 @@ KM TOTALI: ${kmTot} KM`;
         }
       }),
 
-      // Promemoria automatico turno del giorno prima (alle ore 09:00 indipendentemente dalla fascia oraria)
+      // Promemoria automatico turno del giorno prima (UNA SOLA volta per account alle ore 09:00)
       realtime.on('PROMEMORIA_TURNO_DOMANI', (payload: any) => {
         const volIdCorrente = sessioneTurnoRef.current?.volontarioId;
         const volNomeCorrente = sessioneTurnoRef.current?.volontarioNome;
@@ -12569,23 +12652,36 @@ KM TOTALI: ${kmTot} KM`;
         const isCentrale = ruoloRef.current === 'admin' || layoutViewRef.current === 'both' || layoutViewRef.current === 'centrale';
 
         if (isMioTurno) {
-          mostraNotificaNativa(payload.titolo || '📅 PROMEMORIA TURNO PER DOMANI (Ore 09:00)', {
-            body: payload.testo,
-            tag: `promemoria-turno-${payload.turnoId || 'domani'}`,
-            requireInteraction: true,
-            vibrate: [600, 200, 600, 200, 1000]
-          });
-          playRadioChime();
-          aggiungiNotifica(`🔔 ${payload.titolo || 'PROMEMORIA'}: ${payload.testo}`, 'sistema', {
-            registraInCentro: true,
-            dedupKey: `promemoria-domani-${payload.turnoId || ''}-${payload.volontarioId || ''}-${payload.dataFormatted || ''}`,
-            ignoraSuono: true
-          });
-          setPromemoriaTurnoDomaniAlert(payload);
+          const todayStr = payload.todayStr || getItalianDateParts().isoDate;
+          const accountKey = String(volIdCorrente || savedSubVolId || volNomeCorrente || payload.volontarioId || 'vol').trim().toLowerCase();
+          const dayKey = `CROCE_ORO_PROMEMORIA_TURNO_GIORNO_${todayStr}_${accountKey}`;
+          const alreadyShown =
+            promemoriaTurnoMostratoOggiRef.current.has(dayKey) ||
+            (typeof window !== 'undefined' && localStorage.getItem(dayKey) === 'true');
+
+          if (!alreadyShown) {
+            promemoriaTurnoMostratoOggiRef.current.add(dayKey);
+            try {
+              localStorage.setItem(dayKey, 'true');
+            } catch {}
+            mostraNotificaNativa(payload.titolo || '📅 PROMEMORIA TURNO PER DOMANI (Ore 09:00)', {
+              body: payload.testo,
+              tag: `promemoria-turno-giorno-${todayStr}-${accountKey}`,
+              requireInteraction: true,
+              vibrate: [600, 200, 600, 200, 1000]
+            });
+            playRadioChime();
+            aggiungiNotifica(`🔔 ${payload.titolo || 'PROMEMORIA'}: ${payload.testo}`, 'sistema', {
+              registraInCentro: true,
+              dedupKey: `promemoria-domani-giorno-${todayStr}-${accountKey}`,
+              ignoraSuono: true
+            });
+            setPromemoriaTurnoDomaniAlert({ ...payload, reminderKey: dayKey });
+          }
         } else if (isCentrale) {
           aggiungiNotifica(`📅 ${payload.testo}`, 'sistema', {
             registraInCentro: true,
-            dedupKey: `promemoria-domani-ctr-${payload.turnoId || ''}-${payload.volontarioId || ''}-${payload.dataFormatted || ''}`,
+            dedupKey: `promemoria-domani-ctr-${payload.reminderDayKey || payload.turnoId || ''}-${payload.volontarioId || ''}-${payload.dataFormatted || ''}`,
             ignoraSuono: true
           });
         }
@@ -12607,14 +12703,10 @@ KM TOTALI: ${kmTot} KM`;
         }
       }),
 
-      // 15. Sincronizzazione Realtime Bacheca e Commenti
+      // 15. Sincronizzazione Realtime Bacheca e Commenti (Merge non distruttivo)
       realtime.on('BACHECA_UPDATED', (payload: any) => {
-        if (payload && Array.isArray(payload.bacheca)) {
-          const bachecaNorm = normalizzaComunicazioniBacheca(payload.bacheca);
-          setComunicazioniBacheca(bachecaNorm);
-          try {
-            localStorage.setItem('CROCE_ORO_BACHECA_COMUNICAZIONI', JSON.stringify(bachecaNorm));
-          } catch {}
+        if (payload && (Array.isArray(payload.bacheca) || Array.isArray(payload.bachecaEliminatiIds))) {
+          applicaBachecaRemotaSafe(Array.isArray(payload.bacheca) ? payload.bacheca : [], payload.bachecaEliminatiIds);
         }
         if (Array.isArray(payload?.notificheBachecaRecenti) && payload.notificheBachecaRecenti.length > 0) {
           applicaNotificheBachecaRecenti(payload.notificheBachecaRecenti);
@@ -12870,6 +12962,9 @@ KM TOTALI: ${kmTot} KM`;
         if (payload && (Array.isArray(payload.catalogoMansioni) || Array.isArray(payload.categorieMansioni))) {
           applicaMansioniConfigDaSync(payload.catalogoMansioni, payload.categorieMansioni, payload.updatedAt);
         }
+        if (payload && Array.isArray(payload.customEmojiIcons)) {
+          applicaCustomEmojiIconsDaSync(payload.customEmojiIcons, payload.customEmojiIconsUpdatedAt || payload.updatedAt);
+        }
       }),
       realtime.on('NOMI_DATABASE_UPDATED', (payload: any) => {
         if (payload?.nomiDatabase && typeof payload.nomiDatabase === 'object' && !Array.isArray(payload.nomiDatabase)) {
@@ -12942,6 +13037,7 @@ KM TOTALI: ${kmTot} KM`;
           turni: normalizzaTurniSedi(readLS('CROCE_ORO_TURNI_SEDI', TURNI_SEDI_INIZIALI)),
           serviziArchivio: readLS('CROCE_ORO_SERVIZI_ARCHIVIO', []),
           bacheca: normalizzaComunicazioniBacheca(readLS('CROCE_ORO_BACHECA_COMUNICAZIONI', COMUNICAZIONI_BACHECA_INIZIALI)),
+          bachecaEliminatiIds: readLS('CROCE_ORO_BACHECA_ELIMINATI', []),
           giornaleBordo: readLS('CROCE_ORO_GIORNALE_BORDO', []),
           magazzinoParti: readLS('CROCE_ORO_MAGAZZINO_PARTI_MEZZI', []),
           magazzinoMezzi: readLS('CROCE_ORO_MAGAZZINO_MEZZI', []),
@@ -12957,6 +13053,7 @@ KM TOTALI: ${kmTot} KM`;
           mezziFlotta: readLS('CROCE_ORO_MEZZI_FLOTTA', MEZZI_FLOTTA_INIZIALI),
           catalogoMansioni: getMansioniCatalogo(),
           categorieMansioni: getCategorieMansioni(),
+          customEmojiIcons: getCustomEmojiIcons(),
           tipologieMezzo: getTipologieMezzoCatalogo(),
           tipiTurno: getTipiTurnoCatalogo(),
           nomiDatabase: getNomiDatabaseSyncPayload(),
@@ -12990,14 +13087,10 @@ KM TOTALI: ${kmTot} KM`;
       }
     }).catch(() => {});
 
-    // Carica la bacheca remota sincronizzata dal server
+    // Carica la bacheca remota sincronizzata dal server (merge non distruttivo)
     realtime.fetchBacheca().then(remoteBacheca => {
       if (remoteBacheca && Array.isArray(remoteBacheca) && remoteBacheca.length > 0) {
-        const bachecaNorm = normalizzaComunicazioniBacheca(remoteBacheca);
-        setComunicazioniBacheca(bachecaNorm);
-        try {
-          localStorage.setItem('CROCE_ORO_BACHECA_COMUNICAZIONI', JSON.stringify(bachecaNorm));
-        } catch {}
+        applicaBachecaRemotaSafe(remoteBacheca);
       }
     }).catch(() => {});
 
@@ -13043,7 +13136,116 @@ KM TOTALI: ${kmTot} KM`;
     };
   }, []);
 
-  // Controllo proattivo promemoria turno di domani (scatta dalle ore 09:00 del giorno prima)
+  // Persistenza storage permanente al mount (evita revoca dati se app inutilizzata)
+  useEffect(() => {
+    assicuraPersistenzaStorageApp().catch(() => {});
+  }, []);
+
+  // Propagazione automatica globale quando una mansione/competenza viene rinominata in Gestione Volontari:
+  // aggiorna automaticamente turni, corsi di formazione, timbrature e sessione attiva con il nuovo nome.
+  useEffect(() => {
+    const onMansioneRinominata = (ev: Event) => {
+      const detail = (ev as CustomEvent<RinominaMansioneGlobaleDetail>).detail;
+      if (!detail || !detail.vecchioNome || !detail.nuovoNome) return;
+      const oldNorm = detail.vecchioNome.trim().toLowerCase();
+      const newName = detail.nuovoNome.trim();
+      if (!oldNorm || !newName || oldNorm === newName.toLowerCase()) return;
+
+      // 1. Aggiorna tutti i turni (mansioniRichieste + richiesteIscrizione)
+      setTurniSedi((prev) => {
+        const res = aggiornaTurniDopoModificaMansione(
+          prev,
+          detail.vecchioNome,
+          newName,
+          detail.mansioneId,
+          detail.nuovaEmoji
+        );
+        if (!res.modificato) return prev;
+        try {
+          localStorage.setItem('CROCE_ORO_TURNI_SEDI', JSON.stringify(res.aggiornati));
+        } catch {}
+        realtime.syncTurni(res.aggiornati);
+        return res.aggiornati;
+      });
+
+      // 2. Aggiorna corsi di formazione (mansione rilasciata, prerequisito e qualifiche iscritti)
+      setCorsiFormazione((prev) => {
+        let changed = false;
+        const next = prev.map((c) => {
+          let cMod = false;
+          const nextRil = c.mansioneRilasciata && c.mansioneRilasciata.trim().toLowerCase() === oldNorm
+            ? (cMod = true, newName)
+            : c.mansioneRilasciata;
+          const nextPre = c.mansionePrerequisito && c.mansionePrerequisito.trim().toLowerCase() === oldNorm
+            ? (cMod = true, newName)
+            : c.mansionePrerequisito;
+          const nextIscr = Array.isArray(c.iscritti)
+            ? c.iscritti.map((isc) => {
+                if (isc.qualifica && isc.qualifica.trim().toLowerCase() === oldNorm) {
+                  cMod = true;
+                  return { ...isc, qualifica: newName };
+                }
+                return isc;
+              })
+            : c.iscritti;
+          if (!cMod) return c;
+          changed = true;
+          return {
+            ...c,
+            mansioneRilasciata: nextRil,
+            mansionePrerequisito: nextPre,
+            iscritti: nextIscr,
+          };
+        });
+        if (!changed) return prev;
+        try {
+          localStorage.setItem('CROCE_ORO_CORSI', JSON.stringify(next));
+        } catch {}
+        realtime.syncCorsi(next);
+        return next;
+      });
+
+      // 3. Aggiorna qualifica sulle timbrature registrate
+      setTimbratureVolontari((prev) => {
+        let changed = false;
+        const next = prev.map((t) => {
+          if (t.qualifica && t.qualifica.trim().toLowerCase() === oldNorm) {
+            changed = true;
+            return { ...t, qualifica: newName };
+          }
+          return t;
+        });
+        if (!changed) return prev;
+        try {
+          localStorage.setItem('CROCE_ORO_TIMBRATURE', JSON.stringify(next));
+        } catch {}
+        realtime.syncTimbrature(next);
+        return next;
+      });
+
+      // 4. Aggiorna eventuale utenteCentrale attivo
+      setUtenteCentrale((prev) => {
+        if (!prev) return prev;
+        const hasQual = prev.qualifica && prev.qualifica.trim().toLowerCase() === oldNorm;
+        if (!hasQual) return prev;
+        const updated = {
+          ...prev,
+          qualifica: newName,
+        };
+        try {
+          localStorage.setItem('CROCE_ORO_UTENTE_CENTRALE', JSON.stringify(updated));
+        } catch {}
+        return updated;
+      });
+    };
+
+    window.addEventListener('croceoro_mansione_rinominata', onMansioneRinominata);
+    return () => window.removeEventListener('croceoro_mansione_rinominata', onMansioneRinominata);
+  }, []);
+
+  // Controllo proattivo promemoria turno di domani:
+  // OGNI ACCOUNT riceve UNA SOLA notifica il giorno precedente a partire dalle ore 09:00
+  // indipendentemente dal turno (o dal numero di turni) a cui è assegnato, senza mai riproporsi dopo presa visione.
   useEffect(() => {
     const volId = sessioneTurno.volontarioId || (typeof window !== 'undefined' ? localStorage.getItem('CROCE_ORO_SUBSCRIBED_VOL_ID') : null);
     const volNome = sessioneTurno.volontarioNome || (typeof window !== 'undefined' ? localStorage.getItem('CROCE_ORO_SUBSCRIBED_VOL_NOME') : null);
@@ -13054,18 +13256,40 @@ KM TOTALI: ${kmTot} KM`;
       const todayStr = itNow.isoDate;
       const hour = itNow.hour;
 
-      // Scatta a partire dalle ore 09:00 di mattina del giorno prima (ora ufficiale italiana CET/CEST)
+      // Scatta esclusivamente a partire dalle ore 09:00 del giorno prima (ora ufficiale italiana CET/CEST)
       if (hour < 9) return;
+
+      const accountKey = String(volId || volNome || '').trim().toLowerCase();
+      if (!accountKey) return;
+
+      // Chiave UNICA giornaliera per account: garantisce 1 sola notifica al giorno per account e ZERO loop su POLL_SYNC
+      const dayReminderKey = `CROCE_ORO_PROMEMORIA_TURNO_GIORNO_${todayStr}_${accountKey}`;
+      if (
+        promemoriaTurnoMostratoOggiRef.current.has(dayReminderKey) ||
+        (typeof window !== 'undefined' && localStorage.getItem(dayReminderKey) === 'true')
+      ) {
+        return;
+      }
 
       const tomorrowStr = itNow.tomorrowIsoDate;
       const [tomY, tomM, tomD] = tomorrowStr.split('-');
 
       const turniDomani = (turniSedi || []).filter(t => t && t.data === tomorrowStr);
-      for (const t of turniDomani) {
-        const presoVisioneKey = `CROCE_ORO_PROMEMORIA_PRESO_VISIONE_${todayStr}_${t.id}_${volId || volNome}`;
-        if (typeof window !== 'undefined' && localStorage.getItem(presoVisioneKey) === 'true') continue;
+      const turniAssegnatiDomani: Array<{ turno: TurnoSedeOperativa; ruolo: string }> = [];
 
-        // Verifica assegnazione del volontario a questo turno
+      for (const t of turniDomani) {
+        // Verifica se già marcato con vecchia chiave (compatibilità con versioni precedenti)
+        const legacyKeyTurno = `CROCE_ORO_PROMEMORIA_PRESO_VISIONE_${t.id}`;
+        const legacyKeyFull = `CROCE_ORO_PROMEMORIA_PRESO_VISIONE_${todayStr}_${t.id}_${volId || volNome}`;
+        if (
+          typeof window !== 'undefined' &&
+          (localStorage.getItem(legacyKeyTurno) === 'true' || localStorage.getItem(legacyKeyFull) === 'true')
+        ) {
+          promemoriaTurnoMostratoOggiRef.current.add(dayReminderKey);
+          try { localStorage.setItem(dayReminderKey, 'true'); } catch {}
+          return;
+        }
+
         const slots = [
           { s: t.autista, r: 'Autista' },
           { s: t.caposervizio, r: 'Caposervizio' },
@@ -13098,34 +13322,56 @@ KM TOTALI: ${kmTot} KM`;
         }
 
         if (ruoloAssegnato) {
-          const fascia = t.fasciaOraria || `${t.orarioInizio || '08:00'} - ${t.orarioFine || '14:00'}`;
-          const sede = t.sedeNome || 'Sede Operativa';
-          const dataFormatted = `${tomD}/${tomM}/${tomY}`;
-          const mezzo = t.mezzoAssegnato ? ` • Mezzo: ${t.mezzoAssegnato}` : '';
-          const titolo = `📅 PROMEMORIA TURNO PER DOMANI (Ore 09:00)`;
-          const testo = `Ciao ${volNome || 'Volontario'}, ti ricordiamo che domani ${dataFormatted} sei di turno [${fascia}] presso ${sede} (Ruolo: ${ruoloAssegnato}${mezzo}).`;
-
-          setPromemoriaTurnoDomaniAlert({
-            turnoId: t.id,
-            volontarioNome: volNome || undefined,
-            ruolo: ruoloAssegnato,
-            fascia,
-            sede,
-            dataFormatted,
-            titolo,
-            testo
-          });
-
-          mostraNotificaNativa(titolo, {
-            body: testo,
-            tag: `promemoria-${t.id}`,
-            requireInteraction: true
-          });
-          break;
+          turniAssegnatiDomani.push({ turno: t, ruolo: ruoloAssegnato });
         }
       }
+
+      if (turniAssegnatiDomani.length > 0) {
+        // Registra IMMEDIATAMENTE la chiave giornaliera per evitare qualsiasi ripetizione su POLL_SYNC
+        promemoriaTurnoMostratoOggiRef.current.add(dayReminderKey);
+        try {
+          localStorage.setItem(dayReminderKey, 'true');
+        } catch {}
+
+        const primo = turniAssegnatiDomani[0];
+        const t = primo.turno;
+        const fascia =
+          turniAssegnatiDomani.length === 1
+            ? (t.fasciaOraria || `${t.orarioInizio || '08:00'} - ${t.orarioFine || '14:00'}`)
+            : turniAssegnatiDomani
+                .map((x) => x.turno.fasciaOraria || `${x.turno.orarioInizio || '08:00'} - ${x.turno.orarioFine || '14:00'}`)
+                .join(' + ');
+        const sede = t.sedeNome || 'Sede Operativa';
+        const dataFormatted = `${tomD}/${tomM}/${tomY}`;
+        const riepilogo =
+          turniAssegnatiDomani.length === 1
+            ? `[${fascia}] presso ${sede} (Ruolo: ${primo.ruolo}${t.mezzoAssegnato ? ` • Mezzo: ${t.mezzoAssegnato}` : ''})`
+            : turniAssegnatiDomani
+                .map((x) => `[${x.turno.fasciaOraria || `${x.turno.orarioInizio}-${x.turno.orarioFine}`}] presso ${x.turno.sedeNome || 'Sede'} (${x.ruolo}${x.turno.mezzoAssegnato ? ` • ${x.turno.mezzoAssegnato}` : ''})`)
+                .join(' ; ');
+        const titolo = `📅 PROMEMORIA TURNO PER DOMANI (Ore 09:00)`;
+        const testo = `Ciao ${volNome || 'Volontario'}, ti ricordiamo che domani ${dataFormatted} sei di turno: ${riepilogo}.`;
+
+        setPromemoriaTurnoDomaniAlert({
+          turnoId: t.id,
+          reminderKey: dayReminderKey,
+          volontarioNome: volNome || undefined,
+          ruolo: primo.ruolo,
+          fascia,
+          sede,
+          dataFormatted,
+          titolo,
+          testo
+        });
+
+        mostraNotificaNativa(titolo, {
+          body: testo,
+          tag: `promemoria-turno-giorno-${todayStr}-${accountKey}`,
+          requireInteraction: true
+        });
+      }
     } catch {}
-  }, [sessioneTurno, turniSedi]);
+  }, [sessioneTurno.volontarioId, sessioneTurno.volontarioNome, turniSedi]);
 
   // Sincronizza con il server l'elenco aggiornato dei volontari (incluse date di nascita e permessi database Volontari)
   // per garantire che le notifiche email dei compleanni arrivino anche a tutti gli account abilitati al DB Volontari
@@ -13370,6 +13616,7 @@ KM TOTALI: ${kmTot} KM`;
               turni: turniSedi,
               serviziArchivio: archivioPDF,
               bacheca: comunicazioniBacheca,
+              bachecaEliminatiIds,
               giornaleBordo,
               magazzinoParti,
               magazzinoMezzi,
@@ -13382,6 +13629,7 @@ KM TOTALI: ${kmTot} KM`;
               costiServizio,
               catalogoMansioni: getMansioniCatalogo(),
               categorieMansioni: getCategorieMansioni(),
+              customEmojiIcons: getCustomEmojiIcons(),
               tipologieMezzo: getTipologieMezzoCatalogo(),
               tipiTurno: getTipiTurnoCatalogo(),
               mezziFlotta,
@@ -13881,6 +14129,18 @@ KM TOTALI: ${kmTot} KM`;
                           <span>Numeri Utili & Ospedali</span>
                         </button>
 
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setMenuHeaderAzioniAperto(false);
+                            apriCentroPermessiDispositivo();
+                          }}
+                          className="w-full px-2.5 py-2 rounded-lg bg-slate-900 hover:bg-slate-800 text-emerald-300 border border-emerald-500/30 font-bold text-xs flex items-center gap-2 cursor-pointer"
+                        >
+                          <Shield className="w-4 h-4 text-emerald-400 shrink-0" />
+                          <span>Autorizzazioni Dispositivo</span>
+                        </button>
+
                         {isAdminAttivoInHeader && (
                           <>
                             <button
@@ -14076,6 +14336,18 @@ KM TOTALI: ${kmTot} KM`;
                     >
                       <Phone className="w-3 h-3 shrink-0" />
                       <span>Numeri Utili</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => apriCentroPermessiDispositivo()}
+                      className={`px-2 py-1 rounded-lg font-bold text-[11px] flex items-center gap-1 cursor-pointer border whitespace-nowrap ${
+                        isWeb ? 'bg-emerald-100 hover:bg-emerald-200 text-emerald-950 border-emerald-400' : 'bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border-emerald-500/40'
+                      }`}
+                      title="Gestisci tutte le autorizzazioni permanenti del dispositivo"
+                    >
+                      <Shield className="w-3 h-3 shrink-0" />
+                      <span>Autorizzazioni</span>
                     </button>
 
                     {ruolo === 'admin' && adminSection === 'centrale' && (
@@ -21568,6 +21840,7 @@ KM TOTALI: ${kmTot} KM`;
             turni: turniSedi,
             serviziArchivio: archivioPDF,
             bacheca: comunicazioniBacheca,
+            bachecaEliminatiIds,
             giornaleBordo,
             magazzinoParti,
             magazzinoMezzi,
@@ -21580,6 +21853,7 @@ KM TOTALI: ${kmTot} KM`;
             costiServizio,
             catalogoMansioni: getMansioniCatalogo(),
             categorieMansioni: getCategorieMansioni(),
+            customEmojiIcons: getCustomEmojiIcons(),
             tipologieMezzo: getTipologieMezzoCatalogo(),
             tipiTurno: getTipiTurnoCatalogo(),
             mezziFlotta,
@@ -21842,7 +22116,7 @@ KM TOTALI: ${kmTot} KM`;
                     aggiornaSessioneTurno(sessioneAggiornata);
                     realtime.updateShift(sessioneAggiornata);
 
-                    if (!checklistCompilataOggiVolontario && inAttesaChecklistDopoTimbratura?.mezzo && timbratura.tipoAttivita !== 'corso') {
+                    if (checklistObbligatoriaTurnoCorrente && !checklistCompilataOggiVolontario && inAttesaChecklistDopoTimbratura?.mezzo && timbratura.tipoAttivita !== 'corso') {
                       setModalTimbraturaVolontarioAperta(false);
                       setModalChecklistPostTimbraturaAperta(true);
                     }
@@ -22348,9 +22622,30 @@ KM TOTALI: ${kmTot} KM`;
               <button
                 type="button"
                 onClick={() => {
+                  const todayStr = getItalianDateParts().isoDate;
+                  const accKey = String(
+                    sessioneTurno.volontarioId ||
+                    (typeof window !== 'undefined' ? localStorage.getItem('CROCE_ORO_SUBSCRIBED_VOL_ID') : '') ||
+                    sessioneTurno.volontarioNome ||
+                    promemoriaTurnoDomaniAlert.volontarioNome ||
+                    ''
+                  ).trim().toLowerCase();
+                  const dayKey = promemoriaTurnoDomaniAlert.reminderKey || (accKey ? `CROCE_ORO_PROMEMORIA_TURNO_GIORNO_${todayStr}_${accKey}` : '');
+                  if (dayKey) {
+                    promemoriaTurnoMostratoOggiRef.current.add(dayKey);
+                    try {
+                      localStorage.setItem(dayKey, 'true');
+                    } catch {}
+                  }
                   if (promemoriaTurnoDomaniAlert.turnoId) {
                     try {
                       localStorage.setItem(`CROCE_ORO_PROMEMORIA_PRESO_VISIONE_${promemoriaTurnoDomaniAlert.turnoId}`, 'true');
+                      if (accKey) {
+                        localStorage.setItem(
+                          `CROCE_ORO_PROMEMORIA_PRESO_VISIONE_${todayStr}_${promemoriaTurnoDomaniAlert.turnoId}_${sessioneTurno.volontarioId || sessioneTurno.volontarioNome || accKey}`,
+                          'true'
+                        );
+                      }
                     } catch {}
                   }
                   setPromemoriaTurnoDomaniAlert(null);
@@ -22363,6 +22658,19 @@ KM TOTALI: ${kmTot} KM`;
               <button
                 type="button"
                 onClick={() => {
+                  const todayStr = getItalianDateParts().isoDate;
+                  const accKey = String(
+                    sessioneTurno.volontarioId ||
+                    (typeof window !== 'undefined' ? localStorage.getItem('CROCE_ORO_SUBSCRIBED_VOL_ID') : '') ||
+                    sessioneTurno.volontarioNome ||
+                    promemoriaTurnoDomaniAlert.volontarioNome ||
+                    ''
+                  ).trim().toLowerCase();
+                  const dayKey = promemoriaTurnoDomaniAlert.reminderKey || (accKey ? `CROCE_ORO_PROMEMORIA_TURNO_GIORNO_${todayStr}_${accKey}` : '');
+                  if (dayKey) {
+                    promemoriaTurnoMostratoOggiRef.current.add(dayKey);
+                    try { localStorage.setItem(dayKey, 'true'); } catch {}
+                  }
                   setPromemoriaTurnoDomaniAlert(null);
                   setModalTabelloneTurniVolontario(true);
                 }}
@@ -23494,6 +23802,9 @@ KM TOTALI: ${kmTot} KM`;
         }
         onNotificaRadio={aggiungiNotifica}
       />
+
+      {/* CENTRO PERMESSI PERMANENTI DISPOSITIVO + INVITI CONTESTUALI ON-DEMAND (EMERGENZE SEMPRE ATTIVE) */}
+      <ModalPermessiDispositivo />
 
       {/* MODALE OBBLIGATORIA FIRMA DIGITALE & CAMBIO PIN 0000 (CENTRALE / ACCESSO AVANZATO) */}
       {obbligoAdeguamentoCentrale && (

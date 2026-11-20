@@ -39,6 +39,7 @@ import {
   normalizzaListaLuoghiTimbratura,
   normalizzaTurniSedi,
   normalizzaComunicazioniBacheca,
+  mergeComunicazioniBachecaSafe,
 } from '../utils/sediNormalize';
 import {
   capturePublicUrlIfApplicable,
@@ -48,6 +49,11 @@ import {
 } from '../utils/publicUrl';
 import { LEGACY_MOCK_CORSI_IDS } from '../data/adminMockData';
 import { applicaMansioniConfigDaSync, getMansioniConfigUpdatedAt } from '../utils/mansioniVolontari';
+import {
+  applicaCustomEmojiIconsDaSync,
+  getCustomEmojiIcons,
+  getCustomEmojiIconsUpdatedAt,
+} from '../utils/emojiIconsArchive';
 import { applicaNomiDatabaseDaSync, getNomiDatabaseUpdatedAt } from '../constants/macroCategorie';
 import { applicaTipologieMezzoDaSync, getTipologieMezzoUpdatedAt } from '../utils/tipologieMezzo';
 import { applicaTipiTurnoDaSync, getTipiTurnoUpdatedAt } from '../utils/tipiTurno';
@@ -601,6 +607,11 @@ class RealtimeService {
       }
     }
     if (shardId === 'bacheca') {
+      const deletedIds = normalizeDeletedIds([
+        ...(Array.isArray(this.cloudState.bachecaEliminatiIds) ? this.cloudState.bachecaEliminatiIds : []),
+        ...(Array.isArray(payload.bachecaEliminatiIds) ? payload.bachecaEliminatiIds : []),
+      ]);
+      this.cloudState.bachecaEliminatiIds = deletedIds;
       if (Array.isArray(payload.notificheBachecaRecenti)) {
         this.cloudState.notificheBachecaRecenti = mergeNotificheBachecaRecenti(
           this.cloudState.notificheBachecaRecenti,
@@ -608,15 +619,21 @@ class RealtimeService {
         );
       }
       if (Array.isArray(payload.bacheca)) {
-        const bachecaNorm = normalizzaComunicazioniBacheca(payload.bacheca);
-        this.cloudState.bacheca = bachecaNorm;
+        const mergedBacheca = mergeComunicazioniBachecaSafe(
+          this.cloudState.bacheca,
+          payload.bacheca,
+          deletedIds
+        );
+        this.cloudState.bacheca = mergedBacheca;
         this.emit('BACHECA_UPDATED', {
-          bacheca: bachecaNorm,
+          bacheca: mergedBacheca,
+          bachecaEliminatiIds: deletedIds,
           notificheBachecaRecenti: this.cloudState.notificheBachecaRecenti || [],
         });
       } else if (Array.isArray(payload.notificheBachecaRecenti)) {
         this.emit('BACHECA_UPDATED', {
           bacheca: Array.isArray(this.cloudState.bacheca) ? this.cloudState.bacheca : [],
+          bachecaEliminatiIds: deletedIds,
           notificheBachecaRecenti: this.cloudState.notificheBachecaRecenti || [],
         });
       }
@@ -708,15 +725,25 @@ class RealtimeService {
           updatedAt: payload.mezziFlottaUpdatedAt,
         });
       }
-      if (Array.isArray(payload.catalogoMansioni) || Array.isArray(payload.categorieMansioni)) {
-        applicaMansioniConfigDaSync(
-          payload.catalogoMansioni,
-          payload.categorieMansioni,
-          payload.mansioniConfigUpdatedAt
-        );
+      if (Array.isArray(payload.catalogoMansioni) || Array.isArray(payload.categorieMansioni) || Array.isArray(payload.customEmojiIcons)) {
+        if (Array.isArray(payload.catalogoMansioni) || Array.isArray(payload.categorieMansioni)) {
+          applicaMansioniConfigDaSync(
+            payload.catalogoMansioni,
+            payload.categorieMansioni,
+            payload.mansioniConfigUpdatedAt
+          );
+        }
+        if (Array.isArray(payload.customEmojiIcons)) {
+          applicaCustomEmojiIconsDaSync(
+            payload.customEmojiIcons,
+            payload.customEmojiIconsUpdatedAt || payload.mansioniConfigUpdatedAt
+          );
+        }
         this.emit('MANSIONI_CONFIG_UPDATED', {
           catalogoMansioni: payload.catalogoMansioni,
           categorieMansioni: payload.categorieMansioni,
+          customEmojiIcons: payload.customEmojiIcons,
+          customEmojiIconsUpdatedAt: payload.customEmojiIconsUpdatedAt,
           updatedAt: payload.mansioniConfigUpdatedAt,
         });
       }
@@ -1161,6 +1188,7 @@ class RealtimeService {
       case 'bacheca':
         return {
           bacheca: Array.isArray(this.cloudState.bacheca) ? normalizzaComunicazioniBacheca(this.cloudState.bacheca) : [],
+          bachecaEliminatiIds: normalizeDeletedIds(this.cloudState.bachecaEliminatiIds),
           notificheBachecaRecenti: Array.isArray(this.cloudState.notificheBachecaRecenti) ? this.cloudState.notificheBachecaRecenti : [],
           giornaleBordo: Array.isArray(this.cloudState.giornaleBordo) ? this.cloudState.giornaleBordo : [],
         };
@@ -1205,6 +1233,8 @@ class RealtimeService {
           catalogoMansioni: Array.isArray(this.cloudState.catalogoMansioni) ? this.cloudState.catalogoMansioni : undefined,
           categorieMansioni: Array.isArray(this.cloudState.categorieMansioni) ? this.cloudState.categorieMansioni : undefined,
           mansioniConfigUpdatedAt: this.cloudState.mansioniConfigUpdatedAt || undefined,
+          customEmojiIcons: Array.isArray(this.cloudState.customEmojiIcons) ? this.cloudState.customEmojiIcons : undefined,
+          customEmojiIconsUpdatedAt: this.cloudState.customEmojiIconsUpdatedAt || undefined,
           nomiDatabase: this.cloudState.nomiDatabase && typeof this.cloudState.nomiDatabase === 'object' ? this.cloudState.nomiDatabase : undefined,
           nomiDatabaseUpdatedAt: this.cloudState.nomiDatabaseUpdatedAt || undefined,
           tipologieMezzo: Array.isArray(this.cloudState.tipologieMezzo) ? this.cloudState.tipologieMezzo : undefined,
@@ -1386,6 +1416,9 @@ class RealtimeService {
           (Array.isArray(snapshot.giornaleBordo) && snapshot.giornaleBordo.length > 0),
         patch: {
           bacheca: snapshot.bacheca || [],
+          bachecaEliminatiIds: normalizeDeletedIds(
+            snapshot.bachecaEliminatiIds ?? this.cloudState.bachecaEliminatiIds
+          ),
           giornaleBordo: snapshot.giornaleBordo || [],
         },
       },
@@ -1443,6 +1476,7 @@ class RealtimeService {
           (Array.isArray(snapshot.mezziFlotta) && snapshot.mezziFlotta.length > 0) ||
           (Array.isArray(snapshot.catalogoMansioni) && snapshot.catalogoMansioni.length > 0) ||
           (Array.isArray(snapshot.categorieMansioni) && snapshot.categorieMansioni.length > 0) ||
+          (Array.isArray(snapshot.customEmojiIcons) && snapshot.customEmojiIcons.length > 0) ||
           (Array.isArray(snapshot.tipologieMezzo) && snapshot.tipologieMezzo.length > 0) ||
           (Array.isArray(snapshot.tipiTurno) && snapshot.tipiTurno.length > 0) ||
           Boolean(snapshot.nomiDatabase && Object.keys(snapshot.nomiDatabase).length > 0) ||
@@ -1456,6 +1490,8 @@ class RealtimeService {
           catalogoMansioni: snapshot.catalogoMansioni,
           categorieMansioni: snapshot.categorieMansioni,
           mansioniConfigUpdatedAt: getMansioniConfigUpdatedAt() || Date.now(),
+          customEmojiIcons: snapshot.customEmojiIcons ?? getCustomEmojiIcons(),
+          customEmojiIconsUpdatedAt: getCustomEmojiIconsUpdatedAt() || Date.now(),
           tipologieMezzo: snapshot.tipologieMezzo,
           tipologieMezzoUpdatedAt: getTipologieMezzoUpdatedAt() || Date.now(),
           tipiTurno: snapshot.tipiTurno,
@@ -1535,14 +1571,25 @@ class RealtimeService {
       { id: 'turni', patch: { turni: normalizzaTurniSedi(snapshot.turni || this.cloudState.turni || []) } },
       {
         id: 'bacheca',
-        patch: {
-          bacheca: normalizzaComunicazioniBacheca(snapshot.bacheca || this.cloudState.bacheca || []),
-          notificheBachecaRecenti: mergeNotificheBachecaRecenti(
-            this.cloudState.notificheBachecaRecenti,
-            snapshot.notificheBachecaRecenti
-          ),
-          giornaleBordo: snapshot.giornaleBordo || this.cloudState.giornaleBordo || [],
-        },
+        patch: (() => {
+          const deletedIds = normalizeDeletedIds([
+            ...(Array.isArray(this.cloudState.bachecaEliminatiIds) ? this.cloudState.bachecaEliminatiIds : []),
+            ...(Array.isArray(snapshot.bachecaEliminatiIds) ? snapshot.bachecaEliminatiIds : []),
+          ]);
+          return {
+            bacheca: mergeComunicazioniBachecaSafe(
+              this.cloudState.bacheca,
+              snapshot.bacheca || [],
+              deletedIds
+            ),
+            bachecaEliminatiIds: deletedIds,
+            notificheBachecaRecenti: mergeNotificheBachecaRecenti(
+              this.cloudState.notificheBachecaRecenti,
+              snapshot.notificheBachecaRecenti
+            ),
+            giornaleBordo: snapshot.giornaleBordo || this.cloudState.giornaleBordo || [],
+          };
+        })(),
       },
       {
         id: 'magazzino',
@@ -1588,6 +1635,8 @@ class RealtimeService {
           catalogoMansioni: snapshot.catalogoMansioni ?? this.cloudState.catalogoMansioni,
           categorieMansioni: snapshot.categorieMansioni ?? this.cloudState.categorieMansioni,
           mansioniConfigUpdatedAt: getMansioniConfigUpdatedAt() || Date.now(),
+          customEmojiIcons: snapshot.customEmojiIcons ?? this.cloudState.customEmojiIcons ?? getCustomEmojiIcons(),
+          customEmojiIconsUpdatedAt: getCustomEmojiIconsUpdatedAt() || Date.now(),
           tipologieMezzo: snapshot.tipologieMezzo ?? this.cloudState.tipologieMezzo,
           tipologieMezzoUpdatedAt: getTipologieMezzoUpdatedAt() || Date.now(),
           tipiTurno: snapshot.tipiTurno ?? this.cloudState.tipiTurno,
@@ -1770,6 +1819,16 @@ class RealtimeService {
               this.cloudState.categorieMansioni = payload.categorieMansioni ?? this.cloudState.categorieMansioni;
               if (payload.updatedAt) this.cloudState.mansioniConfigUpdatedAt = payload.updatedAt;
               applicaMansioniConfigDaSync(payload.catalogoMansioni, payload.categorieMansioni, payload.updatedAt);
+              if (Array.isArray(payload.customEmojiIcons)) {
+                this.cloudState.customEmojiIcons = payload.customEmojiIcons;
+                if (payload.customEmojiIconsUpdatedAt || payload.updatedAt) {
+                  this.cloudState.customEmojiIconsUpdatedAt = payload.customEmojiIconsUpdatedAt || payload.updatedAt;
+                }
+                applicaCustomEmojiIconsDaSync(
+                  payload.customEmojiIcons,
+                  payload.customEmojiIconsUpdatedAt || payload.updatedAt
+                );
+              }
             } else if (payload.type === 'NOMI_DATABASE_UPDATED' && payload.nomiDatabase) {
               this.cloudState.nomiDatabase = payload.nomiDatabase;
               if (payload.updatedAt) this.cloudState.nomiDatabaseUpdatedAt = payload.updatedAt;
@@ -1891,6 +1950,12 @@ class RealtimeService {
         this.cloudState.catalogoMansioni,
         this.cloudState.categorieMansioni,
         this.cloudState.mansioniConfigUpdatedAt
+      );
+    }
+    if (Array.isArray(this.cloudState.customEmojiIcons)) {
+      applicaCustomEmojiIconsDaSync(
+        this.cloudState.customEmojiIcons,
+        this.cloudState.customEmojiIconsUpdatedAt || this.cloudState.mansioniConfigUpdatedAt
       );
     }
     if (this.cloudState.nomiDatabase && typeof this.cloudState.nomiDatabase === 'object' && !Array.isArray(this.cloudState.nomiDatabase)) {
@@ -2722,8 +2787,16 @@ class RealtimeService {
         break;
       case 'UPDATE_BACHECA': {
         const patchBacheca: Record<string, any> = {};
+        const deletedIds = normalizeDeletedIds([
+          ...(Array.isArray(this.cloudState.bachecaEliminatiIds) ? this.cloudState.bachecaEliminatiIds : []),
+          ...(Array.isArray(data?.bachecaEliminatiIds) ? data.bachecaEliminatiIds : []),
+        ]);
+        this.cloudState.bachecaEliminatiIds = deletedIds;
+        patchBacheca.bachecaEliminatiIds = deletedIds;
         if (Array.isArray(data?.bacheca)) {
-          patchBacheca.bacheca = data.bacheca;
+          const merged = mergeComunicazioniBachecaSafe(this.cloudState.bacheca, data.bacheca, deletedIds);
+          this.cloudState.bacheca = merged;
+          patchBacheca.bacheca = merged;
         }
         if (data?.notifica && (data.notifica.tipo === 'nuovo_post' || data.notifica.tipo === 'nuovo_corso')) {
           const rec: NotificaBachecaRecord = {
@@ -2873,6 +2946,8 @@ class RealtimeService {
         this.scheduleShardWrite('config', {
           ...(Array.isArray(data?.catalogoMansioni) ? { catalogoMansioni: data.catalogoMansioni } : {}),
           ...(Array.isArray(data?.categorieMansioni) ? { categorieMansioni: data.categorieMansioni } : {}),
+          ...(Array.isArray(data?.customEmojiIcons) ? { customEmojiIcons: data.customEmojiIcons } : {}),
+          ...(data?.customEmojiIconsUpdatedAt ? { customEmojiIconsUpdatedAt: data.customEmojiIconsUpdatedAt } : {}),
           mansioniConfigUpdatedAt: data?.updatedAt || Date.now(),
         });
         break;
@@ -3977,15 +4052,19 @@ class RealtimeService {
     return null;
   }
 
-  public syncBacheca(bacheca: any[], notifica?: any) {
-    this.send('UPDATE_BACHECA', { bacheca, notifica });
+  public syncBacheca(bacheca: any[], notifica?: any, bachecaEliminatiIds?: string[]) {
+    const deletedIds = normalizeDeletedIds([
+      ...(Array.isArray(this.cloudState.bachecaEliminatiIds) ? this.cloudState.bachecaEliminatiIds : []),
+      ...(Array.isArray(bachecaEliminatiIds) ? bachecaEliminatiIds : []),
+    ]);
+    this.send('UPDATE_BACHECA', { bacheca, notifica, bachecaEliminatiIds: deletedIds });
     if (!this.isServerlessStaticHost()) {
       try {
         const baseUrl = this.getApiBaseUrl();
         fetch(`${baseUrl}/api/bacheca`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ bacheca, notifica }),
+          body: JSON.stringify({ bacheca, notifica, bachecaEliminatiIds: deletedIds }),
           cache: 'no-store',
         }).catch(() => {});
       } catch {}
@@ -4237,9 +4316,26 @@ class RealtimeService {
     this.send('UPDATE_MOVIMENTI_MAGAZZINO', { movimenti });
   }
 
-  public syncMansioniConfig(catalogoMansioni: any[], categorieMansioni: any[]) {
+  public syncMansioniConfig(catalogoMansioni: any[], categorieMansioni: any[], customEmojiIcons?: any[]) {
     const updatedAt = getMansioniConfigUpdatedAt() || Date.now();
-    this.send('UPDATE_MANSIONI_CONFIG', { catalogoMansioni, categorieMansioni, updatedAt });
+    const iconsToSync = Array.isArray(customEmojiIcons) ? customEmojiIcons : getCustomEmojiIcons();
+    const customEmojiIconsUpdatedAt = getCustomEmojiIconsUpdatedAt() || updatedAt;
+    this.send('UPDATE_MANSIONI_CONFIG', {
+      catalogoMansioni,
+      categorieMansioni,
+      customEmojiIcons: iconsToSync,
+      customEmojiIconsUpdatedAt,
+      updatedAt,
+    });
+  }
+
+  public syncCustomEmojiIcons(customEmojiIcons: any[]) {
+    const customEmojiIconsUpdatedAt = getCustomEmojiIconsUpdatedAt() || Date.now();
+    this.send('UPDATE_MANSIONI_CONFIG', {
+      customEmojiIcons,
+      customEmojiIconsUpdatedAt,
+      updatedAt: getMansioniConfigUpdatedAt() || customEmojiIconsUpdatedAt,
+    });
   }
 
   public syncNomiDatabase(nomiDatabase: Record<string, string>) {

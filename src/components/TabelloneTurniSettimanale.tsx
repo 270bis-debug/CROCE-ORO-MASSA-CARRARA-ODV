@@ -34,8 +34,15 @@ import { TurnoSedeOperativa, SedeAssociativaCompleta, MezzoFlotta, RuoloTurno, C
 import { Volontario } from './DatabaseVolontariModal';
 import { CroceOroLogo } from './CroceOroLogo';
 import { realtime } from '../services/realtime';
-import { puoCoprireRuoloTurno, getMansioniVolontario } from '../utils/mansioniVolontari';
+import {
+  puoCoprireRuoloTurno,
+  getMansioniVolontario,
+  getMansioniCatalogo,
+  getLabelRuoloEquipaggioLive
+} from '../utils/mansioniVolontari';
 import { calcolaCoperturaTurno, getCapoServizioTurno } from '../utils/tipiTurno';
+import { IconaEmoji } from './IconaEmoji';
+import { formatIconaPerTesto } from '../utils/emojiIconsArchive';
 import { addDaysISODate, formatDateItaly, formatISODateItaly, formatTimeItaly, getItalianDateParts } from '../utils/italianTime';
 
 interface TabelloneTurniSettimanaleProps {
@@ -97,6 +104,13 @@ export const TabelloneTurniSettimanale: React.FC<TabelloneTurniSettimanaleProps>
   const [filtroSoloMieiTurni, setFiltroSoloMieiTurni] = useState<boolean>(false);
   const [filtroFascia, setFiltroFascia] = useState<string>('tutte');
   const [ricercaVolontario, setRicercaVolontario] = useState<string>('');
+  const [catalogoMansioni, setCatalogoMansioni] = useState(() => getMansioniCatalogo());
+
+  useEffect(() => {
+    const syncMansioni = () => setCatalogoMansioni(getMansioniCatalogo());
+    window.addEventListener('croceoro_mansioni_updated', syncMansioni);
+    return () => window.removeEventListener('croceoro_mansioni_updated', syncMansioni);
+  }, []);
 
   // Identificazione volontario per autorizzazioni specifiche di centrale
   const [volontarioFiltroId, setVolontarioFiltroId] = useState<string>(volontarioLoggatoId || '');
@@ -174,16 +188,10 @@ export const TabelloneTurniSettimanale: React.FC<TabelloneTurniSettimanaleProps>
   };
 
   const getEtichettaRuolo = (ruolo: RuoloTurno): string => {
-    switch (ruolo) {
-      case 'autista': return '🚑 Autista Soccorritore';
-      case 'caposervizio': return '👨‍⚕️ Caposervizio';
-      case 'soccorritore2': return '🧑‍⚕️ 2° Soccorritore';
-      case 'terzoSoccorritore': return '🧑‍⚕️ 3° Soccorritore';
-      case 'operatoreCentrale': return '🎧 Operatore Centrale';
-      case 'centralinista': return '📞 Centralinista';
-      case 'osservatore': return '👁️ Osservatore';
-      default: return ruolo;
-    }
+    if (ruolo === 'caposervizio') return '⭐ Capo Servizio';
+    const live = getLabelRuoloEquipaggioLive(ruolo, catalogoMansioni);
+    const pref = formatIconaPerTesto(live.emoji, '🎖️');
+    return `${pref ? `${pref} ` : ''}${live.nome}`;
   };
 
   const getMigliorRuoloIdoneo = (
@@ -1070,6 +1078,11 @@ export const TabelloneTurniSettimanale: React.FC<TabelloneTurniSettimanaleProps>
                             <strong className="text-amber-300">{turno.mezzoAssegnato}</strong>
                           </div>
                         )}
+                        {turno.checklistObbligatoria === false && (
+                          <div className="text-[9.5px] font-bold text-amber-200 bg-amber-950/60 border border-amber-500/40 px-2 py-0.5 rounded-md inline-flex items-center gap-1">
+                            <span>✓ Checklist non obbligatoria</span>
+                          </div>
+                        )}
 
                         {/* Equipaggio del Turno */}
                         {(() => {
@@ -1105,10 +1118,11 @@ export const TabelloneTurniSettimanale: React.FC<TabelloneTurniSettimanaleProps>
 
                               {/* Autista */}
                               <div className="flex items-center justify-between gap-1">
-                                <span className="text-slate-400 text-[10px] shrink-0">Autista:</span>
+                                <span className="text-slate-400 text-[10px] shrink-0">{getLabelRuoloEquipaggioLive('autista', catalogoMansioni).nome}:</span>
                                 {turno.autista ? (
-                                  <span className={`font-bold truncate max-w-[175px] text-right ${turno.autista.nome.toLowerCase().includes(volontarioLoggatoNome?.toLowerCase() || '---') ? 'text-amber-400 font-black' : 'text-slate-100'}`} title={turno.autista.nome}>
-                                    🚑 {turno.autista.nome}
+                                  <span className={`font-bold truncate max-w-[175px] text-right inline-flex items-center justify-end gap-1 ${turno.autista.nome.toLowerCase().includes(volontarioLoggatoNome?.toLowerCase() || '---') ? 'text-amber-400 font-black' : 'text-slate-100'}`} title={turno.autista.nome}>
+                                    <IconaEmoji icona={getLabelRuoloEquipaggioLive('autista', catalogoMansioni).emoji} fallback="🚑" size="xs" />
+                                    <span className="truncate">{turno.autista.nome}</span>
                                     {renderCsTag(turno.autista)}
                                   </span>
                                 ) : (
@@ -1119,9 +1133,10 @@ export const TabelloneTurniSettimanale: React.FC<TabelloneTurniSettimanaleProps>
                               {/* 2° Soccorritore */}
                               {turno.soccorritore2 && (
                                 <div className="flex items-center justify-between gap-1">
-                                  <span className="text-slate-400 text-[10px] shrink-0">2° Socc.:</span>
-                                  <span className={`truncate max-w-[175px] text-right ${turno.soccorritore2.nome.toLowerCase().includes(volontarioLoggatoNome?.toLowerCase() || '---') ? 'text-amber-400 font-black' : 'text-slate-200'}`} title={turno.soccorritore2.nome}>
-                                    🧑‍⚕️ {turno.soccorritore2.nome}
+                                  <span className="text-slate-400 text-[10px] shrink-0">{getLabelRuoloEquipaggioLive('soccorritore2', catalogoMansioni).nome}:</span>
+                                  <span className={`truncate max-w-[175px] text-right inline-flex items-center justify-end gap-1 ${turno.soccorritore2.nome.toLowerCase().includes(volontarioLoggatoNome?.toLowerCase() || '---') ? 'text-amber-400 font-black' : 'text-slate-200'}`} title={turno.soccorritore2.nome}>
+                                    <IconaEmoji icona={getLabelRuoloEquipaggioLive('soccorritore2', catalogoMansioni).emoji} fallback="🧑‍⚕️" size="xs" />
+                                    <span className="truncate">{turno.soccorritore2.nome}</span>
                                     {renderCsTag(turno.soccorritore2)}
                                   </span>
                                 </div>
@@ -1130,9 +1145,10 @@ export const TabelloneTurniSettimanale: React.FC<TabelloneTurniSettimanaleProps>
                               {/* 3° Soccorritore */}
                               {turno.terzoSoccorritore && (
                                 <div className="flex items-center justify-between gap-1">
-                                  <span className="text-slate-400 text-[10px] shrink-0">3° Socc.:</span>
-                                  <span className={`truncate max-w-[175px] text-right ${turno.terzoSoccorritore.nome.toLowerCase().includes(volontarioLoggatoNome?.toLowerCase() || '---') ? 'text-amber-400 font-black' : 'text-slate-200'}`} title={turno.terzoSoccorritore.nome}>
-                                    🧑‍⚕️ {turno.terzoSoccorritore.nome}
+                                  <span className="text-slate-400 text-[10px] shrink-0">{getLabelRuoloEquipaggioLive('terzoSoccorritore', catalogoMansioni).nome}:</span>
+                                  <span className={`truncate max-w-[175px] text-right inline-flex items-center justify-end gap-1 ${turno.terzoSoccorritore.nome.toLowerCase().includes(volontarioLoggatoNome?.toLowerCase() || '---') ? 'text-amber-400 font-black' : 'text-slate-200'}`} title={turno.terzoSoccorritore.nome}>
+                                    <IconaEmoji icona={getLabelRuoloEquipaggioLive('terzoSoccorritore', catalogoMansioni).emoji} fallback="🧑‍⚕️" size="xs" />
+                                    <span className="truncate">{turno.terzoSoccorritore.nome}</span>
                                     {renderCsTag(turno.terzoSoccorritore)}
                                   </span>
                                 </div>
@@ -1141,9 +1157,10 @@ export const TabelloneTurniSettimanale: React.FC<TabelloneTurniSettimanaleProps>
                               {/* Operatore Centrale */}
                               {turno.operatoreCentrale && (
                                 <div className="flex items-center justify-between gap-1 pt-0.5 border-t border-slate-800/80">
-                                  <span className="text-slate-400 text-[10px] shrink-0">Centrale:</span>
-                                  <span className="text-slate-300 text-[10px] truncate max-w-[175px] text-right" title={turno.operatoreCentrale.nome}>
-                                    🎧 {turno.operatoreCentrale.nome}
+                                  <span className="text-slate-400 text-[10px] shrink-0">{getLabelRuoloEquipaggioLive('operatoreCentrale', catalogoMansioni).nome}:</span>
+                                  <span className="text-slate-300 text-[10px] truncate max-w-[175px] text-right inline-flex items-center justify-end gap-1" title={turno.operatoreCentrale.nome}>
+                                    <IconaEmoji icona={getLabelRuoloEquipaggioLive('operatoreCentrale', catalogoMansioni).emoji} fallback="🎧" size="xs" />
+                                    <span className="truncate">{turno.operatoreCentrale.nome}</span>
                                     {renderCsTag(turno.operatoreCentrale)}
                                   </span>
                                 </div>
@@ -1152,15 +1169,16 @@ export const TabelloneTurniSettimanale: React.FC<TabelloneTurniSettimanaleProps>
                               {/* Centralinista */}
                               {turno.centralinista ? (
                                 <div className="flex items-center justify-between gap-1 pt-0.5 border-t border-slate-800/80">
-                                  <span className="text-slate-400 text-[10px] shrink-0">Centralinista:</span>
-                                  <span className={`font-bold truncate max-w-[175px] text-right ${turno.centralinista.nome.toLowerCase().includes(volontarioLoggatoNome?.toLowerCase() || '---') ? 'text-amber-400 font-black' : 'text-slate-200'}`} title={turno.centralinista.nome}>
-                                    📞 {turno.centralinista.nome}
+                                  <span className="text-slate-400 text-[10px] shrink-0">{getLabelRuoloEquipaggioLive('centralinista', catalogoMansioni).nome}:</span>
+                                  <span className={`font-bold truncate max-w-[175px] text-right inline-flex items-center justify-end gap-1 ${turno.centralinista.nome.toLowerCase().includes(volontarioLoggatoNome?.toLowerCase() || '---') ? 'text-amber-400 font-black' : 'text-slate-200'}`} title={turno.centralinista.nome}>
+                                    <IconaEmoji icona={getLabelRuoloEquipaggioLive('centralinista', catalogoMansioni).emoji} fallback="📞" size="xs" />
+                                    <span className="truncate">{turno.centralinista.nome}</span>
                                     {renderCsTag(turno.centralinista)}
                                   </span>
                                 </div>
                               ) : (
                                 <div className="flex items-center justify-between gap-1 text-[10px] text-slate-500 pt-0.5 border-t border-slate-800/40">
-                                  <span className="text-slate-400 text-[10px] shrink-0">Centralinista:</span>
+                                  <span className="text-slate-400 text-[10px] shrink-0">{getLabelRuoloEquipaggioLive('centralinista', catalogoMansioni).nome}:</span>
                                   <span className="italic text-slate-500 text-[9.5px]">Disponibile</span>
                                 </div>
                               )}
@@ -1168,15 +1186,16 @@ export const TabelloneTurniSettimanale: React.FC<TabelloneTurniSettimanaleProps>
                               {/* Osservatore */}
                               {turno.osservatore ? (
                                 <div className="flex items-center justify-between gap-1">
-                                  <span className="text-slate-400 text-[10px] shrink-0">Osservatore:</span>
-                                  <span className={`font-bold truncate max-w-[175px] text-right ${turno.osservatore.nome.toLowerCase().includes(volontarioLoggatoNome?.toLowerCase() || '---') ? 'text-amber-400 font-black' : 'text-slate-200'}`} title={turno.osservatore.nome}>
-                                    👁️ {turno.osservatore.nome}
+                                  <span className="text-slate-400 text-[10px] shrink-0">{getLabelRuoloEquipaggioLive('osservatore', catalogoMansioni).nome}:</span>
+                                  <span className={`font-bold truncate max-w-[175px] text-right inline-flex items-center justify-end gap-1 ${turno.osservatore.nome.toLowerCase().includes(volontarioLoggatoNome?.toLowerCase() || '---') ? 'text-amber-400 font-black' : 'text-slate-200'}`} title={turno.osservatore.nome}>
+                                    <IconaEmoji icona={getLabelRuoloEquipaggioLive('osservatore', catalogoMansioni).emoji} fallback="👁️" size="xs" />
+                                    <span className="truncate">{turno.osservatore.nome}</span>
                                     {renderCsTag(turno.osservatore)}
                                   </span>
                                 </div>
                               ) : (
                                 <div className="flex items-center justify-between gap-1 text-[10px] text-slate-500">
-                                  <span className="text-slate-400 text-[10px] shrink-0">Osservatore:</span>
+                                  <span className="text-slate-400 text-[10px] shrink-0">{getLabelRuoloEquipaggioLive('osservatore', catalogoMansioni).nome}:</span>
                                   <span className="italic text-slate-500 text-[9.5px]">Disponibile</span>
                                 </div>
                               )}
@@ -1525,13 +1544,14 @@ export const TabelloneTurniSettimanale: React.FC<TabelloneTurniSettimanaleProps>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                   {([
-                    { id: 'autista', label: '🚑 Autista Soccorritore', occupato: Boolean(turnoPerCandidatura.autista) },
-                    { id: 'soccorritore2', label: '🧑‍⚕️ 2° Soccorritore', occupato: Boolean(turnoPerCandidatura.soccorritore2) },
-                    { id: 'terzoSoccorritore', label: '🧑‍⚕️ 3° Soccorritore', occupato: Boolean(turnoPerCandidatura.terzoSoccorritore) },
-                    { id: 'operatoreCentrale', label: '🎧 Sala Radio / Centrale', occupato: Boolean(turnoPerCandidatura.operatoreCentrale) },
-                    { id: 'centralinista', label: '📞 Centralinista', occupato: Boolean(turnoPerCandidatura.centralinista) },
-                    { id: 'osservatore', label: '👁️ Osservatore', occupato: Boolean(turnoPerCandidatura.osservatore) }
-                  ] as { id: RuoloTurno; label: string; occupato: boolean }[]).map((r) => {
+                    { id: 'autista', occupato: Boolean(turnoPerCandidatura.autista) },
+                    { id: 'soccorritore2', occupato: Boolean(turnoPerCandidatura.soccorritore2) },
+                    { id: 'terzoSoccorritore', occupato: Boolean(turnoPerCandidatura.terzoSoccorritore) },
+                    { id: 'operatoreCentrale', occupato: Boolean(turnoPerCandidatura.operatoreCentrale) },
+                    { id: 'centralinista', occupato: Boolean(turnoPerCandidatura.centralinista) },
+                    { id: 'osservatore', occupato: Boolean(turnoPerCandidatura.osservatore) }
+                  ] as { id: RuoloTurno; occupato: boolean }[]).map((r) => {
+                    const liveRole = getLabelRuoloEquipaggioLive(r.id, catalogoMansioni);
                     const volAttivo = (volontari || []).find(
                       (v) => (candVolontarioId && v.id === candVolontarioId) ||
                              (candVolontarioNome && `${v.nome} ${v.cognome}`.toLowerCase() === candVolontarioNome.trim().toLowerCase())
@@ -1562,8 +1582,9 @@ export const TabelloneTurniSettimanale: React.FC<TabelloneTurniSettimanaleProps>
                             className="accent-teal-500"
                           />
                           <div>
-                            <span className={`font-bold text-[11px] block ${nonIdoneo ? 'line-through text-slate-500' : ''}`}>
-                              {r.label}
+                            <span className={`font-bold text-[11px] inline-flex items-center gap-1 ${nonIdoneo ? 'line-through text-slate-500' : ''}`}>
+                              <IconaEmoji icona={liveRole.emoji} fallback="🎖️" size="xs" />
+                              <span>{liveRole.nome}</span>
                             </span>
                             {nonIdoneo && (
                               <span className="text-[9px] text-rose-400 font-normal">

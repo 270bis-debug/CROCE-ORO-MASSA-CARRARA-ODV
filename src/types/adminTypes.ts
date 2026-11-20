@@ -626,6 +626,7 @@ export interface TurnoSedeOperativa {
   centralinista?: { id: string; nome: string };
   osservatore?: { id: string; nome: string };
   richiesteIscrizione?: CandidaturaTurno[];
+  checklistObbligatoria?: boolean; // Default true (sempre obbligatoria); se false, annulla l'obbligatorietà della checklist per questo turno
   note?: string;
 }
 
@@ -660,7 +661,14 @@ export interface ComunicazioneBacheca {
   autoreId?: string;
   attiva: boolean;
   evidenziata?: boolean;
+  updatedAt?: number;
+  immaginePostDataUrl?: string;
+  immaginePostNome?: string;
   allegatoNome?: string;
+  allegatoDataUrl?: string;
+  allegatoTipo?: 'pdf' | 'image' | 'word' | 'excel';
+  allegatoMime?: string;
+  allegatoDimensione?: number;
   likes?: string[]; // Array di nominativi o ID degli utenti che hanno messo like al post
   commenti?: CommentoBacheca[]; // Elenco commenti e risposte al post
 }

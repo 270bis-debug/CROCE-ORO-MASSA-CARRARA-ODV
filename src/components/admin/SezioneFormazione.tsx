@@ -42,6 +42,7 @@ import {
 } from 'lucide-react';
 import { useTitoloDatabase, useNomiSottosezioniCustom } from '../../hooks/useNomiDatabase';
 import { getTitoloSottosezione } from '../../constants/macroCategorie';
+import { formatIconaPerTesto } from '../../utils/emojiIconsArchive';
 import {
   CorsoFormazione,
   PartecipanteCorso,
@@ -1864,11 +1865,14 @@ export const SezioneFormazione: React.FC<SezioneFormazioneProps> = ({
                       className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-700 text-amber-300 font-bold"
                     >
                       <option value="">-- Nessuna mansione rilasciata in automatico --</option>
-                      {getMansioniCatalogo().map((m) => (
-                        <option key={m.id} value={m.nome}>
-                          {m.badgeEmoji || '🎖️'} {m.nome} ({m.categoria})
-                        </option>
-                      ))}
+                      {getMansioniCatalogo().map((m) => {
+                        const ico = formatIconaPerTesto(m.badgeEmoji, '🎖️');
+                        return (
+                          <option key={m.id} value={m.nome}>
+                            {ico ? `${ico} ` : ''}{m.nome} ({m.categoria})
+                          </option>
+                        );
+                      })}
                     </select>
                     <span className="text-[10px] text-slate-400 mt-1 block">
                       Viene assegnata in automatico all'anagrafica del volontario quando il corso/esame risulta superato.
@@ -1886,11 +1890,14 @@ export const SezioneFormazione: React.FC<SezioneFormazioneProps> = ({
                       className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-700 text-rose-300 font-bold"
                     >
                       <option value="">-- Nessun prerequisito (Aperto a tutti i volontari) --</option>
-                      {getMansioniCatalogo().map((m) => (
-                        <option key={m.id} value={m.nome}>
-                          {m.badgeEmoji || '🔒'} {m.nome}
-                        </option>
-                      ))}
+                      {getMansioniCatalogo().map((m) => {
+                        const ico = formatIconaPerTesto(m.badgeEmoji, '🔒');
+                        return (
+                          <option key={m.id} value={m.nome}>
+                            {ico ? `${ico} ` : ''}{m.nome}
+                          </option>
+                        );
+                      })}
                     </select>
                     <span className="text-[10px] text-slate-400 mt-1 block">
                       Il volontario deve possedere questa mansione (o una superiore che la include) per potersi iscrivere.

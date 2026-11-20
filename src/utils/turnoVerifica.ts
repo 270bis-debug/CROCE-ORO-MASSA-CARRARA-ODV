@@ -8,6 +8,7 @@ export interface EsitoVerificaTurno {
   haTurnoProgrammato?: boolean;
   motivo: string;
   dettaglioTurno?: {
+    turnoId?: string;
     sedeNome?: string;
     nomeTurno?: string;
     fasciaOraria?: string;
@@ -15,6 +16,7 @@ export interface EsitoVerificaTurno {
     orarioFine?: string;
     ruoloAssegnato?: string;
     mezzoAssegnato?: string;
+    checklistObbligatoria?: boolean;
   };
 }
 
@@ -411,13 +413,15 @@ export function verificaVolontarioInTurnoAdesso(
 
   const dettaglioDaTabellone = matchTabellone
     ? {
+        turnoId: matchTabellone.turno.id,
         sedeNome: matchTabellone.turno.sedeNome,
         nomeTurno: matchTabellone.turno.nomeTurno,
         fasciaOraria: matchTabellone.turno.fasciaOraria,
         orarioInizio: matchTabellone.turno.orarioInizio || '00:00',
         orarioFine: matchTabellone.turno.orarioFine || '24:00',
         ruoloAssegnato: matchTabellone.ruoloAssegnato,
-        mezzoAssegnato: matchTabellone.turno.mezzoAssegnato
+        mezzoAssegnato: matchTabellone.turno.mezzoAssegnato,
+        checklistObbligatoria: matchTabellone.turno.checklistObbligatoria !== false
       }
     : undefined;
 

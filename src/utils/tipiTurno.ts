@@ -1,14 +1,19 @@
 /**
  * tipiTurno.ts
  * Catalogo dinamico e sincronizzato dei Tipi di Turni per il Database Calendario Turni.
- * Ogni Tipo di Turno definisce un nome e una o più mansioni con numero minimo (>= 0) e massimo
- * di volontari previsti (sia dai ruoli equipaggio base sia dal catalogo Mansioni & Competenze).
+ * I Ruoli Equipaggio combaciano SEMPRE con il catalogo "Mansioni & Competenze" del Database Gestione Volontari:
+ * ogni creazione, modifica o rinomina in Mansioni & Competenze si riflette automaticamente nei Tipi di Turni e nei Turni.
  * Se minimo = 0, la mansione è facoltativa e non blocca la copertura del turno.
  */
 
 import { useState, useEffect } from 'react';
 import { TipoTurnoConfig, MansioneTipoTurno, RuoloTurno, TurnoSedeOperativa } from '../types/adminTypes';
-import { getMansioniCatalogo, MansioneOperativa } from './mansioniVolontari';
+import {
+  getLabelRuoloEquipaggioLive,
+  getMansioneCatalogoPerRuoloTurno,
+  getMansioniCatalogo,
+  MansioneOperativa,
+} from './mansioniVolontari';
 
 export type { TipoTurnoConfig, MansioneTipoTurno };
 
@@ -26,67 +31,14 @@ export interface OpzioneMansioneTurno {
   isRuoloBase?: boolean;
 }
 
-/**
- * Ruoli equipaggio standard selezionabili nei Tipi di Turno.
- * NOTA: "Caposervizio / Soccorritore Avanzato" NON è una mansione:
- * il Capo Servizio è un badge assegnabile a qualsiasi volontario presente nel turno, indipendentemente dalla mansione.
- */
-export const MANSIONI_BASE_EQUIPAGGIO: OpzioneMansioneTurno[] = [
-  {
-    id: 'ruolo-autista',
-    nome: '1. Autista Soccorritore',
-    emoji: '🚑',
-    categoria: 'Ruoli Equipaggio Base',
-    ruoloTurno: 'autista',
-    descrizione: 'Conducente del mezzo abilitato alla guida di emergenza o ordinaria',
-    isRuoloBase: true,
-  },
-  {
-    id: 'ruolo-soccorritore2',
-    nome: '2. Secondo Soccorritore',
-    emoji: '🧑‍⚕️',
-    categoria: 'Ruoli Equipaggio Base',
-    ruoloTurno: 'soccorritore2',
-    descrizione: 'Secondo soccorritore a bordo del mezzo',
-    isRuoloBase: true,
-  },
-  {
-    id: 'ruolo-terzoSoccorritore',
-    nome: '3. Terzo Soccorritore',
-    emoji: '🧑‍⚕️',
-    categoria: 'Ruoli Equipaggio Base',
-    ruoloTurno: 'terzoSoccorritore',
-    descrizione: 'Terzo soccorritore / supporto operativo a bordo',
-    isRuoloBase: true,
-  },
-  {
-    id: 'ruolo-operatoreCentrale',
-    nome: '4. Operatore Centrale / Sala Radio',
-    emoji: '🎧',
-    categoria: 'Ruoli Equipaggio Base',
-    ruoloTurno: 'operatoreCentrale',
-    descrizione: 'Gestione sala radio, dispatch missioni e coordinamento mezzi',
-    isRuoloBase: true,
-  },
-  {
-    id: 'ruolo-centralinista',
-    nome: '5. Centralinista',
-    emoji: '📞',
-    categoria: 'Ruoli Equipaggio Base',
-    ruoloTurno: 'centralinista',
-    descrizione: 'Risposta telefonica, prenotazione servizi e accoglienza sede',
-    isRuoloBase: true,
-  },
-  {
-    id: 'ruolo-osservatore',
-    nome: '6. Osservatore (In Formazione / Tirocinante)',
-    emoji: '👁️',
-    categoria: 'Ruoli Equipaggio Base',
-    ruoloTurno: 'osservatore',
-    descrizione: 'Volontario in affiancamento formativo o tirocinio pratico',
-    isRuoloBase: true,
-  },
-];
+const LEGACY_RUOLO_ID_TO_CATALOGO_ID: Record<string, { catalogoId: string; ruoloTurno: RuoloTurno }> = {
+  'ruolo-autista': { catalogoId: 'mansione-autista-118', ruoloTurno: 'autista' },
+  'ruolo-soccorritore2': { catalogoId: 'mansione-socc-base', ruoloTurno: 'soccorritore2' },
+  'ruolo-terzosoccorritore': { catalogoId: 'mansione-barelliere', ruoloTurno: 'terzoSoccorritore' },
+  'ruolo-operatorecentrale': { catalogoId: 'mansione-op-centrale', ruoloTurno: 'operatoreCentrale' },
+  'ruolo-centralinista': { catalogoId: 'mansione-centralinista', ruoloTurno: 'centralinista' },
+  'ruolo-osservatore': { catalogoId: 'mansione-osservatore', ruoloTurno: 'osservatore' },
+};
 
 function isMansioneCaposervizioVietata(id?: string, nome?: string, ruoloTurno?: string): boolean {
   const idLow = String(id || '').toLowerCase();
@@ -102,26 +54,132 @@ function isMansioneCaposervizioVietata(id?: string, nome?: string, ruoloTurno?: 
 }
 
 /**
- * Restituisce tutte le mansioni selezionabili per un Tipo di Turno:
- * prima i ruoli equipaggio base, seguiti da tutte le mansioni definite nel database
- * Gestione Volontari -> sottosezione MANSIONI & COMPETENZE (escluso Caposervizio che è un badge, non una mansione).
+ * Associa una mansione del catalogo Gestione Volontari allo slot equipaggio compatibile.
+ */
+export function inferisciRuoloTurnoDaMansione(m: Pick<MansioneOperativa, 'id' | 'nome'>): RuoloTurno | undefined {
+  const idLow = String(m.id || '').toLowerCase();
+  const nomeLow = String(m.nome || '').toLowerCase();
+  if (idLow === 'mansione-autista-118' || idLow === 'mansione-autista-ordinario' || nomeLow.includes('autist')) {
+    return 'autista';
+  }
+  if (idLow === 'mansione-op-centrale' || nomeLow.includes('centrale') || nomeLow.includes('sala radio')) {
+    return 'operatoreCentrale';
+  }
+  if (idLow === 'mansione-centralinista' || nomeLow.includes('centralin')) {
+    return 'centralinista';
+  }
+  if (idLow === 'mansione-osservatore' || nomeLow.includes('osservat') || nomeLow.includes('tirocin')) {
+    return 'osservatore';
+  }
+  if (idLow === 'mansione-barelliere' || nomeLow.includes('barell') || nomeLow.includes('terzo soccorrit')) {
+    return 'terzoSoccorritore';
+  }
+  if (idLow === 'mansione-socc-base' || nomeLow.includes('soccorrit')) {
+    return 'soccorritore2';
+  }
+  return undefined;
+}
+
+/**
+ * Restituisce TUTTI i Ruoli Equipaggio selezionabili per un Tipo di Turno,
+ * combaciando ESATTAMENTE con Mansioni & Competenze (Database Gestione Volontari).
+ * Esclude "Caposervizio" poiché è un badge assegnabile a qualsiasi volontario del turno, non una mansione.
  */
 export function getTutteMansioniDisponibiliPerTipoTurno(
   catalogoCustom?: MansioneOperativa[]
 ): OpzioneMansioneTurno[] {
   const catalogo = catalogoCustom || getMansioniCatalogo();
-  const extra: OpzioneMansioneTurno[] = catalogo
+  return catalogo
     .filter((m) => !isMansioneCaposervizioVietata(m.id, m.nome))
-    .map((m) => ({
-      id: `mansione-${m.id}`,
-      nome: m.nome,
-      emoji: m.badgeEmoji || '🎖️',
-      categoria: m.categoria || 'Mansioni & Competenze',
-      mansioneCatalogoId: m.id,
-      descrizione: m.descrizione,
-      isRuoloBase: false,
-    }));
-  return [...MANSIONI_BASE_EQUIPAGGIO, ...extra];
+    .map((m) => {
+      const ruoloTurno = inferisciRuoloTurnoDaMansione(m);
+      return {
+        id: m.id,
+        nome: m.nome,
+        emoji: m.badgeEmoji || '🎖️',
+        categoria: m.categoria || 'Mansioni & Competenze',
+        ruoloTurno,
+        mansioneCatalogoId: m.id,
+        descrizione: m.descrizione,
+        isRuoloBase: Boolean(ruoloTurno),
+      };
+    });
+}
+
+/**
+ * Trova la mansione live nel catalogo Mansioni & Competenze corrispondente a una voce di MansioneTipoTurno
+ * (gestisce sia ID diretti, sia mansioneCatalogoId, sia vecchi prefissi 'mansione-...', sia legacy 'ruolo-...').
+ */
+function trovaMansioneCatalogoPerVoceTipoTurno(
+  item: Partial<MansioneTipoTurno>,
+  catalogo: MansioneOperativa[]
+): MansioneOperativa | undefined {
+  const candidates = new Set<string>();
+  const rawId = String(item.id || '').trim();
+  const catId = String(item.mansioneCatalogoId || '').trim();
+  if (catId) candidates.add(catId);
+  if (rawId) {
+    candidates.add(rawId);
+    if (rawId.startsWith('mansione-mansione-')) {
+      candidates.add(rawId.slice('mansione-'.length));
+    }
+    const legacy = LEGACY_RUOLO_ID_TO_CATALOGO_ID[rawId.toLowerCase()];
+    if (legacy) candidates.add(legacy.catalogoId);
+  }
+
+  for (const cid of candidates) {
+    const found = catalogo.find((m) => m.id === cid);
+    if (found) return found;
+  }
+
+  // Fallback per nome esatto (case-insensitive)
+  const nomeLow = String(item.nome || '').trim().toLowerCase();
+  if (nomeLow) {
+    const byName = catalogo.find((m) => m.nome.trim().toLowerCase() === nomeLow);
+    if (byName) return byName;
+  }
+
+  // Fallback per ruoloTurno legacy
+  if (item.ruoloTurno) {
+    const byRole = getMansioneCatalogoPerRuoloTurno(item.ruoloTurno, catalogo);
+    if (byRole) return byRole;
+  }
+
+  return undefined;
+}
+
+/**
+ * Allinea un elenco di MansioneTipoTurno con i nomi, le icone e le categorie LIVE
+ * presenti in Mansioni & Competenze (Database Gestione Volontari).
+ */
+export function risolviMansioniTipoTurnoLive(
+  mansioni: MansioneTipoTurno[],
+  catalogoCustom?: MansioneOperativa[]
+): MansioneTipoTurno[] {
+  if (!Array.isArray(mansioni) || mansioni.length === 0) return [];
+  const catalogo = catalogoCustom || getMansioniCatalogo();
+  const seen = new Set<string>();
+  const out: MansioneTipoTurno[] = [];
+
+  for (const item of mansioni) {
+    if (isMansioneCaposervizioVietata(item.id, item.nome, item.ruoloTurno)) continue;
+    const matched = trovaMansioneCatalogoPerVoceTipoTurno(item, catalogo);
+    const resolvedId = matched ? matched.id : item.mansioneCatalogoId || item.id;
+    if (seen.has(resolvedId)) continue;
+    seen.add(resolvedId);
+
+    out.push({
+      ...item,
+      id: resolvedId,
+      mansioneCatalogoId: matched ? matched.id : item.mansioneCatalogoId,
+      nome: matched ? matched.nome : item.nome,
+      emoji: matched ? matched.badgeEmoji || item.emoji || '🎖️' : item.emoji || '🎖️',
+      categoria: matched ? matched.categoria || item.categoria : item.categoria,
+      ruoloTurno: item.ruoloTurno || (matched ? inferisciRuoloTurnoDaMansione(matched) : undefined),
+    });
+  }
+
+  return out;
 }
 
 export const TIPI_TURNO_DEFAULT: TipoTurnoConfig[] = [
@@ -134,29 +192,32 @@ export const TIPI_TURNO_DEFAULT: TipoTurnoConfig[] = [
     dataCreazione: '01/01/2026',
     mansioniObbligatorie: [
       {
-        id: 'ruolo-autista',
-        nome: '1. Autista Soccorritore',
+        id: 'mansione-autista-118',
+        mansioneCatalogoId: 'mansione-autista-118',
+        nome: 'Autista Soccorritore 118',
         emoji: '🚑',
         ruoloTurno: 'autista',
-        categoria: 'Ruoli Equipaggio Base',
+        categoria: 'Emergenza 118',
         minimo: 1,
         massimo: 1,
       },
       {
-        id: 'ruolo-soccorritore2',
-        nome: '2. Secondo Soccorritore',
+        id: 'mansione-socc-base',
+        mansioneCatalogoId: 'mansione-socc-base',
+        nome: 'Soccorritore Base',
         emoji: '🧑‍⚕️',
         ruoloTurno: 'soccorritore2',
-        categoria: 'Ruoli Equipaggio Base',
+        categoria: 'Emergenza 118',
         minimo: 1,
         massimo: 2,
       },
       {
-        id: 'ruolo-terzoSoccorritore',
-        nome: '3. Terzo Soccorritore',
-        emoji: '🧑‍⚕️',
+        id: 'mansione-barelliere',
+        mansioneCatalogoId: 'mansione-barelliere',
+        nome: 'Barelliere / Accompagnatore Sanitario',
+        emoji: '🤝',
         ruoloTurno: 'terzoSoccorritore',
-        categoria: 'Ruoli Equipaggio Base',
+        categoria: 'Ordinario & Sociale',
         minimo: 0,
         massimo: 1,
       },
@@ -171,20 +232,22 @@ export const TIPI_TURNO_DEFAULT: TipoTurnoConfig[] = [
     dataCreazione: '01/01/2026',
     mansioniObbligatorie: [
       {
-        id: 'ruolo-autista',
-        nome: '1. Autista Soccorritore',
-        emoji: '🚑',
+        id: 'mansione-autista-ordinario',
+        mansioneCatalogoId: 'mansione-autista-ordinario',
+        nome: 'Autista Mezzi Ordinari / Pulmino',
+        emoji: '🚐',
         ruoloTurno: 'autista',
-        categoria: 'Ruoli Equipaggio Base',
+        categoria: 'Ordinario & Sociale',
         minimo: 1,
         massimo: 1,
       },
       {
-        id: 'ruolo-soccorritore2',
-        nome: '2. Secondo Soccorritore',
+        id: 'mansione-socc-base',
+        mansioneCatalogoId: 'mansione-socc-base',
+        nome: 'Soccorritore Base',
         emoji: '🧑‍⚕️',
         ruoloTurno: 'soccorritore2',
-        categoria: 'Ruoli Equipaggio Base',
+        categoria: 'Emergenza 118',
         minimo: 1,
         massimo: 2,
       },
@@ -199,20 +262,22 @@ export const TIPI_TURNO_DEFAULT: TipoTurnoConfig[] = [
     dataCreazione: '01/01/2026',
     mansioniObbligatorie: [
       {
-        id: 'ruolo-operatoreCentrale',
-        nome: '4. Operatore Centrale / Sala Radio',
+        id: 'mansione-op-centrale',
+        mansioneCatalogoId: 'mansione-op-centrale',
+        nome: 'Operatore di Centrale Operativa',
         emoji: '🎧',
         ruoloTurno: 'operatoreCentrale',
-        categoria: 'Ruoli Equipaggio Base',
+        categoria: 'Centrale & TLC',
         minimo: 1,
         massimo: 2,
       },
       {
-        id: 'ruolo-centralinista',
-        nome: '5. Centralinista',
+        id: 'mansione-centralinista',
+        mansioneCatalogoId: 'mansione-centralinista',
+        nome: 'Centralinista & Accoglienza',
         emoji: '📞',
         ruoloTurno: 'centralinista',
-        categoria: 'Ruoli Equipaggio Base',
+        categoria: 'Centrale & TLC',
         minimo: 0,
         massimo: 1,
       },
@@ -238,19 +303,21 @@ export function getCapoServizioTurno(
 
 /**
  * Restituisce l'elenco univoco di tutti i volontari assegnati e segnati nel turno,
- * indipendentemente dalla mansione ricoperta.
+ * indipendentemente dalla mansione ricoperta, con etichette ruolo allineate a Mansioni & Competenze.
  */
 export function getVolontariAssegnatiTurno(
-  turno?: Partial<TurnoSedeOperativa> | null
+  turno?: Partial<TurnoSedeOperativa> | null,
+  catalogoCustom?: MansioneOperativa[]
 ): Array<{ id: string; nome: string; ruoloLabel: string; ruoloKey: RuoloTurno }> {
   if (!turno) return [];
+  const catalogo = catalogoCustom || getMansioniCatalogo();
   const entries: Array<{ slot?: { id: string; nome: string }; ruoloLabel: string; ruoloKey: RuoloTurno }> = [
-    { slot: turno.autista, ruoloLabel: 'Autista Soccorritore', ruoloKey: 'autista' },
-    { slot: turno.soccorritore2, ruoloLabel: 'Secondo Soccorritore', ruoloKey: 'soccorritore2' },
-    { slot: turno.terzoSoccorritore, ruoloLabel: 'Terzo Soccorritore', ruoloKey: 'terzoSoccorritore' },
-    { slot: turno.operatoreCentrale, ruoloLabel: 'Operatore Centrale', ruoloKey: 'operatoreCentrale' },
-    { slot: turno.centralinista, ruoloLabel: 'Centralinista', ruoloKey: 'centralinista' },
-    { slot: turno.osservatore, ruoloLabel: 'Osservatore', ruoloKey: 'osservatore' },
+    { slot: turno.autista, ruoloLabel: getLabelRuoloEquipaggioLive('autista', catalogo).nome, ruoloKey: 'autista' },
+    { slot: turno.soccorritore2, ruoloLabel: getLabelRuoloEquipaggioLive('soccorritore2', catalogo).nome, ruoloKey: 'soccorritore2' },
+    { slot: turno.terzoSoccorritore, ruoloLabel: getLabelRuoloEquipaggioLive('terzoSoccorritore', catalogo).nome, ruoloKey: 'terzoSoccorritore' },
+    { slot: turno.operatoreCentrale, ruoloLabel: getLabelRuoloEquipaggioLive('operatoreCentrale', catalogo).nome, ruoloKey: 'operatoreCentrale' },
+    { slot: turno.centralinista, ruoloLabel: getLabelRuoloEquipaggioLive('centralinista', catalogo).nome, ruoloKey: 'centralinista' },
+    { slot: turno.osservatore, ruoloLabel: getLabelRuoloEquipaggioLive('osservatore', catalogo).nome, ruoloKey: 'osservatore' },
     { slot: turno.caposervizio, ruoloLabel: 'Equipaggio', ruoloKey: 'caposervizio' },
   ];
 
@@ -320,7 +387,6 @@ export function calcolaCoperturaTurno(
   if (richieste.length > 0) {
     const obbligatorie = richieste.filter((m) => (typeof m.minimo === 'number' ? m.minimo : 0) > 0);
     if (obbligatorie.length === 0) {
-      // Tutte le mansioni hanno minimo 0 (nessuna obbligatoria): turno coperto appena c'è almeno un volontario (o anche 0 se configurato senza obblighi)
       return totaleAssegnati > 0 ? 'Coperto' : 'Scoperto';
     }
     const tutteObbligatorieCoperte = obbligatorie.every(
@@ -375,29 +441,63 @@ if (typeof window !== 'undefined') {
   } catch {}
 }
 
-export function normalizzaMansioniTipoTurno(rawList: any[]): MansioneTipoTurno[] {
+export function normalizzaMansioniTipoTurno(
+  rawList: any[],
+  catalogoCustom?: MansioneOperativa[]
+): MansioneTipoTurno[] {
   if (!Array.isArray(rawList)) return [];
+  const catalogo = catalogoCustom || getMansioniCatalogo();
   const seen = new Set<string>();
   const out: MansioneTipoTurno[] = [];
   rawList.forEach((item, idx) => {
-    const nome = String(item?.nome || '').trim();
-    if (!nome) return;
-    const id = String(item?.id || `mans-turno-${idx}-${nome.toLowerCase().replace(/\s+/g, '-')}`);
-    if (isMansioneCaposervizioVietata(id, nome, item?.ruoloTurno)) return;
+    const nomeRaw = String(item?.nome || '').trim();
+    if (!nomeRaw) return;
+    const rawId = String(item?.id || `mans-turno-${idx}-${nomeRaw.toLowerCase().replace(/\s+/g, '-')}`);
+    if (isMansioneCaposervizioVietata(rawId, nomeRaw, item?.ruoloTurno)) return;
+
+    const matched = trovaMansioneCatalogoPerVoceTipoTurno(
+      {
+        id: rawId,
+        nome: nomeRaw,
+        mansioneCatalogoId: item?.mansioneCatalogoId ? String(item.mansioneCatalogoId) : undefined,
+        ruoloTurno: item?.ruoloTurno ? (String(item.ruoloTurno) as RuoloTurno) : undefined,
+      },
+      catalogo
+    );
+
+    const id = matched ? matched.id : rawId;
     if (seen.has(id)) return;
     seen.add(id);
+
     const minRaw = Number(item?.minimo);
     const maxRaw = Number(item?.massimo);
     const minimo = Number.isFinite(minRaw) && minRaw >= 0 ? Math.floor(minRaw) : 0;
     const minMaxFloor = Math.max(1, minimo);
     const massimo = Number.isFinite(maxRaw) && maxRaw >= minMaxFloor ? Math.floor(maxRaw) : minMaxFloor;
+
     out.push({
       id,
-      nome,
-      emoji: item?.emoji ? String(item.emoji).trim() : '🎖️',
-      ruoloTurno: item?.ruoloTurno ? (String(item.ruoloTurno) as RuoloTurno) : undefined,
-      mansioneCatalogoId: item?.mansioneCatalogoId ? String(item.mansioneCatalogoId) : undefined,
-      categoria: item?.categoria ? String(item.categoria).trim() : undefined,
+      nome: matched ? matched.nome : nomeRaw,
+      emoji: matched
+        ? matched.badgeEmoji || (item?.emoji ? String(item.emoji).trim() : '🎖️')
+        : item?.emoji
+        ? String(item.emoji).trim()
+        : '🎖️',
+      ruoloTurno: item?.ruoloTurno
+        ? (String(item.ruoloTurno) as RuoloTurno)
+        : matched
+        ? inferisciRuoloTurnoDaMansione(matched)
+        : undefined,
+      mansioneCatalogoId: matched
+        ? matched.id
+        : item?.mansioneCatalogoId
+        ? String(item.mansioneCatalogoId)
+        : undefined,
+      categoria: matched
+        ? matched.categoria
+        : item?.categoria
+        ? String(item.categoria).trim()
+        : undefined,
       minimo,
       massimo,
     });
@@ -405,8 +505,9 @@ export function normalizzaMansioniTipoTurno(rawList: any[]): MansioneTipoTurno[]
   return out;
 }
 
-export function normalizzaListaTipiTurno(rawList: any[]): TipoTurnoConfig[] {
+export function normalizzaListaTipiTurno(rawList: any[], catalogoCustom?: MansioneOperativa[]): TipoTurnoConfig[] {
   if (!Array.isArray(rawList)) return [];
+  const catalogo = catalogoCustom || getMansioniCatalogo();
   const seenIds = new Set<string>();
   const out: TipoTurnoConfig[] = [];
   rawList.forEach((item, idx) => {
@@ -420,7 +521,7 @@ export function normalizzaListaTipiTurno(rawList: any[]): TipoTurnoConfig[] {
       nome,
       descrizione: item?.descrizione ? String(item.descrizione).trim() : '',
       icona: item?.icona ? String(item.icona).trim() : '📅',
-      mansioniObbligatorie: normalizzaMansioniTipoTurno(item?.mansioniObbligatorie || []),
+      mansioniObbligatorie: normalizzaMansioniTipoTurno(item?.mansioniObbligatorie || [], catalogo),
       predefinito: Boolean(item?.predefinito),
       dataCreazione: item?.dataCreazione ? String(item.dataCreazione) : undefined,
     });
@@ -428,18 +529,19 @@ export function normalizzaListaTipiTurno(rawList: any[]): TipoTurnoConfig[] {
   return out;
 }
 
-export function getTipiTurnoCatalogo(): TipoTurnoConfig[] {
-  if (typeof window === 'undefined') return TIPI_TURNO_DEFAULT;
+export function getTipiTurnoCatalogo(catalogoCustom?: MansioneOperativa[]): TipoTurnoConfig[] {
+  const catalogo = catalogoCustom || getMansioniCatalogo();
+  if (typeof window === 'undefined') return normalizzaListaTipiTurno(TIPI_TURNO_DEFAULT, catalogo);
   try {
     const saved = localStorage.getItem(TIPI_TURNO_STORAGE_KEY);
     if (saved !== null) {
       const parsed = JSON.parse(saved);
       if (Array.isArray(parsed)) {
-        return normalizzaListaTipiTurno(parsed);
+        return normalizzaListaTipiTurno(parsed, catalogo);
       }
     }
   } catch {}
-  return TIPI_TURNO_DEFAULT;
+  return normalizzaListaTipiTurno(TIPI_TURNO_DEFAULT, catalogo);
 }
 
 export function salvaTipiTurnoCatalogo(lista: TipoTurnoConfig[], updatedAt?: number): TipoTurnoConfig[] {
@@ -464,6 +566,155 @@ export function applicaTipiTurnoDaSync(tipi?: any[], updatedAt?: number): boolea
   return true;
 }
 
+function matchesRenamedMansione(
+  entry: MansioneTipoTurno,
+  vecchioNomeLow: string,
+  mansioneId?: string
+): boolean {
+  if (mansioneId) {
+    if (entry.id === mansioneId || entry.mansioneCatalogoId === mansioneId) return true;
+    if (entry.id === `mansione-${mansioneId}`) return true;
+    const legacy = LEGACY_RUOLO_ID_TO_CATALOGO_ID[String(entry.id || '').toLowerCase()];
+    if (legacy && legacy.catalogoId === mansioneId) return true;
+  }
+  if (vecchioNomeLow && String(entry.nome || '').trim().toLowerCase() === vecchioNomeLow) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Aggiorna automaticamente tutti i Tipi di Turno quando una mansione del catalogo Mansioni & Competenze
+ * viene rinominata o modificata (nome, emoji o categoria).
+ */
+export function aggiornaTipiTurnoDopoModificaMansione(
+  vecchioNome: string,
+  nuovoNome: string,
+  mansioneId?: string,
+  nuovaEmoji?: string,
+  nuovaCategoria?: string
+): { aggiornati: TipoTurnoConfig[]; modificato: boolean } {
+  const attuali = getTipiTurnoCatalogo();
+  const vecchioLow = (vecchioNome || '').trim().toLowerCase();
+  const nuovoPulito = (nuovoNome || '').trim();
+  if (!nuovoPulito && !nuovaEmoji && !nuovaCategoria) {
+    return { aggiornati: attuali, modificato: false };
+  }
+
+  let modificato = false;
+  const aggiornati = attuali.map((tipo) => {
+    let tipoMod = false;
+    const nuoveMansioni = tipo.mansioniObbligatorie.map((m) => {
+      if (!matchesRenamedMansione(m, vecchioLow, mansioneId)) return m;
+      const nextNome = nuovoPulito || m.nome;
+      const nextEmoji = nuovaEmoji !== undefined ? nuovaEmoji : m.emoji;
+      const nextCat = nuovaCategoria !== undefined ? nuovaCategoria : m.categoria;
+      const nextId = mansioneId || m.id;
+      const nextCatId = mansioneId || m.mansioneCatalogoId;
+      if (
+        m.nome !== nextNome ||
+        m.emoji !== nextEmoji ||
+        m.categoria !== nextCat ||
+        m.id !== nextId ||
+        m.mansioneCatalogoId !== nextCatId
+      ) {
+        tipoMod = true;
+        modificato = true;
+        return {
+          ...m,
+          id: nextId,
+          mansioneCatalogoId: nextCatId,
+          nome: nextNome,
+          emoji: nextEmoji,
+          categoria: nextCat,
+        };
+      }
+      return m;
+    });
+    return tipoMod ? { ...tipo, mansioniObbligatorie: nuoveMansioni } : tipo;
+  });
+
+  if (modificato) {
+    const salvati = salvaTipiTurnoCatalogo(aggiornati);
+    return { aggiornati: salvati, modificato: true };
+  }
+  return { aggiornati: attuali, modificato: false };
+}
+
+/**
+ * Aggiorna automaticamente TUTTI i Turni (passati, presenti e futuri) quando una mansione
+ * viene rinominata o modificata (mansioniRichieste + candidature.qualificaVolontario).
+ */
+export function aggiornaTurniDopoModificaMansione(
+  turni: TurnoSedeOperativa[],
+  vecchioNome: string,
+  nuovoNome: string,
+  mansioneId?: string,
+  nuovaEmoji?: string,
+  nuovaCategoria?: string
+): { aggiornati: TurnoSedeOperativa[]; modificato: boolean } {
+  if (!Array.isArray(turni) || turni.length === 0) return { aggiornati: turni, modificato: false };
+  const vecchioLow = (vecchioNome || '').trim().toLowerCase();
+  const nuovoPulito = (nuovoNome || '').trim();
+  let modificato = false;
+
+  const aggiornati = turni.map((t) => {
+    let turnoMod = false;
+    let nextRichieste = t.mansioniRichieste;
+    if (Array.isArray(t.mansioniRichieste) && t.mansioniRichieste.length > 0) {
+      nextRichieste = t.mansioniRichieste.map((m) => {
+        if (!matchesRenamedMansione(m, vecchioLow, mansioneId)) return m;
+        const nextNome = nuovoPulito || m.nome;
+        const nextEmoji = nuovaEmoji !== undefined ? nuovaEmoji : m.emoji;
+        const nextCat = nuovaCategoria !== undefined ? nuovaCategoria : m.categoria;
+        const nextId = mansioneId || m.id;
+        const nextCatId = mansioneId || m.mansioneCatalogoId;
+        if (
+          m.nome !== nextNome ||
+          m.emoji !== nextEmoji ||
+          m.categoria !== nextCat ||
+          m.id !== nextId ||
+          m.mansioneCatalogoId !== nextCatId
+        ) {
+          turnoMod = true;
+          modificato = true;
+          return {
+            ...m,
+            id: nextId,
+            mansioneCatalogoId: nextCatId,
+            nome: nextNome,
+            emoji: nextEmoji,
+            categoria: nextCat,
+          };
+        }
+        return m;
+      });
+    }
+
+    let nextRichiesteIscrizione = t.richiesteIscrizione;
+    if (vecchioLow && nuovoPulito && vecchioLow !== nuovoPulito.toLowerCase() && Array.isArray(t.richiesteIscrizione)) {
+      nextRichiesteIscrizione = t.richiesteIscrizione.map((c) => {
+        if (c.qualificaVolontario && c.qualificaVolontario.trim().toLowerCase() === vecchioLow) {
+          turnoMod = true;
+          modificato = true;
+          return { ...c, qualificaVolontario: nuovoPulito };
+        }
+        return c;
+      });
+    }
+
+    return turnoMod
+      ? {
+          ...t,
+          ...(nextRichieste !== t.mansioniRichieste ? { mansioniRichieste: nextRichieste } : {}),
+          ...(nextRichiesteIscrizione !== t.richiesteIscrizione ? { richiesteIscrizione: nextRichiesteIscrizione } : {}),
+        }
+      : t;
+  });
+
+  return { aggiornati, modificato };
+}
+
 export function useTipiTurno(): TipoTurnoConfig[] {
   const [tipi, setTipi] = useState<TipoTurnoConfig[]>(() => getTipiTurnoCatalogo());
 
@@ -472,8 +723,10 @@ export function useTipiTurno(): TipoTurnoConfig[] {
       setTipi(getTipiTurnoCatalogo());
     };
     window.addEventListener('croceoro_tipi_turno_updated', refresh);
+    window.addEventListener('croceoro_mansioni_updated', refresh);
     return () => {
       window.removeEventListener('croceoro_tipi_turno_updated', refresh);
+      window.removeEventListener('croceoro_mansioni_updated', refresh);
     };
   }, []);
 

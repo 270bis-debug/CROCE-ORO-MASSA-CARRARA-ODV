@@ -173,6 +173,17 @@ export const MANSIONI_DEFAULT: MansioneOperativa[] = [
     mansioniIncluse: ['Volontario']
   },
   {
+    id: 'mansione-osservatore',
+    nome: 'Osservatore (In Formazione / Tirocinante)',
+    descrizione: 'Volontario in affiancamento formativo, osservazione operativa o tirocinio pratico',
+    categoria: 'Ordinario & Sociale',
+    coloreBg: 'bg-sky-950/70',
+    coloreTesto: 'text-sky-300',
+    coloreBorder: 'border-sky-500/60',
+    badgeEmoji: '👁️',
+    mansioniIncluse: ['Volontario']
+  },
+  {
     id: 'mansione-segreteria',
     nome: 'Addetto Segreteria & Tesseramento',
     descrizione: 'Gestione libri soci, quietanze, tesseramenti annuali e pratiche burocratiche',
@@ -536,16 +547,43 @@ export function modificaMansioneCatalogo(
           : m.parentMansioneId;
       return { ...m, ...modifiche, parentMansioneId: nextParent };
     }
-    if (vecchioNome && nuovoNome && vecchioNome !== nuovoNome && Array.isArray(m.mansioniIncluse) && m.mansioniIncluse.includes(vecchioNome)) {
+    if (
+      vecchioNome &&
+      nuovoNome &&
+      vecchioNome.trim().toLowerCase() !== nuovoNome.trim().toLowerCase() &&
+      Array.isArray(m.mansioniIncluse) &&
+      m.mansioniIncluse.some((inc) => inc.trim().toLowerCase() === vecchioNome.trim().toLowerCase())
+    ) {
       return {
         ...m,
-        mansioniIncluse: m.mansioniIncluse.map((inc) => (inc === vecchioNome ? nuovoNome : inc))
+        mansioniIncluse: m.mansioniIncluse.map((inc) =>
+          inc.trim().toLowerCase() === vecchioNome.trim().toLowerCase() ? nuovoNome : inc
+        )
       };
     }
     return m;
   });
   salvaMansioniCatalogo(aggiornato);
   return aggiornato;
+}
+
+export interface RinominaMansioneGlobaleDetail {
+  mansioneId: string;
+  vecchioNome: string;
+  nuovoNome: string;
+  nuovaEmoji?: string;
+  nuovaCategoria?: string;
+}
+
+/**
+ * Emette l'evento globale di rinomina/aggiornamento mansione affinché App.tsx, Tipi di Turno,
+ * Calendario Turni, Volontari, Formazione e Timbrature aggiornino automaticamente tutti i riferimenti.
+ */
+export function emettiRinominaMansioneGlobale(detail: RinominaMansioneGlobaleDetail): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.dispatchEvent(new CustomEvent<RinominaMansioneGlobaleDetail>('croceoro_mansione_rinominata', { detail }));
+  } catch {}
 }
 
 /**
@@ -928,32 +966,88 @@ export function isResponsabileParcoMezzi(
   );
 }
 
-const RUOLO_TURNO_MANSIONI_IDS: Record<string, { ids: string[]; fallbackNomi: string[] }> = {
+const RUOLO_TURNO_MANSIONI_IDS: Record<string, { ids: string[]; fallbackNomi: string[]; defaultEmoji: string }> = {
   autista: {
     ids: ['mansione-autista-118', 'mansione-autista-ordinario'],
     fallbackNomi: ['Autista Soccorritore 118', 'Autista Mezzi Ordinari / Pulmino'],
-  },
-  caposervizio: {
-    ids: ['mansione-socc-avanzato', 'mansione-autista-118', 'mansione-formatore'],
-    fallbackNomi: ['Soccorritore Avanzato (Caposervizio)', 'Autista Soccorritore 118', 'Formatore Sanitario / Istruttore BLSD'],
+    defaultEmoji: '🚑',
   },
   soccorritore2: {
-    ids: ['mansione-socc-base', 'mansione-socc-avanzato', 'mansione-autista-118'],
-    fallbackNomi: ['Soccorritore Base', 'Soccorritore Avanzato (Caposervizio)', 'Autista Soccorritore 118'],
+    ids: ['mansione-socc-base', 'mansione-autista-118'],
+    fallbackNomi: ['Soccorritore Base', 'Autista Soccorritore 118'],
+    defaultEmoji: '🧑‍⚕️',
   },
   terzosoccorritore: {
-    ids: ['mansione-barelliere', 'mansione-socc-base', 'mansione-socc-avanzato', 'mansione-autista-118'],
-    fallbackNomi: ['Barelliere / Accompagnatore Sanitario', 'Soccorritore Base', 'Soccorritore Avanzato (Caposervizio)', 'Autista Soccorritore 118'],
+    ids: ['mansione-barelliere', 'mansione-socc-base', 'mansione-autista-118'],
+    fallbackNomi: ['Barelliere / Accompagnatore Sanitario', 'Soccorritore Base', 'Autista Soccorritore 118'],
+    defaultEmoji: '🤝',
   },
   operatorecentrale: {
     ids: ['mansione-op-centrale'],
     fallbackNomi: ['Operatore di Centrale Operativa'],
+    defaultEmoji: '🎧',
   },
   centralinista: {
     ids: ['mansione-centralinista', 'mansione-op-centrale'],
     fallbackNomi: ['Centralinista & Accoglienza', 'Operatore di Centrale Operativa'],
+    defaultEmoji: '📞',
+  },
+  osservatore: {
+    ids: ['mansione-osservatore'],
+    fallbackNomi: ['Osservatore (In Formazione / Tirocinante)'],
+    defaultEmoji: '👁️',
   },
 };
+
+/**
+ * Restituisce la mansione primaria dal catalogo Mansioni & Competenze associata a uno slot equipaggio,
+ * garantendo che Ruoli Equipaggio combacino sempre con Mansioni & Competenze anche dopo rinomine.
+ */
+export function getMansioneCatalogoPerRuoloTurno(
+  ruolo: string,
+  catalogo?: MansioneOperativa[]
+): MansioneOperativa | undefined {
+  const norm = (ruolo || '').toLowerCase().trim();
+  const cfg = RUOLO_TURNO_MANSIONI_IDS[norm];
+  if (!cfg) return undefined;
+  const lista = catalogo || getMansioniCatalogo();
+  for (const id of cfg.ids) {
+    const found = lista.find((m) => m.id === id);
+    if (found) return found;
+  }
+  for (const fb of cfg.fallbackNomi) {
+    const found = lista.find((m) => m.nome.trim().toLowerCase() === fb.toLowerCase());
+    if (found) return found;
+  }
+  return undefined;
+}
+
+/**
+ * Restituisce nome e icona LIVE di un ruolo equipaggio leggendoli direttamente dal catalogo Mansioni & Competenze.
+ */
+export function getLabelRuoloEquipaggioLive(
+  ruolo: string,
+  catalogo?: MansioneOperativa[]
+): { nome: string; emoji: string; mansioneId?: string } {
+  const norm = (ruolo || '').toLowerCase().trim();
+  const mans = getMansioneCatalogoPerRuoloTurno(norm, catalogo);
+  const cfg = RUOLO_TURNO_MANSIONI_IDS[norm];
+  if (mans) {
+    return {
+      nome: mans.nome,
+      emoji: mans.badgeEmoji || cfg?.defaultEmoji || '🎖️',
+      mansioneId: mans.id,
+    };
+  }
+  if (cfg) {
+    return {
+      nome: cfg.fallbackNomi[0] || ruolo,
+      emoji: cfg.defaultEmoji || '🎖️',
+      mansioneId: cfg.ids[0],
+    };
+  }
+  return { nome: ruolo || 'Equipaggio', emoji: '🎖️' };
+}
 
 /**
  * Restituisce i requisiti di mansione previsti per ciascun ruolo dello slot turno (risolvendo eventuali rinomine dal catalogo live)
@@ -961,7 +1055,7 @@ const RUOLO_TURNO_MANSIONI_IDS: Record<string, { ids: string[]; fallbackNomi: st
 export function getMansioniPerRuoloTurno(ruolo: string, catalogo?: MansioneOperativa[]): string[] {
   const norm = (ruolo || '').toLowerCase().trim();
   const cfg = RUOLO_TURNO_MANSIONI_IDS[norm];
-  if (!cfg) return ['Volontario'];
+  if (!cfg || norm === 'osservatore') return ['Volontario'];
   const lista = catalogo || getMansioniCatalogo();
   return cfg.ids.map((id, idx) => {
     const item = lista.find((m) => m.id === id);
@@ -990,7 +1084,7 @@ export function puoCoprireRuoloTurno(
   const richieste = getMansioniPerRuoloTurno(ruolo, catalogoEffettivo);
 
   // Per il ruolo osservatore o ruoli liberi, chiunque è ammesso
-  if (!cfg) {
+  if (!cfg || normRuolo === 'osservatore') {
     return {
       idoneo: true,
       mansioniPossedute: effettive,

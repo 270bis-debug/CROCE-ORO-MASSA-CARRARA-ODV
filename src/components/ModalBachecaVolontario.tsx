@@ -15,12 +15,22 @@ import {
   Trash2,
   Edit3,
   GraduationCap,
-  MapPin
+  MapPin,
+  Eye,
+  Lock,
+  FileText,
+  FileSpreadsheet,
+  Image as ImageIcon
 } from 'lucide-react';
 import { ComunicazioneBacheca, CorsoFormazione, SedeAssociativaCompleta } from '../types/adminTypes';
 import { CroceOroLogo } from './CroceOroLogo';
 import { CommentiBachecaPost } from './bacheca/CommentiBachecaPost';
-import { realtime } from '../services/realtime';
+import {
+  ImmaginePostProtetta,
+  ModalVisualizzatoreProtetto,
+  ContenutoProtettoBacheca
+} from './bacheca/VisualizzatoreProtettoBacheca';
+import { formatDimensioneFile } from '../utils/bachecaMedia';
 import {
   getCorsiVisibiliInBacheca,
   getDataInizioEffettivaCorso,
@@ -32,7 +42,7 @@ interface ModalBachecaVolontarioProps {
   aperta: boolean;
   onChiudi: () => void;
   comunicazioni: ComunicazioneBacheca[];
-  onAggiornaComunicazioni?: (nuove: ComunicazioneBacheca[]) => void;
+  onAggiornaComunicazioni?: (nuove: ComunicazioneBacheca[], opts?: { notifica?: any; deletedId?: string }) => void;
   corsiFormazione?: CorsoFormazione[];
   onApriDettaglioCorso?: (corso: CorsoFormazione) => void;
   volontarioNome?: string;
@@ -62,6 +72,9 @@ export const ModalBachecaVolontario: React.FC<ModalBachecaVolontarioProps> = ({
   const [ricerca, setRicerca] = useState('');
   const [categoriaSelezionata, setCategoriaSelezionata] = useState('tutte');
   const [soloMiaSezione, setSoloMiaSezione] = useState(false);
+  const [contenutoProtettoAperto, setContenutoProtettoAperto] = useState<ContenutoProtettoBacheca | null>(null);
+  const [confermaEliminaPostId, setConfermaEliminaPostId] = useState<string | null>(null);
+  const [avvisoBacheca, setAvvisoBacheca] = useState<string | null>(null);
 
   // Filtra comunicazioni attive
   const comunicazioniAttive = useMemo(() => {
@@ -137,9 +150,9 @@ export const ModalBachecaVolontario: React.FC<ModalBachecaVolontarioProps> = ({
       testoCommento: string;
     }
   ) => {
-    const aggiornate = comunicazioni.map((c) => (c.id === postAggiornato.id ? postAggiornato : c));
-    onAggiornaComunicazioni?.(aggiornate);
-
+    const aggiornate = comunicazioni.map((c) =>
+      c.id === postAggiornato.id ? { ...postAggiornato, updatedAt: Date.now() } : c
+    );
     if (notificaCommento) {
       const notifPayload = {
         tipo: 'nuovo_commento' as const,
@@ -151,9 +164,9 @@ export const ModalBachecaVolontario: React.FC<ModalBachecaVolontarioProps> = ({
         destinatariVolontariIds: notificaCommento.destinatariIds,
         messaggio: `Nuovo commento di ${volontarioNome} su "${postAggiornato.titolo}": "${notificaCommento.testoCommento.substring(0, 80)}"`
       };
-      realtime.syncBacheca(aggiornate, notifPayload);
+      onAggiornaComunicazioni?.(aggiornate, { notifica: notifPayload });
     } else {
-      realtime.syncBacheca(aggiornate);
+      onAggiornaComunicazioni?.(aggiornate);
     }
   };
 
@@ -165,15 +178,19 @@ export const ModalBachecaVolontario: React.FC<ModalBachecaVolontarioProps> = ({
       (postDaEliminare?.autore && postDaEliminare.autore.trim().toLowerCase() === volontarioNome.trim().toLowerCase());
 
     if (!puoEliminare) {
-      alert("⛔ Operazione non autorizzata: i post in bacheca possono essere cancellati solo da chi li ha creati (l'Amministratore può cancellare qualsiasi post).");
+      setAvvisoBacheca("⛔ Operazione non autorizzata: i post in bacheca possono essere cancellati solo da chi li ha creati o dall'Amministratore.");
+      setTimeout(() => setAvvisoBacheca(null), 4000);
       return;
     }
 
-    if (confirm('Sei sicuro di voler eliminare questa comunicazione dalla bacheca?')) {
-      const aggiornate = comunicazioni.filter((c) => c.id !== postId);
-      onAggiornaComunicazioni?.(aggiornate);
-      realtime.syncBacheca(aggiornate);
+    if (confermaEliminaPostId !== postId) {
+      setConfermaEliminaPostId(postId);
+      return;
     }
+
+    const aggiornate = comunicazioni.filter((c) => c.id !== postId);
+    setConfermaEliminaPostId(null);
+    onAggiornaComunicazioni?.(aggiornate, { deletedId: postId });
   };
 
   if (!aperta) return null;
@@ -491,32 +508,108 @@ export const ModalBachecaVolontario: React.FC<ModalBachecaVolontarioProps> = ({
                     </div>
                   </div>
 
-                  {/* Titolo e Testo */}
-                  <div className="py-2.5 space-y-1.5">
+                  {/* Titolo, Testo, Immagine Protetta e Allegato Protetto */}
+                  <div className="py-2.5 space-y-2.5">
                     <h4 className="text-sm sm:text-base font-black text-white tracking-wide">
                       {com.titolo}
                     </h4>
                     <p className="text-xs text-slate-200 leading-relaxed whitespace-pre-line font-normal">
                       {com.contenuto}
                     </p>
+
+                    {com.immaginePostDataUrl && (
+                      <ImmaginePostProtetta
+                        dataUrl={com.immaginePostDataUrl}
+                        nome={com.immaginePostNome}
+                        titoloPost={com.titolo}
+                        utenteWatermark={volontarioNome || 'Volontario Croce Oro'}
+                        onApriProtetto={() =>
+                          setContenutoProtettoAperto({
+                            titolo: com.titolo,
+                            nomeFile: com.immaginePostNome || `${com.titolo}.jpg`,
+                            dataUrl: com.immaginePostDataUrl!,
+                            tipo: 'image',
+                          })
+                        }
+                      />
+                    )}
+
+                    {com.allegatoDataUrl && com.allegatoNome && (
+                      <div className="p-2.5 rounded-xl bg-slate-900 border border-violet-500/40 flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <div className="w-8 h-8 rounded-lg bg-violet-950 border border-violet-500/40 flex items-center justify-center shrink-0">
+                            {com.allegatoTipo === 'excel' ? (
+                              <FileSpreadsheet className="w-4 h-4 text-emerald-400" />
+                            ) : com.allegatoTipo === 'image' ? (
+                              <ImageIcon className="w-4 h-4 text-sky-400" />
+                            ) : (
+                              <FileText className="w-4 h-4 text-violet-300" />
+                            )}
+                          </div>
+                          <div className="min-w-0">
+                            <div className="text-xs font-bold text-white truncate">{com.allegatoNome}</div>
+                            <div className="text-[10px] text-slate-400 flex items-center gap-1.5">
+                              <Lock className="w-2.5 h-2.5 text-rose-400" />
+                              <span>Solo visualizzazione protetta (no download / no screenshot)</span>
+                              {com.allegatoDimensione ? <span>• {formatDimensioneFile(com.allegatoDimensione)}</span> : null}
+                            </div>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setContenutoProtettoAperto({
+                              titolo: com.titolo,
+                              nomeFile: com.allegatoNome!,
+                              dataUrl: com.allegatoDataUrl!,
+                              tipo: com.allegatoTipo || 'pdf',
+                              dimensione: com.allegatoDimensione,
+                            })
+                          }
+                          className="px-3 py-1.5 rounded-lg bg-violet-600 hover:bg-violet-500 text-white font-black text-[10.5px] uppercase inline-flex items-center gap-1.5 cursor-pointer shrink-0"
+                        >
+                          <Eye className="w-3.5 h-3.5" />
+                          <span>Visualizza</span>
+                        </button>
+                      </div>
+                    )}
                   </div>
 
                   {/* Firma Autore & Azioni Post Autore/Admin */}
-                  <div className="pt-2 border-t border-slate-800/80 flex items-center justify-between text-[11px] text-slate-400">
+                  <div className="pt-2 border-t border-slate-800/80 flex items-center justify-between text-[11px] text-slate-400 gap-2 flex-wrap">
                     <div>
                       Firma: <strong className="text-slate-200">{com.autore}</strong>
                     </div>
                     <div className="flex items-center gap-2">
                       {(isAdmin || (com.autoreId && com.autoreId === volontarioId) || (com.autore && com.autore.trim().toLowerCase() === volontarioNome.trim().toLowerCase())) && (
-                        <button
-                          type="button"
-                          onClick={() => handleEliminaPost(com.id)}
-                          className="px-2 py-0.5 rounded-lg text-slate-400 hover:text-red-400 hover:bg-red-950/40 border border-slate-800 transition-colors cursor-pointer flex items-center gap-1 text-[10px] font-bold"
-                          title="Elimina post (consentito all'autore o all'Amministratore)"
-                        >
-                          <Trash2 className="w-3 h-3 text-red-400" />
-                          <span>Elimina Post</span>
-                        </button>
+                        confermaEliminaPostId === com.id ? (
+                          <span className="inline-flex items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() => handleEliminaPost(com.id)}
+                              className="px-2 py-0.5 rounded-lg bg-red-600 hover:bg-red-500 text-white font-black text-[10px] cursor-pointer"
+                            >
+                              Conferma Elimina
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setConfermaEliminaPostId(null)}
+                              className="px-2 py-0.5 rounded-lg bg-slate-800 text-slate-300 text-[10px] font-bold cursor-pointer"
+                            >
+                              Annulla
+                            </button>
+                          </span>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => handleEliminaPost(com.id)}
+                            className="px-2 py-0.5 rounded-lg text-slate-400 hover:text-red-400 hover:bg-red-950/40 border border-slate-800 transition-colors cursor-pointer flex items-center gap-1 text-[10px] font-bold"
+                            title="Elimina post (consentito all'autore o all'Amministratore)"
+                          >
+                            <Trash2 className="w-3 h-3 text-red-400" />
+                            <span>Elimina Post</span>
+                          </button>
+                        )
                       )}
                       <span className="text-[10px] font-bold text-violet-400/90 uppercase">
                         Croce Oro Massa Carrara OdV
@@ -541,6 +634,13 @@ export const ModalBachecaVolontario: React.FC<ModalBachecaVolontarioProps> = ({
           )}
         </div>
 
+        {/* Avviso errore/conferma inline */}
+        {avvisoBacheca && (
+          <div className="mx-4 mb-2 p-2.5 rounded-xl bg-rose-950/80 border border-rose-500/60 text-rose-200 text-xs font-bold">
+            {avvisoBacheca}
+          </div>
+        )}
+
         {/* ------------------------------------------------------------- */}
         {/* FOOTER MODALE                                                 */}
         {/* ------------------------------------------------------------- */}
@@ -560,6 +660,13 @@ export const ModalBachecaVolontario: React.FC<ModalBachecaVolontarioProps> = ({
         </div>
 
       </div>
+
+      {/* Visualizzatore Protetto Volontario (NO download, Anti-Screenshot) */}
+      <ModalVisualizzatoreProtetto
+        contenuto={contenutoProtettoAperto}
+        onChiudi={() => setContenutoProtettoAperto(null)}
+        utenteLabel={volontarioNome || 'Volontario Croce Oro'}
+      />
     </div>
   );
 };
