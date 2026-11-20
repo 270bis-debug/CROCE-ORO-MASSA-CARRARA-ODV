@@ -47,15 +47,22 @@ import {
   ContattoEsterno,
   InterventoManutenzione,
   SedeAssociativaCompleta,
+  CategoriaCostoServizio,
   TariffaCostoServizio,
   VoceNotaDiDebito,
   ProprietarioImmobileData,
   MovimentoAltreEntrateUscite,
   VoceCostoGestione
 } from '../../types/adminTypes';
+import {
+  useCategorieCostiServizio,
+  salvaCategorieCostiServizio,
+  getNomeCategoriaCosto
+} from '../../utils/categorieCostiServizioStore';
 import { TARIFFE_COSTI_SERVIZIO_INIZIALI } from '../../data/adminMockData';
 import { DICITURA_ESENZIONE_BOLLO } from '../../data/tesseramento';
 import { Volontario } from '../DatabaseVolontariModal';
+import { realtime } from '../../services/realtime';
 import { inviaNotificaModificaAdmin } from '../../utils/notificaModificaAdmin';
 import {
   stampaEInviaRicevutaTesseramento,
@@ -251,9 +258,20 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
     onAggiornaCostiServizio?.(nuove);
   };
 
-  const [filtroCategoriaTariffa, setFiltroCategoriaTariffa] = useState<'tutti' | NonNullable<TariffaCostoServizio['categoria']>>('tutti');
+  const categorieCostiServizio = useCategorieCostiServizio();
+  const [mostraGestioneCategorieCosti, setMostraGestioneCategorieCosti] = useState(false);
+  const [nuovaCatCostoNome, setNuovaCatCostoNome] = useState('');
+  const [nuovaCatCostoUnita, setNuovaCatCostoUnita] = useState('servizio');
+  const [nuovaCatCostoDesc, setNuovaCatCostoDesc] = useState('');
+  const [editingCatCostoId, setEditingCatCostoId] = useState<string | null>(null);
+  const [editingCatCostoNome, setEditingCatCostoNome] = useState('');
+  const [editingCatCostoUnita, setEditingCatCostoUnita] = useState('');
+  const [editingCatCostoDesc, setEditingCatCostoDesc] = useState('');
+  const [confermaEliminaCatCostoId, setConfermaEliminaCatCostoId] = useState<string | null>(null);
+
+  const [filtroCategoriaTariffa, setFiltroCategoriaTariffa] = useState<string>('tutti');
   const [editingTariffaId, setEditingTariffaId] = useState<string | null>(null);
-  const [formTariffaCategoria, setFormTariffaCategoria] = useState<NonNullable<TariffaCostoServizio['categoria']>>('mezzo_km');
+  const [formTariffaCategoria, setFormTariffaCategoria] = useState<string>('mezzo_km');
   const [formTariffaSigla, setFormTariffaSigla] = useState('');
   const [formTariffaDescrizioneSigla, setFormTariffaDescrizioneSigla] = useState('');
   const [formTariffaNome, setFormTariffaNome] = useState('');
@@ -261,6 +279,15 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
   const [formTariffaUnita, setFormTariffaUnita] = useState('km');
   const [formTariffaNote, setFormTariffaNote] = useState('');
   const [confermaEliminaTariffaId, setConfermaEliminaTariffaId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (categorieCostiServizio.length > 0 && !categorieCostiServizio.some((c) => c.id === formTariffaCategoria)) {
+      setFormTariffaCategoria(categorieCostiServizio[0].id);
+    }
+    if (filtroCategoriaTariffa !== 'tutti' && !categorieCostiServizio.some((c) => c.id === filtroCategoriaTariffa)) {
+      setFiltroCategoriaTariffa('tutti');
+    }
+  }, [categorieCostiServizio, formTariffaCategoria, filtroCategoriaTariffa]);
 
   // Modale Anteprima Documento per Stampa (Tessera, Nota di Debito o Ricevuta)
   const [documentoPerStampa, setDocumentoPerStampa] = useState<{ tipo: 'tessera' | 'nota' | 'ricevuta'; data: any } | null>(null);
@@ -1152,8 +1179,119 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
     setFormTariffaDescrizioneSigla('');
     setFormTariffaNome('');
     setFormTariffaImporto('0');
-    setFormTariffaUnita('km');
+    const defCat = categorieCostiServizio.find((c) => c.id === formTariffaCategoria) || categorieCostiServizio[0];
+    setFormTariffaUnita(defCat?.unitaDefault || 'servizio');
     setFormTariffaNote('');
+  };
+
+  const handleCreaCategoriaCosto = (e: React.FormEvent) => {
+    e.preventDefault();
+    const nome = nuovaCatCostoNome.trim();
+    if (!nome) {
+      mostraAvviso('Inserisci il nome della nuova categoria di costo.');
+      return;
+    }
+    if (categorieCostiServizio.some((c) => c.nome.trim().toLowerCase() === nome.toLowerCase())) {
+      mostraAvviso(`Esiste già una categoria di costo chiamata "${nome}".`);
+      return;
+    }
+    const slug = nome
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-z0-9]+/g, '_')
+      .replace(/^_+|_+$/g, '')
+      .slice(0, 28);
+    const id = slug && !categorieCostiServizio.some((c) => c.id === slug) ? slug : `cat_costo_${Date.now()}`;
+    const nuova: CategoriaCostoServizio = {
+      id,
+      nome,
+      unitaDefault: nuovaCatCostoUnita.trim() || 'servizio',
+      descrizione: nuovaCatCostoDesc.trim() || undefined,
+      predefinita: false
+    };
+    const aggiornate = salvaCategorieCostiServizio([...categorieCostiServizio, nuova]);
+    realtime.send('UPDATE_CATEGORIE_COSTI_SERVIZIO', { categorie: aggiornate, updatedAt: Date.now() });
+    setNuovaCatCostoNome('');
+    setNuovaCatCostoUnita('servizio');
+    setNuovaCatCostoDesc('');
+    setFormTariffaCategoria(nuova.id);
+    if (!editingTariffaId) {
+      setFormTariffaUnita(nuova.unitaDefault || 'servizio');
+    }
+    mostraAvviso(`Categoria di costo "${nome}" creata e salvata.`);
+  };
+
+  const handleSalvaModificaCategoriaCosto = (catId: string) => {
+    const nome = editingCatCostoNome.trim();
+    if (!nome) {
+      mostraAvviso('Il nome della categoria di costo non può essere vuoto.');
+      return;
+    }
+    if (categorieCostiServizio.some((c) => c.id !== catId && c.nome.trim().toLowerCase() === nome.toLowerCase())) {
+      mostraAvviso(`Esiste già un'altra categoria di costo chiamata "${nome}".`);
+      return;
+    }
+    const aggiornate = salvaCategorieCostiServizio(
+      categorieCostiServizio.map((c) =>
+        c.id === catId
+          ? {
+              ...c,
+              nome,
+              unitaDefault: editingCatCostoUnita.trim() || c.unitaDefault || 'servizio',
+              descrizione: editingCatCostoDesc.trim() || undefined
+            }
+          : c
+      )
+    );
+    realtime.send('UPDATE_CATEGORIE_COSTI_SERVIZIO', { categorie: aggiornate, updatedAt: Date.now() });
+    setEditingCatCostoId(null);
+    setEditingCatCostoNome('');
+    setEditingCatCostoUnita('');
+    setEditingCatCostoDesc('');
+    mostraAvviso(`Categoria di costo aggiornata in "${nome}".`);
+  };
+
+  const handleEliminaCategoriaCosto = (catId: string) => {
+    if (categorieCostiServizio.length <= 1) {
+      mostraAvviso('Deve rimanere almeno una categoria di costo attiva nel tariffario.');
+      setConfermaEliminaCatCostoId(null);
+      return;
+    }
+    const target = categorieCostiServizio.find((c) => c.id === catId);
+    const rimanenti = categorieCostiServizio.filter((c) => c.id !== catId);
+    const fallbackCat = rimanenti[0];
+
+    const aggiornateCat = salvaCategorieCostiServizio(rimanenti);
+    realtime.send('UPDATE_CATEGORIE_COSTI_SERVIZIO', { categorie: aggiornateCat, updatedAt: Date.now() });
+
+    // Riassegna in modo sicuro eventuali voci tariffarie che usavano la categoria eliminata
+    const vociDaSpostare = tariffeCostiServizio.filter((t) => (t.categoria || t.tipoVoce) === catId);
+    if (vociDaSpostare.length > 0 && fallbackCat) {
+      salvaTariffeCostiServizio(
+        tariffeCostiServizio.map((t) =>
+          (t.categoria || t.tipoVoce) === catId
+            ? { ...t, categoria: fallbackCat.id, tipoVoce: fallbackCat.id }
+            : t
+        )
+      );
+    }
+
+    if (filtroCategoriaTariffa === catId) {
+      setFiltroCategoriaTariffa('tutti');
+    }
+    if (formTariffaCategoria === catId && fallbackCat) {
+      setFormTariffaCategoria(fallbackCat.id);
+    }
+    if (editingCatCostoId === catId) {
+      setEditingCatCostoId(null);
+    }
+    setConfermaEliminaCatCostoId(null);
+    mostraAvviso(
+      vociDaSpostare.length > 0 && fallbackCat
+        ? `Categoria "${target?.nome || catId}" eliminata. ${vociDaSpostare.length} voci spostate in "${fallbackCat.nome}".`
+        : `Categoria di costo "${target?.nome || catId}" eliminata.`
+    );
   };
 
   const handleEmettiNotaDiDebito = (e: React.FormEvent) => {
@@ -3419,30 +3557,249 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
               </p>
             </div>
             <div className="flex items-center gap-2 flex-wrap">
-              {(['tutti', 'mezzo_km', 'uscita_mezzo', 'operatore', 'editabile'] as const).map((cat) => (
+              <button
+                type="button"
+                onClick={() => setMostraGestioneCategorieCosti((prev) => !prev)}
+                className={`px-3 py-1.5 rounded-xl text-[11px] font-black uppercase cursor-pointer border transition-all flex items-center gap-1.5 ${
+                  mostraGestioneCategorieCosti
+                    ? 'bg-amber-500 text-slate-950 border-amber-300 shadow-md'
+                    : 'bg-amber-950/60 text-amber-300 border-amber-500/50 hover:bg-amber-900/70'
+                }`}
+              >
+                <Tag className="w-3.5 h-3.5" />
+                <span>{mostraGestioneCategorieCosti ? 'Chiudi Categorie' : `Gestisci Categorie (${categorieCostiServizio.length})`}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setFiltroCategoriaTariffa('tutti')}
+                className={`px-2.5 py-1.5 rounded-xl text-[11px] font-bold uppercase cursor-pointer border transition-all ${
+                  filtroCategoriaTariffa === 'tutti'
+                    ? 'bg-purple-600 text-white border-purple-400'
+                    : 'bg-slate-950 text-slate-400 border-slate-800 hover:text-white'
+                }`}
+              >
+                Tutte
+              </button>
+              {categorieCostiServizio.map((cat) => (
                 <button
-                  key={cat}
+                  key={cat.id}
                   type="button"
-                  onClick={() => setFiltroCategoriaTariffa(cat)}
+                  onClick={() => setFiltroCategoriaTariffa(cat.id)}
                   className={`px-2.5 py-1.5 rounded-xl text-[11px] font-bold uppercase cursor-pointer border transition-all ${
-                    filtroCategoriaTariffa === cat
+                    filtroCategoriaTariffa === cat.id
                       ? 'bg-purple-600 text-white border-purple-400'
                       : 'bg-slate-950 text-slate-400 border-slate-800 hover:text-white'
                   }`}
                 >
-                  {cat === 'tutti'
-                    ? 'Tutte'
-                    : cat === 'mezzo_km'
-                    ? 'Mezzo al KM'
-                    : cat === 'uscita_mezzo'
-                    ? 'Uscita Mezzo'
-                    : cat === 'operatore'
-                    ? 'Operatori'
-                    : 'Voci Editabili'}
+                  {cat.nome}
                 </button>
               ))}
             </div>
           </div>
+
+          {/* Pannello Gestione Categorie di Costo (Crea, Modifica, Cancella) */}
+          {mostraGestioneCategorieCosti && (
+            <div className="bg-slate-950 p-4 rounded-2xl border border-amber-500/40 space-y-4 shadow-xl">
+              <div className="flex items-center justify-between gap-2 border-b border-slate-800 pb-2.5">
+                <div>
+                  <h4 className="text-xs font-black text-amber-300 uppercase flex items-center gap-1.5">
+                    <Tag className="w-4 h-4" />
+                    <span>Gestione Categorie di Costo</span>
+                  </h4>
+                  <p className="text-[11px] text-slate-400 mt-0.5">
+                    Crea nuove categorie, rinomina o modifica quelle esistenti oppure eliminale. Le modifiche si applicano subito al tariffario.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setMostraGestioneCategorieCosti(false)}
+                  className="p-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-400 hover:text-white cursor-pointer"
+                  title="Chiudi pannello categorie"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              {/* Form creazione nuova categoria */}
+              <form onSubmit={handleCreaCategoriaCosto} className="grid grid-cols-1 sm:grid-cols-12 gap-2.5 items-end text-xs">
+                <div className="sm:col-span-4">
+                  <label className="block text-[10px] font-bold text-amber-300 uppercase mb-1">Nome Nuova Categoria *</label>
+                  <input
+                    type="text"
+                    required
+                    maxLength={60}
+                    placeholder="es. Materiale Sanitario, Presidio Evento..."
+                    value={nuovaCatCostoNome}
+                    onChange={(e) => setNuovaCatCostoNome(e.target.value)}
+                    className="w-full p-2.5 rounded-xl bg-slate-900 border border-slate-700 text-white focus:border-amber-400 focus:outline-none"
+                  />
+                </div>
+                <div className="sm:col-span-2">
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">Unità Predefinita</label>
+                  <input
+                    type="text"
+                    maxLength={24}
+                    placeholder="servizio / ora / km"
+                    value={nuovaCatCostoUnita}
+                    onChange={(e) => setNuovaCatCostoUnita(e.target.value)}
+                    className="w-full p-2.5 rounded-xl bg-slate-900 border border-slate-700 text-white font-mono focus:border-amber-400 focus:outline-none"
+                  />
+                </div>
+                <div className="sm:col-span-4">
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">Descrizione (opzionale)</label>
+                  <input
+                    type="text"
+                    maxLength={120}
+                    placeholder="Breve nota sulla categoria"
+                    value={nuovaCatCostoDesc}
+                    onChange={(e) => setNuovaCatCostoDesc(e.target.value)}
+                    className="w-full p-2.5 rounded-xl bg-slate-900 border border-slate-700 text-white focus:border-amber-400 focus:outline-none"
+                  />
+                </div>
+                <div className="sm:col-span-2">
+                  <button
+                    type="submit"
+                    className="w-full py-2.5 px-3 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black uppercase text-xs flex items-center justify-center gap-1.5 cursor-pointer active:scale-95"
+                  >
+                    <PlusCircle className="w-4 h-4" />
+                    <span>Crea</span>
+                  </button>
+                </div>
+              </form>
+
+              {/* Elenco categorie esistenti con Modifica ed Elimina */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+                {categorieCostiServizio.map((cat) => {
+                  const countVoci = tariffeCostiServizio.filter((t) => (t.categoria || t.tipoVoce) === cat.id).length;
+                  const isEditing = editingCatCostoId === cat.id;
+                  return (
+                    <div
+                      key={cat.id}
+                      className="p-3 rounded-xl bg-slate-900/90 border border-slate-800 flex flex-col gap-2"
+                    >
+                      {isEditing ? (
+                        <div className="space-y-2 text-xs">
+                          <div className="grid grid-cols-1 sm:grid-cols-12 gap-2">
+                            <div className="sm:col-span-7">
+                              <label className="block text-[10px] font-bold text-amber-300 uppercase mb-0.5">Nome Categoria *</label>
+                              <input
+                                type="text"
+                                value={editingCatCostoNome}
+                                onChange={(e) => setEditingCatCostoNome(e.target.value)}
+                                className="w-full p-2 rounded-lg bg-slate-950 border border-amber-500/60 text-white focus:outline-none"
+                              />
+                            </div>
+                            <div className="sm:col-span-5">
+                              <label className="block text-[10px] font-bold text-slate-400 uppercase mb-0.5">Unità Default</label>
+                              <input
+                                type="text"
+                                value={editingCatCostoUnita}
+                                onChange={(e) => setEditingCatCostoUnita(e.target.value)}
+                                className="w-full p-2 rounded-lg bg-slate-950 border border-slate-700 text-white font-mono focus:outline-none"
+                              />
+                            </div>
+                          </div>
+                          <div>
+                            <label className="block text-[10px] font-bold text-slate-400 uppercase mb-0.5">Descrizione</label>
+                            <input
+                              type="text"
+                              value={editingCatCostoDesc}
+                              onChange={(e) => setEditingCatCostoDesc(e.target.value)}
+                              placeholder="Opzionale"
+                              className="w-full p-2 rounded-lg bg-slate-950 border border-slate-700 text-white focus:outline-none"
+                            />
+                          </div>
+                          <div className="flex items-center justify-end gap-2 pt-1">
+                            <button
+                              type="button"
+                              onClick={() => setEditingCatCostoId(null)}
+                              className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-[11px] cursor-pointer"
+                            >
+                              Annulla
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleSalvaModificaCategoriaCosto(cat.id)}
+                              className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-black text-[11px] flex items-center gap-1 cursor-pointer"
+                            >
+                              <Check className="w-3.5 h-3.5" />
+                              <span>Salva</span>
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="text-xs font-black text-white truncate">{cat.nome}</span>
+                              <span className="px-1.5 py-0.5 rounded bg-slate-950 border border-slate-700 text-[10px] font-mono text-amber-300">
+                                / {cat.unitaDefault || 'servizio'}
+                              </span>
+                              <span className="px-1.5 py-0.5 rounded bg-purple-950/70 border border-purple-700/50 text-[10px] font-bold text-purple-300">
+                                {countVoci} {countVoci === 1 ? 'voce' : 'voci'}
+                              </span>
+                            </div>
+                            {cat.descrizione && (
+                              <p className="text-[11px] text-slate-400 mt-0.5">{cat.descrizione}</p>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setEditingCatCostoId(cat.id);
+                                setEditingCatCostoNome(cat.nome);
+                                setEditingCatCostoUnita(cat.unitaDefault || 'servizio');
+                                setEditingCatCostoDesc(cat.descrizione || '');
+                                setConfermaEliminaCatCostoId(null);
+                              }}
+                              className="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-[11px] flex items-center gap-1 cursor-pointer"
+                              title="Modifica categoria"
+                            >
+                              <Edit3 className="w-3 h-3" />
+                              <span>Modifica</span>
+                            </button>
+                            {confermaEliminaCatCostoId === cat.id ? (
+                              <div className="flex items-center gap-1">
+                                <button
+                                  type="button"
+                                  onClick={() => handleEliminaCategoriaCosto(cat.id)}
+                                  className="px-2 py-1 rounded-lg bg-red-600 hover:bg-red-500 text-white font-bold text-[10px] cursor-pointer"
+                                >
+                                  Elimina
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setConfermaEliminaCatCostoId(null)}
+                                  className="px-2 py-1 rounded-lg bg-slate-800 text-slate-300 font-bold text-[10px] cursor-pointer"
+                                >
+                                  No
+                                </button>
+                              </div>
+                            ) : (
+                              <button
+                                type="button"
+                                disabled={categorieCostiServizio.length <= 1}
+                                onClick={() => setConfermaEliminaCatCostoId(cat.id)}
+                                className={`p-1.5 rounded-lg border cursor-pointer ${
+                                  categorieCostiServizio.length <= 1
+                                    ? 'bg-slate-900 text-slate-600 border-slate-800 cursor-not-allowed'
+                                    : 'bg-red-950/70 hover:bg-red-900 text-red-400 hover:text-white border-red-800/60'
+                                }`}
+                                title={categorieCostiServizio.length <= 1 ? 'Deve rimanere almeno una categoria' : 'Elimina categoria'}
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
 
           {/* Form Aggiunta / Modifica Voce Tariffaria */}
           <form onSubmit={handleSalvaTariffaCosto} className="bg-slate-950 p-4 rounded-2xl border border-purple-500/40 space-y-3 shadow-lg">
@@ -3460,7 +3817,8 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
                     setFormTariffaDescrizioneSigla('');
                     setFormTariffaNome('');
                     setFormTariffaImporto('0');
-                    setFormTariffaUnita('km');
+                    const defCat = categorieCostiServizio.find((c) => c.id === formTariffaCategoria) || categorieCostiServizio[0];
+                    setFormTariffaUnita(defCat?.unitaDefault || 'servizio');
                     setFormTariffaNote('');
                   }}
                   className="text-[11px] text-slate-400 hover:text-white underline cursor-pointer"
@@ -3476,18 +3834,20 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
                 <select
                   value={formTariffaCategoria}
                   onChange={(e) => {
-                    const c = e.target.value as NonNullable<TariffaCostoServizio['categoria']>;
+                    const c = e.target.value;
                     setFormTariffaCategoria(c);
                     if (!editingTariffaId) {
-                      setFormTariffaUnita(c === 'mezzo_km' ? 'km' : c === 'operatore' ? 'ora' : c === 'uscita_mezzo' ? 'uscita' : 'servizio');
+                      const catObj = categorieCostiServizio.find((item) => item.id === c);
+                      setFormTariffaUnita(catObj?.unitaDefault || 'servizio');
                     }
                   }}
                   className="w-full p-2.5 rounded-xl bg-slate-900 border border-slate-700 text-white focus:border-purple-500 focus:outline-none"
                 >
-                  <option value="mezzo_km">Costo Mezzo al KM</option>
-                  <option value="uscita_mezzo">Costo Uscita Mezzo</option>
-                  <option value="operatore">Costo Operatori / Equipaggio</option>
-                  <option value="editabile">Voce Editabile / Personalizzata</option>
+                  {categorieCostiServizio.map((cat) => (
+                    <option key={cat.id} value={cat.id}>
+                      {cat.nome}
+                    </option>
+                  ))}
                 </select>
               </div>
 
@@ -3600,13 +3960,7 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
                       <tr key={t.id} className="hover:bg-slate-900/50 transition-colors">
                         <td className="py-3 px-4">
                           <span className="px-2 py-0.5 rounded-md bg-slate-900 border border-slate-700 text-[10px] font-bold uppercase text-purple-300">
-                            {catEff === 'mezzo_km'
-                              ? 'Mezzo/KM'
-                              : catEff === 'uscita_mezzo'
-                              ? 'Uscita Mezzo'
-                              : catEff === 'operatore'
-                              ? 'Operatore'
-                              : 'Editabile'}
+                            {getNomeCategoriaCosto(catEff, categorieCostiServizio)}
                           </span>
                         </td>
                         <td className="py-3 px-4">

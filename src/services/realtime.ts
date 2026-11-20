@@ -58,6 +58,7 @@ import { applicaNomiDatabaseDaSync, getNomiDatabaseUpdatedAt } from '../constant
 import { applicaTipologieMezzoDaSync, getTipologieMezzoUpdatedAt } from '../utils/tipologieMezzo';
 import { applicaTipiTurnoDaSync, getTipiTurnoUpdatedAt } from '../utils/tipiTurno';
 import { applicaMetodiPagamentoDaSync } from '../utils/metodiPagamentoStore';
+import { applicaCategorieCostiServizioDaSync } from '../utils/categorieCostiServizioStore';
 import { applicaRegolaNotificaScadenzeDaSync } from '../utils/avvisiManutenzioneMezzi';
 import { applicaRubricaNumeriUtiliDaSync, getRubricaNumeriUtiliUpdatedAt } from '../utils/rubricaNumeriUtiliStore';
 import {
@@ -261,6 +262,19 @@ class RealtimeService {
     this.setupLifecycleSyncHooks();
   }
 
+  private wsKeepAliveTimer: any = null;
+
+  public ensureConnected() {
+    if (this.isServerlessStaticHost()) return;
+    if (!this.ws || (this.ws.readyState !== WebSocket.OPEN && this.ws.readyState !== WebSocket.CONNECTING)) {
+      this.connect();
+    } else if (this.ws.readyState === WebSocket.OPEN) {
+      try {
+        this.ws.send(JSON.stringify({ type: 'PTT_CLIENT_CAPS', data: this.localRadioClientMeta }));
+      } catch {}
+    }
+  }
+
   private setupLifecycleSyncHooks() {
     if (typeof window === 'undefined' || typeof document === 'undefined') return;
     const flushPending = () => {
@@ -273,17 +287,39 @@ class RealtimeService {
       });
     };
 
+    const wakeTransport = () => {
+      this.ensureConnected();
+      const now = Date.now();
+      if (this.firebaseSession.isAuthorized && now - this.lastVolontariRefreshAt > 15000) {
+        this.lastVolontariRefreshAt = now;
+        this.refreshShardFromServer('volontari').catch(() => {});
+        this.reconcileCompletedPinResets().catch(() => {});
+      }
+    };
+
+    // Heartbeat leggero ogni 20s per mantenere aperta la portante WebSocket radio anche in background
+    if (!this.wsKeepAliveTimer) {
+      this.wsKeepAliveTimer = setInterval(() => {
+        if (this.isServerlessStaticHost()) return;
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+          try {
+            this.ws.send(JSON.stringify({ type: 'PING', data: { ts: Date.now() } }));
+          } catch {}
+        } else if (!this.ws || this.ws.readyState === WebSocket.CLOSED) {
+          this.connect();
+        }
+      }, 20000);
+    }
+
     window.addEventListener('pagehide', flushPending);
+    window.addEventListener('online', wakeTransport);
+    window.addEventListener('focus', wakeTransport);
+    window.addEventListener('pageshow', wakeTransport);
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'hidden') {
         flushPending();
       } else if (document.visibilityState === 'visible') {
-        const now = Date.now();
-        if (this.firebaseSession.isAuthorized && now - this.lastVolontariRefreshAt > 15000) {
-          this.lastVolontariRefreshAt = now;
-          this.refreshShardFromServer('volontari').catch(() => {});
-          this.reconcileCompletedPinResets().catch(() => {});
-        }
+        wakeTransport();
       }
     });
   }
@@ -782,6 +818,17 @@ class RealtimeService {
           this.cloudState.metodiPagamentoCustomUpdatedAt = payload.metodiPagamentoCustomUpdatedAt;
         }
         applicaMetodiPagamentoDaSync(payload.metodiPagamentoCustom, payload.metodiPagamentoCustomUpdatedAt);
+      }
+      if (Array.isArray(payload.categorieCostiServizio) && payload.categorieCostiServizio.length > 0) {
+        this.cloudState.categorieCostiServizio = payload.categorieCostiServizio;
+        if (payload.categorieCostiServizioUpdatedAt) {
+          this.cloudState.categorieCostiServizioUpdatedAt = payload.categorieCostiServizioUpdatedAt;
+        }
+        applicaCategorieCostiServizioDaSync(payload.categorieCostiServizio, payload.categorieCostiServizioUpdatedAt);
+        this.emit('CATEGORIE_COSTI_SERVIZIO_UPDATED', {
+          categorie: payload.categorieCostiServizio,
+          updatedAt: payload.categorieCostiServizioUpdatedAt,
+        });
       }
       if (payload.regolaScadenzeMezzi && typeof payload.regolaScadenzeMezzi === 'object') {
         this.cloudState.regolaScadenzeMezzi = payload.regolaScadenzeMezzi;
@@ -1860,6 +1907,10 @@ class RealtimeService {
               this.cloudState.metodiPagamentoCustom = payload.metodi;
               if (payload.updatedAt) this.cloudState.metodiPagamentoCustomUpdatedAt = payload.updatedAt;
               applicaMetodiPagamentoDaSync(payload.metodi, payload.updatedAt);
+            } else if (payload.type === 'CATEGORIE_COSTI_SERVIZIO_UPDATED' && Array.isArray(payload.categorie)) {
+              this.cloudState.categorieCostiServizio = payload.categorie;
+              if (payload.updatedAt) this.cloudState.categorieCostiServizioUpdatedAt = payload.updatedAt;
+              applicaCategorieCostiServizioDaSync(payload.categorie, payload.updatedAt);
             } else if (payload.type === 'REGOLA_SCADENZE_MEZZI_UPDATED' && payload.regola) {
               this.cloudState.regolaScadenzeMezzi = payload.regola;
               applicaRegolaNotificaScadenzeDaSync(payload.regola);
@@ -1976,6 +2027,9 @@ class RealtimeService {
     }
     if (Array.isArray(this.cloudState.metodiPagamentoCustom)) {
       applicaMetodiPagamentoDaSync(this.cloudState.metodiPagamentoCustom, this.cloudState.metodiPagamentoCustomUpdatedAt);
+    }
+    if (Array.isArray(this.cloudState.categorieCostiServizio) && this.cloudState.categorieCostiServizio.length > 0) {
+      applicaCategorieCostiServizioDaSync(this.cloudState.categorieCostiServizio, this.cloudState.categorieCostiServizioUpdatedAt);
     }
     if (this.cloudState.regolaScadenzeMezzi && typeof this.cloudState.regolaScadenzeMezzi === 'object') {
       applicaRegolaNotificaScadenzeDaSync(this.cloudState.regolaScadenzeMezzi);
@@ -2937,6 +2991,15 @@ class RealtimeService {
       case 'UPDATE_COSTI_SERVIZIO':
         if (Array.isArray(data?.costiServizio)) {
           this.scheduleShardWrite('config', { costiServizio: data.costiServizio });
+        }
+        break;
+      case 'UPDATE_CATEGORIE_COSTI_SERVIZIO':
+        if (Array.isArray(data?.categorie)) {
+          const ts = typeof data?.updatedAt === 'number' ? data.updatedAt : Date.now();
+          this.scheduleShardWrite('config', {
+            categorieCostiServizio: data.categorie,
+            categorieCostiServizioUpdatedAt: ts,
+          });
         }
         break;
       case 'UPDATE_MAGAZZINO_VESTIARIO':

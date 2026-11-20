@@ -4,7 +4,7 @@
 // 2. Strategia Network-First su navigazione per caricare SEMPRE l'ultima release pubblicata
 // 3. Notifiche Push in Background ad Alta Priorità e Risveglio Schermo Bloccato
 
-const CACHE_NAME = 'croce-oro-cache-v5.0.2';
+const CACHE_NAME = 'croce-oro-cache-v5.0.3';
 
 const PRECACHE_ASSETS = [
   '/',
@@ -208,6 +208,11 @@ self.addEventListener('push', (event) => {
     source: 'Centrale Operativa',
     soundType: 'telefono',
     codice: '',
+    tipo: '',
+    channelId: 'general',
+    transmissionId: '',
+    speakerName: '',
+    isEmergency: false,
     timestamp: Date.now()
   };
 
@@ -222,10 +227,37 @@ self.addEventListener('push', (event) => {
     }
   }
 
-  // Schema di vibrazione potente di soccorso
-  const vibrationPattern = data.urgenza === 'ROSSO'
+  const isRadioEmergency = data.tipo === 'radio_emergency' || Boolean(data.isEmergency);
+  const isRadioPtt = data.tipo === 'radio_ptt' || data.tipo === 'radio_message';
+
+  // Schema di vibrazione distinto per Emergenza Radio, Radio Normale o Missione
+  const vibrationPattern = isRadioEmergency
+    ? [900, 180, 900, 180, 1200, 250, 1200, 250, 1600]
+    : isRadioPtt
+    ? [260, 90, 320, 90, 260]
+    : data.urgenza === 'ROSSO'
     ? [1000, 300, 1000, 300, 1500, 400, 1500, 400, 2000]
     : [600, 200, 600, 200, 1000, 300, 1000];
+
+  const targetUrl =
+    isRadioEmergency || isRadioPtt
+      ? `/?radioWake=1&radioTipo=${encodeURIComponent(data.tipo || (isRadioEmergency ? 'radio_emergency' : 'radio_ptt'))}&channelId=${encodeURIComponent(data.channelId || 'general')}&transmissionId=${encodeURIComponent(data.transmissionId || '')}&source=${encodeURIComponent(data.speakerName || data.source || 'Radio')}`
+      : `/?ring=1&soundType=${data.soundType || 'telefono'}&source=${encodeURIComponent(data.source || 'Centrale')}&codice=${data.codice || ''}`;
+
+  const actions = isRadioEmergency
+    ? [
+        { action: 'open_radio', title: '🚨 ASCOLTA EMERGENZA RADIO' },
+        { action: 'silence_alarm', title: '🔕 Silenzia' }
+      ]
+    : isRadioPtt
+    ? [
+        { action: 'open_radio', title: '📻 APRI E ASCOLTA RADIO' },
+        { action: 'silence_alarm', title: '🔕 Chiudi' }
+      ]
+    : [
+        { action: 'open_mission', title: '🚨 APRI SCHEDA E SQUILLO' },
+        { action: 'silence_alarm', title: '🔕 Silenzia' }
+      ];
 
   const options = {
     body: data.body,
@@ -233,19 +265,16 @@ self.addEventListener('push', (event) => {
     badge: '/icon-192-v2.png',
     image: data.image || undefined,
     vibrate: vibrationPattern,
-    tag: (data.tag || 'dispatch') + '-' + Date.now(),
+    tag: isRadioPtt && data.channelId ? `radio-ch-${data.channelId}` : (data.tag || 'dispatch') + '-' + Date.now(),
     renotify: true,
-    requireInteraction: true,
+    requireInteraction: isRadioEmergency || !isRadioPtt,
     silent: false,
     data: {
-      url: `/?ring=1&soundType=${data.soundType || 'telefono'}&source=${encodeURIComponent(data.source || 'Centrale')}&codice=${data.codice || ''}`,
+      url: targetUrl,
       timestamp: Date.now(),
       ...data
     },
-    actions: [
-      { action: 'open_mission', title: '🚨 APRI SCHEDA E SQUILLO' },
-      { action: 'silence_alarm', title: '🔕 Silenzia' }
-    ]
+    actions
   };
 
   const notifyClients = self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clients) => {
@@ -254,6 +283,12 @@ self.addEventListener('push', (event) => {
         type: 'REMOTE_PUSH_RECEIVED',
         data: data
       });
+      if (isRadioEmergency || isRadioPtt) {
+        client.postMessage({
+          type: 'RADIO_BACKGROUND_TRIGGER',
+          data: data
+        });
+      }
     });
   });
 
@@ -278,15 +313,22 @@ self.addEventListener('notificationclick', (event) => {
     return;
   }
 
-  const targetUrl = (event.notification.data && event.notification.data.url) || '/?ring=1';
+  const notifData = event.notification.data || {};
+  const isRadioNotif =
+    event.action === 'open_radio' ||
+    notifData.tipo === 'radio_emergency' ||
+    notifData.tipo === 'radio_ptt' ||
+    notifData.tipo === 'radio_message' ||
+    Boolean(notifData.isEmergency);
+  const targetUrl = notifData.url || (isRadioNotif ? '/?radioWake=1' : '/?ring=1');
 
   event.waitUntil(
     self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
       for (const client of clientList) {
         if (client.url && 'focus' in client) {
           client.postMessage({
-            type: 'FOCUS_WITH_RING',
-            data: event.notification.data
+            type: isRadioNotif ? 'RADIO_NOTIFICATION_CLICKED' : 'FOCUS_WITH_RING',
+            data: notifData
           });
           return client.focus();
         }

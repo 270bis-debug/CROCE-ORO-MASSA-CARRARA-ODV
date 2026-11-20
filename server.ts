@@ -62,9 +62,107 @@ interface PushSubscriber {
 }
 const subscribers = new Map<string, PushSubscriber>();
 
-function sendPushNotificationToRole(targetRole: 'volontario' | 'admin' | 'centrale' | 'all', payload: any) {
+interface BufferedRadioChunk {
+  codec: string;
+  payloadBase64: string;
+  sampleRate: number;
+  seq: number;
+  speakerId: string;
+}
+
+interface BufferedRadioTransmission {
+  id: string;
+  channelId: string;
+  groupId?: string;
+  groupName?: string;
+  memberIds?: string[];
+  speakerId: string;
+  speakerName: string;
+  role: 'admin' | 'volontario';
+  isEmergency: boolean;
+  startedAt: number;
+  endedAt?: number;
+  chunks: BufferedRadioChunk[];
+}
+
+const MAX_RADIO_TRANSMISSIONS = 15;
+const MAX_CHUNKS_PER_TRANSMISSION = 260;
+const RADIO_TRANSMISSION_TTL_MS = 15 * 60 * 1000;
+const recentRadioTransmissions: BufferedRadioTransmission[] = [];
+const activeTransmissionByChannel = new Map<string, BufferedRadioTransmission>();
+const lastPttPushByChannel = new Map<string, number>();
+
+function pruneOldRadioTransmissions() {
+  const cutoff = Date.now() - RADIO_TRANSMISSION_TTL_MS;
+  while (recentRadioTransmissions.length > 0 && recentRadioTransmissions[0].startedAt < cutoff) {
+    recentRadioTransmissions.shift();
+  }
+  while (recentRadioTransmissions.length > MAX_RADIO_TRANSMISSIONS) {
+    recentRadioTransmissions.shift();
+  }
+}
+
+function startRadioTransmissionBuffer(params: {
+  channelId: string;
+  groupId?: string;
+  groupName?: string;
+  memberIds?: string[];
+  speakerId: string;
+  speakerName: string;
+  role: 'admin' | 'volontario';
+  isEmergency: boolean;
+}): BufferedRadioTransmission {
+  pruneOldRadioTransmissions();
+  const tx: BufferedRadioTransmission = {
+    id: `tx_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    channelId: params.channelId,
+    groupId: params.groupId,
+    groupName: params.groupName,
+    memberIds: params.memberIds ? [...params.memberIds] : undefined,
+    speakerId: params.speakerId,
+    speakerName: params.speakerName,
+    role: params.role,
+    isEmergency: params.isEmergency,
+    startedAt: Date.now(),
+    chunks: [],
+  };
+  recentRadioTransmissions.push(tx);
+  activeTransmissionByChannel.set(params.channelId, tx);
+  pruneOldRadioTransmissions();
+  return tx;
+}
+
+function appendRadioTransmissionChunk(channelId: string, chunk: BufferedRadioChunk) {
+  const tx = activeTransmissionByChannel.get(channelId);
+  if (!tx) return;
+  if (tx.chunks.length >= MAX_CHUNKS_PER_TRANSMISSION) {
+    tx.chunks.shift();
+  }
+  tx.chunks.push(chunk);
+}
+
+function finishRadioTransmissionBuffer(channelId: string) {
+  const tx = activeTransmissionByChannel.get(channelId);
+  if (tx) {
+    tx.endedAt = Date.now();
+    activeTransmissionByChannel.delete(channelId);
+  }
+}
+
+function syncSubscribersToState(stateObj: any) {
+  if (!stateObj) return;
+  stateObj.pushSubscribers = Array.from(subscribers.values()).slice(-200);
+}
+
+function sendPushNotificationToRole(
+  targetRole: 'volontario' | 'admin' | 'centrale' | 'all',
+  payload: any,
+  excludeVolontarioId?: string
+) {
   const payloadStr = JSON.stringify(payload);
+  const excl = excludeVolontarioId ? String(excludeVolontarioId).trim() : '';
   subscribers.forEach((sub, endpoint) => {
+    if (excl && sub.volontarioId && sub.volontarioId === excl) return;
     const isTarget =
       targetRole === 'all' ||
       sub.role === 'all' ||
@@ -73,7 +171,7 @@ function sendPushNotificationToRole(targetRole: 'volontario' | 'admin' | 'centra
     if (isTarget) {
       webpush.sendNotification(sub.subscription, payloadStr, {
         urgency: 'high',
-        TTL: 3600,
+        TTL: payload?.tipo === 'radio_ptt' ? 90 : 3600,
         headers: {
           'Urgency': 'high'
         }
@@ -98,7 +196,7 @@ function sendPushNotificationToVolunteer(volontarioId: string | undefined, paylo
       sentCount++;
       webpush.sendNotification(sub.subscription, payloadStr, {
         urgency: 'high',
-        TTL: 86400,
+        TTL: payload?.tipo === 'radio_ptt' ? 90 : 86400,
         headers: {
           'Urgency': 'high'
         }
@@ -433,6 +531,9 @@ export interface ServerState {
   tipiTurnoUpdatedAt?: number;
   metodiPagamentoCustom?: any[];
   metodiPagamentoCustomUpdatedAt?: number;
+  categorieCostiServizio?: any[];
+  categorieCostiServizioUpdatedAt?: number;
+  pushSubscribers?: PushSubscriber[];
   regolaScadenzeMezzi?: any;
   modelliAttestatiCategoria?: Record<string, any>;
   modelliAttestatiUpdatedAt?: number;
@@ -927,6 +1028,25 @@ function loadPersistedState(): ServerState {
           tipiTurnoUpdatedAt: typeof parsed.tipiTurnoUpdatedAt === 'number' ? parsed.tipiTurnoUpdatedAt : undefined,
           metodiPagamentoCustom: Array.isArray(parsed.metodiPagamentoCustom) ? parsed.metodiPagamentoCustom : undefined,
           metodiPagamentoCustomUpdatedAt: typeof parsed.metodiPagamentoCustomUpdatedAt === 'number' ? parsed.metodiPagamentoCustomUpdatedAt : undefined,
+          categorieCostiServizio: Array.isArray(parsed.categorieCostiServizio) ? parsed.categorieCostiServizio : undefined,
+          categorieCostiServizioUpdatedAt: typeof parsed.categorieCostiServizioUpdatedAt === 'number' ? parsed.categorieCostiServizioUpdatedAt : undefined,
+          pushSubscribers: Array.isArray(parsed.pushSubscribers)
+            ? (() => {
+                parsed.pushSubscribers.forEach((s: any) => {
+                  if (s && s.endpoint && s.subscription?.endpoint) {
+                    subscribers.set(String(s.endpoint), {
+                      endpoint: String(s.endpoint),
+                      role: s.role || 'all',
+                      volontarioId: s.volontarioId ? String(s.volontarioId) : undefined,
+                      volontarioNome: s.volontarioNome ? String(s.volontarioNome) : undefined,
+                      subscription: s.subscription,
+                      timestamp: Number(s.timestamp) || Date.now(),
+                    });
+                  }
+                });
+                return Array.from(subscribers.values());
+              })()
+            : [],
           regolaScadenzeMezzi: parsed.regolaScadenzeMezzi && typeof parsed.regolaScadenzeMezzi === 'object' ? parsed.regolaScadenzeMezzi : undefined,
           rubricaNumeriUtili: Array.isArray(parsed.rubricaNumeriUtili) ? parsed.rubricaNumeriUtili : undefined,
           rubricaNumeriUtiliUpdatedAt: typeof parsed.rubricaNumeriUtiliUpdatedAt === 'number' ? parsed.rubricaNumeriUtiliUpdatedAt : undefined,
@@ -3348,17 +3468,38 @@ async function startServer() {
               ? `🎙️ Nuovo messaggio audio${data?.mittenteNome ? ` da ${data.mittenteNome}` : ''} (${Number(data.audioDurationSec) || 1}s)`
               : `${data?.testo || 'Nuova comunicazione radio ricevuta.'}`;
 
+            const radioMsgPushExtra = {
+              tipo: 'radio_message',
+              channelId: targetGroup ? targetGroup.id : 'general',
+              messageId: notif.id,
+              hasAudio,
+              speakerName: data?.mittenteNome ? String(data.mittenteNome) : (data?.mittente === 'CENTRALE' ? 'Centrale Operativa' : 'Bordo Mezzo'),
+            };
+
             if (targetGroup) {
               targetGroup.memberIds.forEach((mId) => {
+                if (data?.volontarioId && String(data.volontarioId) === mId) return;
                 sendPushNotificationToVolunteer(mId, {
                   title: `📻 RADIO GRUPPO ${targetGroup.name.toUpperCase()}`,
                   body: pushBody,
                   tag: `radio-grp-${targetGroup.id}-${Date.now()}`,
                   soundType: 'cicalino',
                   urgenza: 'GIALLO',
-                  requireInteraction: true
+                  requireInteraction: true,
+                  ...radioMsgPushExtra,
                 });
               });
+              if (data?.mittente !== 'CENTRALE') {
+                sendPushNotificationToRole('admin', {
+                  title: `📻 RADIO GRUPPO ${targetGroup.name.toUpperCase()}`,
+                  body: pushBody,
+                  tag: `radio-grp-${targetGroup.id}-${Date.now()}`,
+                  soundType: 'cicalino',
+                  urgenza: 'GIALLO',
+                  requireInteraction: true,
+                  ...radioMsgPushExtra,
+                });
+              }
             } else if (data?.mittente === 'CENTRALE') {
               sendPushNotificationToRole('volontario', {
                 title: `📻 COMUNICAZIONE RADIO DALLA CENTRALE`,
@@ -3366,17 +3507,19 @@ async function startServer() {
                 tag: `radio-${Date.now()}`,
                 soundType: 'cicalino',
                 urgenza: 'GIALLO',
-                requireInteraction: true
+                requireInteraction: true,
+                ...radioMsgPushExtra,
               });
             } else {
-              sendPushNotificationToRole('admin', {
+              sendPushNotificationToRole('all', {
                 title: `📻 COMUNICAZIONE RADIO DA BORDO MEZZO`,
                 body: pushBody,
                 tag: `radio-${Date.now()}`,
                 soundType: 'cicalino',
                 urgenza: 'GIALLO',
-                requireInteraction: true
-              });
+                requireInteraction: true,
+                ...radioMsgPushExtra,
+              }, data?.volontarioId ? String(data.volontarioId) : undefined);
             }
             break;
           }
@@ -3647,7 +3790,11 @@ async function startServer() {
                 tag: `radio-em-${Date.now()}`,
                 soundType: 'sirena',
                 urgenza: 'ROSSO',
-                requireInteraction: true
+                requireInteraction: true,
+                tipo: 'radio_emergency',
+                isEmergency: true,
+                channelId: 'emergency',
+                speakerName: triggeredBy
               });
             } else {
               if (state.radioPtt?.activeSpeaker?.isEmergency) {
@@ -3741,6 +3888,14 @@ async function startServer() {
                 message: `TRASMISSIONE VOCALE EMERGENZA IN CORSO (${reqName})`
               };
 
+              const emTx = startRadioTransmissionBuffer({
+                channelId: 'emergency',
+                speakerId: reqSpeakerId,
+                speakerName: reqName,
+                role: 'admin',
+                isEmergency: true,
+              });
+
               broadcast({
                 type: 'RADIO_EMERGENCY_STATE',
                 radioEmergency: state.radioEmergency
@@ -3748,9 +3903,29 @@ async function startServer() {
               broadcast({
                 type: 'PTT_SPEAKER_CHANGED',
                 channelId: 'emergency',
+                transmissionId: emTx.id,
                 radioPtt: state.radioPtt,
                 radioGroups: state.radioGroups
               });
+
+              // Notifica Push immediata ad alta priorità per risvegliare i dispositivi in background / schermo spento
+              sendPushNotificationToRole(
+                'all',
+                {
+                  title: '🚨 EMERGENZA RADIO LIVE',
+                  body: `${reqName} sta trasmettendo in EMERGENZA su tutti i canali!`,
+                  tag: `radio-em-ptt-${emTx.id}`,
+                  soundType: 'sirena',
+                  urgenza: 'ROSSO',
+                  requireInteraction: true,
+                  tipo: 'radio_emergency',
+                  isEmergency: true,
+                  channelId: 'emergency',
+                  transmissionId: emTx.id,
+                  speakerName: reqName,
+                },
+                data?.volontarioId ? String(data.volontarioId) : undefined
+              );
               break;
             }
 
@@ -3829,17 +4004,55 @@ async function startServer() {
               };
               activeGroupSockets.set(targetGroup.id, excludeClient || null);
 
+              const grpTx = startRadioTransmissionBuffer({
+                channelId: targetGroup.id,
+                groupId: targetGroup.id,
+                groupName: targetGroup.name,
+                memberIds: targetGroup.memberIds,
+                speakerId: reqSpeakerId,
+                speakerName: reqName,
+                role: reqRole,
+                isEmergency: false,
+              });
+
               // Invia SOLO ai membri del gruppo e alla Centrale! Dalle altre parti nessuno sente/vede nulla.
               broadcastToFilter(
                 {
                   type: 'PTT_SPEAKER_CHANGED',
                   channelId: targetGroup.id,
                   groupId: targetGroup.id,
+                  transmissionId: grpTx.id,
                   activeSpeaker: targetGroup.activeSpeaker,
                   radioGroup: targetGroup
                 },
                 (c) => isSocketAllowedInGroup(c, targetGroup)
               );
+
+              // Risveglio Push in background SOLO per i membri autorizzati del gruppo e Centrale (anti-spam 6s per gruppo)
+              const nowGrpPush = Date.now();
+              if (nowGrpPush - (lastPttPushByChannel.get(targetGroup.id) || 0) >= 6000) {
+                lastPttPushByChannel.set(targetGroup.id, nowGrpPush);
+                const grpPushPayload = {
+                  title: `📻 RADIO GRUPPO ${targetGroup.name.toUpperCase()}`,
+                  body: `${reqName} sta parlando nel gruppo radio "${targetGroup.name}"`,
+                  tag: `radio-ptt-${targetGroup.id}`,
+                  soundType: 'cicalino',
+                  urgenza: 'GIALLO',
+                  requireInteraction: false,
+                  tipo: 'radio_ptt',
+                  isEmergency: false,
+                  channelId: targetGroup.id,
+                  transmissionId: grpTx.id,
+                  speakerName: reqName,
+                };
+                targetGroup.memberIds.forEach((mId) => {
+                  if (reqVolId && mId === reqVolId) return;
+                  sendPushNotificationToVolunteer(mId, grpPushPayload);
+                });
+                if (reqRole !== 'admin') {
+                  sendPushNotificationToRole('admin', grpPushPayload, reqVolId || undefined);
+                }
+              }
               break;
             }
 
@@ -3899,11 +4112,44 @@ async function startServer() {
             };
             activePttSocket = excludeClient || null;
 
+            const genTx = startRadioTransmissionBuffer({
+              channelId: 'general',
+              speakerId: reqSpeakerId,
+              speakerName: reqName,
+              role: reqRole,
+              isEmergency: false,
+            });
+
             broadcast({
               type: 'PTT_SPEAKER_CHANGED',
               channelId: 'general',
+              transmissionId: genTx.id,
               radioPtt: state.radioPtt
             });
+
+            // Risveglio Push ad alta priorità in background per i dispositivi con app chiusa o schermo spento (anti-spam 6s)
+            const nowGenPush = Date.now();
+            if (nowGenPush - (lastPttPushByChannel.get('general') || 0) >= 6000) {
+              lastPttPushByChannel.set('general', nowGenPush);
+              const reqVolIdGen = data?.volontarioId ? String(data.volontarioId) : ((excludeClient as any)?.volontarioId || '');
+              sendPushNotificationToRole(
+                'all',
+                {
+                  title: '📻 TRASMISSIONE RADIO VHF/UHF',
+                  body: `${reqName} sta trasmettendo sul Canale Radio Generale`,
+                  tag: 'radio-ptt-general',
+                  soundType: 'cicalino',
+                  urgenza: 'GIALLO',
+                  requireInteraction: false,
+                  tipo: 'radio_ptt',
+                  isEmergency: false,
+                  channelId: 'general',
+                  transmissionId: genTx.id,
+                  speakerName: reqName,
+                },
+                reqVolIdGen || undefined
+              );
+            }
             break;
           }
 
@@ -3946,6 +4192,13 @@ async function startServer() {
                 break;
               }
               targetGroup.activeSpeaker.lastChunkAt = Date.now();
+              appendRadioTransmissionChunk(targetGroup.id, {
+                codec: String(data.codec || 'pcm16'),
+                payloadBase64: String(payloadB64),
+                sampleRate: Number(data.sampleRate) || 24000,
+                seq: Number(data.seq) || 0,
+                speakerId: targetGroup.activeSpeaker.speakerId,
+              });
               broadcastToFilter(
                 {
                   type: 'PTT_AUDIO_CHUNK',
@@ -3981,9 +4234,17 @@ async function startServer() {
               break;
             }
             state.radioPtt.activeSpeaker.lastChunkAt = Date.now();
+            const effChan = isActiveEmerg ? 'emergency' : 'general';
+            appendRadioTransmissionChunk(effChan, {
+              codec: String(data.codec || 'pcm16'),
+              payloadBase64: String(payloadB64),
+              sampleRate: Number(data.sampleRate) || 24000,
+              seq: Number(data.seq) || 0,
+              speakerId: state.radioPtt.activeSpeaker.speakerId,
+            });
             const chunkMsg = {
               type: 'PTT_AUDIO_CHUNK',
-              channelId: isActiveEmerg ? 'emergency' : 'general',
+              channelId: effChan,
               speakerId: state.radioPtt.activeSpeaker.speakerId,
               speakerName: state.radioPtt.activeSpeaker.speakerName,
               role: state.radioPtt.activeSpeaker.role,
@@ -4017,6 +4278,7 @@ async function startServer() {
             const channelId = String(data?.channelId || '');
             if (state.radioPtt?.activeSpeaker && state.radioPtt.activeSpeaker.speakerId === data?.speakerId) {
               const wasEmerg = Boolean(state.radioPtt.activeSpeaker.isEmergency);
+              finishRadioTransmissionBuffer(wasEmerg ? 'emergency' : 'general');
               state.radioPtt.activeSpeaker = null;
               activePttSocket = null;
               broadcast({
@@ -4028,6 +4290,7 @@ async function startServer() {
             if (Array.isArray(state.radioGroups)) {
               state.radioGroups.forEach((g) => {
                 if ((!channelId || g.id === channelId) && g.activeSpeaker && g.activeSpeaker.speakerId === data?.speakerId) {
+                  finishRadioTransmissionBuffer(g.id);
                   g.activeSpeaker = null;
                   activeGroupSockets.set(g.id, null);
                   broadcastToFilter(
@@ -5168,6 +5431,21 @@ async function startServer() {
             break;
           }
 
+          case 'UPDATE_CATEGORIE_COSTI_SERVIZIO': {
+            if (Array.isArray(data?.categorie) && data.categorie.length > 0 && data.categorie.length <= 100) {
+              const ts = typeof data?.updatedAt === 'number' && Number.isFinite(data.updatedAt) ? data.updatedAt : Date.now();
+              state.categorieCostiServizio = data.categorie;
+              state.categorieCostiServizioUpdatedAt = ts;
+              persistState();
+              broadcast({
+                type: 'CATEGORIE_COSTI_SERVIZIO_UPDATED',
+                categorie: state.categorieCostiServizio,
+                updatedAt: ts
+              });
+            }
+            break;
+          }
+
           case 'UPDATE_MAGAZZINO_VESTIARIO': {
             if (Array.isArray(data?.magazzinoVestiario)) {
               state.magazzinoVestiario = data.magazzinoVestiario;
@@ -5327,6 +5605,15 @@ async function startServer() {
                   updatedAt: state.mezziFlottaUpdatedAt
                 });
               }
+            }
+            break;
+          }
+
+          case 'PING': {
+            if (excludeClient && excludeClient.readyState === WebSocket.OPEN) {
+              try {
+                excludeClient.send(JSON.stringify({ type: 'PONG', ts: Date.now() }));
+              } catch {}
             }
             break;
           }
@@ -6919,6 +7206,111 @@ async function startServer() {
     }
   });
 
+  // REST API per Categorie di Costo di Servizio (Crea, Modifica, Cancella)
+  app.get('/api/categorie-costi-servizio', (_req, res) => {
+    res.json({
+      success: true,
+      categorie: Array.isArray(state.categorieCostiServizio) ? state.categorieCostiServizio : null,
+      updatedAt: state.categorieCostiServizioUpdatedAt || 0
+    });
+  });
+
+  app.post('/api/categorie-costi-servizio', (req, res) => {
+    try {
+      const { categorie, updatedAt } = req.body || {};
+      if (!Array.isArray(categorie) || categorie.length === 0 || categorie.length > 100) {
+        return res.status(400).json({ success: false, error: 'Elenco categorie di costo non valido' });
+      }
+      const cleaned = categorie
+        .map((c: any) => ({
+          id: String(c?.id || '').trim().slice(0, 64),
+          nome: String(c?.nome || '').trim().slice(0, 80),
+          unitaDefault: c?.unitaDefault ? String(c.unitaDefault).trim().slice(0, 32) : 'servizio',
+          descrizione: c?.descrizione ? String(c.descrizione).trim().slice(0, 160) : undefined,
+          predefinita: Boolean(c?.predefinita),
+          dataCreazione: c?.dataCreazione ? String(c.dataCreazione).slice(0, 32) : undefined,
+        }))
+        .filter((c: any) => c.id && c.nome);
+      if (cleaned.length === 0) {
+        return res.status(400).json({ success: false, error: 'Nessuna categoria valida fornita' });
+      }
+      const ts = typeof updatedAt === 'number' && Number.isFinite(updatedAt) && updatedAt > 0 ? updatedAt : Date.now();
+      state.categorieCostiServizio = cleaned;
+      state.categorieCostiServizioUpdatedAt = ts;
+      persistState();
+      broadcast({
+        type: 'CATEGORIE_COSTI_SERVIZIO_UPDATED',
+        categorie: state.categorieCostiServizio,
+        updatedAt: ts
+      });
+      return res.json({ success: true, categorie: state.categorieCostiServizio, updatedAt: ts });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err?.message || 'Errore salvataggio categorie di costo' });
+    }
+  });
+
+  // REST API per recupero trasmissione radio recente al risveglio dal background / schermo spento
+  app.get('/api/radio-transmission/:id', (req, res) => {
+    pruneOldRadioTransmissions();
+    const rawId = String(req.params.id || '').trim();
+    if (!/^[a-zA-Z0-9_-]{3,64}$/.test(rawId)) {
+      return res.status(400).json({ success: false, error: 'ID trasmissione non valido' });
+    }
+    const tx = recentRadioTransmissions.find((t) => t.id === rawId);
+    if (!tx) {
+      return res.status(404).json({ success: false, error: 'Trasmissione non più disponibile' });
+    }
+    const reqRole = String(req.query.role || 'volontario');
+    const reqVolId = String(req.query.volontarioId || '').trim();
+    if (tx.groupId && reqRole !== 'admin') {
+      const allowed = Array.isArray(tx.memberIds) && reqVolId !== '' && tx.memberIds.includes(reqVolId);
+      if (!allowed) {
+        return res.status(403).json({ success: false, error: 'Accesso non autorizzato al gruppo radio' });
+      }
+    }
+    return res.json({
+      success: true,
+      transmission: {
+        id: tx.id,
+        channelId: tx.channelId,
+        groupId: tx.groupId,
+        groupName: tx.groupName,
+        speakerId: tx.speakerId,
+        speakerName: tx.speakerName,
+        role: tx.role,
+        isEmergency: tx.isEmergency,
+        startedAt: tx.startedAt,
+        endedAt: tx.endedAt,
+        chunks: tx.chunks,
+      }
+    });
+  });
+
+  app.get('/api/radio-recent', (req, res) => {
+    pruneOldRadioTransmissions();
+    const reqRole = String(req.query.role || 'volontario');
+    const reqVolId = String(req.query.volontarioId || '').trim();
+    const since = Number(req.query.since) || 0;
+    const items = recentRadioTransmissions
+      .filter((tx) => {
+        if (since > 0 && tx.startedAt <= since) return false;
+        if (!tx.groupId || reqRole === 'admin') return true;
+        return Array.isArray(tx.memberIds) && reqVolId !== '' && tx.memberIds.includes(reqVolId);
+      })
+      .map((tx) => ({
+        id: tx.id,
+        channelId: tx.channelId,
+        groupId: tx.groupId,
+        groupName: tx.groupName,
+        speakerName: tx.speakerName,
+        isEmergency: tx.isEmergency,
+        startedAt: tx.startedAt,
+        endedAt: tx.endedAt,
+        chunkCount: tx.chunks.length,
+      }));
+    return res.json({ success: true, transmissions: items });
+  });
+
   // REST API per Numeri Utili di Emergenza & Interni Associazione
   app.get('/api/rubrica-numeri-utili', (_req, res) => {
     res.json({
@@ -7210,8 +7602,8 @@ async function startServer() {
 
   // Registrazione della sottoscrizione Web Push inviata dal Service Worker del telefono
   app.post('/api/push-subscribe', (req, res) => {
-    const { role, subscription, volontarioId, volontarioNome } = req.body;
-    if (subscription && subscription.endpoint) {
+    const { role, subscription, volontarioId, volontarioNome } = req.body || {};
+    if (subscription && typeof subscription.endpoint === 'string' && subscription.endpoint.startsWith('https://')) {
       subscribers.set(subscription.endpoint, {
         endpoint: subscription.endpoint,
         role: role || 'all',
@@ -7220,6 +7612,8 @@ async function startServer() {
         subscription,
         timestamp: Date.now()
       });
+      syncSubscribersToState(state);
+      persistState();
       console.log(`[WebPush] Dispositivo registrato per notifiche push (${role}${volontarioId ? ` - volId: ${volontarioId}` : ''}). Totale: ${subscribers.size}`);
     }
     res.json({ success: true, count: subscribers.size });

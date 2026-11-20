@@ -206,10 +206,19 @@ export interface ProprietarioImmobileData {
   indirizzoResidenza: string;
 }
 
+export interface CategoriaCostoServizio {
+  id: string;
+  nome: string;
+  unitaDefault?: string;
+  descrizione?: string;
+  predefinita?: boolean;
+  dataCreazione?: string;
+}
+
 export interface TariffaCostoServizio {
   id: string;
-  tipoVoce?: 'mezzo_km' | 'uscita_mezzo' | 'operatore' | 'editabile';
-  categoria?: 'mezzo_km' | 'uscita_mezzo' | 'operatore' | 'editabile';
+  tipoVoce?: string;
+  categoria?: string;
   siglaBreve: string;
   descrizioneSigla: string;
   nomeVoce: string;

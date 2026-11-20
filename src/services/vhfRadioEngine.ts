@@ -397,6 +397,20 @@ class VhfRadioEngine {
   private emergencyLoadPromise: Promise<AudioBuffer | null> | null = null;
   private activeEmergencyCancel: (() => void) | null = null;
 
+  // Background Radio Reception Keep-Alive (impedisce la sospensione OS di AudioContext e WebSocket a schermo spento/background)
+  private bgKeepAliveAudio: HTMLAudioElement | null = null;
+  private bgKeepAliveBlobUrl: string | null = null;
+  private bgReceptionArmed: boolean = false;
+  private bgVisibilityHooked: boolean = false;
+  private pendingRxPackets: Array<{
+    speakerId?: string;
+    codec?: RadioAudioCodec;
+    payloadBase64?: string;
+    pcm16Base64?: string;
+    sampleRate?: number;
+  }> = [];
+  private activeVoiceClipAudio: HTMLAudioElement | null = null;
+
   public subscribeTxLevel(cb: (level: number) => void): () => void {
     this.txLevelListeners.add(cb);
     return () => this.txLevelListeners.delete(cb);
@@ -483,11 +497,213 @@ class VhfRadioEngine {
       this.rxChainInput = null;
       this.rxWorkletNode = null;
       this.workletLoadingPromise = null;
+      const createdCtx = this.audioCtx;
+      if (createdCtx) {
+        createdCtx.onstatechange = () => {
+          if (createdCtx.state === 'running') {
+            this.flushPendingRxPackets();
+          } else if (createdCtx.state === 'suspended' && this.bgReceptionArmed) {
+            createdCtx.resume().catch(() => {});
+          }
+        };
+      }
     }
     if (this.audioCtx.state === 'suspended') {
-      this.audioCtx.resume().catch(() => {});
+      this.audioCtx
+        .resume()
+        .then(() => {
+          this.flushPendingRxPackets();
+        })
+        .catch(() => {});
     }
     return this.audioCtx;
+  }
+
+  // Genera un file WAV PCM silenzioso da 1 secondo (~8KB) per mantenere attiva la sessione audio radio in background
+  private createSilentWavBlobUrl(): string | null {
+    if (this.bgKeepAliveBlobUrl) return this.bgKeepAliveBlobUrl;
+    if (typeof Blob === 'undefined' || typeof URL === 'undefined') return null;
+    try {
+      const sampleRate = 8000;
+      const numSamples = sampleRate; // 1 secondo
+      const dataSize = numSamples; // 8-bit mono unsigned PCM
+      const buffer = new ArrayBuffer(44 + dataSize);
+      const view = new DataView(buffer);
+      const writeStr = (offset: number, s: string) => {
+        for (let i = 0; i < s.length; i++) view.setUint8(offset + i, s.charCodeAt(i));
+      };
+      writeStr(0, 'RIFF');
+      view.setUint32(4, 36 + dataSize, true);
+      writeStr(8, 'WAVE');
+      writeStr(12, 'fmt ');
+      view.setUint32(16, 16, true); // PCM chunk size
+      view.setUint16(20, 1, true); // PCM format
+      view.setUint16(22, 1, true); // mono
+      view.setUint32(24, sampleRate, true);
+      view.setUint32(28, sampleRate, true); // byte rate
+      view.setUint16(32, 1, true); // block align
+      view.setUint16(34, 8, true); // 8 bits per sample
+      writeStr(36, 'data');
+      view.setUint32(40, dataSize, true);
+      const bytes = new Uint8Array(buffer, 44);
+      bytes.fill(128); // 128 = silenzio digitale esatto in PCM 8-bit unsigned
+      const blob = new Blob([buffer], { type: 'audio/wav' });
+      this.bgKeepAliveBlobUrl = URL.createObjectURL(blob);
+      return this.bgKeepAliveBlobUrl;
+    } catch {
+      return null;
+    }
+  }
+
+  public updateMediaSessionState(info?: { title?: string; artist?: string; isEmergency?: boolean }) {
+    if (typeof navigator === 'undefined' || !('mediaSession' in navigator)) return;
+    try {
+      const ms = (navigator as any).mediaSession;
+      const MediaMetadataClass = (window as any).MediaMetadata;
+      if (typeof MediaMetadataClass === 'function') {
+        ms.metadata = new MediaMetadataClass({
+          title: info?.title || (info?.isEmergency ? '🚨 EMERGENZA RADIO CENTRALE' : 'Radio VHF/UHF • Ascolto Attivo'),
+          artist: info?.artist || 'Croce Oro Massa Carrara OdV',
+          album: info?.isEmergency ? 'Canale Emergenza Prioritario' : 'Ricetrasmittente Operativa in Background',
+          artwork: [
+            { src: '/icon-192-v2.png', sizes: '192x192', type: 'image/png' },
+            { src: '/icon-512-v2.png', sizes: '512x512', type: 'image/png' },
+          ],
+        });
+      }
+      ms.playbackState = 'playing';
+      // Evita che il sistema metta in pausa il canale radio dai controlli lockscreen
+      try {
+        ms.setActionHandler('play', () => {
+          this.armBackgroundReception().catch(() => {});
+        });
+        ms.setActionHandler('pause', () => {
+          // Mantiene la ricezione radio pronta
+          this.ensureAudioContext();
+        });
+      } catch {}
+    } catch {}
+  }
+
+  public async armBackgroundReception(label?: string): Promise<boolean> {
+    if (typeof window === 'undefined') return false;
+    this.bgReceptionArmed = true;
+
+    const ctx = this.ensureAudioContext();
+    if (ctx) {
+      if (ctx.state === 'suspended') {
+        try {
+          await ctx.resume();
+        } catch {}
+      }
+      this.preloadEmergencyAnnouncement().catch(() => {});
+      this.ensureWorkletsLoaded(ctx).catch(() => {});
+    }
+
+    if (!this.bgVisibilityHooked && typeof document !== 'undefined') {
+      this.bgVisibilityHooked = true;
+      document.addEventListener('visibilitychange', () => {
+        if (!this.bgReceptionArmed) return;
+        const c = this.ensureAudioContext();
+        if (c && c.state === 'suspended') {
+          c.resume().catch(() => {});
+        }
+        if (this.bgKeepAliveAudio && this.bgKeepAliveAudio.paused) {
+          this.bgKeepAliveAudio.play().catch(() => {});
+        }
+      });
+    }
+
+    try {
+      if (!this.bgKeepAliveAudio) {
+        const blobUrl = this.createSilentWavBlobUrl();
+        if (blobUrl) {
+          const audio = new Audio(blobUrl);
+          audio.loop = true;
+          audio.volume = 0.01;
+          audio.preload = 'auto';
+          (audio as any).playsInline = true;
+          audio.setAttribute('playsinline', 'true');
+          this.bgKeepAliveAudio = audio;
+        }
+      }
+      if (this.bgKeepAliveAudio && this.bgKeepAliveAudio.paused) {
+        await this.bgKeepAliveAudio.play();
+      }
+      this.updateMediaSessionState(label ? { title: label } : undefined);
+      return true;
+    } catch {
+      // L'autoplay potrà completarsi al primo gesto utente successivo
+      return false;
+    }
+  }
+
+  public isBackgroundReceptionArmed(): boolean {
+    return this.bgReceptionArmed && Boolean(this.bgKeepAliveAudio && !this.bgKeepAliveAudio.paused);
+  }
+
+  public async playAudioDataUrl(dataUrl: string): Promise<boolean> {
+    if (!dataUrl || typeof window === 'undefined') return false;
+    try {
+      if (this.activeVoiceClipAudio) {
+        try {
+          this.activeVoiceClipAudio.pause();
+          this.activeVoiceClipAudio.src = '';
+        } catch {}
+      }
+      const audio = new Audio(dataUrl);
+      audio.volume = 1.0;
+      (audio as any).playsInline = true;
+      this.activeVoiceClipAudio = audio;
+      await audio.play();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  public async playBufferedTransmission(
+    chunks: Array<{
+      speakerId?: string;
+      codec?: RadioAudioCodec;
+      payloadBase64?: string;
+      pcm16Base64?: string;
+      sampleRate?: number;
+    }>,
+    options?: { isEmergency?: boolean; speakerName?: string }
+  ): Promise<boolean> {
+    if (!Array.isArray(chunks) || chunks.length === 0) return false;
+    await this.armBackgroundReception(
+      options?.isEmergency
+        ? `🚨 EMERGENZA: ${options?.speakerName || 'Centrale'}`
+        : `📻 RADIO: ${options?.speakerName || 'Trasmissione'}`
+    );
+    const ctx = this.ensureAudioContext();
+    if (!ctx) return false;
+    if (ctx.state === 'suspended') {
+      try {
+        await ctx.resume();
+      } catch {}
+    }
+    this.interruptPlayback();
+    if (options?.isEmergency) {
+      this.playItalianPoliceSelcall('emergency');
+    } else {
+      this.playVhfKeyUp('normal');
+    }
+    chunks.forEach((pkt) => {
+      this.enqueueEncodedChunk(pkt);
+    });
+    return true;
+  }
+
+  private flushPendingRxPackets() {
+    if (this.pendingRxPackets.length === 0) return;
+    if (!this.audioCtx || this.audioCtx.state !== 'running') return;
+    const queued = this.pendingRxPackets.splice(0, this.pendingRxPackets.length);
+    for (const pkt of queued) {
+      this.enqueueEncodedChunk(pkt);
+    }
   }
 
   private async ensureWorkletsLoaded(ctx: AudioContext): Promise<boolean> {
@@ -535,6 +751,7 @@ class VhfRadioEngine {
     }
     this.preloadEmergencyAnnouncement().catch(() => {});
     await this.ensureWorkletsLoaded(ctx);
+    this.armBackgroundReception().catch(() => {});
   }
 
   public async preloadEmergencyAnnouncement(): Promise<AudioBuffer | null> {
@@ -1508,7 +1725,24 @@ class VhfRadioEngine {
   }) {
     try {
       const ctx = this.ensureAudioContext();
-      if (!ctx || ctx.state !== 'running') return;
+      if (!ctx) return;
+      if (ctx.state !== 'running') {
+        // Non scartare l'audio in background: accoda i pacchetti mentre AudioContext si risveglia
+        if (this.pendingRxPackets.length >= 45) {
+          this.pendingRxPackets.shift();
+        }
+        this.pendingRxPackets.push(packet);
+        ctx
+          .resume()
+          .then(() => {
+            this.flushPendingRxPackets();
+          })
+          .catch(() => {});
+        if (this.bgKeepAliveAudio && this.bgKeepAliveAudio.paused) {
+          this.bgKeepAliveAudio.play().catch(() => {});
+        }
+        return;
+      }
       if (!this.workletsLoadedCtx.has(ctx) && !this.workletLoadingPromise) {
         this.ensureWorkletsLoaded(ctx).catch(() => {});
       }
@@ -1562,6 +1796,7 @@ class VhfRadioEngine {
   // Interrompe immediatamente tutta la coda audio in ascolto
   public interruptPlayback() {
     this.nextPlaybackTime = 0;
+    this.pendingRxPackets = [];
     this.closeOpusDecoder();
     if (this.rxWorkletNode) {
       try {

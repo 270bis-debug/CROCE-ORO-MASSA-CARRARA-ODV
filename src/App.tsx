@@ -4785,6 +4785,227 @@ export default function App() {
     return null;
   }, [sessioneTurno.attivo, sessioneTurno.volontarioId, sessioneTurno.volontarioNome, volontari]);
 
+  // Nome di battesimo dell'account loggato (solo `nome` da anagrafica, mai il cognome) per saluto "Ciao, <Nome>" in header
+  const nomeSalutoAccount = useMemo(() => {
+    const estraiSoloNome = (nomeRaw?: string, cognomeRaw?: string): string => {
+      const n = String(nomeRaw || '').trim();
+      if (!n) return '';
+      const c = String(cognomeRaw || '').trim();
+      if (c && n.toLowerCase().endsWith(` ${c.toLowerCase()}`)) {
+        return n.slice(0, n.length - c.length).trim();
+      }
+      return n;
+    };
+
+    if (ruolo === 'admin') {
+      const matchAnag =
+        (utenteCentrale?.id && volontari.find((v) => v.id === utenteCentrale.id)) ||
+        (utenteCentrale?.pin && volontari.find((v) => v.pin === utenteCentrale.pin)) ||
+        null;
+      if (matchAnag?.nome?.trim()) {
+        return estraiSoloNome(matchAnag.nome, matchAnag.cognome);
+      }
+      if (utenteCentrale?.nome?.trim()) {
+        return estraiSoloNome(utenteCentrale.nome, utenteCentrale.cognome);
+      }
+      return '';
+    }
+
+    if (volontarioLoggatoCorrente?.nome?.trim()) {
+      return estraiSoloNome(volontarioLoggatoCorrente.nome, volontarioLoggatoCorrente.cognome);
+    }
+
+    if (sessioneTurno.attivo && sessioneTurno.volontarioId) {
+      const byId = volontari.find((v) => v.id === sessioneTurno.volontarioId);
+      if (byId?.nome?.trim()) {
+        return estraiSoloNome(byId.nome, byId.cognome);
+      }
+    }
+
+    if (sessioneTurno.attivo && sessioneTurno.volontarioNome?.trim()) {
+      const full = sessioneTurno.volontarioNome.trim();
+      const byFull = volontari.find(
+        (v) => `${v.nome} ${v.cognome}`.trim().toLowerCase() === full.toLowerCase()
+      );
+      if (byFull?.nome?.trim()) {
+        return estraiSoloNome(byFull.nome, byFull.cognome);
+      }
+      return full.split(/\s+/)[0] || '';
+    }
+
+    return '';
+  }, [
+    ruolo,
+    utenteCentrale?.id,
+    utenteCentrale?.pin,
+    utenteCentrale?.nome,
+    utenteCentrale?.cognome,
+    volontarioLoggatoCorrente?.nome,
+    volontarioLoggatoCorrente?.cognome,
+    sessioneTurno.attivo,
+    sessioneTurno.volontarioId,
+    sessioneTurno.volontarioNome,
+    volontari
+  ]);
+
+  const lastWsRadioChunkAtRef = useRef<number>(0);
+  const replayedTransmissionIdsRef = useRef<Set<string>>(new Set());
+
+  // Ri-registra automaticamente la sottoscrizione Push con ruolo/volontarioId aggiornati (se permesso già concesso)
+  // per garantire ricezione radio normale ed emergenza anche a schermo spento / app in background
+  useEffect(() => {
+    if (typeof window === 'undefined' || !('Notification' in window)) return;
+    if (Notification.permission !== 'granted') return;
+    const isAdminNow = ruolo === 'admin';
+    const activeVolId = isAdminNow
+      ? (utenteCentrale?.id || 'vol-admin')
+      : (sessioneTurno.attivo ? sessioneTurno.volontarioId : undefined);
+    const activeVolNome = isAdminNow
+      ? `${utenteCentrale?.nome || ''} ${utenteCentrale?.cognome || ''}`.trim() || 'Centrale Operativa'
+      : (sessioneTurno.attivo ? sessioneTurno.volontarioNome : undefined);
+    if (!isAdminNow && !activeVolId) return;
+    attivaServiceWorkerEPush(isAdminNow ? 'admin' : 'volontario', activeVolId, activeVolNome).catch(() => {});
+  }, [
+    ruolo,
+    utenteCentrale?.id,
+    utenteCentrale?.nome,
+    utenteCentrale?.cognome,
+    sessioneTurno.attivo,
+    sessioneTurno.volontarioId,
+    sessioneTurno.volontarioNome
+  ]);
+
+  // Ponte Service Worker <-> App per risveglio radio in background (normale + emergenza) e replay trasmissioni perse
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const replayTransmissionIfMissed = async (
+      transmissionId: string,
+      isEmergency: boolean,
+      speakerName?: string,
+      forceReplay = false
+    ) => {
+      if (!transmissionId || replayedTransmissionIdsRef.current.has(transmissionId)) return;
+      if (!forceReplay && Date.now() - lastWsRadioChunkAtRef.current < 2500) {
+        // Stiamo già ricevendo il flusso live in tempo reale via WebSocket
+        return;
+      }
+      replayedTransmissionIdsRef.current.add(transmissionId);
+      if (replayedTransmissionIdsRef.current.size > 40) {
+        const first = replayedTransmissionIdsRef.current.values().next().value;
+        if (first) replayedTransmissionIdsRef.current.delete(first);
+      }
+      try {
+        const currentRole = ruoloRef.current === 'admin' ? 'admin' : 'volontario';
+        const currentVolId =
+          currentRole === 'admin'
+            ? (utenteCentraleRef.current?.id || 'vol-admin')
+            : (sessioneTurnoRef.current?.volontarioId || '');
+        const qs = new URLSearchParams({
+          role: currentRole,
+          volontarioId: currentVolId
+        });
+        const res = await fetch(`/api/radio-transmission/${encodeURIComponent(transmissionId)}?${qs.toString()}`, {
+          cache: 'no-store'
+        });
+        if (!res.ok) return;
+        const json = await res.json();
+        const chunks = json?.transmission?.chunks;
+        if (Array.isArray(chunks) && chunks.length > 0) {
+          await vhfRadioEngine.playBufferedTransmission(chunks, {
+            isEmergency: Boolean(isEmergency || json?.transmission?.isEmergency),
+            speakerName: speakerName || json?.transmission?.speakerName
+          });
+        }
+      } catch {}
+    };
+
+    const handleRadioWakePayload = (data: any, fromUserClick: boolean) => {
+      if (!data) return;
+      realtime.ensureConnected();
+      const isEmerg = Boolean(data.isEmergency || data.tipo === 'radio_emergency' || data.radioTipo === 'radio_emergency');
+      const spkName = String(data.speakerName || data.source || (isEmerg ? 'Centrale Operativa' : 'Radio'));
+      const chId = String(data.channelId || 'general');
+      const txId = String(data.transmissionId || '').trim();
+
+      vhfRadioEngine
+        .armBackgroundReception(isEmerg ? `🚨 EMERGENZA: ${spkName}` : `📻 RADIO: ${spkName}`)
+        .catch(() => {});
+
+      if (fromUserClick) {
+        if (chId && chId !== 'emergency') {
+          setSelectedRadioChannelId(chId);
+        }
+        setModalNotificheAperta(true);
+      }
+
+      if (isEmerg && Date.now() - lastRemoteEmergencyTriggerRef.current > 4000) {
+        lastRemoteEmergencyTriggerRef.current = Date.now();
+        vhfRadioEngine.interruptPlayback();
+        vhfRadioEngine.playEmergencyAnnouncement({ isSender: false });
+      } else if (!isEmerg && Date.now() - lastWsRadioChunkAtRef.current > 2500) {
+        vhfRadioEngine.playItalianPoliceSelcall(chId !== 'general' ? 'group' : 'standard');
+      }
+
+      if (txId) {
+        // Attende brevemente per dare precedenza allo stream WebSocket live se attivo; se in background/sospeso fa replay automatico
+        setTimeout(() => {
+          replayTransmissionIfMissed(txId, isEmerg, spkName, fromUserClick);
+        }, fromUserClick ? 250 : 1400);
+      }
+    };
+
+    const onSwMessage = (event: MessageEvent) => {
+      const msg = event.data;
+      if (!msg || typeof msg !== 'object') return;
+      if (msg.type === 'RADIO_BACKGROUND_TRIGGER') {
+        handleRadioWakePayload(msg.data, false);
+      } else if (msg.type === 'RADIO_NOTIFICATION_CLICKED') {
+        handleRadioWakePayload(msg.data, true);
+      } else if (msg.type === 'REMOTE_PUSH_RECEIVED') {
+        const d = msg.data || {};
+        if (d.tipo === 'radio_emergency' || d.tipo === 'radio_ptt' || d.tipo === 'radio_message' || d.isEmergency) {
+          handleRadioWakePayload(d, false);
+        }
+      }
+    };
+
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.addEventListener('message', onSwMessage);
+    }
+
+    // Gestione apertura da notifica Push a schermata spenta (?radioWake=1&...)
+    try {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get('radioWake') === '1') {
+        const wakeData = {
+          tipo: params.get('radioTipo') || 'radio_ptt',
+          channelId: params.get('channelId') || 'general',
+          transmissionId: params.get('transmissionId') || '',
+          speakerName: params.get('source') || 'Radio',
+          isEmergency: params.get('radioTipo') === 'radio_emergency'
+        };
+        setTimeout(() => {
+          handleRadioWakePayload(wakeData, true);
+        }, 400);
+        // Pulisce i parametri dall'URL senza ricaricare la pagina
+        params.delete('radioWake');
+        params.delete('radioTipo');
+        params.delete('channelId');
+        params.delete('transmissionId');
+        params.delete('source');
+        const nextUrl = params.toString() ? `${window.location.pathname}?${params.toString()}` : window.location.pathname;
+        window.history.replaceState({}, '', nextUrl);
+      }
+    } catch {}
+
+    return () => {
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.removeEventListener('message', onSwMessage);
+      }
+    };
+  }, []);
+
   // Verifica centralizzata se un volontario è attualmente loggato su qualsiasi terminale
   const isVolontarioLoggatoLive = useCallback((v: Volontario): boolean => {
     if (sessioneTurno.attivo && sessioneTurno.volontarioId === v.id) return true;
@@ -11723,6 +11944,7 @@ KM TOTALI: ${kmTot} KM`;
             }
             if (!localPttIsEmergencyRef.current && Date.now() - lastRemoteEmergencyTriggerRef.current > 4000) {
               lastRemoteEmergencyTriggerRef.current = Date.now();
+              vhfRadioEngine.armBackgroundReception(`🚨 EMERGENZA: ${nextEm.triggeredBy || 'Centrale'}`).catch(() => {});
               vhfRadioEngine.interruptPlayback();
               vhfRadioEngine.playEmergencyAnnouncement({ isSender: false });
             }
@@ -11735,6 +11957,7 @@ KM TOTALI: ${kmTot} KM`;
           } else if (!nextEm.active && prevActive) {
             lastRemoteEmergencyTriggerRef.current = 0;
             vhfRadioEngine.stopEmergencyAnnouncement();
+            vhfRadioEngine.updateMediaSessionState({ title: 'Radio VHF/UHF • Ascolto Attivo', isEmergency: false });
           }
         }
         if (payload?.radioPtt) {
@@ -11794,10 +12017,15 @@ KM TOTALI: ${kmTot} KM`;
               if (nextSpeaker.isEmergency) {
                 if (Date.now() - lastRemoteEmergencyTriggerRef.current > 4000) {
                   lastRemoteEmergencyTriggerRef.current = Date.now();
+                  vhfRadioEngine.armBackgroundReception(`🚨 EMERGENZA: ${nextSpeaker.speakerName}`).catch(() => {});
                   vhfRadioEngine.interruptPlayback();
                   vhfRadioEngine.playEmergencyAnnouncement({ isSender: false });
                 }
               } else {
+                vhfRadioEngine.updateMediaSessionState({
+                  title: `📻 LIVE: ${nextSpeaker.speakerName}`,
+                  isEmergency: false
+                });
                 vhfRadioEngine.interruptPlayback();
                 vhfRadioEngine.playVhfKeyUp(nextSpeaker.isCentralePriority ? 'priority' : 'normal');
               }
@@ -11809,6 +12037,10 @@ KM TOTALI: ${kmTot} KM`;
             }
             if (prevRemoteId && prevRemoteId !== localId) {
               vhfRadioEngine.playVhfRogerBeep(chId === 'emergency' ? 'emergency' : 'normal');
+              vhfRadioEngine.updateMediaSessionState({
+                title: 'Radio VHF/UHF • Ascolto Attivo',
+                isEmergency: false
+              });
             }
             prevRemoteSpeakerIdRef.current = null;
           }
@@ -11846,6 +12078,7 @@ KM TOTALI: ${kmTot} KM`;
           }
         }
 
+        lastWsRadioChunkAtRef.current = Date.now();
         vhfRadioEngine.enqueueEncodedChunk(payload);
       }),
 
@@ -14065,6 +14298,21 @@ KM TOTALI: ${kmTot} KM`;
                         </span>
                       )}
                     </button>
+
+                    {/* Saluto personalizzato con solo il nome di battesimo da anagrafica */}
+                    {nomeSalutoAccount && (
+                      <span
+                        className={`ml-1 text-xs sm:text-[13px] font-bold tracking-tight truncate max-w-[140px] sm:max-w-[220px] ${
+                          isWeb ? 'text-slate-700' : 'text-amber-300'
+                        }`}
+                        title={`Ciao, ${nomeSalutoAccount}`}
+                      >
+                        Ciao,{' '}
+                        <span className={isWeb ? 'text-indigo-700 font-black' : 'text-white font-black'}>
+                          {nomeSalutoAccount}
+                        </span>
+                      </span>
+                    )}
                   </div>
 
                   <div className="flex items-center gap-1.5 shrink-0">
