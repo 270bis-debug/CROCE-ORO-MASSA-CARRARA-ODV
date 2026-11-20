@@ -186,12 +186,16 @@ function sendPushNotificationToRole(
   });
 }
 
-function sendPushNotificationToVolunteer(volontarioId: string | undefined, payload: any): number {
+function sendPushNotificationToVolunteer(
+  volontarioId: string | undefined,
+  payload: any,
+  strictMemberOnly: boolean = false
+): number {
   const payloadStr = JSON.stringify(payload);
   let sentCount = 0;
   subscribers.forEach((sub, endpoint) => {
     const isTargetVol = Boolean(volontarioId && sub.volontarioId === volontarioId);
-    const isGenericVolDevice = !sub.volontarioId && (sub.role === 'volontario' || sub.role === 'all');
+    const isGenericVolDevice = !strictMemberOnly && !sub.volontarioId && (sub.role === 'volontario' || sub.role === 'all');
     if (isTargetVol || isGenericVolDevice) {
       sentCount++;
       webpush.sendNotification(sub.subscription, payloadStr, {
@@ -3487,7 +3491,7 @@ async function startServer() {
                   urgenza: 'GIALLO',
                   requireInteraction: true,
                   ...radioMsgPushExtra,
-                });
+                }, true);
               });
               if (data?.mittente !== 'CENTRALE') {
                 sendPushNotificationToRole('admin', {
@@ -3538,6 +3542,12 @@ async function startServer() {
             }
             const nextEnabled = Boolean(data?.enabled);
             const toggledBy = String(data?.operatorName || 'Operatore Centrale');
+            const prevEnabled = Boolean(state.radioPtt?.enabled);
+            const prevToggledAt = Number(state.radioPtt?.toggledAt || 0);
+            // Idempotenza contro doppi invii ravvicinati WS + HTTP /api/event
+            if (prevEnabled === nextEnabled && Date.now() - prevToggledAt < 2500) {
+              break;
+            }
             const prevSpeaker = state.radioPtt?.activeSpeaker || null;
 
             state.radioPtt = {
@@ -3579,6 +3589,26 @@ async function startServer() {
               radioPtt: state.radioPtt,
               notification: notifPtt
             });
+
+            if (nextEnabled) {
+              const reqVolIdToggle = data?.volontarioId ? String(data.volontarioId) : ((excludeClient as any)?.volontarioId || '');
+              sendPushNotificationToRole(
+                'all',
+                {
+                  title: '📡 RADIO GENERALE (TUTTI) ATTIVATA',
+                  body: `${toggledBy} ha attivato il Canale Radio Generale. Tocca per ascoltare in diretta.`,
+                  tag: 'radio-ch-general',
+                  soundType: 'cicalino',
+                  urgenza: 'GIALLO',
+                  requireInteraction: true,
+                  tipo: 'radio_channel_on',
+                  isEmergency: false,
+                  channelId: 'general',
+                  speakerName: toggledBy,
+                },
+                reqVolIdToggle || undefined
+              );
+            }
             break;
           }
 
@@ -3648,6 +3678,15 @@ async function startServer() {
             let targetGroup: RadioGroup | undefined;
             let prevSpeaker: RadioPttSpeaker | null = null;
 
+            const existingGrpBeforeToggle = (state.radioGroups || []).find((g) => g.id === groupId);
+            if (
+              existingGrpBeforeToggle &&
+              Boolean(existingGrpBeforeToggle.enabled) === nextEnabled &&
+              Date.now() - Number(existingGrpBeforeToggle.toggledAt || 0) < 2500
+            ) {
+              break;
+            }
+
             state.radioGroups = (state.radioGroups || []).map((g) => {
               if (g.id !== groupId) return g;
               prevSpeaker = g.activeSpeaker || null;
@@ -3690,6 +3729,27 @@ async function startServer() {
               toggledEnabled: nextEnabled,
               toggledBy
             });
+
+            if (nextEnabled) {
+              const reqVolIdGrpToggle = data?.volontarioId ? String(data.volontarioId) : ((excludeClient as any)?.volontarioId || '');
+              const grpOnPayload = {
+                title: `🔒 RADIO GRUPPO ${targetGroup.name.toUpperCase()} ATTIVATO`,
+                body: `${toggledBy} ha attivato il canale radio riservato "${targetGroup.name}". Tocca per ascoltare.`,
+                tag: `radio-ch-${targetGroup.id}`,
+                soundType: 'cicalino',
+                urgenza: 'GIALLO',
+                requireInteraction: true,
+                tipo: 'radio_channel_on',
+                isEmergency: false,
+                channelId: targetGroup.id,
+                speakerName: toggledBy,
+              };
+              targetGroup.memberIds.forEach((mId) => {
+                if (reqVolIdGrpToggle && mId === reqVolIdGrpToggle) return;
+                sendPushNotificationToVolunteer(mId, grpOnPayload, true);
+              });
+              sendPushNotificationToRole('admin', grpOnPayload, reqVolIdGrpToggle || undefined);
+            }
             break;
           }
 
@@ -3723,6 +3783,14 @@ async function startServer() {
             const nextActive = data?.active !== false;
             const triggeredBy = String(data?.operatorName || 'Operatore Centrale');
             const message = String(data?.message || 'ALLERTA EMERGENZA GENERALE DALLA CENTRALE OPERATIVA');
+
+            // Deduplica invio ravvicinato WS + HTTP /api/event
+            if (
+              Boolean(state.radioEmergency?.active) === nextActive &&
+              Date.now() - Number(state.radioEmergency?.triggeredAt || 0) < 2500
+            ) {
+              break;
+            }
 
             state.radioEmergency = {
               active: nextActive,
@@ -3795,7 +3863,7 @@ async function startServer() {
                 isEmergency: true,
                 channelId: 'emergency',
                 speakerName: triggeredBy
-              });
+              }, data?.volontarioId ? String(data.volontarioId) : undefined);
             } else {
               if (state.radioPtt?.activeSpeaker?.isEmergency) {
                 state.radioPtt.activeSpeaker = null;
@@ -3829,6 +3897,17 @@ async function startServer() {
                     reason: 'Solo un Operatore di Centrale può trasmettere in EMERGENZA.'
                   }));
                 }
+                break;
+              }
+
+              // Idempotenza contro doppio PTT_START ravvicinato (WS + HTTP /api/event): non sovrascrivere il buffer audio attivo!
+              const existingEmSpk = state.radioPtt?.activeSpeaker;
+              if (
+                existingEmSpk?.isEmergency &&
+                existingEmSpk.speakerId === reqSpeakerId &&
+                Date.now() - Number(existingEmSpk.startedAt || 0) < 3500 &&
+                activeTransmissionByChannel.has('emergency')
+              ) {
                 break;
               }
 
@@ -3965,6 +4044,15 @@ async function startServer() {
               }
 
               const currentGroupSpeaker = targetGroup.activeSpeaker;
+              // Idempotenza contro doppio PTT_START ravvicinato (WS + HTTP /api/event)
+              if (
+                currentGroupSpeaker &&
+                currentGroupSpeaker.speakerId === reqSpeakerId &&
+                Date.now() - Number(currentGroupSpeaker.startedAt || 0) < 3500 &&
+                activeTransmissionByChannel.has(targetGroup.id)
+              ) {
+                break;
+              }
               if (currentGroupSpeaker && currentGroupSpeaker.speakerId !== reqSpeakerId) {
                 if (reqRole !== 'admin') {
                   if (excludeClient && excludeClient.readyState === WebSocket.OPEN) {
@@ -4047,7 +4135,7 @@ async function startServer() {
                 };
                 targetGroup.memberIds.forEach((mId) => {
                   if (reqVolId && mId === reqVolId) return;
-                  sendPushNotificationToVolunteer(mId, grpPushPayload);
+                  sendPushNotificationToVolunteer(mId, grpPushPayload, true);
                 });
                 if (reqRole !== 'admin') {
                   sendPushNotificationToRole('admin', grpPushPayload, reqVolId || undefined);
@@ -4072,6 +4160,16 @@ async function startServer() {
             }
 
             const currentSpeaker = state.radioPtt.activeSpeaker;
+            // Idempotenza contro doppio PTT_START ravvicinato (WS + HTTP /api/event)
+            if (
+              currentSpeaker &&
+              !currentSpeaker.isEmergency &&
+              currentSpeaker.speakerId === reqSpeakerId &&
+              Date.now() - Number(currentSpeaker.startedAt || 0) < 3500 &&
+              activeTransmissionByChannel.has('general')
+            ) {
+              break;
+            }
             if (currentSpeaker && currentSpeaker.speakerId !== reqSpeakerId) {
               if (reqRole !== 'admin') {
                 const busyMsg = {
@@ -4214,11 +4312,7 @@ async function startServer() {
                   sampleRate: Number(data.sampleRate) || 24000,
                   seq: Number(data.seq) || 0
                 },
-                (client) => {
-                  if (!isSocketAllowedInGroup(client, targetGroup)) return false;
-                  const ch = (client as any).activeChannelId;
-                  return !ch || ch === targetGroup.id;
-                },
+                (client) => isSocketAllowedInGroup(client, targetGroup),
                 excludeClient
               );
               break;
@@ -4256,20 +4350,8 @@ async function startServer() {
               seq: Number(data.seq) || 0
             };
 
-            if (isActiveEmerg) {
-              // EMERGENZA: trasmetti a TUTTI i terminali su qualsiasi canale/gruppo
-              broadcast(chunkMsg, excludeClient);
-            } else {
-              // GENERALE: trasmetti a tutti i terminali che non sono isolati dentro un gruppo privato
-              broadcastToFilter(
-                chunkMsg,
-                (client) => {
-                  const ch = (client as any).activeChannelId;
-                  return !ch || ch === 'general';
-                },
-                excludeClient
-              );
-            }
+            // Sia Emergenza che Generale ("Tutti") raggiungono tutti i terminali connessi anche in background / fuori dalla modale radio
+            broadcast(chunkMsg, excludeClient);
             break;
           }
 
@@ -7309,6 +7391,38 @@ async function startServer() {
         chunkCount: tx.chunks.length,
       }));
     return res.json({ success: true, transmissions: items });
+  });
+
+  // Relay HTTP burst audio PTT per mittenti su host serverless (es. www.croceoro.org) o con WebSocket temporaneamente in riconnessione
+  app.post('/api/radio-burst', (req, res) => {
+    try {
+      const { chunks } = req.body || {};
+      if (!Array.isArray(chunks) || chunks.length === 0 || chunks.length > 12) {
+        return res.status(400).json({ success: false, error: 'Burst audio non valido' });
+      }
+      let accepted = 0;
+      for (const ch of chunks) {
+        if (!ch || typeof ch !== 'object') continue;
+        const b64 = typeof ch.payloadBase64 === 'string' ? ch.payloadBase64 : '';
+        if (!b64 || b64.length > 24000) continue;
+        const speakerId = String(ch.speakerId || '').trim().slice(0, 80);
+        const channelId = String(ch.channelId || 'general').trim().slice(0, 80);
+        if (!speakerId) continue;
+        handleIncomingAction('PTT_AUDIO_CHUNK', {
+          speakerId,
+          channelId,
+          isEmergency: Boolean(ch.isEmergency || channelId === 'emergency'),
+          codec: String(ch.codec || 'adpcm24').slice(0, 16),
+          payloadBase64: b64,
+          sampleRate: Math.min(48000, Math.max(8000, Number(ch.sampleRate) || 24000)),
+          seq: Math.max(0, Number(ch.seq) || 0),
+        });
+        accepted++;
+      }
+      return res.json({ success: true, accepted });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err?.message || 'Errore relay burst audio' });
+    }
   });
 
   // REST API per Numeri Utili di Emergenza & Interni Associazione

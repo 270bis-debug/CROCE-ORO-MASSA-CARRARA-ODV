@@ -397,7 +397,13 @@ class VhfRadioEngine {
   private emergencyLoadPromise: Promise<AudioBuffer | null> | null = null;
   private activeEmergencyCancel: (() => void) | null = null;
 
-  // Background Radio Reception Keep-Alive (impedisce la sospensione OS di AudioContext e WebSocket a schermo spento/background)
+  // Background Radio Reception Keep-Alive (MediaStreamAudioDestinationNode -> HTMLAudioElement + fallback WAV dither)
+  private masterBus: GainNode | null = null;
+  private mediaStreamDest: MediaStreamAudioDestinationNode | null = null;
+  private bgStreamAudio: HTMLAudioElement | null = null;
+  private bgComfortOsc: OscillatorNode | null = null;
+  private bgComfortGain: GainNode | null = null;
+  private isRoutedToMediaStream: boolean = false;
   private bgKeepAliveAudio: HTMLAudioElement | null = null;
   private bgKeepAliveBlobUrl: string | null = null;
   private bgReceptionArmed: boolean = false;
@@ -496,6 +502,11 @@ class VhfRadioEngine {
       }
       this.rxChainInput = null;
       this.rxWorkletNode = null;
+      this.masterBus = null;
+      this.mediaStreamDest = null;
+      this.bgComfortOsc = null;
+      this.bgComfortGain = null;
+      this.isRoutedToMediaStream = false;
       this.workletLoadingPromise = null;
       const createdCtx = this.audioCtx;
       if (createdCtx) {
@@ -519,7 +530,39 @@ class VhfRadioEngine {
     return this.audioCtx;
   }
 
-  // Genera un file WAV PCM silenzioso da 1 secondo (~8KB) per mantenere attiva la sessione audio radio in background
+  // Bus master unificato: instrada voce RX e toni verso lo stream HTMLAudioElement in background (MediaSession reale)
+  // o direttamente a ctx.destination se lo stream background non è ancora avviato
+  private getMasterOutput(ctx: AudioContext): GainNode {
+    if (this.masterBus) return this.masterBus;
+    const bus = ctx.createGain();
+    bus.gain.value = 1.0;
+    bus.connect(ctx.destination);
+    this.masterBus = bus;
+    this.isRoutedToMediaStream = false;
+    return bus;
+  }
+
+  private switchMasterOutputToMediaStream(ctx: AudioContext, dest: MediaStreamAudioDestinationNode) {
+    const bus = this.getMasterOutput(ctx);
+    if (this.isRoutedToMediaStream) return;
+    try {
+      bus.disconnect();
+    } catch {}
+    bus.connect(dest);
+    this.isRoutedToMediaStream = true;
+  }
+
+  private switchMasterOutputToDirect(ctx: AudioContext) {
+    const bus = this.getMasterOutput(ctx);
+    if (!this.isRoutedToMediaStream) return;
+    try {
+      bus.disconnect();
+    } catch {}
+    bus.connect(ctx.destination);
+    this.isRoutedToMediaStream = false;
+  }
+
+  // Genera un file WAV PCM da 1 secondo con micro-dither impercettibile (~ -66 dB) come fallback keep-alive
   private createSilentWavBlobUrl(): string | null {
     if (this.bgKeepAliveBlobUrl) return this.bgKeepAliveBlobUrl;
     if (typeof Blob === 'undefined' || typeof URL === 'undefined') return null;
@@ -546,7 +589,10 @@ class VhfRadioEngine {
       writeStr(36, 'data');
       view.setUint32(40, dataSize, true);
       const bytes = new Uint8Array(buffer, 44);
-      bytes.fill(128); // 128 = silenzio digitale esatto in PCM 8-bit unsigned
+      // Micro-dither non-zero (±1 LSB a 25Hz, totalmente inudibile ma evita sospensione "pure silence" di Android/iOS)
+      for (let i = 0; i < dataSize; i++) {
+        bytes[i] = i % 320 === 0 ? 129 : i % 320 === 160 ? 127 : 128;
+      }
       const blob = new Blob([buffer], { type: 'audio/wav' });
       this.bgKeepAliveBlobUrl = URL.createObjectURL(blob);
       return this.bgKeepAliveBlobUrl;
@@ -608,19 +654,73 @@ class VhfRadioEngine {
         if (c && c.state === 'suspended') {
           c.resume().catch(() => {});
         }
-        if (this.bgKeepAliveAudio && this.bgKeepAliveAudio.paused) {
+        if (this.bgStreamAudio && this.bgStreamAudio.paused) {
+          this.bgStreamAudio.play().catch(() => {
+            if (c) this.switchMasterOutputToDirect(c);
+          });
+        } else if (this.bgKeepAliveAudio && this.bgKeepAliveAudio.paused) {
           this.bgKeepAliveAudio.play().catch(() => {});
         }
       });
     }
 
+    // Strategia primaria: MediaStreamAudioDestinationNode -> HTMLAudioElement live con portante sub-udibile (-69 dB)
+    // Mantiene attivo AudioFocus + MediaSession reale su Android Chrome / iOS Safari anche a schermo spento
+    if (ctx && typeof (ctx as any).createMediaStreamDestination === 'function') {
+      try {
+        if (!this.mediaStreamDest) {
+          this.mediaStreamDest = ctx.createMediaStreamDestination();
+        }
+        if (!this.bgComfortOsc) {
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.type = 'sine';
+          osc.frequency.value = 24; // sub-udibile 24 Hz
+          gain.gain.value = 0.00035; // ~ -69 dB: impercettibile all'orecchio, ma impedisce lo standby OS
+          osc.connect(gain);
+          gain.connect(this.mediaStreamDest);
+          osc.start();
+          this.bgComfortOsc = osc;
+          this.bgComfortGain = gain;
+        }
+        if (!this.bgStreamAudio) {
+          const streamEl = document.createElement('audio');
+          streamEl.srcObject = this.mediaStreamDest.stream;
+          streamEl.autoplay = true;
+          streamEl.volume = 1.0;
+          (streamEl as any).playsInline = true;
+          streamEl.setAttribute('playsinline', 'true');
+          streamEl.addEventListener('pause', () => {
+            if (this.audioCtx) {
+              this.switchMasterOutputToDirect(this.audioCtx);
+            }
+          });
+          streamEl.addEventListener('playing', () => {
+            if (this.audioCtx && this.mediaStreamDest) {
+              this.switchMasterOutputToMediaStream(this.audioCtx, this.mediaStreamDest);
+            }
+          });
+          this.bgStreamAudio = streamEl;
+        }
+        if (this.bgStreamAudio.paused) {
+          await this.bgStreamAudio.play();
+        }
+        this.switchMasterOutputToMediaStream(ctx, this.mediaStreamDest);
+        this.updateMediaSessionState(label ? { title: label } : undefined);
+        return true;
+      } catch {
+        this.switchMasterOutputToDirect(ctx);
+      }
+    }
+
+    // Fallback: elemento <audio> WAV loop con micro-dither
     try {
       if (!this.bgKeepAliveAudio) {
         const blobUrl = this.createSilentWavBlobUrl();
         if (blobUrl) {
           const audio = new Audio(blobUrl);
           audio.loop = true;
-          audio.volume = 0.01;
+          audio.volume = 0.02;
           audio.preload = 'auto';
           (audio as any).playsInline = true;
           audio.setAttribute('playsinline', 'true');
@@ -639,7 +739,9 @@ class VhfRadioEngine {
   }
 
   public isBackgroundReceptionArmed(): boolean {
-    return this.bgReceptionArmed && Boolean(this.bgKeepAliveAudio && !this.bgKeepAliveAudio.paused);
+    const streamPlaying = Boolean(this.bgStreamAudio && !this.bgStreamAudio.paused);
+    const wavPlaying = Boolean(this.bgKeepAliveAudio && !this.bgKeepAliveAudio.paused);
+    return this.bgReceptionArmed && (streamPlaying || wavPlaying);
   }
 
   public async playAudioDataUrl(dataUrl: string): Promise<boolean> {
@@ -821,7 +923,7 @@ class VhfRadioEngine {
     presence.connect(lowPass);
     lowPass.connect(compressor);
     compressor.connect(masterOut);
-    masterOut.connect(ctx.destination);
+    masterOut.connect(this.getMasterOutput(ctx));
 
     this.rxChainInput = inputNode;
     return inputNode;
@@ -862,7 +964,7 @@ class VhfRadioEngine {
       const master = ctx.createGain();
       master.gain.value = mode === 'emergency' ? 0.42 : 0.3;
       filter.connect(master);
-      master.connect(ctx.destination);
+      master.connect(this.getMasterOutput(ctx));
 
       const toneSets: number[][] =
         mode === 'emergency'
@@ -915,7 +1017,7 @@ class VhfRadioEngine {
       nGain.gain.exponentialRampToValueAtTime(0.001, cursor + (mode === 'emergency' ? 0.085 : 0.055));
       noise.connect(nFilter);
       nFilter.connect(nGain);
-      nGain.connect(ctx.destination);
+      nGain.connect(this.getMasterOutput(ctx));
       noise.start(cursor);
       noise.stop(cursor + 0.095);
 
@@ -958,7 +1060,7 @@ class VhfRadioEngine {
       clickGain.gain.value = 0.28;
       clickSrc.connect(clickFilter);
       clickFilter.connect(clickGain);
-      clickGain.connect(ctx.destination);
+      clickGain.connect(this.getMasterOutput(ctx));
       clickSrc.start(now);
 
       // 2. Toni apertura portante Forze dell'Ordine (Priorità Centrale CCIR o Grant Chirp TETRA PS/CC)
@@ -978,7 +1080,7 @@ class VhfRadioEngine {
         gain.gain.linearRampToValueAtTime(normalizedMode === 'priority' ? 0.28 : 0.2, t0 + 0.006);
         gain.gain.exponentialRampToValueAtTime(0.001, t0 + dur - 0.002);
         osc.connect(gain);
-        gain.connect(ctx.destination);
+        gain.connect(this.getMasterOutput(ctx));
         osc.start(t0);
         osc.stop(t0 + dur + 0.004);
       });
@@ -1002,7 +1104,7 @@ class VhfRadioEngine {
       gain.gain.exponentialRampToValueAtTime(0.001, sqStart + 0.038);
       noise.connect(filter);
       filter.connect(gain);
-      gain.connect(ctx.destination);
+      gain.connect(this.getMasterOutput(ctx));
       noise.start(sqStart);
       noise.stop(sqStart + 0.044);
     } catch {}
@@ -1028,7 +1130,7 @@ class VhfRadioEngine {
         gain.gain.linearRampToValueAtTime(0.24, now + 0.008);
         gain.gain.exponentialRampToValueAtTime(0.001, now + 0.14);
         osc.connect(gain);
-        gain.connect(ctx.destination);
+        gain.connect(this.getMasterOutput(ctx));
         osc.start(now);
         osc.stop(now + 0.15);
         cursor = now + 0.125;
@@ -1053,7 +1155,7 @@ class VhfRadioEngine {
           g.gain.linearRampToValueAtTime(normalizedMode === 'emergency' ? 0.28 : 0.22, cursor + 0.006);
           g.gain.exponentialRampToValueAtTime(0.001, cursor + st.d);
           osc.connect(g);
-          g.connect(ctx.destination);
+          g.connect(this.getMasterOutput(ctx));
           osc.start(cursor);
           osc.stop(cursor + st.d + 0.005);
           cursor += st.d;
@@ -1079,7 +1181,7 @@ class VhfRadioEngine {
       nGain.gain.exponentialRampToValueAtTime(0.001, cursor + 0.068);
       noise.connect(filter);
       filter.connect(nGain);
-      nGain.connect(ctx.destination);
+      nGain.connect(this.getMasterOutput(ctx));
       noise.start(cursor);
       noise.stop(cursor + 0.075);
     } catch {}
@@ -1105,7 +1207,7 @@ class VhfRadioEngine {
         g.gain.linearRampToValueAtTime(0.32, now + t.start + 0.008);
         g.gain.exponentialRampToValueAtTime(0.001, now + t.start + t.dur);
         osc.connect(g);
-        g.connect(ctx.destination);
+        g.connect(this.getMasterOutput(ctx));
         osc.start(now + t.start);
         osc.stop(now + t.start + t.dur + 0.008);
       });

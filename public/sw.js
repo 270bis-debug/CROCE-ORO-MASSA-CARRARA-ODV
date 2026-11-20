@@ -4,7 +4,7 @@
 // 2. Strategia Network-First su navigazione per caricare SEMPRE l'ultima release pubblicata
 // 3. Notifiche Push in Background ad Alta Priorità e Risveglio Schermo Bloccato
 
-const CACHE_NAME = 'croce-oro-cache-v5.0.3';
+const CACHE_NAME = 'croce-oro-cache-v5.0.4';
 
 const PRECACHE_ASSETS = [
   '/',
@@ -228,11 +228,14 @@ self.addEventListener('push', (event) => {
   }
 
   const isRadioEmergency = data.tipo === 'radio_emergency' || Boolean(data.isEmergency);
-  const isRadioPtt = data.tipo === 'radio_ptt' || data.tipo === 'radio_message';
+  const isRadioChannelOn = data.tipo === 'radio_channel_on';
+  const isRadioPtt = data.tipo === 'radio_ptt' || data.tipo === 'radio_message' || isRadioChannelOn;
 
-  // Schema di vibrazione distinto per Emergenza Radio, Radio Normale o Missione
+  // Schema di vibrazione distinto per Emergenza Radio, Attivazione Canale, PTT o Missione
   const vibrationPattern = isRadioEmergency
     ? [900, 180, 900, 180, 1200, 250, 1200, 250, 1600]
+    : isRadioChannelOn
+    ? [360, 110, 360, 110, 520]
     : isRadioPtt
     ? [260, 90, 320, 90, 260]
     : data.urgenza === 'ROSSO'
@@ -267,7 +270,7 @@ self.addEventListener('push', (event) => {
     vibrate: vibrationPattern,
     tag: isRadioPtt && data.channelId ? `radio-ch-${data.channelId}` : (data.tag || 'dispatch') + '-' + Date.now(),
     renotify: true,
-    requireInteraction: isRadioEmergency || !isRadioPtt,
+    requireInteraction: isRadioEmergency || isRadioChannelOn || !isRadioPtt,
     silent: false,
     data: {
       url: targetUrl,
@@ -319,6 +322,7 @@ self.addEventListener('notificationclick', (event) => {
     notifData.tipo === 'radio_emergency' ||
     notifData.tipo === 'radio_ptt' ||
     notifData.tipo === 'radio_message' ||
+    notifData.tipo === 'radio_channel_on' ||
     Boolean(notifData.isEmergency);
   const targetUrl = notifData.url || (isRadioNotif ? '/?radioWake=1' : '/?ring=1');
 

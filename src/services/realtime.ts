@@ -588,6 +588,13 @@ class RealtimeService {
     const prevRinging = this.cloudState.ringing || null;
     const prevShift = this.cloudState.activeShift || null;
     const prevPttEnabled = Boolean(this.cloudState.radioPtt?.enabled ?? this.cloudState.radioPttEnabled);
+    const prevRadioGroups: any[] = Array.isArray(this.cloudState.radioGroups)
+      ? this.cloudState.radioGroups.map((g: any) => ({ ...g }))
+      : [];
+    const prevRadioGroupSpeakers: Record<string, any> =
+      this.cloudState.radioGroupSpeakers && typeof this.cloudState.radioGroupSpeakers === 'object'
+        ? { ...this.cloudState.radioGroupSpeakers }
+        : {};
 
     if (shardId === 'volontari') {
       const deletedIds = normalizeDeletedIds([
@@ -740,7 +747,26 @@ class RealtimeService {
         }
       }
       if (Array.isArray(payload.radioGroups)) {
-        this.emit('RADIO_GROUPS_UPDATED', { radioGroups: payload.radioGroups });
+        const prevMap = new Map<string, any>(prevRadioGroups.map((g: any) => [String(g?.id || ''), g]));
+        let toggledGroupId: string | undefined;
+        let toggledEnabled: boolean | undefined;
+        let toggledBy: string | undefined;
+        if (isRemoteLiveDelta) {
+          for (const g of payload.radioGroups) {
+            const gid = String(g?.id || '');
+            const prevG = prevMap.get(gid);
+            if (prevG && Boolean(prevG.enabled) !== Boolean(g?.enabled)) {
+              toggledGroupId = gid;
+              toggledEnabled = Boolean(g?.enabled);
+              toggledBy = g?.toggledBy;
+              break;
+            }
+          }
+        }
+        this.emit('RADIO_GROUPS_UPDATED', {
+          radioGroups: payload.radioGroups,
+          ...(toggledGroupId !== undefined ? { toggledGroupId, toggledEnabled, toggledBy } : {}),
+        });
       }
       if (payload.datiCartaIntestata && typeof payload.datiCartaIntestata === 'object') {
         this.emit('CARTA_INTESTATA_UPDATED', { dati: payload.datiCartaIntestata });
@@ -1033,12 +1059,20 @@ class RealtimeService {
       if (payload.gpsPosition) {
         this.emit('GPS_UPDATED', { position: payload.gpsPosition });
       }
-      if ('radioPttEnabled' in payload || 'radioPttActiveSpeaker' in payload) {
+      if ('radioPtt' in payload || 'radioPttEnabled' in payload || 'radioPttActiveSpeaker' in payload) {
+        const incomingRadioPtt = payload.radioPtt && typeof payload.radioPtt === 'object' ? payload.radioPtt : null;
         const nextEnabled =
           'radioPttEnabled' in payload
             ? Boolean(payload.radioPttEnabled)
+            : incomingRadioPtt && 'enabled' in incomingRadioPtt
+            ? Boolean(incomingRadioPtt.enabled)
             : Boolean(this.cloudState.radioPtt?.enabled ?? this.cloudState.radioPttEnabled);
-        const rawSpeaker = 'radioPttActiveSpeaker' in payload ? payload.radioPttActiveSpeaker : prevActiveSpeaker;
+        const rawSpeaker =
+          'radioPttActiveSpeaker' in payload
+            ? payload.radioPttActiveSpeaker
+            : incomingRadioPtt && 'activeSpeaker' in incomingRadioPtt
+            ? incomingRadioPtt.activeSpeaker
+            : prevActiveSpeaker;
         const isFreshSpeaker =
           rawSpeaker &&
           typeof rawSpeaker === 'object' &&
@@ -1048,8 +1082,8 @@ class RealtimeService {
         this.cloudState.radioPtt = {
           ...(this.cloudState.radioPtt || { enabled: false, activeSpeaker: null }),
           enabled: nextEnabled,
-          toggledBy: payload.radioPttToggledBy ?? this.cloudState.radioPtt?.toggledBy,
-          toggledAt: payload.radioPttToggledAt ?? this.cloudState.radioPtt?.toggledAt,
+          toggledBy: payload.radioPttToggledBy ?? incomingRadioPtt?.toggledBy ?? this.cloudState.radioPtt?.toggledBy,
+          toggledAt: payload.radioPttToggledAt ?? incomingRadioPtt?.toggledAt ?? this.cloudState.radioPtt?.toggledAt,
           codecMode: 'adpcm-24k',
           activeSpeaker: (nextEnabled || nextSpeaker?.isEmergency) ? nextSpeaker : null,
         };
@@ -1064,6 +1098,33 @@ class RealtimeService {
             radioPtt: this.cloudState.radioPtt,
           });
         }
+      }
+      if (payload.radioGroupSpeakers && typeof payload.radioGroupSpeakers === 'object') {
+        const nextMap = payload.radioGroupSpeakers as Record<string, any>;
+        const currentGroups: any[] = Array.isArray(this.cloudState.radioGroups) ? this.cloudState.radioGroups : [];
+        const allGroupIds = new Set<string>([...Object.keys(prevRadioGroupSpeakers), ...Object.keys(nextMap)]);
+        allGroupIds.forEach((gid) => {
+          const prevSpk = prevRadioGroupSpeakers[gid] || null;
+          const rawNext = nextMap[gid] || null;
+          const isFresh =
+            rawNext &&
+            typeof rawNext === 'object' &&
+            (!rawNext.startedAt || Date.now() - Number(rawNext.lastChunkAt || rawNext.startedAt) < 15000);
+          const nextSpk = isFresh ? rawNext : null;
+          if ((prevSpk?.speakerId || null) !== (nextSpk?.speakerId || null)) {
+            const grpBase = currentGroups.find((g: any) => String(g?.id || '') === gid);
+            if (grpBase && isRemoteLiveDelta) {
+              const updatedGrp = { ...grpBase, activeSpeaker: nextSpk };
+              this.cloudState.radioGroups = currentGroups.map((g: any) => (String(g?.id || '') === gid ? updatedGrp : g));
+              this.emit('PTT_SPEAKER_CHANGED', {
+                channelId: gid,
+                groupId: gid,
+                activeSpeaker: nextSpk,
+                radioGroup: updatedGrp,
+              });
+            }
+          }
+        });
       }
       if (payload.radioEmergency && typeof payload.radioEmergency === 'object') {
         const emTs = Number(payload.radioEmergency.triggeredAt || 0);
@@ -1743,6 +1804,27 @@ class RealtimeService {
     return origin;
   }
 
+  // URL del backend Express con supporto Web Push VAPID e buffer replay audio radio
+  // Anche quando l'app è aperta su dominio statico/Vercel (es. www.croceoro.org), punta al backend Cloud Run
+  public getPushBackendBaseUrl(): string {
+    if (typeof window === 'undefined') return '';
+    const customUrl = localStorage.getItem('CROCE_ORO_SERVER_URL');
+    if (customUrl && customUrl.trim()) {
+      return customUrl.trim().replace(/\/$/, '');
+    }
+    const origin = window.location.origin;
+    if (origin && origin.includes('.run.app')) {
+      return origin;
+    }
+    if (window.location.hostname === 'localhost' && window.location.port === '3000') {
+      return origin;
+    }
+    if (this.isServerlessStaticHost()) {
+      return this.DEFAULT_CLOUD_URL;
+    }
+    return this.getApiBaseUrl() || this.DEFAULT_CLOUD_URL;
+  }
+
   public getWebSocketUrl(): string {
     const baseUrl = this.getApiBaseUrl();
     if (!baseUrl) return '';
@@ -2308,9 +2390,11 @@ class RealtimeService {
             activeSpeaker: nextEnabled ? (this.cloudState.radioPtt?.activeSpeaker || null) : null,
           };
           this.scheduleShardWrite('mission', {
+            radioPtt: this.cloudState.radioPtt,
             radioPttEnabled: nextEnabled,
             radioPttToggledBy: toggledBy,
             radioPttToggledAt: toggledAt,
+            ...(!nextEnabled ? { radioPttActiveSpeaker: null } : {}),
           });
         }
         break;
@@ -2415,23 +2499,34 @@ class RealtimeService {
           startedAt: Date.now(),
           lastChunkAt: Date.now(),
         };
-        const nextRadioPtt = {
-          ...(this.cloudState.radioPtt || { enabled: false, activeSpeaker: null }),
-          activeSpeaker: spk,
-        };
-        this.scheduleShardWrite('mission', {
-          radioPtt: nextRadioPtt,
-          ...(isEmerg
-            ? {
-                radioEmergency: {
-                  active: true,
-                  triggeredBy: spk.speakerName,
-                  triggeredAt: Date.now(),
-                  message: `TRASMISSIONE VOCALE EMERGENZA IN CORSO (${spk.speakerName})`,
-                },
-              }
-            : {}),
-        });
+        if (!isEmerg && chId !== 'general') {
+          const nextGroupSpeakers = {
+            ...(this.cloudState.radioGroupSpeakers || {}),
+            [chId]: spk,
+          };
+          this.scheduleShardWrite('mission', {
+            radioGroupSpeakers: nextGroupSpeakers,
+          });
+        } else {
+          const nextRadioPtt = {
+            ...(this.cloudState.radioPtt || { enabled: false, activeSpeaker: null }),
+            activeSpeaker: spk,
+          };
+          this.scheduleShardWrite('mission', {
+            radioPtt: nextRadioPtt,
+            radioPttActiveSpeaker: spk,
+            ...(isEmerg
+              ? {
+                  radioEmergency: {
+                    active: true,
+                    triggeredBy: spk.speakerName,
+                    triggeredAt: Date.now(),
+                    message: `TRASMISSIONE VOCALE EMERGENZA IN CORSO (${spk.speakerName})`,
+                  },
+                }
+              : {}),
+          });
+        }
         break;
       }
       case 'PTT_STOP': {
@@ -2440,17 +2535,35 @@ class RealtimeService {
           clearTimeout(this.pttCloudFlushTimer);
           this.pttCloudFlushTimer = null;
         }
+        const chIdStop = String(data?.channelId || '');
+        const patchStop: Record<string, any> = { radioAudioBurst: null };
         const currSpk = this.cloudState.radioPtt?.activeSpeaker;
         if (!currSpk || currSpk.speakerId === data?.speakerId) {
-          const nextRadioPtt = {
+          patchStop.radioPtt = {
             ...(this.cloudState.radioPtt || { enabled: false, activeSpeaker: null }),
             activeSpeaker: null,
           };
-          this.scheduleShardWrite('mission', {
-            radioPtt: nextRadioPtt,
-            radioAudioBurst: null,
-          });
+          patchStop.radioPttActiveSpeaker = null;
         }
+        if (chIdStop && chIdStop !== 'general' && chIdStop !== 'emergency') {
+          patchStop.radioGroupSpeakers = {
+            ...(this.cloudState.radioGroupSpeakers || {}),
+            [chIdStop]: null,
+          };
+        } else if (this.cloudState.radioGroupSpeakers && typeof this.cloudState.radioGroupSpeakers === 'object') {
+          const nextGrpSpk = { ...this.cloudState.radioGroupSpeakers };
+          let changed = false;
+          Object.keys(nextGrpSpk).forEach((gid) => {
+            if (nextGrpSpk[gid]?.speakerId === data?.speakerId) {
+              nextGrpSpk[gid] = null;
+              changed = true;
+            }
+          });
+          if (changed) {
+            patchStop.radioGroupSpeakers = nextGrpSpk;
+          }
+        }
+        this.scheduleShardWrite('mission', patchStop);
         break;
       }
       case 'UPDATE_GPS':
@@ -3072,8 +3185,8 @@ class RealtimeService {
   public send(type: string, data: any = {}) {
     const payload = JSON.stringify({ type, data });
 
-    // Streaming audio HD in diretta: invio WebSocket immediato + relay compresso su Firestore ogni ~220ms
-    // così funziona contemporaneamente su device loggati con account diversi anche senza WebSocket condiviso
+    // Streaming audio HD in diretta: invio WebSocket immediato + relay compresso su Firestore e HTTP Push Backend ogni ~220ms
+    // così funziona contemporaneamente su device agganciati a reti dati/Wi-Fi diverse o domini diversi (es. Vercel <-> Cloud Run)
     if (type === 'PTT_AUDIO_CHUNK') {
       let sentViaWs = false;
       if (this.ws && this.ws.readyState === WebSocket.OPEN) {
@@ -3082,7 +3195,9 @@ class RealtimeService {
           sentViaWs = true;
         } catch {}
       }
-      if (this.firebaseSession.isAuthorized && this.shardLoadedFromCloud['mission'] && data?.payloadBase64) {
+      const needFirestoreRelay = Boolean(this.firebaseSession.isAuthorized && this.shardLoadedFromCloud['mission']);
+      const needHttpBurstRelay = !sentViaWs;
+      if ((needFirestoreRelay || needHttpBurstRelay) && data?.payloadBase64) {
         this.pttCloudChunkBuffer.push({
           speakerId: String(data.speakerId || ''),
           speakerName: data.speakerName ? String(data.speakerName) : undefined,
@@ -3103,12 +3218,28 @@ class RealtimeService {
             if (this.pttCloudChunkBuffer.length === 0) return;
             const batch = this.pttCloudChunkBuffer.splice(0, 8);
             const burstId = `b-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-            this.cloudState.radioAudioBurst = {
-              burstId,
-              ts: Date.now(),
-              chunks: batch,
-            };
-            this.flushShardToFirestore('mission').catch(() => {});
+            if (this.firebaseSession.isAuthorized && this.shardLoadedFromCloud['mission']) {
+              this.cloudState.radioAudioBurst = {
+                burstId,
+                ts: Date.now(),
+                chunks: batch,
+              };
+              this.flushShardToFirestore('mission').catch(() => {});
+            }
+            if (!(this.ws && this.ws.readyState === WebSocket.OPEN)) {
+              const pushBase = this.getPushBackendBaseUrl();
+              if (pushBase) {
+                fetch(`${pushBase}/api/radio-burst`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    chunks: batch,
+                    volontarioId: this.localRadioClientMeta.volontarioId || undefined,
+                  }),
+                  cache: 'no-store',
+                }).catch(() => {});
+              }
+            }
           }, 220);
         }
       }
@@ -3130,16 +3261,29 @@ class RealtimeService {
       }
     }
 
-    // 3. Invio HTTP ridondante verso Express se non su host puramente serverless statico
-    if (!this.isServerlessStaticHost()) {
+    // 3. Invio HTTP ridondante verso Express / Push Backend
+    // Gli eventi radio critici (Emergenza, Accensione Canale Tutti/Gruppo, PTT, Messaggi Radio) vengono SEMPRE
+    // recapitati anche al Push Backend (incluso da host serverless Vercel/croceoro.org) per risvegliare i device a schermo spento.
+    const isRadioCritical =
+      type === 'TRIGGER_RADIO_EMERGENCY' ||
+      type === 'TOGGLE_RADIO_PTT_LIVE' ||
+      type === 'TOGGLE_RADIO_GROUP_LIVE' ||
+      type === 'PTT_START' ||
+      type === 'PTT_STOP' ||
+      type === 'SEND_RADIO_MESSAGE';
+
+    if (!this.isServerlessStaticHost() || isRadioCritical) {
       try {
-        const baseUrl = this.getApiBaseUrl();
-        fetch(`${baseUrl}/api/event`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: payload,
-          cache: 'no-store',
-        }).catch(() => {});
+        const targetBase = this.isServerlessStaticHost() ? this.getPushBackendBaseUrl() : this.getApiBaseUrl();
+        if (targetBase) {
+          fetch(`${targetBase}/api/event`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: payload,
+            cache: 'no-store',
+            keepalive: payload.length < 55000,
+          }).catch(() => {});
+        }
       } catch {}
     }
 
@@ -3709,6 +3853,7 @@ class RealtimeService {
       enabled,
       role,
       operatorName,
+      volontarioId: this.localRadioClientMeta.volontarioId || undefined,
     });
   }
 
@@ -3756,6 +3901,7 @@ class RealtimeService {
       enabled,
       operatorName,
       role,
+      volontarioId: this.localRadioClientMeta.volontarioId || undefined,
     });
   }
 
@@ -3777,6 +3923,7 @@ class RealtimeService {
       operatorName,
       role,
       message,
+      volontarioId: this.localRadioClientMeta.volontarioId || undefined,
     });
   }
 

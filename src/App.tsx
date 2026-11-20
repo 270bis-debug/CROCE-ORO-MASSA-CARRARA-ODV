@@ -128,7 +128,7 @@ import {
   RisultatoObbligoFirmaEPin
 } from './components/ModalObbligoFirmaEPin';
 import { ModalAnteprimaMultipla } from './components/ModalAnteprimaMultipla';
-import { attivaServiceWorkerEPush, mostraNotificaNativa } from './services/pushManager';
+import { attivaServiceWorkerEPush, getPushSubscriptionStatus, isRunningInEmbeddedIframe, mostraNotificaNativa } from './services/pushManager';
 import { soundEngine } from './services/soundEngine';
 import { vhfRadioEngine } from './services/vhfRadioEngine';
 import { realtime, ConnectionInfo, mergeOperativeTimesImmutable } from './services/realtime';
@@ -1157,7 +1157,9 @@ export default function App() {
   // riproducono immediatamente voce radio ed emergenza.
   useEffect(() => {
     const unlockOnGesture = () => {
-      vhfRadioEngine.unlockAudio().catch(() => {});
+      if (!vhfRadioEngine.isBackgroundReceptionArmed()) {
+        vhfRadioEngine.unlockAudio().catch(() => {});
+      }
     };
     window.addEventListener('pointerdown', unlockOnGesture, { passive: true });
     window.addEventListener('touchstart', unlockOnGesture, { passive: true });
@@ -4849,10 +4851,63 @@ export default function App() {
   ]);
 
   const lastWsRadioChunkAtRef = useRef<number>(0);
+  const lastRadioRecentCheckRef = useRef<number>(Date.now());
   const replayedTransmissionIdsRef = useRef<Set<string>>(new Set());
+  const [bgRadioStatus, setBgRadioStatus] = useState<{
+    audioArmed: boolean;
+    pushSubscribed: boolean;
+    permission: NotificationPermission;
+    inIframe: boolean;
+  }>(() => ({
+    audioArmed: false,
+    pushSubscribed: false,
+    permission: typeof window !== 'undefined' && 'Notification' in window ? Notification.permission : 'default',
+    inIframe: isRunningInEmbeddedIframe(),
+  }));
+
+  const aggiornaStatoRadioBackground = useCallback(async () => {
+    try {
+      const pushStat = await getPushSubscriptionStatus();
+      setBgRadioStatus({
+        audioArmed: vhfRadioEngine.isBackgroundReceptionArmed(),
+        pushSubscribed: pushStat.subscribed,
+        permission: pushStat.permission,
+        inIframe: pushStat.inIframe,
+      });
+    } catch {}
+  }, []);
+
+  const attivaAscoltoRadioBackground = useCallback(async () => {
+    const armed = await vhfRadioEngine.armBackgroundReception('Radio VHF/UHF • Ascolto Attivo');
+    const isAdminNow = ruoloRef.current === 'admin';
+    const activeVolId = isAdminNow
+      ? (utenteCentraleRef.current?.id || 'vol-admin')
+      : (sessioneTurnoRef.current?.volontarioId || undefined);
+    const activeVolNome = isAdminNow
+      ? `${utenteCentraleRef.current?.nome || ''} ${utenteCentraleRef.current?.cognome || ''}`.trim() || 'Centrale Operativa'
+      : (sessioneTurnoRef.current?.volontarioNome || undefined);
+    const pushRes = await attivaServiceWorkerEPush(
+      isAdminNow ? 'admin' : 'volontario',
+      activeVolId,
+      activeVolNome
+    );
+    setBgRadioStatus({
+      audioArmed: armed || vhfRadioEngine.isBackgroundReceptionArmed(),
+      pushSubscribed: pushRes.subscribed,
+      permission: pushRes.permission,
+      inIframe: Boolean(pushRes.inIframe),
+    });
+    return { armed, pushRes };
+  }, []);
+
+  useEffect(() => {
+    if (modalNotificheAperta) {
+      aggiornaStatoRadioBackground();
+    }
+  }, [modalNotificheAperta, aggiornaStatoRadioBackground]);
 
   // Ri-registra automaticamente la sottoscrizione Push con ruolo/volontarioId aggiornati (se permesso già concesso)
-  // per garantire ricezione radio normale ed emergenza anche a schermo spento / app in background
+  // per garantire ricezione radio normale, gruppi ed emergenza anche a schermo spento / app in background
   useEffect(() => {
     if (typeof window === 'undefined' || !('Notification' in window)) return;
     if (Notification.permission !== 'granted') return;
@@ -4864,7 +4919,9 @@ export default function App() {
       ? `${utenteCentrale?.nome || ''} ${utenteCentrale?.cognome || ''}`.trim() || 'Centrale Operativa'
       : (sessioneTurno.attivo ? sessioneTurno.volontarioNome : undefined);
     if (!isAdminNow && !activeVolId) return;
-    attivaServiceWorkerEPush(isAdminNow ? 'admin' : 'volontario', activeVolId, activeVolNome).catch(() => {});
+    attivaServiceWorkerEPush(isAdminNow ? 'admin' : 'volontario', activeVolId, activeVolNome)
+      .then(() => aggiornaStatoRadioBackground())
+      .catch(() => {});
   }, [
     ruolo,
     utenteCentrale?.id,
@@ -4872,10 +4929,11 @@ export default function App() {
     utenteCentrale?.cognome,
     sessioneTurno.attivo,
     sessioneTurno.volontarioId,
-    sessioneTurno.volontarioNome
+    sessioneTurno.volontarioNome,
+    aggiornaStatoRadioBackground
   ]);
 
-  // Ponte Service Worker <-> App per risveglio radio in background (normale + emergenza) e replay trasmissioni perse
+  // Ponte Service Worker <-> App + Ripristino al risveglio schermo/rete per radio in background (Emergenza, Gruppi, Tutti)
   useEffect(() => {
     if (typeof window === 'undefined') return;
 
@@ -4905,7 +4963,8 @@ export default function App() {
           role: currentRole,
           volontarioId: currentVolId
         });
-        const res = await fetch(`/api/radio-transmission/${encodeURIComponent(transmissionId)}?${qs.toString()}`, {
+        const pushBase = realtime.getPushBackendBaseUrl();
+        const res = await fetch(`${pushBase}/api/radio-transmission/${encodeURIComponent(transmissionId)}?${qs.toString()}`, {
           cache: 'no-store'
         });
         if (!res.ok) return;
@@ -4920,10 +4979,56 @@ export default function App() {
       } catch {}
     };
 
+    const checkAndReplayMissedTransmissions = async () => {
+      try {
+        const currentRole = ruoloRef.current === 'admin' ? 'admin' : 'volontario';
+        const currentVolId =
+          currentRole === 'admin'
+            ? (utenteCentraleRef.current?.id || 'vol-admin')
+            : (sessioneTurnoRef.current?.volontarioId || '');
+        if (currentRole !== 'admin' && !currentVolId) return;
+        const since = Math.max(Date.now() - 120000, lastRadioRecentCheckRef.current - 4000);
+        lastRadioRecentCheckRef.current = Date.now();
+        const qs = new URLSearchParams({
+          role: currentRole,
+          volontarioId: currentVolId,
+          since: String(since),
+        });
+        const pushBase = realtime.getPushBackendBaseUrl();
+        const res = await fetch(`${pushBase}/api/radio-recent?${qs.toString()}`, { cache: 'no-store' });
+        if (!res.ok) return;
+        const json = await res.json();
+        const list = Array.isArray(json?.transmissions) ? json.transmissions : [];
+        if (list.length === 0) return;
+        // Seleziona la trasmissione più recente non ancora ascoltata con audio presente
+        const latestMissed = [...list]
+          .reverse()
+          .find(
+            (tx: any) =>
+              tx?.id &&
+              Number(tx.chunkCount || 0) > 0 &&
+              !replayedTransmissionIdsRef.current.has(String(tx.id)) &&
+              Number(tx.startedAt || 0) > lastWsRadioChunkAtRef.current - 1200
+          );
+        if (latestMissed) {
+          if (latestMissed.groupId && !localPttTransmittingIdRef.current) {
+            setSelectedRadioChannelId(String(latestMissed.groupId));
+          }
+          await replayTransmissionIfMissed(
+            String(latestMissed.id),
+            Boolean(latestMissed.isEmergency),
+            latestMissed.speakerName ? String(latestMissed.speakerName) : undefined,
+            true
+          );
+        }
+      } catch {}
+    };
+
     const handleRadioWakePayload = (data: any, fromUserClick: boolean) => {
       if (!data) return;
       realtime.ensureConnected();
       const isEmerg = Boolean(data.isEmergency || data.tipo === 'radio_emergency' || data.radioTipo === 'radio_emergency');
+      const isChannelOn = data.tipo === 'radio_channel_on' || data.radioTipo === 'radio_channel_on';
       const spkName = String(data.speakerName || data.source || (isEmerg ? 'Centrale Operativa' : 'Radio'));
       const chId = String(data.channelId || 'general');
       const txId = String(data.transmissionId || '').trim();
@@ -4932,10 +5037,11 @@ export default function App() {
         .armBackgroundReception(isEmerg ? `🚨 EMERGENZA: ${spkName}` : `📻 RADIO: ${spkName}`)
         .catch(() => {});
 
+      if (chId && chId !== 'emergency' && (fromUserClick || isChannelOn || !localPttTransmittingIdRef.current)) {
+        setSelectedRadioChannelId(chId);
+      }
+
       if (fromUserClick) {
-        if (chId && chId !== 'emergency') {
-          setSelectedRadioChannelId(chId);
-        }
         setModalNotificheAperta(true);
       }
 
@@ -4943,7 +5049,7 @@ export default function App() {
         lastRemoteEmergencyTriggerRef.current = Date.now();
         vhfRadioEngine.interruptPlayback();
         vhfRadioEngine.playEmergencyAnnouncement({ isSender: false });
-      } else if (!isEmerg && Date.now() - lastWsRadioChunkAtRef.current > 2500) {
+      } else if (!isEmerg && (isChannelOn || Date.now() - lastWsRadioChunkAtRef.current > 2500)) {
         vhfRadioEngine.playItalianPoliceSelcall(chId !== 'general' ? 'group' : 'standard');
       }
 
@@ -4952,6 +5058,10 @@ export default function App() {
         setTimeout(() => {
           replayTransmissionIfMissed(txId, isEmerg, spkName, fromUserClick);
         }, fromUserClick ? 250 : 1400);
+      } else if (fromUserClick) {
+        setTimeout(() => {
+          checkAndReplayMissedTransmissions();
+        }, 350);
       }
     };
 
@@ -4964,15 +5074,41 @@ export default function App() {
         handleRadioWakePayload(msg.data, true);
       } else if (msg.type === 'REMOTE_PUSH_RECEIVED') {
         const d = msg.data || {};
-        if (d.tipo === 'radio_emergency' || d.tipo === 'radio_ptt' || d.tipo === 'radio_message' || d.isEmergency) {
+        if (
+          d.tipo === 'radio_emergency' ||
+          d.tipo === 'radio_ptt' ||
+          d.tipo === 'radio_message' ||
+          d.tipo === 'radio_channel_on' ||
+          d.isEmergency
+        ) {
           handleRadioWakePayload(d, false);
         }
       }
     };
 
+    const onAppWake = () => {
+      if (document.visibilityState === 'visible') {
+        realtime.ensureConnected();
+        vhfRadioEngine.armBackgroundReception().catch(() => {});
+        aggiornaStatoRadioBackground();
+        setTimeout(() => {
+          checkAndReplayMissedTransmissions();
+        }, 500);
+      }
+    };
+
+    const onNetworkOnline = () => {
+      realtime.ensureConnected();
+      setTimeout(() => {
+        checkAndReplayMissedTransmissions();
+      }, 700);
+    };
+
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.addEventListener('message', onSwMessage);
     }
+    document.addEventListener('visibilitychange', onAppWake);
+    window.addEventListener('online', onNetworkOnline);
 
     // Gestione apertura da notifica Push a schermata spenta (?radioWake=1&...)
     try {
@@ -5003,8 +5139,10 @@ export default function App() {
       if ('serviceWorker' in navigator) {
         navigator.serviceWorker.removeEventListener('message', onSwMessage);
       }
+      document.removeEventListener('visibilitychange', onAppWake);
+      window.removeEventListener('online', onNetworkOnline);
     };
-  }, []);
+  }, [aggiornaStatoRadioBackground]);
 
   // Verifica centralizzata se un volontario è attualmente loggato su qualsiasi terminale
   const isVolontarioLoggatoLive = useCallback((v: Volontario): boolean => {
@@ -11030,9 +11168,14 @@ KM TOTALI: ${kmTot} KM`;
 
       realtime.on('POLL_SYNC', (s: any) => {
         if (!s) return;
+        const prevPttEnabledPoll = radioPttStateRef.current.enabled;
+        const prevGroupsPoll = radioGroupsRef.current;
+        const prevEmPoll = radioEmergencyRef.current;
+
         if (s.radioPtt && typeof s.radioPtt === 'object') {
+          const nextEnabledPoll = Boolean(s.radioPtt.enabled);
           setRadioPttState((prev) => ({
-            enabled: Boolean(s.radioPtt.enabled),
+            enabled: nextEnabledPoll,
             toggledBy: s.radioPtt.toggledBy ?? prev.toggledBy,
             toggledAt: s.radioPtt.toggledAt ?? prev.toggledAt,
             codecMode: s.radioPtt.codecMode ?? prev.codecMode,
@@ -11041,20 +11184,54 @@ KM TOTALI: ${kmTot} KM`;
                 ? s.radioPtt.activeSpeaker
                 : prev.activeSpeaker,
           }));
+          if (nextEnabledPoll && !prevPttEnabledPoll && Date.now() - Number(s.radioPtt.toggledAt || 0) < 20000) {
+            vhfRadioEngine.armBackgroundReception('📡 Radio Generale (Tutti) Attiva').catch(() => {});
+            vhfRadioEngine.playItalianPoliceSelcall('standard');
+          }
         } else if ('radioPttEnabled' in s) {
+          const nextEnabledPoll = Boolean(s.radioPttEnabled);
           setRadioPttState((prev) => ({
             ...prev,
-            enabled: Boolean(s.radioPttEnabled),
+            enabled: nextEnabledPoll,
             toggledBy: s.radioPttToggledBy ?? prev.toggledBy,
             toggledAt: s.radioPttToggledAt ?? prev.toggledAt,
-            activeSpeaker: Boolean(s.radioPttEnabled) ? prev.activeSpeaker : null,
+            activeSpeaker: nextEnabledPoll ? prev.activeSpeaker : null,
           }));
+          if (nextEnabledPoll && !prevPttEnabledPoll && Date.now() - Number(s.radioPttToggledAt || 0) < 20000) {
+            vhfRadioEngine.armBackgroundReception('📡 Radio Generale (Tutti) Attiva').catch(() => {});
+            vhfRadioEngine.playItalianPoliceSelcall('standard');
+          }
         }
         if (Array.isArray(s.radioGroups)) {
           setRadioGroups(s.radioGroups);
+          const myVolIdPoll = sessioneTurnoRef.current?.volontarioId;
+          const prevGrpMap = new Map<string, RadioGroup>(prevGroupsPoll.map((g) => [g.id, g]));
+          for (const g of s.radioGroups as RadioGroup[]) {
+            const prevG = prevGrpMap.get(g.id);
+            const isMember = ruoloRef.current === 'admin' || Boolean(myVolIdPoll && g.memberIds?.includes(myVolIdPoll));
+            if (isMember && g.enabled && prevG && !prevG.enabled && Date.now() - Number(g.toggledAt || 0) < 20000) {
+              vhfRadioEngine.armBackgroundReception(`🔒 Radio Gruppo ${g.name}`).catch(() => {});
+              vhfRadioEngine.playItalianPoliceSelcall('group');
+              if (!localPttTransmittingIdRef.current) {
+                setSelectedRadioChannelId(g.id);
+              }
+              break;
+            }
+          }
         }
         if (s.radioEmergency && typeof s.radioEmergency === 'object') {
           setRadioEmergency(s.radioEmergency);
+          const emTs = Number(s.radioEmergency.triggeredAt || 0);
+          const isFreshNewEm =
+            Boolean(s.radioEmergency.active) &&
+            (!prevEmPoll.active || emTs > Number(prevEmPoll.triggeredAt || 0)) &&
+            (!emTs || Date.now() - emTs < 30000);
+          if (isFreshNewEm && !localPttIsEmergencyRef.current && Date.now() - lastRemoteEmergencyTriggerRef.current > 4000) {
+            lastRemoteEmergencyTriggerRef.current = Date.now();
+            vhfRadioEngine.armBackgroundReception(`🚨 EMERGENZA: ${s.radioEmergency.triggeredBy || 'Centrale'}`).catch(() => {});
+            vhfRadioEngine.interruptPlayback();
+            vhfRadioEngine.playEmergencyAnnouncement({ isSender: false });
+          }
         }
         if (s.loggedSessions && typeof s.loggedSessions === 'object') {
           setLoggedSessions(prev => mergeLoggedSessionsSafe(prev, s.loggedSessions));
@@ -11871,7 +12048,16 @@ KM TOTALI: ${kmTot} KM`;
           };
           setRadioPttState(nextState);
           if (nextState.enabled && !prevEnabled) {
+            vhfRadioEngine.armBackgroundReception('📡 Radio Generale (Tutti) Attiva').catch(() => {});
             vhfRadioEngine.playItalianPoliceSelcall('standard');
+            if (typeof document !== 'undefined' && document.hidden) {
+              mostraNotificaNativa('📡 RADIO GENERALE (TUTTI) ATTIVATA', {
+                body: `${nextState.toggledBy || 'Centrale Operativa'} ha aperto il Canale Radio Generale.`,
+                tag: 'radio-ch-general',
+                vibrate: [220, 80, 260],
+                requireInteraction: true
+              });
+            }
           } else if (!nextState.enabled && prevEnabled) {
             vhfRadioEngine.interruptPlayback();
             vhfRadioEngine.playVhfRogerBeep('normal');
@@ -11903,14 +12089,19 @@ KM TOTALI: ${kmTot} KM`;
             );
             if (isMember) {
               if (payload.toggledEnabled) {
+                vhfRadioEngine.armBackgroundReception(`🔒 Radio Gruppo ${grp.name}`).catch(() => {});
                 vhfRadioEngine.playItalianPoliceSelcall('group');
-                // Se il volontario è su Generale (spento) e viene acceso un suo gruppo privato, sintonizzalo subito sul gruppo
-                if (
-                  ruoloRef.current !== 'admin' &&
-                  !radioPttStateRef.current.enabled &&
-                  selectedRadioChannelIdRef.current === 'general'
-                ) {
+                // Auto-sintonizza sul gruppo attivato se l'utente non sta trasmettendo su un altro canale
+                if (!localPttTransmittingIdRef.current) {
                   setSelectedRadioChannelId(grp.id);
+                }
+                if (typeof document !== 'undefined' && document.hidden) {
+                  mostraNotificaNativa(`🔒 RADIO GRUPPO ${grp.name.toUpperCase()} ATTIVATO`, {
+                    body: `${payload.toggledBy || 'Centrale Operativa'} ha attivato il canale radio del gruppo "${grp.name}".`,
+                    tag: `radio-ch-${grp.id}`,
+                    vibrate: [220, 80, 260],
+                    requireInteraction: true
+                  });
                 }
               } else {
                 if (selectedRadioChannelIdRef.current === grp.id) {
@@ -11986,12 +12177,16 @@ KM TOTALI: ${kmTot} KM`;
           if (!isAllowed) return;
 
           setRadioGroups((prev) => prev.map((g) => (g.id === grp.id ? grp : g)));
-          const isTuned = selectedRadioChannelIdRef.current === grp.id;
-          if (!isTuned) return; // Dalle altre parti nessuno sente nulla
+          const isTransmittingElsewhere = Boolean(localId && activePttChannelRef.current !== grp.id);
+          if (isTransmittingElsewhere) return;
 
           const nextSpeaker = grp.activeSpeaker || null;
           if (nextSpeaker) {
+            if (selectedRadioChannelIdRef.current !== grp.id && !localId) {
+              setSelectedRadioChannelId(grp.id);
+            }
             if (nextSpeaker.speakerId !== localId && nextSpeaker.speakerId !== prevRemoteSpeakerIdRef.current) {
+              vhfRadioEngine.armBackgroundReception(`🔒 GRUPPO ${grp.name}: ${nextSpeaker.speakerName}`).catch(() => {});
               vhfRadioEngine.interruptPlayback();
               vhfRadioEngine.playVhfKeyUp(nextSpeaker.isCentralePriority ? 'priority' : 'normal');
             }
@@ -11999,6 +12194,10 @@ KM TOTALI: ${kmTot} KM`;
           } else {
             if (prevRemoteSpeakerIdRef.current && prevRemoteSpeakerIdRef.current !== localId) {
               vhfRadioEngine.playVhfRogerBeep('normal');
+              vhfRadioEngine.updateMediaSessionState({
+                title: 'Radio VHF/UHF • Ascolto Attivo',
+                isEmergency: false
+              });
             }
             prevRemoteSpeakerIdRef.current = null;
           }
@@ -12009,10 +12208,14 @@ KM TOTALI: ${kmTot} KM`;
         const nextSpeaker = payload.radioPtt.activeSpeaker || null;
         const prevRemoteId = prevRemoteSpeakerIdRef.current;
         const isEmergencySpk = Boolean(nextSpeaker?.isEmergency || chId === 'emergency');
-        const shouldPlayCues = isEmergencySpk || selectedRadioChannelIdRef.current === 'general';
+        const isTransmittingOnGroup = Boolean(localId && activePttChannelRef.current !== 'general' && !isEmergencySpk);
+        const shouldPlayCues = isEmergencySpk || !isTransmittingOnGroup;
 
         if (shouldPlayCues) {
           if (nextSpeaker) {
+            if (!isEmergencySpk && selectedRadioChannelIdRef.current !== 'general' && !localId) {
+              setSelectedRadioChannelId('general');
+            }
             if (nextSpeaker.speakerId !== localId && nextSpeaker.speakerId !== prevRemoteId) {
               if (nextSpeaker.isEmergency) {
                 if (Date.now() - lastRemoteEmergencyTriggerRef.current > 4000) {
@@ -12022,10 +12225,7 @@ KM TOTALI: ${kmTot} KM`;
                   vhfRadioEngine.playEmergencyAnnouncement({ isSender: false });
                 }
               } else {
-                vhfRadioEngine.updateMediaSessionState({
-                  title: `📻 LIVE: ${nextSpeaker.speakerName}`,
-                  isEmergency: false
-                });
+                vhfRadioEngine.armBackgroundReception(`📻 LIVE: ${nextSpeaker.speakerName}`).catch(() => {});
                 vhfRadioEngine.interruptPlayback();
                 vhfRadioEngine.playVhfKeyUp(nextSpeaker.isCentralePriority ? 'priority' : 'normal');
               }
@@ -12055,7 +12255,7 @@ KM TOTALI: ${kmTot} KM`;
         }));
       }),
 
-      // 7d. Ricezione frame audio HD VHF/UHF live da altro account con isolamento rigoroso per gruppo
+      // 7d. Ricezione frame audio HD VHF/UHF live da altro account (ricezione attiva anche in background/fuori dalla modale radio con isolamento rigoroso per gruppo)
       realtime.on('PTT_AUDIO_CHUNK', (payload: any) => {
         if (!payload?.payloadBase64 && !payload?.pcm16Base64) return;
         if (payload.speakerId && payload.speakerId === localPttTransmittingIdRef.current) {
@@ -12065,8 +12265,8 @@ KM TOTALI: ${kmTot} KM`;
         const isEmerg = Boolean(payload.isEmergency || payload.channelId === 'emergency');
         if (!isEmerg) {
           const chId = String(payload.groupId || payload.channelId || 'general');
-          if (chId !== selectedRadioChannelIdRef.current) {
-            return; // Isolato: dalle altre parti non si sente nulla
+          if (localPttTransmittingIdRef.current && activePttChannelRef.current !== chId) {
+            return;
           }
           if (chId !== 'general') {
             const myVolId = sessioneTurnoRef.current?.volontarioId;
@@ -12074,7 +12274,10 @@ KM TOTALI: ${kmTot} KM`;
             const allowed = Boolean(
               grp && (ruoloRef.current === 'admin' || (myVolId && grp.memberIds?.includes(myVolId)))
             );
-            if (!allowed) return;
+            if (!allowed) return; // Isolamento rigoroso: non membri non sentono mai nulla
+            if (selectedRadioChannelIdRef.current !== chId && !localPttTransmittingIdRef.current) {
+              setSelectedRadioChannelId(chId);
+            }
           }
         }
 
@@ -21502,6 +21705,52 @@ KM TOTALI: ${kmTot} KM`;
               >
                 ✕
               </button>
+            </div>
+
+            {/* Controllo Ascolto Radio in Background & Schermo Spento */}
+            <div className="bg-slate-950 p-2.5 rounded-xl border border-slate-800 flex flex-col gap-1.5 mb-2.5">
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span
+                    className={`w-2.5 h-2.5 rounded-full shrink-0 ${
+                      bgRadioStatus.audioArmed && bgRadioStatus.pushSubscribed
+                        ? 'bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)]'
+                        : bgRadioStatus.audioArmed || bgRadioStatus.pushSubscribed
+                        ? 'bg-amber-400'
+                        : 'bg-red-500'
+                    }`}
+                  />
+                  <span className="text-xs font-bold text-slate-200 truncate">
+                    {bgRadioStatus.audioArmed && bgRadioStatus.pushSubscribed
+                      ? 'Ricezione in Background Attiva (Audio + Push)'
+                      : bgRadioStatus.audioArmed
+                      ? 'Audio Background Attivo • Push da abilitare'
+                      : 'Ascolto a Schermo Spento da attivare'}
+                  </span>
+                </div>
+                <button
+                  onClick={() => {
+                    attivaAscoltoRadioBackground().catch(() => {});
+                  }}
+                  className={`px-2.5 py-1 rounded-lg font-bold text-[11px] shrink-0 transition-colors ${
+                    bgRadioStatus.audioArmed && bgRadioStatus.pushSubscribed
+                      ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 hover:bg-emerald-500/30'
+                      : 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-sm'
+                  }`}
+                >
+                  {bgRadioStatus.audioArmed && bgRadioStatus.pushSubscribed ? '✓ Riconferma' : 'Attiva Background'}
+                </button>
+              </div>
+              {bgRadioStatus.inIframe && !bgRadioStatus.pushSubscribed && (
+                <p className="text-[11px] text-amber-300 leading-snug">
+                  Apri l&apos;app dal collegamento diretto o installata sulla Home del telefono: dentro l&apos;anteprima incorporata il browser blocca le notifiche push a schermo spento.
+                </p>
+              )}
+              {!bgRadioStatus.inIframe && bgRadioStatus.permission === 'denied' && (
+                <p className="text-[11px] text-red-300 leading-snug">
+                  Notifiche bloccate sul browser: abilita le Notifiche nelle impostazioni del sito/app per ricevere le chiamate radio a schermo spento.
+                </p>
+              )}
             </div>
 
             {/* Barra Azioni Rapide Suoneria dentro Notifiche */}
