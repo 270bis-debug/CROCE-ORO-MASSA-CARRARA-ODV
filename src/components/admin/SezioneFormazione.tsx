@@ -38,7 +38,8 @@ import {
   Mail,
   Send,
   FileUp,
-  Hash
+  Hash,
+  Printer
 } from 'lucide-react';
 import { useTitoloDatabase, useNomiSottosezioniCustom } from '../../hooks/useNomiDatabase';
 import { getTitoloSottosezione } from '../../constants/macroCategorie';
@@ -79,6 +80,8 @@ import {
 } from '../../utils/modelliAttestatiStore';
 import { realtime } from '../../services/realtime';
 import { PannelloModelliAttestatiPdf } from './PannelloModelliAttestatiPdf';
+import { PdfAnteprimaWorkflowModal } from './PdfAnteprimaWorkflowModal';
+import { scaricaOStampaMultipliPDF, PdfBatchItem } from '../../utils/pdfWorkflowUtils';
 import { addDaysISODate, formatDateTimeItaly, formatISODateItaly, getCurrentYearItaly } from '../../utils/italianTime';
 
 export const TIPOLOGIE_CORSO_CONSENTITE: TipologiaCorso[] = [
@@ -238,8 +241,19 @@ export const SezioneFormazione: React.FC<SezioneFormazioneProps> = ({
   const [editAttestatoMatricola, setEditAttestatoMatricola] = useState('');
   const [editAttestatoData, setEditAttestatoData] = useState('');
   const [editAttestatoLuogo, setEditAttestatoLuogo] = useState('');
+  const [anteprimaWorkflowAttestatoAperta, setAnteprimaWorkflowAttestatoAperta] = useState(false);
+
+  // Selezione multipla PDF per sottosezione (Iscritti & Scadenziario)
+  const [selectedIscrittiPdfIds, setSelectedIscrittiPdfIds] = useState<string[]>([]);
+  const [selectedScadenziarioKeys, setSelectedScadenziarioKeys] = useState<string[]>([]);
+  const [batchPdfInCorso, setBatchPdfInCorso] = useState(false);
 
   useEffect(() => {
+    setSelectedIscrittiPdfIds([]);
+  }, [corsoPerIscrizioni?.id]);
+
+  useEffect(() => {
+    setAnteprimaWorkflowAttestatoAperta(false);
     if (attestatoPerStampa) {
       const modCat = getModelloPerTipologia(attestatoPerStampa.corso.tipologia);
       setEditAttestatoMatricola(
@@ -344,6 +358,71 @@ export const SezioneFormazione: React.FC<SezioneFormazioneProps> = ({
       setTimeout(() => {
         setOperazioneAttestatoInCorso(false);
       }, 600);
+    }
+  };
+
+  const toggleSelezionaIscrittoPdf = (volontarioId: string) => {
+    setSelectedIscrittiPdfIds((prev) =>
+      prev.includes(volontarioId) ? prev.filter((x) => x !== volontarioId) : [...prev, volontarioId]
+    );
+  };
+
+  const toggleSelezionaTuttiIscrittiPdf = (ids: string[]) => {
+    if (ids.length > 0 && ids.every((id) => selectedIscrittiPdfIds.includes(id))) {
+      setSelectedIscrittiPdfIds((prev) => prev.filter((id) => !ids.includes(id)));
+    } else {
+      setSelectedIscrittiPdfIds((prev) => Array.from(new Set([...prev, ...ids])));
+    }
+  };
+
+  const toggleSelezionaScadenziario = (key: string) => {
+    setSelectedScadenziarioKeys((prev) =>
+      prev.includes(key) ? prev.filter((x) => x !== key) : [...prev, key]
+    );
+  };
+
+  const toggleSelezionaTuttiScadenziario = (keys: string[]) => {
+    if (keys.length > 0 && keys.every((k) => selectedScadenziarioKeys.includes(k))) {
+      setSelectedScadenziarioKeys((prev) => prev.filter((k) => !keys.includes(k)));
+    } else {
+      setSelectedScadenziarioKeys((prev) => Array.from(new Set([...prev, ...keys])));
+    }
+  };
+
+  const handleBatchPdfAttestati = async (
+    lista: Array<{ corso: CorsoFormazione; partecipante: PartecipanteCorso }>,
+    azione: 'download' | 'print',
+    nomeBundle: string
+  ) => {
+    if (lista.length === 0) return;
+    setBatchPdfInCorso(true);
+    try {
+      const items: PdfBatchItem[] = [];
+      for (const { corso, partecipante } of lista) {
+        const bytes = await scaricaAttestatoPDF(corso, partecipante, {
+          downloadImmediato: false,
+          apiBaseUrl: realtime.getApiBaseUrl(),
+          luogoRilascio: partecipante.luogoRilascioAttestato,
+          dataRilascio: partecipante.dataRilascioAttestato
+        });
+        const safeMat = (partecipante.numeroAttestato || 'ATTESTATO').replace(/[^a-zA-Z0-9_-]/g, '_');
+        const safeNome = (partecipante.volontarioNome || 'Partecipante').replace(/[^a-zA-Z0-9_-]/g, '_');
+        items.push({
+          nomeFile: `Attestato_${safeMat}_${safeNome}.pdf`,
+          bytes
+        });
+      }
+      await scaricaOStampaMultipliPDF(items, azione, nomeBundle);
+      mostraAvviso(
+        azione === 'print'
+          ? `Avviata stampa per ${items.length} attestato/i selezionato/i.`
+          : `Scaricati ${items.length} PDF di attestati selezionati.`
+      );
+    } catch (err: any) {
+      console.error('Errore batch PDF attestati:', err);
+      mostraAvviso(`Errore nella generazione batch PDF: ${err?.message || 'Errore'}`);
+    } finally {
+      setBatchPdfInCorso(false);
     }
   };
 
@@ -956,20 +1035,20 @@ export const SezioneFormazione: React.FC<SezioneFormazioneProps> = ({
         </div>
       )}
 
-      {/* Barra Navigazione Sotto-Categorie */}
-      <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-none border-b border-slate-800">
+      {/* Barra Navigazione Sotto-Categorie (a griglia adattiva, senza scroll orizzontale) */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-1.5 sm:gap-2 pb-2 border-b border-slate-800">
         {canShowSubtab('corsi') && (
         <button
           type="button"
           onClick={() => setSottoTab('corsi')}
-          className={`px-4 py-2.5 rounded-xl text-xs font-black uppercase flex items-center gap-2 transition-all cursor-pointer ${
+          className={`w-full px-2.5 sm:px-3 py-2 rounded-xl text-[10px] sm:text-xs font-black uppercase flex items-center justify-center gap-1.5 text-center leading-tight transition-all cursor-pointer ${
             sottoTab === 'corsi'
               ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/30 border border-indigo-400'
               : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
           }`}
         >
-          <BookOpen className="w-4 h-4" />
-          <span>1. {getTitoloSottosezione('formazione', 'corsi', 'Catalogo Corsi & Piano Formativo', nomiSubCustom)} ({corsi.length})</span>
+          <BookOpen className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0" />
+          <span className="break-words">1. {getTitoloSottosezione('formazione', 'corsi', 'Catalogo Corsi & Piano Formativo', nomiSubCustom)} ({corsi.length})</span>
         </button>
         )}
 
@@ -977,14 +1056,14 @@ export const SezioneFormazione: React.FC<SezioneFormazioneProps> = ({
         <button
           type="button"
           onClick={() => setSottoTab('iscritti')}
-          className={`px-4 py-2.5 rounded-xl text-xs font-black uppercase flex items-center gap-2 transition-all cursor-pointer ${
+          className={`w-full px-2.5 sm:px-3 py-2 rounded-xl text-[10px] sm:text-xs font-black uppercase flex items-center justify-center gap-1.5 text-center leading-tight transition-all cursor-pointer ${
             sottoTab === 'iscritti'
               ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/30 border border-indigo-400'
               : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
           }`}
         >
-          <Users className="w-4 h-4" />
-          <span>2. {getTitoloSottosezione('formazione', 'iscritti', 'Iscrizioni & Registro Presenze', nomiSubCustom)}</span>
+          <Users className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0" />
+          <span className="break-words">2. {getTitoloSottosezione('formazione', 'iscritti', 'Iscrizioni & Registro Presenze', nomiSubCustom)}</span>
         </button>
         )}
 
@@ -992,14 +1071,14 @@ export const SezioneFormazione: React.FC<SezioneFormazioneProps> = ({
         <button
           type="button"
           onClick={() => setSottoTab('scadenziario')}
-          className={`px-4 py-2.5 rounded-xl text-xs font-black uppercase flex items-center gap-2 transition-all cursor-pointer ${
+          className={`w-full px-2.5 sm:px-3 py-2 rounded-xl text-[10px] sm:text-xs font-black uppercase flex items-center justify-center gap-1.5 text-center leading-tight transition-all cursor-pointer ${
             sottoTab === 'scadenziario'
               ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/30 border border-indigo-400'
               : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
           }`}
         >
-          <Award className="w-4 h-4" />
-          <span>3. {getTitoloSottosezione('formazione', 'scadenziario', 'Scadenziario Brevetti & Attestati', nomiSubCustom)} ({tuttiGliAttestati.length})</span>
+          <Award className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0" />
+          <span className="break-words">3. {getTitoloSottosezione('formazione', 'scadenziario', 'Scadenziario Brevetti & Attestati', nomiSubCustom)} ({tuttiGliAttestati.length})</span>
         </button>
         )}
 
@@ -1007,14 +1086,14 @@ export const SezioneFormazione: React.FC<SezioneFormazioneProps> = ({
         <button
           type="button"
           onClick={() => setSottoTab('modelli_pdf')}
-          className={`px-4 py-2.5 rounded-xl text-xs font-black uppercase flex items-center gap-2 transition-all cursor-pointer shrink-0 ${
+          className={`w-full px-2.5 sm:px-3 py-2 rounded-xl text-[10px] sm:text-xs font-black uppercase flex items-center justify-center gap-1.5 text-center leading-tight transition-all cursor-pointer ${
             sottoTab === 'modelli_pdf'
               ? 'bg-amber-500 text-slate-950 shadow-lg shadow-amber-500/30 border border-amber-300'
               : 'bg-slate-900 text-amber-300/90 hover:text-amber-200 border border-amber-500/30'
           }`}
         >
-          <FileUp className="w-4 h-4" />
-          <span>4. {getTitoloSottosezione('formazione', 'modelli_pdf', 'Modelli PDF Prestampati & Matricole', nomiSubCustom)}</span>
+          <FileUp className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0" />
+          <span className="break-words">4. {getTitoloSottosezione('formazione', 'modelli_pdf', 'Modelli PDF Prestampati & Matricole', nomiSubCustom)}</span>
         </button>
         )}
       </div>
@@ -1275,12 +1354,88 @@ export const SezioneFormazione: React.FC<SezioneFormazioneProps> = ({
                 </form>
               </div>
 
+              {/* Barra Selezione Multipla PDF Attestati Iscritti */}
+              {selectedIscrittiPdfIds.length > 0 && (() => {
+                const idoneiSelezionati = corsoPerIscrizioni.iscritti
+                  .filter((p) => p.esito === 'Idoneo / Superato' && selectedIscrittiPdfIds.includes(p.volontarioId))
+                  .map((partecipante) => ({ corso: corsoPerIscrizioni, partecipante }));
+                if (idoneiSelezionati.length === 0) return null;
+                return (
+                  <div className="bg-indigo-950/60 border-2 border-indigo-500/60 p-3.5 rounded-2xl flex flex-wrap items-center justify-between gap-3 shadow-lg animate-in fade-in">
+                    <div className="flex items-center gap-2 text-xs font-bold text-indigo-100">
+                      <CheckSquare className="w-4 h-4 text-indigo-400 shrink-0" />
+                      <span>
+                        <strong>{idoneiSelezionati.length}</strong> attestato/i selezionato/i per questo corso
+                      </span>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setSelectedIscrittiPdfIds([])}
+                        className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold cursor-pointer"
+                      >
+                        Deseleziona
+                      </button>
+                      <button
+                        type="button"
+                        disabled={batchPdfInCorso}
+                        onClick={() =>
+                          handleBatchPdfAttestati(
+                            idoneiSelezionati,
+                            'download',
+                            `Attestati_${(corsoPerIscrizioni.codiceCorso || 'Corso').replace(/[^a-zA-Z0-9_-]/g, '_')}`
+                          )
+                        }
+                        className="px-3.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-black uppercase flex items-center gap-1.5 shadow-md active:scale-95 cursor-pointer"
+                      >
+                        <Download className="w-3.5 h-3.5" />
+                        <span>Scarica PDF ({idoneiSelezionati.length})</span>
+                      </button>
+                      <button
+                        type="button"
+                        disabled={batchPdfInCorso}
+                        onClick={() =>
+                          handleBatchPdfAttestati(
+                            idoneiSelezionati,
+                            'print',
+                            `Attestati_${(corsoPerIscrizioni.codiceCorso || 'Corso').replace(/[^a-zA-Z0-9_-]/g, '_')}`
+                          )
+                        }
+                        className="px-3.5 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-black uppercase flex items-center gap-1.5 shadow-md active:scale-95 cursor-pointer"
+                      >
+                        <Printer className="w-3.5 h-3.5" />
+                        <span>Stampa PDF ({idoneiSelezionati.length})</span>
+                      </button>
+                    </div>
+                  </div>
+                );
+              })()}
+
               {/* Tabella Iscritti al Corso */}
               <div className="bg-slate-950 rounded-2xl border border-slate-800 overflow-hidden shadow-xl">
                 <div className="overflow-x-auto">
                   <table className="w-full text-left border-collapse text-xs">
                     <thead>
                       <tr className="bg-slate-900/90 text-slate-400 uppercase text-[10px] font-black border-b border-slate-800">
+                        <th className="py-3 px-3 w-10 text-center">
+                          {(() => {
+                            const idoneiIds = corsoPerIscrizioni.iscritti
+                              .filter((x) => x.esito === 'Idoneo / Superato')
+                              .map((x) => x.volontarioId);
+                            const allSel = idoneiIds.length > 0 && idoneiIds.every((id) => selectedIscrittiPdfIds.includes(id));
+                            return (
+                              <button
+                                type="button"
+                                disabled={idoneiIds.length === 0}
+                                onClick={() => toggleSelezionaTuttiIscrittiPdf(idoneiIds)}
+                                className="text-slate-400 hover:text-white disabled:opacity-30 cursor-pointer"
+                                title="Seleziona tutti gli attestati idonei per download/stampa PDF"
+                              >
+                                {allSel ? <CheckSquare className="w-4 h-4 text-indigo-400" /> : <Square className="w-4 h-4" />}
+                              </button>
+                            );
+                          })()}
+                        </th>
                         <th className="py-3 px-4">Volontario</th>
                         <th className="py-3 px-4">Qualifica</th>
                         <th className="py-3 px-4">Timbratura GPS (Entrata / Uscita)</th>
@@ -1293,19 +1448,38 @@ export const SezioneFormazione: React.FC<SezioneFormazioneProps> = ({
                     <tbody className="divide-y divide-slate-800/60">
                       {corsoPerIscrizioni.iscritti.length === 0 ? (
                         <tr>
-                          <td colSpan={7} className="py-8 text-center text-slate-500">
+                          <td colSpan={8} className="py-8 text-center text-slate-500">
                             Nessun volontario ancora iscritto a questo corso. Utilizza il selettore sopra per aggiungere iscritti.
                           </td>
                         </tr>
                       ) : (
                         corsoPerIscrizioni.iscritti.map((p) => {
                           const isIdoneo = p.esito === 'Idoneo / Superato';
+                          const isSelPdf = isIdoneo && selectedIscrittiPdfIds.includes(p.volontarioId);
                           const oreMinime = corsoPerIscrizioni.oreMinimeFrequenza || Math.round((corsoPerIscrizioni.oreTotali * (corsoPerIscrizioni.percentualeMinimaPresenza || 75)) / 100);
                           const raggiuntoMinimo = p.oreFrequentate >= oreMinime;
                           const percentualeEffettiva = Math.round((p.oreFrequentate / corsoPerIscrizioni.oreTotali) * 100);
 
                           return (
-                            <tr key={p.volontarioId} className="hover:bg-slate-900/50 transition-colors">
+                            <tr key={p.volontarioId} className={`transition-colors ${isSelPdf ? 'bg-indigo-950/25' : 'hover:bg-slate-900/50'}`}>
+                              <td className="py-3 px-3 text-center">
+                                {isIdoneo ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => toggleSelezionaIscrittoPdf(p.volontarioId)}
+                                    className="text-slate-400 hover:text-white cursor-pointer"
+                                    title="Seleziona attestato PDF"
+                                  >
+                                    {isSelPdf ? (
+                                      <CheckSquare className="w-4 h-4 text-indigo-400" />
+                                    ) : (
+                                      <Square className="w-4 h-4" />
+                                    )}
+                                  </button>
+                                ) : (
+                                  <span className="text-slate-700">—</span>
+                                )}
+                              </td>
                               <td className="py-3 px-4 font-bold text-white text-sm">
                                 {p.volontarioNome}
                               </td>
@@ -1583,12 +1757,78 @@ export const SezioneFormazione: React.FC<SezioneFormazioneProps> = ({
             </div>
           </div>
 
+          {/* Barra Selezione Multipla PDF Attestati Scadenziario */}
+          {selectedScadenziarioKeys.length > 0 && (() => {
+            const scelti = tuttiGliAttestati.filter(({ corso, partecipante }) =>
+              selectedScadenziarioKeys.includes(`${corso.id}::${partecipante.volontarioId}`)
+            );
+            if (scelti.length === 0) return null;
+            return (
+              <div className="bg-indigo-950/60 border-2 border-indigo-500/60 p-3.5 rounded-2xl flex flex-wrap items-center justify-between gap-3 shadow-lg animate-in fade-in">
+                <div className="flex items-center gap-2 text-xs font-bold text-indigo-100">
+                  <CheckSquare className="w-4 h-4 text-indigo-400 shrink-0" />
+                  <span>
+                    <strong>{scelti.length}</strong> brevetto/i & attestato/i selezionato/i
+                  </span>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setSelectedScadenziarioKeys([])}
+                    className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold cursor-pointer"
+                  >
+                    Deseleziona
+                  </button>
+                  <button
+                    type="button"
+                    disabled={batchPdfInCorso}
+                    onClick={() =>
+                      handleBatchPdfAttestati(scelti, 'download', `Scadenziario_Attestati_${formatISODateItaly()}`)
+                    }
+                    className="px-3.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-black uppercase flex items-center gap-1.5 shadow-md active:scale-95 cursor-pointer"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    <span>Scarica PDF ({scelti.length})</span>
+                  </button>
+                  <button
+                    type="button"
+                    disabled={batchPdfInCorso}
+                    onClick={() =>
+                      handleBatchPdfAttestati(scelti, 'print', `Scadenziario_Attestati_${formatISODateItaly()}`)
+                    }
+                    className="px-3.5 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-black uppercase flex items-center gap-1.5 shadow-md active:scale-95 cursor-pointer"
+                  >
+                    <Printer className="w-3.5 h-3.5" />
+                    <span>Stampa PDF ({scelti.length})</span>
+                  </button>
+                </div>
+              </div>
+            );
+          })()}
+
           {/* Tabella Elenco Brevetti e Stato Preavviso */}
           <div className="bg-slate-950 rounded-2xl border border-slate-800 overflow-hidden shadow-xl">
             <div className="overflow-x-auto">
               <table className="w-full text-left border-collapse text-xs">
                 <thead>
                   <tr className="bg-slate-900/90 text-slate-400 uppercase text-[10px] font-black border-b border-slate-800">
+                    <th className="py-3 px-3 w-10 text-center">
+                      {(() => {
+                        const allKeys = tuttiGliAttestati.map(({ corso, partecipante }) => `${corso.id}::${partecipante.volontarioId}`);
+                        const allSel = allKeys.length > 0 && allKeys.every((k) => selectedScadenziarioKeys.includes(k));
+                        return (
+                          <button
+                            type="button"
+                            disabled={allKeys.length === 0}
+                            onClick={() => toggleSelezionaTuttiScadenziario(allKeys)}
+                            className="text-slate-400 hover:text-white disabled:opacity-30 cursor-pointer"
+                            title="Seleziona tutti gli attestati per download/stampa PDF"
+                          >
+                            {allSel ? <CheckSquare className="w-4 h-4 text-indigo-400" /> : <Square className="w-4 h-4" />}
+                          </button>
+                        );
+                      })()}
+                    </th>
                     <th className="py-3 px-4">Volontario</th>
                     <th className="py-3 px-4">Brevetto / Abilitazione</th>
                     <th className="py-3 px-4">Numero Attestato</th>
@@ -1601,12 +1841,14 @@ export const SezioneFormazione: React.FC<SezioneFormazioneProps> = ({
                 <tbody className="divide-y divide-slate-800/60">
                   {tuttiGliAttestati.length === 0 ? (
                     <tr>
-                      <td colSpan={7} className="py-8 text-center text-slate-500">
+                      <td colSpan={8} className="py-8 text-center text-slate-500">
                         Nessun attestato ancora rilasciato nel registro corsi.
                       </td>
                     </tr>
                   ) : (
                     tuttiGliAttestati.map(({ corso, partecipante }) => {
+                      const rowKey = `${corso.id}::${partecipante.volontarioId}`;
+                      const isSel = selectedScadenziarioKeys.includes(rowKey);
                       const oggiMs = Date.now();
                       const msGiorno = 1000 * 60 * 60 * 24;
                       const hasScadenza = Boolean(partecipante.scadenzaBrevetto);
@@ -1621,7 +1863,21 @@ export const SezioneFormazione: React.FC<SezioneFormazioneProps> = ({
                       }
 
                       return (
-                        <tr key={`${corso.id}-${partecipante.volontarioId}`} className="hover:bg-slate-900/50 transition-colors">
+                        <tr key={`${corso.id}-${partecipante.volontarioId}`} className={`transition-colors ${isSel ? 'bg-indigo-950/25' : 'hover:bg-slate-900/50'}`}>
+                          <td className="py-3 px-3 text-center">
+                            <button
+                              type="button"
+                              onClick={() => toggleSelezionaScadenziario(rowKey)}
+                              className="text-slate-400 hover:text-white cursor-pointer"
+                              title="Seleziona attestato per download/stampa PDF"
+                            >
+                              {isSel ? (
+                                <CheckSquare className="w-4 h-4 text-indigo-400" />
+                              ) : (
+                                <Square className="w-4 h-4" />
+                              )}
+                            </button>
+                          </td>
                           <td className="py-3 px-4 font-bold text-white text-sm">
                             {partecipante.volontarioNome}
                             {partecipante.qualifica && (
@@ -2680,7 +2936,7 @@ export const SezioneFormazione: React.FC<SezioneFormazioneProps> = ({
                 </div>
               </div>
 
-              {/* AZIONI DI STAMPA E DOWNLOAD */}
+              {/* AZIONI PRE-GENERAZIONE PDF (Anteprima / Stampa / Salva in Archivio / Torna alla Modifica) */}
               <div className="flex flex-col sm:flex-row items-center justify-between gap-2 pt-3 border-t border-slate-200">
                 <button
                   type="button"
@@ -2707,19 +2963,51 @@ export const SezioneFormazione: React.FC<SezioneFormazioneProps> = ({
                   <button
                     type="button"
                     disabled={operazioneAttestatoInCorso}
-                    onClick={() => handleScaricaAttestato(attestatoPerStampa.corso, partecipanteConModifiche)}
+                    onClick={() => setAnteprimaWorkflowAttestatoAperta(true)}
                     className="w-full sm:w-auto px-6 py-2.5 rounded-xl bg-[#1d1a60] hover:bg-[#2b2787] disabled:opacity-50 text-white font-black text-xs uppercase flex items-center justify-center gap-2 shadow-md active:scale-95 cursor-pointer transition-all"
                   >
-                    {operazioneAttestatoInCorso ? (
-                      <Loader2 className="w-4 h-4 animate-spin text-amber-300" />
-                    ) : (
-                      <Download className="w-4 h-4 text-amber-300" />
-                    )}
-                    <span>{usaPrestampato ? 'Scarica PDF Prestampato' : 'Scarica PDF'}</span>
+                    <Eye className="w-4 h-4 text-amber-300" />
+                    <span>{usaPrestampato ? 'Anteprima, Stampa o Salva PDF Prestampato' : 'Anteprima, Stampa o Salva PDF'}</span>
                   </button>
                 </div>
               </div>
             </div>
+
+            {anteprimaWorkflowAttestatoAperta && (
+              <PdfAnteprimaWorkflowModal
+                aperto={true}
+                titoloDocumento={`Attestato ${numAttestato}`}
+                sottotitolo={`${partecipanteConModifiche.volontarioNome || 'Partecipante'} • ${attestatoPerStampa.corso.titolo}`}
+                nomeFile={`Attestato_${numAttestato.replace(/[^a-zA-Z0-9_-]/g, '_')}_${(partecipanteConModifiche.volontarioNome || 'Partecipante').replace(/[^a-zA-Z0-9_-]/g, '_')}.pdf`}
+                generaPdfBytes={() =>
+                  scaricaAttestatoPDF(attestatoPerStampa.corso, partecipanteConModifiche, {
+                    downloadImmediato: false,
+                    apiBaseUrl: realtime.getApiBaseUrl(),
+                    luogoRilascio: partecipanteConModifiche.luogoRilascioAttestato,
+                    dataRilascio: partecipanteConModifiche.dataRilascioAttestato
+                  })
+                }
+                riepilogoContenuto={
+                  <div className="space-y-2 text-xs">
+                    <div className="flex justify-between font-mono font-bold text-[#1d1a60]">
+                      <span>Matricola: {numAttestato}</span>
+                      <span>Rilascio: {cittaPrevalente}, {dataStampa}</span>
+                    </div>
+                    <div>Partecipante: <strong>{(partecipanteConModifiche.volontarioNome || 'PARTECIPANTE').toUpperCase()}</strong></div>
+                    <div>Corso / Seminario: <strong>{titoloMostrato}</strong></div>
+                    <div>Tipologia: <strong>{attestatoPerStampa.corso.tipologia}</strong></div>
+                    <div>Periodo: <strong>{intervalloDate}</strong></div>
+                  </div>
+                }
+                testoSalvaInArchivio="Salva Dati in Archivio"
+                onSalvaInArchivio={() => {
+                  handleSalvaDatiAttestatoSingolo();
+                }}
+                onTornaAllaModifica={() => setAnteprimaWorkflowAttestatoAperta(false)}
+                onChiudi={() => setAnteprimaWorkflowAttestatoAperta(false)}
+                onFeedback={(msg) => mostraAvviso(msg)}
+              />
+            )}
           </div>
         );
       })()}

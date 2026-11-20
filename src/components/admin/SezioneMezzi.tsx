@@ -1149,20 +1149,20 @@ export const SezioneMezzi: React.FC<SezioneMezziProps> = ({
         </div>
       )}
 
-      {/* Sotto-Schede Sezione 3 */}
-      <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-none border-b border-slate-800">
+      {/* Sotto-Schede Sezione 3: tutte visibili sullo schermo senza scorrimento orizzontale */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-1.5 sm:gap-2 pb-2 border-b border-slate-800">
         {canShowSubtab('flotta') && (
         <button
           type="button"
           onClick={() => setSottoTab('flotta')}
-          className={`px-4 py-2.5 rounded-xl text-xs font-black uppercase flex items-center gap-2 transition-all cursor-pointer ${
+          className={`w-full min-w-0 px-2.5 sm:px-3 py-2 rounded-xl text-[10px] sm:text-xs font-black uppercase flex items-center justify-center sm:justify-start gap-1.5 sm:gap-2 text-left leading-tight transition-all cursor-pointer ${
             sottoTab === 'flotta'
               ? 'bg-amber-500 text-slate-950 shadow-lg shadow-amber-500/30 border border-amber-400'
               : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
           }`}
         >
-          <Ambulance className="w-4 h-4" />
-          <span>1. {getTitoloSottosezione('mezzi', 'flotta', 'Flotta Mezzi', nomiSubCustom)} ({mezzi.length})</span>
+          <Ambulance className="w-4 h-4 shrink-0" />
+          <span className="break-words">1. {getTitoloSottosezione('mezzi', 'flotta', 'Flotta Mezzi', nomiSubCustom)} ({mezzi.length})</span>
         </button>
         )}
 
@@ -1170,14 +1170,14 @@ export const SezioneMezzi: React.FC<SezioneMezziProps> = ({
         <button
           type="button"
           onClick={() => setSottoTab('manutenzione')}
-          className={`px-4 py-2.5 rounded-xl text-xs font-black uppercase flex items-center gap-2 transition-all cursor-pointer ${
+          className={`w-full min-w-0 px-2.5 sm:px-3 py-2 rounded-xl text-[10px] sm:text-xs font-black uppercase flex items-center justify-center sm:justify-start gap-1.5 sm:gap-2 text-left leading-tight transition-all cursor-pointer ${
             sottoTab === 'manutenzione'
               ? 'bg-amber-500 text-slate-950 shadow-lg shadow-amber-500/30 border border-amber-400'
               : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
           }`}
         >
-          <Wrench className="w-4 h-4" />
-          <span>2. {getTitoloSottosezione('mezzi', 'manutenzione', 'Manutenzione Mezzi & Tagliandi', nomiSubCustom)} ({manutenzioni.length})</span>
+          <Wrench className="w-4 h-4 shrink-0" />
+          <span className="break-words">2. {getTitoloSottosezione('mezzi', 'manutenzione', 'Manutenzione Mezzi & Tagliandi', nomiSubCustom)} ({manutenzioni.length})</span>
         </button>
         )}
 
@@ -1185,14 +1185,14 @@ export const SezioneMezzi: React.FC<SezioneMezziProps> = ({
         <button
           type="button"
           onClick={() => setSottoTab('dotazione')}
-          className={`px-4 py-2.5 rounded-xl text-xs font-black uppercase flex items-center gap-2 transition-all cursor-pointer ${
+          className={`w-full min-w-0 px-2.5 sm:px-3 py-2 rounded-xl text-[10px] sm:text-xs font-black uppercase flex items-center justify-center sm:justify-start gap-1.5 sm:gap-2 text-left leading-tight transition-all cursor-pointer ${
             sottoTab === 'dotazione'
               ? 'bg-amber-500 text-slate-950 shadow-lg shadow-amber-500/30 border border-amber-400'
               : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
           }`}
         >
-          <Package className="w-4 h-4" />
-          <span>3. {getTitoloSottosezione('mezzi', 'dotazione', 'Dotazione Mezzi', nomiSubCustom)} ({magazzinoMezzi.length})</span>
+          <Package className="w-4 h-4 shrink-0" />
+          <span className="break-words">3. {getTitoloSottosezione('mezzi', 'dotazione', 'Dotazione Mezzi', nomiSubCustom)} ({magazzinoMezzi.length})</span>
         </button>
         )}
 
@@ -1200,14 +1200,14 @@ export const SezioneMezzi: React.FC<SezioneMezziProps> = ({
         <button
           type="button"
           onClick={() => setSottoTab('magazzinoMezzi')}
-          className={`px-4 py-2.5 rounded-xl text-xs font-black uppercase flex items-center gap-2 transition-all cursor-pointer ${
+          className={`w-full min-w-0 px-2.5 sm:px-3 py-2 rounded-xl text-[10px] sm:text-xs font-black uppercase flex items-center justify-center sm:justify-start gap-1.5 sm:gap-2 text-left leading-tight transition-all cursor-pointer ${
             sottoTab === 'magazzinoMezzi'
               ? 'bg-amber-500 text-slate-950 shadow-lg shadow-amber-500/30 border border-amber-400'
               : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
           }`}
         >
-          <Package className="w-4 h-4" />
-          <span>4. {getTitoloSottosezione('mezzi', 'magazzinoMezzi', 'Magazzino Mezzi', nomiSubCustom)} ({magazzinoParti.length})</span>
+          <Package className="w-4 h-4 shrink-0" />
+          <span className="break-words">4. {getTitoloSottosezione('mezzi', 'magazzinoMezzi', 'Magazzino Mezzi', nomiSubCustom)} ({magazzinoParti.length})</span>
         </button>
         )}
 
@@ -1215,14 +1215,14 @@ export const SezioneMezzi: React.FC<SezioneMezziProps> = ({
         <button
           type="button"
           onClick={() => setSottoTab('consumi')}
-          className={`px-4 py-2.5 rounded-xl text-xs font-black uppercase flex items-center gap-2 transition-all cursor-pointer ${
+          className={`w-full min-w-0 px-2.5 sm:px-3 py-2 rounded-xl text-[10px] sm:text-xs font-black uppercase flex items-center justify-center sm:justify-start gap-1.5 sm:gap-2 text-left leading-tight transition-all cursor-pointer ${
             sottoTab === 'consumi'
               ? 'bg-amber-500 text-slate-950 shadow-lg shadow-amber-500/30 border border-amber-400 font-black'
               : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
           }`}
         >
-          <Fuel className="w-4 h-4 text-amber-400" />
-          <span>5. {getTitoloSottosezione('mezzi', 'consumi', 'Consumi & Costo KM', nomiSubCustom)} ({rifornimenti.length} rifornimenti)</span>
+          <Fuel className={`w-4 h-4 shrink-0 ${sottoTab === 'consumi' ? 'text-slate-950' : 'text-amber-400'}`} />
+          <span className="break-words">5. {getTitoloSottosezione('mezzi', 'consumi', 'Consumi & Costo KM', nomiSubCustom)} ({rifornimenti.length})</span>
         </button>
         )}
 
@@ -1230,14 +1230,14 @@ export const SezioneMezzi: React.FC<SezioneMezziProps> = ({
         <button
           type="button"
           onClick={() => setSottoTab('checklist')}
-          className={`px-4 py-2.5 rounded-xl text-xs font-black uppercase flex items-center gap-2 transition-all cursor-pointer ${
+          className={`w-full min-w-0 px-2.5 sm:px-3 py-2 rounded-xl text-[10px] sm:text-xs font-black uppercase flex items-center justify-center sm:justify-start gap-1.5 sm:gap-2 text-left leading-tight transition-all cursor-pointer ${
             sottoTab === 'checklist'
               ? 'bg-amber-500 text-slate-950 shadow-lg shadow-amber-500/30 border border-amber-400 font-black'
               : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
           }`}
         >
-          <ClipboardCheck className="w-4 h-4 text-amber-400" />
-          <span>6. {getTitoloSottosezione('mezzi', 'checklist', 'Checklist Inizio Turno', nomiSubCustom)} ({templatesChecklist.length} Modelli)</span>
+          <ClipboardCheck className={`w-4 h-4 shrink-0 ${sottoTab === 'checklist' ? 'text-slate-950' : 'text-amber-400'}`} />
+          <span className="break-words">6. {getTitoloSottosezione('mezzi', 'checklist', 'Checklist Inizio Turno', nomiSubCustom)} ({templatesChecklist.length})</span>
         </button>
         )}
 
@@ -1245,14 +1245,14 @@ export const SezioneMezzi: React.FC<SezioneMezziProps> = ({
         <button
           type="button"
           onClick={() => setSottoTab('tipologie')}
-          className={`px-4 py-2.5 rounded-xl text-xs font-black uppercase flex items-center gap-2 transition-all cursor-pointer ${
+          className={`w-full min-w-0 px-2.5 sm:px-3 py-2 rounded-xl text-[10px] sm:text-xs font-black uppercase flex items-center justify-center sm:justify-start gap-1.5 sm:gap-2 text-left leading-tight transition-all cursor-pointer ${
             sottoTab === 'tipologie'
               ? 'bg-amber-500 text-slate-950 shadow-lg shadow-amber-500/30 border border-amber-400 font-black'
               : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
           }`}
         >
-          <Tags className={`w-4 h-4 ${sottoTab === 'tipologie' ? 'text-slate-950' : 'text-amber-400'}`} />
-          <span>7. {getTitoloSottosezione('mezzi', 'tipologie', 'Tipologia Mezzo', nomiSubCustom)} ({tipologieMezzo.length})</span>
+          <Tags className={`w-4 h-4 shrink-0 ${sottoTab === 'tipologie' ? 'text-slate-950' : 'text-amber-400'}`} />
+          <span className="break-words">7. {getTitoloSottosezione('mezzi', 'tipologie', 'Tipologia Mezzo', nomiSubCustom)} ({tipologieMezzo.length})</span>
         </button>
         )}
       </div>

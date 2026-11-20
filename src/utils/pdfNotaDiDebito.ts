@@ -7,13 +7,14 @@ import {
 } from './pdfInstitutionalLayout';
 import { getDatiCartaIntestata } from './cartaIntestataStore';
 import { formatISODateItaly } from './italianTime';
+import { DatiTesorierePDF, disegnaBoxFirmaTesoriere } from './pdfRicevutaTesseramento';
 
 /**
  * Genera il documento PDF ufficiale per la Nota di Debito con carta intestata istituzionale
  * Croce Oro Massa Carrara OdV, senza caratteri sovrapposti e con supporto completo a voci dettagliate,
  * servizio collegato, proprietario immobile (Assistenza Atto Esecutivo) e scontistiche.
  */
-export function generaNotaDiDebitoPDF(nota: NotaDiDebito): jsPDF {
+export function generaNotaDiDebitoPDF(nota: NotaDiDebito, tesoriere?: DatiTesorierePDF): jsPDF {
   const doc = new jsPDF({
     orientation: 'portrait',
     unit: 'mm',
@@ -68,10 +69,22 @@ export function generaNotaDiDebitoPDF(nota: NotaDiDebito): jsPDF {
   doc.setFontSize(7.5);
   const debIndLines = doc.splitTextToSize(sanitizeWinAnsi(`Indirizzo Sede: ${nota.indirizzoDebitore || 'N.D.'}`), boxInnerW);
   const debCfLines = doc.splitTextToSize(sanitizeWinAnsi(`P.IVA / Cod. Fiscale: ${nota.partitaIvaCodiceFiscale || 'N.D.'}`), boxInnerW);
+  const emailLabel = nota.emailNonDisponibile
+    ? "Email: Non disponibile (dichiarato non in possesso all'emissione)"
+    : nota.emailDestinatario
+      ? `Email: ${nota.emailDestinatario}`
+      : '';
+  const pecLabel = nota.pecNonDisponibile
+    ? "PEC: Non disponibile (dichiarato non in possesso all'emissione)"
+    : nota.pecDestinatario
+      ? `PEC: ${nota.pecDestinatario}`
+      : '';
+  const debEmailLines = emailLabel ? doc.splitTextToSize(sanitizeWinAnsi(emailLabel), boxInnerW) : [];
+  const debPecLines = pecLabel ? doc.splitTextToSize(sanitizeWinAnsi(pecLabel), boxInnerW) : [];
   const debRifLines = nota.codiceServizioRiferimento
     ? doc.splitTextToSize(sanitizeWinAnsi(`Rif. Servizio / Codice: ${nota.codiceServizioRiferimento}`), boxInnerW)
     : [];
-  const propImm = nota.datiProprietarioImmobile;
+  const propImm = nota.datiProprietarioImmobile || nota.proprietarioImmobile;
   const hasPropImm = Boolean(propImm && (propImm.nomeCognome || propImm.codiceFiscale || propImm.indirizzoResidenza));
   const propImmLines = hasPropImm
     ? doc.splitTextToSize(
@@ -87,9 +100,11 @@ export function generaNotaDiDebitoPDF(nota: NotaDiDebito): jsPDF {
     debNomeLines.length * 4.2 +
     debIndLines.length * 3.6 +
     debCfLines.length * 3.6 +
-    debRifLines.length * 3.6 +
+    (debEmailLines.length > 0 ? debEmailLines.length * 3.5 + 1.0 : 0) +
+    (debPecLines.length > 0 ? debPecLines.length * 3.5 + 1.0 : 0) +
+    (debRifLines.length > 0 ? debRifLines.length * 3.6 + 1.0 : 0) +
     (propImmLines.length > 0 ? propImmLines.length * 3.4 + 3 : 0) +
-    6;
+    8;
 
   const topBoxH = Math.max(46, mittenteH, destH);
 
@@ -158,8 +173,26 @@ export function generaNotaDiDebitoPDF(nota: NotaDiDebito): jsPDF {
   doc.text(debCfLines, colRightX + 4, yD);
   yD += debCfLines.length * 3.6 + 1.0;
 
+  if (debEmailLines.length > 0) {
+    doc.setFont('helvetica', nota.emailNonDisponibile ? 'italic' : 'normal');
+    doc.setFontSize(7.2);
+    doc.setTextColor(nota.emailNonDisponibile ? 146 : 51, nota.emailNonDisponibile ? 64 : 65, nota.emailNonDisponibile ? 14 : 85);
+    doc.text(debEmailLines, colRightX + 4, yD);
+    yD += debEmailLines.length * 3.5 + 1.0;
+  }
+
+  if (debPecLines.length > 0) {
+    doc.setFont('helvetica', nota.pecNonDisponibile ? 'italic' : 'normal');
+    doc.setFontSize(7.2);
+    doc.setTextColor(nota.pecNonDisponibile ? 146 : 51, nota.pecNonDisponibile ? 64 : 65, nota.pecNonDisponibile ? 14 : 85);
+    doc.text(debPecLines, colRightX + 4, yD);
+    yD += debPecLines.length * 3.5 + 1.0;
+  }
+
   if (debRifLines.length > 0) {
     doc.setFont('helvetica', 'bold');
+    doc.setFontSize(7.5);
+    doc.setTextColor(51, 65, 85);
     doc.text(debRifLines, colRightX + 4, yD);
     yD += debRifLines.length * 3.6 + 1.0;
   }
@@ -513,33 +546,20 @@ export function generaNotaDiDebitoPDF(nota: NotaDiDebito): jsPDF {
 
   currentY += boxFiscH + 4;
 
-  // 8. Box Firme Ufficiali (Tesoreria & Presidenza)
-  ensureSpace(28);
-  const boxFirmaW = (contentWidth - 6) / 2;
+  // 8. Box Firma Ufficiale del Tesoriere (rimossa la firma del Presidente)
+  const boxFirmaH = 41;
+  ensureSpace(boxFirmaH + 4);
+  const boxFirmaW = 92;
+  const boxFirmaX = margin + contentWidth - boxFirmaW;
 
-  doc.setDrawColor(203, 213, 225);
-  doc.setLineWidth(0.3);
-  doc.line(margin + 10, currentY + 16, margin + boxFirmaW - 10, currentY + 16);
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(7.2);
-  doc.setTextColor(71, 85, 105);
-  doc.text("L'Ufficio Tesoreria / Contabilita", margin + boxFirmaW / 2, currentY + 20, { align: 'center' });
-  doc.setFont('helvetica', 'normal');
-  doc.setFontSize(6.5);
-  doc.text(sanitizeWinAnsi(info.denominazione || 'Croce Oro Massa Carrara OdV'), margin + boxFirmaW / 2, currentY + 23.5, {
-    align: 'center'
-  });
-
-  const box2X = margin + boxFirmaW + 6;
-  doc.line(box2X + 10, currentY + 16, box2X + boxFirmaW - 10, currentY + 16);
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(7.2);
-  doc.setTextColor(71, 85, 105);
-  doc.text('Il Presidente / Legale Rappresentante', box2X + boxFirmaW / 2, currentY + 20, { align: 'center' });
-  doc.setFont('helvetica', 'normal');
-  doc.setFontSize(6.5);
-  doc.text(sanitizeWinAnsi(info.denominazione || 'Croce Oro Massa Carrara OdV'), box2X + boxFirmaW / 2, currentY + 23.5, {
-    align: 'center'
+  disegnaBoxFirmaTesoriere(doc, {
+    x: boxFirmaX,
+    y: currentY,
+    width: boxFirmaW,
+    height: boxFirmaH,
+    tesoriere,
+    denominazioneEnte: info.denominazione || 'Croce Oro Massa Carrara OdV',
+    dataDocumento: nota.dataEmissione || formatISODateItaly()
   });
 
   // 9. Footer Istituzionale su tutte le pagine
@@ -560,8 +580,8 @@ export function generaNotaDiDebitoPDF(nota: NotaDiDebito): jsPDF {
 /**
  * Scarica il file PDF della Nota di Debito senza usare popup esterni bloccati.
  */
-export function scaricaNotaDiDebitoPDF(nota: NotaDiDebito): void {
-  const doc = generaNotaDiDebitoPDF(nota);
+export function scaricaNotaDiDebitoPDF(nota: NotaDiDebito, tesoriere?: DatiTesorierePDF): void {
+  const doc = generaNotaDiDebitoPDF(nota, tesoriere);
   const nomeFile = `Nota_Di_Debito_${(nota.numeroProgressivo || 'ND-2026').replace(/[^a-zA-Z0-9_-]/g, '_')}.pdf`;
   doc.save(nomeFile);
 }

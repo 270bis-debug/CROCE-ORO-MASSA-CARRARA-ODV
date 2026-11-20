@@ -35,13 +35,15 @@ import {
   Percent,
   SlidersHorizontal,
   Landmark,
-  Copy
+  Copy,
+  Send
 } from 'lucide-react';
 import { useTitoloDatabase, useNomiSottosezioniCustom } from '../../hooks/useNomiDatabase';
 import { getTitoloSottosezione } from '../../constants/macroCategorie';
 import {
   TesseraAssociativa,
   NotaDiDebito,
+  RicevutaContabile,
   ContattoEsterno,
   InterventoManutenzione,
   SedeAssociativaCompleta,
@@ -58,9 +60,13 @@ import { inviaNotificaModificaAdmin } from '../../utils/notificaModificaAdmin';
 import {
   stampaEInviaRicevutaTesseramento,
   preparaVolontarioDaTessera,
-  getTesoriereAttivo
+  getTesoriereAttivo,
+  generaRicevutaTesseramentoPDF
 } from '../../utils/pdfRicevutaTesseramento';
-import { scaricaNotaDiDebitoPDF } from '../../utils/pdfNotaDiDebito';
+import { scaricaNotaDiDebitoPDF, generaNotaDiDebitoPDF } from '../../utils/pdfNotaDiDebito';
+import { scaricaRicevutaContabilePDF, generaRicevutaContabilePDF } from '../../utils/pdfRicevutaContabile';
+import { PdfAnteprimaWorkflowModal } from './PdfAnteprimaWorkflowModal';
+import { generaBytesDaJsPDF, scaricaBytesPDF, scaricaOStampaMultipliPDF, PdfBatchItem } from '../../utils/pdfWorkflowUtils';
 import { getDatiCartaIntestata } from '../../utils/cartaIntestataStore';
 import {
   calcolaProspettoCommercialista,
@@ -87,6 +93,8 @@ interface SezioneContabilitaProps {
   onAggiornaAltreEntrateUscite?: (voci: MovimentoAltreEntrateUscite[]) => void;
   costiGestione?: VoceCostoGestione[];
   onAggiornaCostiGestione?: (voci: VoceCostoGestione[]) => void;
+  ricevuteContabilita?: RicevutaContabile[];
+  onAggiornaRicevuteContabilita?: (ricevute: RicevutaContabile[]) => void;
   operatoreCorrente?: string;
   isAdmin?: boolean;
   onNotificaRadio?: (testo: string, tipo?: 'centrale' | 'mezzo' | 'sistema' | 'allarme') => void;
@@ -112,6 +120,8 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
   onAggiornaAltreEntrateUscite,
   costiGestione: costiGestioneProp,
   onAggiornaCostiGestione,
+  ricevuteContabilita: ricevuteContabilitaProp,
+  onAggiornaRicevuteContabilita,
   operatoreCorrente = 'Amministratore',
   isAdmin = true,
   onNotificaRadio,
@@ -124,12 +134,12 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
   allowedSubtabs = null
 }) => {
   const nomiSubCustom = useNomiSottosezioniCustom();
-  const [sottoTab, setSottoTab] = useState<'donazioni' | 'tesseramento' | 'noteDebito' | 'commercialista' | 'costiServizio' | 'contiCorrenti' | 'altreEntrateUscite' | 'costiGestione'>('donazioni');
+  const [sottoTab, setSottoTab] = useState<'donazioni' | 'tesseramento' | 'noteDebito' | 'commercialista' | 'costiServizio' | 'contiCorrenti' | 'altreEntrateUscite' | 'costiGestione' | 'ricevute'>('donazioni');
   const canShowSubtab = (id: string) => !allowedSubtabs || allowedSubtabs.includes(id);
 
   useEffect(() => {
     if (!canShowSubtab(sottoTab)) {
-      const ordine = ['donazioni', 'tesseramento', 'noteDebito', 'commercialista', 'costiServizio', 'contiCorrenti', 'altreEntrateUscite', 'costiGestione'] as const;
+      const ordine = ['donazioni', 'tesseramento', 'noteDebito', 'commercialista', 'costiServizio', 'contiCorrenti', 'altreEntrateUscite', 'costiGestione', 'ricevute'] as const;
       const prima = ordine.find((t) => canShowSubtab(t));
       if (prima) setSottoTab(prima);
     }
@@ -195,6 +205,10 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
   const [formNotaDebitore, setFormNotaDebitore] = useState('Azienda USL Toscana Nord Ovest');
   const [formNotaPiva, setFormNotaPiva] = useState('02198590503');
   const [formNotaIndirizzo, setFormNotaIndirizzo] = useState('Via Monterotondo 49, Livorno (LI)');
+  const [formNotaEmail, setFormNotaEmail] = useState('');
+  const [formNotaEmailNonDisponibile, setFormNotaEmailNonDisponibile] = useState(false);
+  const [formNotaPec, setFormNotaPec] = useState('');
+  const [formNotaPecNonDisponibile, setFormNotaPecNonDisponibile] = useState(false);
   const [formNotaCausale, setFormNotaCausale] = useState('Trasporto Sanitario Paziente');
   const [formNotaImporto, setFormNotaImporto] = useState(250.0);
   const [formNotaScadenza, setFormNotaScadenza] = useState(
@@ -248,9 +262,21 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
   const [formTariffaNote, setFormTariffaNote] = useState('');
   const [confermaEliminaTariffaId, setConfermaEliminaTariffaId] = useState<string | null>(null);
 
-  // Modale Anteprima Documento per Stampa (Tessera o Nota di Debito)
-  const [documentoPerStampa, setDocumentoPerStampa] = useState<{ tipo: 'tessera' | 'nota'; data: any } | null>(null);
+  // Modale Anteprima Documento per Stampa (Tessera, Nota di Debito o Ricevuta)
+  const [documentoPerStampa, setDocumentoPerStampa] = useState<{ tipo: 'tessera' | 'nota' | 'ricevuta'; data: any } | null>(null);
   const [inviandoEmailStampa, setInviandoEmailStampa] = useState(false);
+
+  // Workflow Anteprima / Stampa / Salva / Torna alla Modifica prima della generazione PDF
+  const [bozzaPdfWorkflow, setBozzaPdfWorkflow] = useState<{
+    tipo: 'tessera' | 'nota' | 'ricevuta';
+    data: any;
+    salvato: boolean;
+  } | null>(null);
+
+  // Selezione multipla PDF per sottosezione (Tessere, Note di Debito, Ricevute)
+  const [selectedTessereIds, setSelectedTessereIds] = useState<string[]>([]);
+  const [selectedRicevuteIds, setSelectedRicevuteIds] = useState<string[]>([]);
+  const [batchPdfInCorso, setBatchPdfInCorso] = useState(false);
 
   // Selezione multipla e rimozione Note di Debito dall'archivio con notifica email
   const [selectedNoteIds, setSelectedNoteIds] = useState<string[]>([]);
@@ -371,6 +397,47 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
   const [formGestioneNote, setFormGestioneNote] = useState<string>('');
   const [confermaEliminaGestioneId, setConfermaEliminaGestioneId] = useState<string | null>(null);
 
+  // Stato Emissione Ricevute (Sotto-sezione 9)
+  const [ricevuteLocali, setRicevuteLocali] = useState<RicevutaContabile[]>(() => {
+    try {
+      const saved = localStorage.getItem('CROCE_ORO_RICEVUTE_CONTABILITA');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+  const listaRicevute: RicevutaContabile[] = React.useMemo(
+    () => (ricevuteContabilitaProp !== undefined ? ricevuteContabilitaProp : ricevuteLocali),
+    [ricevuteContabilitaProp, ricevuteLocali]
+  );
+  const salvaRicevuteContabilita = (nuove: RicevutaContabile[]) => {
+    setRicevuteLocali(nuove);
+    try {
+      localStorage.setItem('CROCE_ORO_RICEVUTE_CONTABILITA', JSON.stringify(nuove));
+    } catch {}
+    onAggiornaRicevuteContabilita?.(nuove);
+  };
+  const [ricercaRicevute, setRicercaRicevute] = useState('');
+  const [filtroStatoRicevuta, setFiltroStatoRicevuta] = useState<'tutte' | 'Emessa' | 'Annullata'>('tutte');
+  const [modaleNuovaRicevutaAperta, setModaleNuovaRicevutaAperta] = useState(false);
+  const [formRicTipologia, setFormRicTipologia] = useState<RicevutaContabile['tipologia']>('Erogazione Liberale / Donazione');
+  const [formRicData, setFormRicData] = useState<string>(() => formatISODateItaly());
+  const [formRicIntestatario, setFormRicIntestatario] = useState('');
+  const [formRicCfPiva, setFormRicCfPiva] = useState('');
+  const [formRicIndirizzo, setFormRicIndirizzo] = useState('');
+  const [formRicEmail, setFormRicEmail] = useState('');
+  const [formRicEmailNonDisponibile, setFormRicEmailNonDisponibile] = useState(false);
+  const [formRicPec, setFormRicPec] = useState('');
+  const [formRicPecNonDisponibile, setFormRicPecNonDisponibile] = useState(false);
+  const [formRicCausale, setFormRicCausale] = useState('');
+  const [formRicRiferimento, setFormRicRiferimento] = useState('');
+  const [formRicImporto, setFormRicImporto] = useState<string>('');
+  const [formRicMetodo, setFormRicMetodo] = useState<string>('Contanti');
+  const [formRicNote, setFormRicNote] = useState('');
+  const [ricevutaDaAnnullare, setRicevutaDaAnnullare] = useState<RicevutaContabile | null>(null);
+  const [motivoAnnullamentoRicevuta, setMotivoAnnullamentoRicevuta] = useState('Errore di compilazione / emissione duplicata');
+  const [confermaEliminaRicevutaId, setConfermaEliminaRicevutaId] = useState<string | null>(null);
+
   // Chiusura accessibile dei modali con tasto ESC
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -378,6 +445,8 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
         if (modaleNuovaNotaAperta) setModaleNuovaNotaAperta(false);
         if (modaleNuovaDonazioneAperta) setModaleNuovaDonazioneAperta(false);
         if (modaleNuovaTesseraAperta) setModaleNuovaTesseraAperta(false);
+        if (modaleNuovaRicevutaAperta) setModaleNuovaRicevutaAperta(false);
+        if (ricevutaDaAnnullare) setRicevutaDaAnnullare(null);
         if (tesseraDaAnnullare) setTesseraDaAnnullare(null);
         if (meseDettaglioSelezionato) setMeseDettaglioSelezionato(null);
         if (modaleConfermaEliminaNoteAperta) setModaleConfermaEliminaNoteAperta(false);
@@ -390,6 +459,8 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
     modaleNuovaNotaAperta,
     modaleNuovaDonazioneAperta,
     modaleNuovaTesseraAperta,
+    modaleNuovaRicevutaAperta,
+    ricevutaDaAnnullare,
     tesseraDaAnnullare,
     meseDettaglioSelezionato,
     modaleConfermaEliminaNoteAperta,
@@ -809,6 +880,21 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
   // =========================================================================
   // 2. GESTIONE TESSERAMENTO
   // =========================================================================
+  const salvaBozzaTesseraInArchivio = (nuova: TesseraAssociativa) => {
+    if (tessere.some((t) => t.id === nuova.id)) return;
+    onAggiornaTessere([nuova, ...tessere]);
+    onNotificaRadio?.(`💳 TESSERAMENTO: Emessa nuova tessera ${nuova.numeroTessera} per ${nuova.socioNome} ${nuova.socioCognome}`, 'sistema');
+    if (!isAdmin) {
+      inviaNotificaModificaAdmin(
+        'contabilita',
+        'Nuova tessera socio emessa',
+        `Emessa tessera socio ${nuova.numeroTessera} per ${nuova.socioNome} ${nuova.socioCognome} (quota: € ${nuova.quotaVersata})`,
+        operatoreCorrente
+      );
+    }
+    mostraAvviso(`Nuova tessera ${nuova.numeroTessera} salvata in archivio per ${nuova.socioNome} ${nuova.socioCognome}.`);
+  };
+
   const handleEmettiTessera = (e: React.FormEvent) => {
     e.preventDefault();
     const annoCorr = getCurrentYearItaly();
@@ -828,18 +914,8 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
       timbroCartaceo: true
     };
 
-    onAggiornaTessere([nuova, ...tessere]);
     setModaleNuovaTesseraAperta(false);
-    onNotificaRadio?.(`💳 TESSERAMENTO: Emessa nuova tessera ${nuova.numeroTessera} per ${nuova.socioNome} ${nuova.socioCognome}`, 'sistema');
-    if (!isAdmin) {
-      inviaNotificaModificaAdmin(
-        'contabilita',
-        'Nuova tessera socio emessa',
-        `Emessa tessera socio ${nuova.numeroTessera} per ${nuova.socioNome} ${nuova.socioCognome} (quota: € ${nuova.quotaVersata})`,
-        operatoreCorrente
-      );
-    }
-    mostraAvviso(`Nuova tessera ${nuova.numeroTessera} emessa con successo per ${nuova.socioNome} ${nuova.socioCognome}.`);
+    setBozzaPdfWorkflow({ tipo: 'tessera', data: nuova, salvato: false });
   };
 
   const handleRinnovaTessera = (tess: TesseraAssociativa) => {
@@ -1082,6 +1158,17 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
 
   const handleEmettiNotaDiDebito = (e: React.FormEvent) => {
     e.preventDefault();
+    const emailPulita = formNotaEmail.trim();
+    const pecPulita = formNotaPec.trim();
+    if (!formNotaEmailNonDisponibile && (!emailPulita || !emailPulita.includes('@'))) {
+      mostraAvviso('Inserisci un indirizzo Email valido oppure spunta la casella "Non in possesso dell\'indirizzo Email".');
+      return;
+    }
+    if (!formNotaPecNonDisponibile && (!pecPulita || !pecPulita.includes('@'))) {
+      mostraAvviso('Inserisci un indirizzo PEC valido oppure spunta la casella "Non in possesso dell\'indirizzo PEC".');
+      return;
+    }
+
     const metodoCustomSel = metodiPerPagamenti.find((m) => formattaEtichettaMetodoPagamento(m) === formNotaMetodo);
     const isPoste = !metodoCustomSel && (formNotaMetodo.includes('Poste') || formNotaMetodo.includes('00001007035676') || formNotaMetodo.includes('C/C Postale'));
     const isCredit = !metodoCustomSel && (formNotaMetodo.includes('Credit Agricole') || formNotaMetodo.includes('Agricole') || (!isPoste && formNotaMetodo.includes('Bonifico')));
@@ -1109,6 +1196,10 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
       debitoreIntestatario: formNotaDebitore.trim(),
       partitaIvaCodiceFiscale: formNotaPiva.trim(),
       indirizzoDebitore: formNotaIndirizzo.trim(),
+      emailDestinatario: formNotaEmailNonDisponibile ? undefined : emailPulita,
+      emailNonDisponibile: formNotaEmailNonDisponibile,
+      pecDestinatario: formNotaPecNonDisponibile ? undefined : pecPulita,
+      pecNonDisponibile: formNotaPecNonDisponibile,
       causale: formNotaCausale.trim(),
       codiceServizioRiferimento: formNotaRiferimento.trim() || undefined,
       servizioCollegatoId: formServizioCollegatoId || undefined,
@@ -1137,8 +1228,13 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
       operatoreEmissione: operatoreCorrente
     };
 
-    onAggiornaNoteDiDebito([nuovaNota, ...noteDiDebito]);
     setModaleNuovaNotaAperta(false);
+    setBozzaPdfWorkflow({ tipo: 'nota', data: nuovaNota, salvato: false });
+  };
+
+  const salvaBozzaNotaInArchivio = (nuovaNota: NotaDiDebito) => {
+    if (noteDiDebito.some((n) => n.id === nuovaNota.id)) return;
+    onAggiornaNoteDiDebito([nuovaNota, ...noteDiDebito]);
     onNotificaRadio?.(`📑 NOTA DI DEBITO: Emessa nuova nota ${nuovaNota.numeroProgressivo} di € ${nuovaNota.importoTotale.toFixed(2)} a ${nuovaNota.debitoreIntestatario}`, 'sistema');
     if (!isAdmin) {
       inviaNotificaModificaAdmin(
@@ -1148,7 +1244,153 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
         operatoreCorrente
       );
     }
-    mostraAvviso(`Nota di Debito ${nuovaNota.numeroProgressivo} emessa con successo.`);
+    mostraAvviso(`Nota di Debito ${nuovaNota.numeroProgressivo} salvata in archivio con successo.`);
+  };
+
+  // Emissione, Annullamento e Rimozione Ricevute Contabili (Sotto-sezione 9)
+  const apriModaleNuovaRicevuta = () => {
+    setFormRicTipologia('Erogazione Liberale / Donazione');
+    setFormRicData(formatISODateItaly());
+    setFormRicIntestatario('');
+    setFormRicCfPiva('');
+    setFormRicIndirizzo('');
+    setFormRicEmail('');
+    setFormRicEmailNonDisponibile(false);
+    setFormRicPec('');
+    setFormRicPecNonDisponibile(false);
+    setFormRicCausale('');
+    setFormRicRiferimento('');
+    setFormRicImporto('');
+    setFormRicMetodo('Contanti');
+    setFormRicNote('');
+    setModaleNuovaRicevutaAperta(true);
+  };
+
+  const handleEmettiRicevutaContabile = (e: React.FormEvent) => {
+    e.preventDefault();
+    const intestatario = formRicIntestatario.trim();
+    const causale = formRicCausale.trim();
+    const importoNum = parseFloat((formRicImporto || '').replace(',', '.'));
+    const emailPulita = formRicEmail.trim();
+    const pecPulita = formRicPec.trim();
+
+    if (!intestatario) {
+      mostraAvviso('Inserisci il nominativo o la ragione sociale dell\'intestatario della ricevuta.');
+      return;
+    }
+    if (!causale) {
+      mostraAvviso('Inserisci la causale della ricevuta.');
+      return;
+    }
+    if (isNaN(importoNum) || importoNum <= 0) {
+      mostraAvviso('Inserisci un importo valido superiore a € 0,00.');
+      return;
+    }
+    if (!formRicEmailNonDisponibile && (!emailPulita || !emailPulita.includes('@'))) {
+      mostraAvviso('Inserisci un indirizzo Email valido oppure spunta la casella "Non in possesso dell\'indirizzo Email".');
+      return;
+    }
+    if (!formRicPecNonDisponibile && (!pecPulita || !pecPulita.includes('@'))) {
+      mostraAvviso('Inserisci un indirizzo PEC valido oppure spunta la casella "Non in possesso dell\'indirizzo PEC".');
+      return;
+    }
+
+    const annoCorrente = getCurrentYearItaly();
+    const maxProg = listaRicevute.reduce((acc, r) => {
+      const m = (r.numeroProgressivo || '').match(new RegExp(`RIC-${annoCorrente}/(\\d+)`));
+      const num = m ? parseInt(m[1], 10) : 0;
+      return num > acc ? num : acc;
+    }, 0);
+    const numeroProgressivo = `RIC-${annoCorrente}/${String(maxProg + 1).padStart(3, '0')}`;
+
+    const metodoCustomSel = metodiPerPagamenti.find((m) => formattaEtichettaMetodoPagamento(m) === formRicMetodo);
+    const isPoste = !metodoCustomSel && (formRicMetodo.includes('Poste') || formRicMetodo.includes('00001007035676') || formRicMetodo.includes('C/C Postale'));
+    const isCredit = !metodoCustomSel && (formRicMetodo.includes('Credit Agricole') || formRicMetodo.includes('Agricole') || (!isPoste && formRicMetodo.includes('Bonifico')));
+
+    const contoAccredito = metodoCustomSel
+      ? metodoCustomSel.nome
+      : isPoste
+        ? 'Poste Italiane'
+        : isCredit
+          ? 'Credit Agricole'
+          : formRicMetodo;
+    const ibanAccredito = metodoCustomSel?.coordinateODettagli || (isPoste ? ibanPoste : isCredit ? ibanCreditAgricole : undefined);
+    const ccPostaleAccredito = isPoste ? ccPostale : undefined;
+
+    const nuovaRicevuta: RicevutaContabile = {
+      id: `ric-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      numeroProgressivo,
+      dataEmissione: formRicData || formatISODateItaly(),
+      tipologia: formRicTipologia,
+      intestatario,
+      codiceFiscalePartitaIva: formRicCfPiva.trim().toUpperCase(),
+      indirizzoIntestatario: formRicIndirizzo.trim(),
+      emailDestinatario: formRicEmailNonDisponibile ? undefined : emailPulita,
+      emailNonDisponibile: formRicEmailNonDisponibile,
+      pecDestinatario: formRicPecNonDisponibile ? undefined : pecPulita,
+      pecNonDisponibile: formRicPecNonDisponibile,
+      causale,
+      codiceServizioRiferimento: formRicRiferimento.trim() || undefined,
+      importoTotale: Math.round(importoNum * 100) / 100,
+      metodoPagamento: formRicMetodo,
+      contoAccredito,
+      ibanAccredito,
+      ccPostaleAccredito,
+      stato: 'Emessa',
+      operatoreEmissione: operatoreCorrente,
+      note: formRicNote.trim() || undefined,
+      createdAt: Date.now()
+    };
+
+    setModaleNuovaRicevutaAperta(false);
+    setBozzaPdfWorkflow({ tipo: 'ricevuta', data: nuovaRicevuta, salvato: false });
+  };
+
+  const salvaBozzaRicevutaInArchivio = (nuovaRicevuta: RicevutaContabile) => {
+    if (listaRicevute.some((r) => r.id === nuovaRicevuta.id)) return;
+    salvaRicevuteContabilita([nuovaRicevuta, ...listaRicevute]);
+    onNotificaRadio?.(
+      `🧾 RICEVUTA CONTABILE: Emessa ricevuta ${nuovaRicevuta.numeroProgressivo} di € ${nuovaRicevuta.importoTotale.toFixed(2)} a ${nuovaRicevuta.intestatario}`,
+      'sistema'
+    );
+    if (!isAdmin) {
+      inviaNotificaModificaAdmin(
+        'contabilita',
+        'Nuova ricevuta emessa',
+        `Emessa ricevuta ${nuovaRicevuta.numeroProgressivo} (${nuovaRicevuta.tipologia}) a ${nuovaRicevuta.intestatario} per € ${nuovaRicevuta.importoTotale.toFixed(2)}`,
+        operatoreCorrente
+      );
+    }
+    mostraAvviso(`Ricevuta ${nuovaRicevuta.numeroProgressivo} salvata in archivio con successo.`);
+  };
+
+  const handleConfermaAnnullaRicevuta = () => {
+    if (!ricevutaDaAnnullare) return;
+    const aggiornate = listaRicevute.map((r) =>
+      r.id === ricevutaDaAnnullare.id
+        ? {
+            ...r,
+            stato: 'Annullata' as const,
+            motivoAnnullamento: motivoAnnullamentoRicevuta.trim() || 'Annullata manualmente'
+          }
+        : r
+    );
+    salvaRicevuteContabilita(aggiornate);
+    onNotificaRadio?.(
+      `🚫 RICEVUTA ANNULLATA: Annullata ricevuta ${ricevutaDaAnnullare.numeroProgressivo} (${ricevutaDaAnnullare.intestatario})`,
+      'sistema'
+    );
+    mostraAvviso(`Ricevuta ${ricevutaDaAnnullare.numeroProgressivo} contrassegnata come ANNULLATA.`);
+    setRicevutaDaAnnullare(null);
+  };
+
+  const handleEliminaRicevuta = (id: string) => {
+    const target = listaRicevute.find((r) => r.id === id);
+    salvaRicevuteContabilita(listaRicevute.filter((r) => r.id !== id));
+    setConfermaEliminaRicevutaId(null);
+    if (target) {
+      mostraAvviso(`Ricevuta ${target.numeroProgressivo} rimossa dall'archivio.`);
+    }
   };
 
   const handleSegnaSaldata = (nota: NotaDiDebito) => {
@@ -1201,6 +1443,115 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
     }
   };
 
+  const toggleSelezionaTessera = (id: string) => {
+    setSelectedTessereIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  };
+
+  const toggleSelezionaTutteTessere = (filtroIds: string[]) => {
+    if (filtroIds.length > 0 && filtroIds.every((id) => selectedTessereIds.includes(id))) {
+      setSelectedTessereIds((prev) => prev.filter((id) => !filtroIds.includes(id)));
+    } else {
+      setSelectedTessereIds((prev) => Array.from(new Set([...prev, ...filtroIds])));
+    }
+  };
+
+  const toggleSelezionaRicevuta = (id: string) => {
+    setSelectedRicevuteIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  };
+
+  const toggleSelezionaTutteRicevute = (filtroIds: string[]) => {
+    if (filtroIds.length > 0 && filtroIds.every((id) => selectedRicevuteIds.includes(id))) {
+      setSelectedRicevuteIds((prev) => prev.filter((id) => !filtroIds.includes(id)));
+    } else {
+      setSelectedRicevuteIds((prev) => Array.from(new Set([...prev, ...filtroIds])));
+    }
+  };
+
+  const handleBatchPdfTessere = async (azione: 'download' | 'print', sorgente: TesseraAssociativa[]) => {
+    const scelte = sorgente.filter((t) => selectedTessereIds.includes(t.id));
+    if (scelte.length === 0) return;
+    setBatchPdfInCorso(true);
+    try {
+      const tesoriere = getTesoriereAttivo(volontari);
+      const items: PdfBatchItem[] = scelte.map((t) => {
+        const vol = preparaVolontarioDaTessera(t, volontari);
+        const doc = generaRicevutaTesseramentoPDF(vol, undefined, tesoriere);
+        const safeNum = (t.numeroTessera || t.id).replace(/[^a-zA-Z0-9_-]/g, '_');
+        return {
+          nomeFile: `Ricevuta_Tesseramento_${safeNum}.pdf`,
+          bytes: generaBytesDaJsPDF(doc)
+        };
+      });
+      await scaricaOStampaMultipliPDF(items, azione, `Tessere_Associative_${formatISODateItaly()}`);
+      mostraAvviso(
+        azione === 'print'
+          ? `Avviata stampa per ${scelte.length} ricevuta/e di tesseramento.`
+          : `Scaricati ${scelte.length} PDF di tesseramento.`
+      );
+    } catch (err: any) {
+      console.error('Errore batch PDF tessere:', err);
+      mostraAvviso(`Errore nella generazione batch PDF tessere: ${err?.message || 'Errore'}`);
+    } finally {
+      setBatchPdfInCorso(false);
+    }
+  };
+
+  const handleBatchPdfNote = async (azione: 'download' | 'print') => {
+    const scelte = noteDiDebito.filter((n) => selectedNoteIds.includes(n.id));
+    if (scelte.length === 0) return;
+    setBatchPdfInCorso(true);
+    try {
+      const tesoriere = getTesoriereAttivo(volontari);
+      const items: PdfBatchItem[] = scelte.map((n) => {
+        const doc = generaNotaDiDebitoPDF(n, tesoriere);
+        const safeNum = (n.numeroProgressivo || n.id).replace(/[^a-zA-Z0-9_-]/g, '_');
+        return {
+          nomeFile: `Nota_Di_Debito_${safeNum}.pdf`,
+          bytes: generaBytesDaJsPDF(doc)
+        };
+      });
+      await scaricaOStampaMultipliPDF(items, azione, `Note_Di_Debito_${formatISODateItaly()}`);
+      mostraAvviso(
+        azione === 'print'
+          ? `Avviata stampa per ${scelte.length} nota/e di debito.`
+          : `Scaricati ${scelte.length} PDF di note di debito.`
+      );
+    } catch (err: any) {
+      console.error('Errore batch PDF note di debito:', err);
+      mostraAvviso(`Errore nella generazione batch PDF note di debito: ${err?.message || 'Errore'}`);
+    } finally {
+      setBatchPdfInCorso(false);
+    }
+  };
+
+  const handleBatchPdfRicevute = async (azione: 'download' | 'print') => {
+    const scelte = listaRicevute.filter((r) => selectedRicevuteIds.includes(r.id));
+    if (scelte.length === 0) return;
+    setBatchPdfInCorso(true);
+    try {
+      const tesoriere = getTesoriereAttivo(volontari);
+      const items: PdfBatchItem[] = scelte.map((r) => {
+        const doc = generaRicevutaContabilePDF(r, tesoriere);
+        const safeNum = (r.numeroProgressivo || r.id).replace(/[^a-zA-Z0-9_-]/g, '_');
+        return {
+          nomeFile: `Ricevuta_${safeNum}.pdf`,
+          bytes: generaBytesDaJsPDF(doc)
+        };
+      });
+      await scaricaOStampaMultipliPDF(items, azione, `Ricevute_Contabilita_${formatISODateItaly()}`);
+      mostraAvviso(
+        azione === 'print'
+          ? `Avviata stampa per ${scelte.length} ricevuta/e contabile/i.`
+          : `Scaricati ${scelte.length} PDF di ricevute.`
+      );
+    } catch (err: any) {
+      console.error('Errore batch PDF ricevute:', err);
+      mostraAvviso(`Errore nella generazione batch PDF ricevute: ${err?.message || 'Errore'}`);
+    } finally {
+      setBatchPdfInCorso(false);
+    }
+  };
+
   const apriEliminaSingolaNota = (nota: NotaDiDebito) => {
     setNoteDaEliminare([nota]);
     setMotivoEliminazioneNota('');
@@ -1248,15 +1599,138 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
     setEliminazioneInCorso(false);
   };
 
+  const bytesToPdfBase64DataUri = (bytes: Uint8Array): string => {
+    const chunkSize = 0x8000;
+    let binary = '';
+    for (let i = 0; i < bytes.length; i += chunkSize) {
+      const slice = bytes.subarray(i, i + chunkSize);
+      binary += String.fromCharCode(...slice);
+    }
+    return `data:application/pdf;base64,${btoa(binary)}`;
+  };
+
+  const inviaDocumentoContabileViaEmail = async (
+    tipo: 'nota' | 'ricevuta',
+    docData: NotaDiDebito | RicevutaContabile,
+    pdfBytesOverride?: Uint8Array
+  ): Promise<boolean> => {
+    const emailOrd = (!docData.emailNonDisponibile ? (docData.emailDestinatario || '') : '').trim();
+    const emailValid = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(emailOrd);
+    if (!emailValid) {
+      mostraAvviso(
+        'Impossibile inviare: manca un indirizzo email ordinario (non PEC) valido per il destinatario.'
+      );
+      return false;
+    }
+
+    const tesoriere = getTesoriereAttivo(volontari);
+    const ccEmail = (tesoriere.email || 'tesoreria@croceoro.org').trim();
+    const tesoriereNomeCompleto = `${tesoriere.nome} ${tesoriere.cognome}`.trim();
+
+    const isNota = tipo === 'nota';
+    const nota = isNota ? (docData as NotaDiDebito) : null;
+    const ric = !isNota ? (docData as RicevutaContabile) : null;
+
+    const numeroProgressivo = docData.numeroProgressivo || (isNota ? 'ND-2026' : 'RIC-2026');
+    const destinatarioNome = isNota
+      ? nota!.debitoreIntestatario
+      : ric!.intestatario;
+    const nomeFile = `${isNota ? 'Nota_Di_Debito' : 'Ricevuta'}_${numeroProgressivo.replace(/[^a-zA-Z0-9_-]/g, '_')}.pdf`;
+
+    const bytes =
+      pdfBytesOverride ||
+      generaBytesDaJsPDF(
+        isNota
+          ? generaNotaDiDebitoPDF(nota!, tesoriere)
+          : generaRicevutaContabilePDF(ric!, tesoriere)
+      );
+    const pdfBase64 = bytesToPdfBase64DataUri(bytes);
+
+    setInviandoEmailStampa(true);
+    try {
+      const res = await fetch('/api/invia-email-documento-contabile', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          tipoDocumento: isNota ? 'nota_debito' : 'ricevuta',
+          numeroProgressivo,
+          dataEmissione: docData.dataEmissione,
+          destinatarioNome,
+          destinatarioEmail: emailOrd,
+          tesoriereEmail: ccEmail,
+          tesoriereNome: tesoriereNomeCompleto,
+          importoTotale: Number(docData.importoTotale || 0),
+          causale: docData.causale,
+          scadenzaPagamento: isNota ? nota!.scadenzaPagamento : undefined,
+          metodoPagamento: docData.metodoPagamento,
+          tipologia: !isNota ? ric!.tipologia : undefined,
+          pdfBase64,
+          nomeFile
+        })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.success) {
+        mostraAvviso(data?.error || 'Errore durante l\'invio dell\'email.');
+        return false;
+      }
+
+      const etichetta = isNota ? 'Nota di Debito' : 'Ricevuta';
+      const ccEffettivo = data.ccTesoriere || ccEmail;
+
+      if (data.speditoViaSmtp) {
+        mostraAvviso(
+          `${etichetta} ${numeroProgressivo} inviata via email a ${emailOrd} (in copia CC: ${ccEffettivo}) con allegato PDF!`
+        );
+      } else {
+        // Fallback operativo se SMTP non è attivo sul server: scarica il PDF e apre la bozza mailto con CC Tesoriere
+        await scaricaBytesPDF(bytes, nomeFile);
+        const subject = encodeURIComponent(
+          `[${etichetta.toUpperCase()} ${numeroProgressivo}] ${destinatarioNome}`
+        );
+        const body = encodeURIComponent(
+          `Gentile ${destinatarioNome},\n\n` +
+          `si trasmette in allegato il documento ufficiale (${etichetta} n. ${numeroProgressivo} del ${docData.dataEmissione}) per l'importo di € ${Number(docData.importoTotale || 0).toFixed(2)}.\n` +
+          `Causale: ${docData.causale || '-'}\n\n` +
+          `Il file PDF (${nomeFile}) è stato scaricato sul dispositivo per essere allegato alla presente email.\n\n` +
+          `Cordiali saluti,\nUfficio Tesoreria (${tesoriereNomeCompleto})`
+        );
+        const ccPart =
+          ccEffettivo && ccEffettivo.toLowerCase() !== emailOrd.toLowerCase()
+            ? `cc=${encodeURIComponent(ccEffettivo)}&`
+            : '';
+        const a = document.createElement('a');
+        a.href = `mailto:${encodeURIComponent(emailOrd)}?${ccPart}subject=${subject}&body=${body}`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        mostraAvviso(
+          `${etichetta} ${numeroProgressivo} salvata! Email predisposta verso ${emailOrd} (CC Tesoriere: ${ccEffettivo}) e PDF scaricato per l'allegato.`
+        );
+      }
+
+      onNotificaRadio?.(
+        `📧 ${etichetta.toUpperCase()} ${numeroProgressivo}: inviata via email a ${emailOrd} con CC automatico al Tesoriere (${ccEffettivo})`,
+        'centrale'
+      );
+      return true;
+    } catch (err: any) {
+      console.error('Errore invio email documento contabile:', err);
+      mostraAvviso(`Errore durante l'invio email: ${err?.message || 'Errore di rete'}`);
+      return false;
+    } finally {
+      setInviandoEmailStampa(false);
+    }
+  };
+
   // Stampa Documento con Firma Automatica del Tesoriere e Invio Email con Allegato PDF
   const handleStampaDocumento = async () => {
     if (!documentoPerStampa) return;
+    const tesoriere = getTesoriereAttivo(volontari);
     if (documentoPerStampa.tipo === 'tessera') {
       setInviandoEmailStampa(true);
       try {
         const vol = preparaVolontarioDaTessera(documentoPerStampa.data, volontari);
         const res = await stampaEInviaRicevutaTesseramento(vol, undefined, volontari);
-        const tesoriere = getTesoriereAttivo(volontari);
         mostraAvviso(
           `Ricevuta stampata a firma del Tesoriere ${tesoriere.nome} ${tesoriere.cognome} ed inviata via email a ${res.destinatarioEmail}!`
         );
@@ -1273,8 +1747,8 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
       }
     } else if (documentoPerStampa.tipo === 'nota') {
       try {
-        scaricaNotaDiDebitoPDF(documentoPerStampa.data);
-        mostraAvviso(`Nota di Debito ${documentoPerStampa.data.numeroProgressivo} stampata e generata con successo in PDF ufficiale!`);
+        scaricaNotaDiDebitoPDF(documentoPerStampa.data, tesoriere);
+        mostraAvviso(`Nota di Debito ${documentoPerStampa.data.numeroProgressivo} stampata a firma del Tesoriere ${tesoriere.nome} ${tesoriere.cognome}!`);
         onNotificaRadio?.(
           `📄 NOTA DI DEBITO: Stampato documento ufficiale PDF per la nota n. ${documentoPerStampa.data.numeroProgressivo} intestata a ${documentoPerStampa.data.debitoreIntestatario}`,
           'centrale'
@@ -1283,6 +1757,19 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
       } catch (err: any) {
         console.error('Errore generazione PDF nota di debito:', err);
         mostraAvviso(`Errore nella stampa della nota di debito: ${err?.message || 'Errore'}`);
+      }
+    } else if (documentoPerStampa.tipo === 'ricevuta') {
+      try {
+        scaricaRicevutaContabilePDF(documentoPerStampa.data, tesoriere);
+        mostraAvviso(`Ricevuta ${documentoPerStampa.data.numeroProgressivo} generata a firma del Tesoriere ${tesoriere.nome} ${tesoriere.cognome}!`);
+        onNotificaRadio?.(
+          `🧾 RICEVUTA CONTABILE: Stampato documento ufficiale PDF per la ricevuta n. ${documentoPerStampa.data.numeroProgressivo} intestata a ${documentoPerStampa.data.intestatario}`,
+          'centrale'
+        );
+        setDocumentoPerStampa(null);
+      } catch (err: any) {
+        console.error('Errore generazione PDF ricevuta:', err);
+        mostraAvviso(`Errore nella stampa della ricevuta: ${err?.message || 'Errore'}`);
       }
     } else {
       const nomeFile = scaricaProspettoCommercialistaCSV(prospettoCommercialista);
@@ -1565,20 +2052,20 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
         </div>
       )}
 
-      {/* Barra Navigazione Sotto-Categorie */}
-      <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-none border-b border-slate-800">
+      {/* Barra Navigazione Sotto-Categorie (a griglia adattiva, senza scroll orizzontale) */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-1.5 sm:gap-2 pb-2 border-b border-slate-800">
         {canShowSubtab('donazioni') && (
         <button
           type="button"
           onClick={() => setSottoTab('donazioni')}
-          className={`px-4 py-2.5 rounded-xl text-xs font-black uppercase flex items-center gap-2 transition-all cursor-pointer ${
+          className={`w-full px-2.5 sm:px-3 py-2 rounded-xl text-[10px] sm:text-xs font-black uppercase flex items-center justify-center gap-1.5 text-center leading-tight transition-all cursor-pointer ${
             sottoTab === 'donazioni'
               ? 'bg-purple-600 text-white shadow-lg shadow-purple-600/30 border border-purple-400'
               : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
           }`}
         >
-          <Heart className="w-4 h-4 text-pink-400" />
-          <span>1. {getTitoloSottosezione('contabilita', 'donazioni', 'Servizi con Donazioni', nomiSubCustom)} ({serviziConDonazioni.length})</span>
+          <Heart className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-pink-400 shrink-0" />
+          <span className="break-words">1. {getTitoloSottosezione('contabilita', 'donazioni', 'Servizi con Donazioni', nomiSubCustom)} ({serviziConDonazioni.length})</span>
         </button>
         )}
 
@@ -1586,14 +2073,14 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
         <button
           type="button"
           onClick={() => setSottoTab('tesseramento')}
-          className={`px-4 py-2.5 rounded-xl text-xs font-black uppercase flex items-center gap-2 transition-all cursor-pointer ${
+          className={`w-full px-2.5 sm:px-3 py-2 rounded-xl text-[10px] sm:text-xs font-black uppercase flex items-center justify-center gap-1.5 text-center leading-tight transition-all cursor-pointer ${
             sottoTab === 'tesseramento'
               ? 'bg-purple-600 text-white shadow-lg shadow-purple-600/30 border border-purple-400'
               : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
           }`}
         >
-          <CreditCard className="w-4 h-4" />
-          <span>2. {getTitoloSottosezione('contabilita', 'tesseramento', 'Tesseramento & Soci', nomiSubCustom)} ({tessere.length})</span>
+          <CreditCard className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0" />
+          <span className="break-words">2. {getTitoloSottosezione('contabilita', 'tesseramento', 'Tesseramento & Soci', nomiSubCustom)} ({tessere.length})</span>
         </button>
         )}
 
@@ -1601,14 +2088,14 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
         <button
           type="button"
           onClick={() => setSottoTab('noteDebito')}
-          className={`px-4 py-2.5 rounded-xl text-xs font-black uppercase flex items-center gap-2 transition-all cursor-pointer ${
+          className={`w-full px-2.5 sm:px-3 py-2 rounded-xl text-[10px] sm:text-xs font-black uppercase flex items-center justify-center gap-1.5 text-center leading-tight transition-all cursor-pointer ${
             sottoTab === 'noteDebito'
               ? 'bg-purple-600 text-white shadow-lg shadow-purple-600/30 border border-purple-400'
               : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
           }`}
         >
-          <FileText className="w-4 h-4" />
-          <span>3. {getTitoloSottosezione('contabilita', 'noteDebito', 'Note di Debito', nomiSubCustom)} ({noteDiDebito.length})</span>
+          <FileText className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0" />
+          <span className="break-words">3. {getTitoloSottosezione('contabilita', 'noteDebito', 'Note di Debito', nomiSubCustom)} ({noteDiDebito.length})</span>
         </button>
         )}
 
@@ -1616,14 +2103,14 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
         <button
           type="button"
           onClick={() => setSottoTab('commercialista')}
-          className={`px-4 py-2.5 rounded-xl text-xs font-black uppercase flex items-center gap-2 transition-all cursor-pointer shrink-0 ${
+          className={`w-full px-2.5 sm:px-3 py-2 rounded-xl text-[10px] sm:text-xs font-black uppercase flex items-center justify-center gap-1.5 text-center leading-tight transition-all cursor-pointer ${
             sottoTab === 'commercialista'
               ? 'bg-purple-600 text-white shadow-lg shadow-purple-600/30 border border-purple-400 font-black'
               : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
           }`}
         >
-          <FileSpreadsheet className="w-4 h-4 text-emerald-400" />
-          <span>4. {getTitoloSottosezione('contabilita', 'commercialista', 'Prospetto Mensile Commercialista', nomiSubCustom)}</span>
+          <FileSpreadsheet className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-emerald-400 shrink-0" />
+          <span className="break-words">4. {getTitoloSottosezione('contabilita', 'commercialista', 'Prospetto Commercialista', nomiSubCustom)}</span>
         </button>
         )}
 
@@ -1631,14 +2118,14 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
         <button
           type="button"
           onClick={() => setSottoTab('costiServizio')}
-          className={`px-4 py-2.5 rounded-xl text-xs font-black uppercase flex items-center gap-2 transition-all cursor-pointer shrink-0 ${
+          className={`w-full px-2.5 sm:px-3 py-2 rounded-xl text-[10px] sm:text-xs font-black uppercase flex items-center justify-center gap-1.5 text-center leading-tight transition-all cursor-pointer ${
             sottoTab === 'costiServizio'
               ? 'bg-purple-600 text-white shadow-lg shadow-purple-600/30 border border-purple-400 font-black'
               : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
           }`}
         >
-          <Tag className="w-4 h-4 text-amber-400" />
-          <span>5. {getTitoloSottosezione('contabilita', 'costiServizio', 'Costi di Servizio', nomiSubCustom)} ({tariffeCostiServizio.length})</span>
+          <Tag className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-amber-400 shrink-0" />
+          <span className="break-words">5. {getTitoloSottosezione('contabilita', 'costiServizio', 'Costi di Servizio', nomiSubCustom)} ({tariffeCostiServizio.length})</span>
         </button>
         )}
 
@@ -1646,14 +2133,14 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
         <button
           type="button"
           onClick={() => setSottoTab('contiCorrenti')}
-          className={`px-4 py-2.5 rounded-xl text-xs font-black uppercase flex items-center gap-2 transition-all cursor-pointer shrink-0 ${
+          className={`w-full px-2.5 sm:px-3 py-2 rounded-xl text-[10px] sm:text-xs font-black uppercase flex items-center justify-center gap-1.5 text-center leading-tight transition-all cursor-pointer ${
             sottoTab === 'contiCorrenti'
               ? 'bg-purple-600 text-white shadow-lg shadow-purple-600/30 border border-purple-400 font-black'
               : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
           }`}
         >
-          <Landmark className="w-4 h-4 text-yellow-400" />
-          <span>6. {getTitoloSottosezione('contabilita', 'contiCorrenti', 'Coordinate Bancarie & Postali', nomiSubCustom)} ({2 + metodiPagamentoCustom.filter((m) => m.attivo).length})</span>
+          <Landmark className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-yellow-400 shrink-0" />
+          <span className="break-words">6. {getTitoloSottosezione('contabilita', 'contiCorrenti', 'Coordinate Bancarie & Postali', nomiSubCustom)} ({2 + metodiPagamentoCustom.filter((m) => m.attivo).length})</span>
         </button>
         )}
 
@@ -1661,14 +2148,14 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
         <button
           type="button"
           onClick={() => setSottoTab('altreEntrateUscite')}
-          className={`px-4 py-2.5 rounded-xl text-xs font-black uppercase flex items-center gap-2 transition-all cursor-pointer shrink-0 ${
+          className={`w-full px-2.5 sm:px-3 py-2 rounded-xl text-[10px] sm:text-xs font-black uppercase flex items-center justify-center gap-1.5 text-center leading-tight transition-all cursor-pointer ${
             sottoTab === 'altreEntrateUscite'
               ? 'bg-purple-600 text-white shadow-lg shadow-purple-600/30 border border-purple-400 font-black'
               : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
           }`}
         >
-          <TrendingUp className="w-4 h-4 text-cyan-400" />
-          <span>7. {getTitoloSottosezione('contabilita', 'altreEntrateUscite', 'Altre Entrate / Uscite', nomiSubCustom)} ({listaAltreEntrateUscite.length})</span>
+          <TrendingUp className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-cyan-400 shrink-0" />
+          <span className="break-words">7. {getTitoloSottosezione('contabilita', 'altreEntrateUscite', 'Altre Entrate / Uscite', nomiSubCustom)} ({listaAltreEntrateUscite.length})</span>
         </button>
         )}
 
@@ -1676,14 +2163,29 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
         <button
           type="button"
           onClick={() => setSottoTab('costiGestione')}
-          className={`px-4 py-2.5 rounded-xl text-xs font-black uppercase flex items-center gap-2 transition-all cursor-pointer shrink-0 ${
+          className={`w-full px-2.5 sm:px-3 py-2 rounded-xl text-[10px] sm:text-xs font-black uppercase flex items-center justify-center gap-1.5 text-center leading-tight transition-all cursor-pointer ${
             sottoTab === 'costiGestione'
               ? 'bg-purple-600 text-white shadow-lg shadow-purple-600/30 border border-purple-400 font-black'
               : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
           }`}
         >
-          <Building2 className="w-4 h-4 text-rose-400" />
-          <span>8. {getTitoloSottosezione('contabilita', 'costiGestione', 'Costi di Gestione', nomiSubCustom)} ({listaCostiGestione.length})</span>
+          <Building2 className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-rose-400 shrink-0" />
+          <span className="break-words">8. {getTitoloSottosezione('contabilita', 'costiGestione', 'Costi di Gestione', nomiSubCustom)} ({listaCostiGestione.length})</span>
+        </button>
+        )}
+
+        {canShowSubtab('ricevute') && (
+        <button
+          type="button"
+          onClick={() => setSottoTab('ricevute')}
+          className={`w-full px-2.5 sm:px-3 py-2 rounded-xl text-[10px] sm:text-xs font-black uppercase flex items-center justify-center gap-1.5 text-center leading-tight transition-all cursor-pointer ${
+            sottoTab === 'ricevute'
+              ? 'bg-purple-600 text-white shadow-lg shadow-purple-600/30 border border-purple-400 font-black'
+              : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
+          }`}
+        >
+          <Receipt className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-emerald-400 shrink-0" />
+          <span className="break-words">9. {getTitoloSottosezione('contabilita', 'ricevute', 'Emissione Ricevute', nomiSubCustom)} ({listaRicevute.length})</span>
         </button>
         )}
       </div>
@@ -1947,12 +2449,65 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
             </div>
           </div>
 
+          {/* Barra Azioni Selezione Multipla PDF Tessere */}
+          {selectedTessereIds.length > 0 && (
+            <div className="bg-indigo-950/60 border-2 border-indigo-500/60 p-3.5 rounded-2xl flex flex-wrap items-center justify-between gap-3 shadow-lg animate-in fade-in">
+              <div className="flex items-center gap-2 text-xs font-bold text-indigo-200">
+                <CheckSquare className="w-4 h-4 text-indigo-400 shrink-0" />
+                <span>
+                  <strong>{selectedTessereIds.length}</strong> ricevuta/e tessera selezionata/e
+                </span>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setSelectedTessereIds([])}
+                  className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold cursor-pointer"
+                >
+                  Deseleziona
+                </button>
+                <button
+                  type="button"
+                  disabled={batchPdfInCorso}
+                  onClick={() => handleBatchPdfTessere('download', tessereComplete)}
+                  className="px-3.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-black uppercase flex items-center gap-1.5 shadow-md active:scale-95 cursor-pointer"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>Scarica PDF ({selectedTessereIds.length})</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={batchPdfInCorso}
+                  onClick={() => handleBatchPdfTessere('print', tessereComplete)}
+                  className="px-3.5 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-black uppercase flex items-center gap-1.5 shadow-md active:scale-95 cursor-pointer"
+                >
+                  <Printer className="w-3.5 h-3.5" />
+                  <span>Stampa PDF ({selectedTessereIds.length})</span>
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* Tabella Tessere */}
           <div className="bg-slate-950 rounded-2xl border border-slate-800 overflow-hidden shadow-xl">
             <div className="overflow-x-auto">
               <table className="w-full text-left border-collapse text-xs">
                 <thead>
                   <tr className="bg-slate-900/90 text-slate-400 uppercase text-[10px] font-black border-b border-slate-800">
+                    <th className="py-3 px-3 w-10 text-center">
+                      <button
+                        type="button"
+                        onClick={() => toggleSelezionaTutteTessere(tessereFiltrate.map((t) => t.id))}
+                        className="text-slate-400 hover:text-white cursor-pointer"
+                        title="Seleziona tutte le ricevute visibili per download/stampa PDF"
+                      >
+                        {tessereFiltrate.length > 0 && tessereFiltrate.every((t) => selectedTessereIds.includes(t.id)) ? (
+                          <CheckSquare className="w-4 h-4 text-indigo-400" />
+                        ) : (
+                          <Square className="w-4 h-4" />
+                        )}
+                      </button>
+                    </th>
                     <th className="py-3 px-4">Numero Tessera</th>
                     <th className="py-3 px-4">Socio & Codice Fiscale</th>
                     <th className="py-3 px-4">Qualifica</th>
@@ -1966,9 +2521,24 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
                   {tessereFiltrate.map((t) => {
                     const isAttiva = t.stato === 'Attiva' || t.stato === 'Rinnovata';
                     const isAnnullata = t.stato === 'Annullata';
+                    const isSelected = selectedTessereIds.includes(t.id);
 
                     return (
-                      <tr key={t.id} className="hover:bg-slate-900/50 transition-colors">
+                      <tr key={t.id} className={`transition-colors ${isSelected ? 'bg-indigo-950/25' : 'hover:bg-slate-900/50'}`}>
+                        <td className="py-3 px-3 text-center">
+                          <button
+                            type="button"
+                            onClick={() => toggleSelezionaTessera(t.id)}
+                            className="text-slate-400 hover:text-white cursor-pointer"
+                            title="Seleziona tessera per download/stampa PDF"
+                          >
+                            {isSelected ? (
+                              <CheckSquare className="w-4 h-4 text-indigo-400" />
+                            ) : (
+                              <Square className="w-4 h-4" />
+                            )}
+                          </button>
+                        </td>
                         <td className="py-3 px-4 font-mono font-black text-amber-400">
                           {t.numeroTessera}
                           <div className="text-[10px] text-slate-500 font-normal">Anno {t.annoSociale}</div>
@@ -2115,6 +2685,10 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
                 setFormNotaDebitore('Azienda USL Toscana Nord Ovest');
                 setFormNotaPiva('02198590503');
                 setFormNotaIndirizzo('Via Monterotondo 49, Livorno (LI)');
+                setFormNotaEmail('');
+                setFormNotaEmailNonDisponibile(false);
+                setFormNotaPec('');
+                setFormNotaPecNonDisponibile(false);
                 setFormNotaCausale('Convenzione Trasporto Sanitario');
                 setFormNotaImporto(300.0);
                 setFormNotaScadenza(addDaysISODate(formatISODateItaly(), 30));
@@ -2138,19 +2712,16 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
             </button>
           </div>
 
-          {/* Barra Azioni Selezione Multipla */}
+          {/* Barra Azioni Selezione Multipla (Scarica PDF, Stampa PDF, Rimuovi) */}
           {selectedNoteIds.length > 0 && (
-            <div className="bg-red-950/50 border-2 border-red-500/60 p-3.5 rounded-2xl flex flex-wrap items-center justify-between gap-3 shadow-lg animate-in fade-in">
-              <div className="flex items-center gap-2 text-xs font-bold text-red-200">
-                <CheckSquare className="w-4 h-4 text-red-400 shrink-0" />
+            <div className="bg-indigo-950/60 border-2 border-indigo-500/60 p-3.5 rounded-2xl flex flex-wrap items-center justify-between gap-3 shadow-lg animate-in fade-in">
+              <div className="flex flex-wrap items-center gap-2 text-xs font-bold text-indigo-100">
+                <CheckSquare className="w-4 h-4 text-indigo-400 shrink-0" />
                 <span>
                   <strong>{selectedNoteIds.length}</strong> nota/e di debito selezionata/e dall'archivio
                 </span>
-                <span className="text-[10px] text-red-300/80 bg-red-900/60 px-2 py-0.5 rounded-full border border-red-700/60">
-                  Notifica via email a presidenza@croceoro.org e tesoreria@croceoro.org
-                </span>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <button
                   type="button"
                   onClick={() => setSelectedNoteIds([])}
@@ -2160,11 +2731,29 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
                 </button>
                 <button
                   type="button"
+                  disabled={batchPdfInCorso}
+                  onClick={() => handleBatchPdfNote('download')}
+                  className="px-3.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-black uppercase flex items-center gap-1.5 shadow-md active:scale-95 cursor-pointer"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>Scarica PDF ({selectedNoteIds.length})</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={batchPdfInCorso}
+                  onClick={() => handleBatchPdfNote('print')}
+                  className="px-3.5 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-black uppercase flex items-center gap-1.5 shadow-md active:scale-95 cursor-pointer"
+                >
+                  <Printer className="w-3.5 h-3.5" />
+                  <span>Stampa PDF ({selectedNoteIds.length})</span>
+                </button>
+                <button
+                  type="button"
                   onClick={apriEliminaNoteSelezionate}
                   className="px-3.5 py-1.5 rounded-xl bg-red-600 hover:bg-red-500 text-white text-xs font-black uppercase flex items-center gap-1.5 shadow-md active:scale-95 cursor-pointer"
                 >
                   <Trash2 className="w-3.5 h-3.5" />
-                  <span>Rimuovi selezionate ({selectedNoteIds.length})</span>
+                  <span>Rimuovi ({selectedNoteIds.length})</span>
                 </button>
               </div>
             </div>
@@ -2232,6 +2821,26 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
                         <td className="py-3 px-4">
                           <div className="font-bold text-white text-sm">{n.debitoreIntestatario}</div>
                           <div className="text-[11px] text-slate-400 font-mono">P.IVA/CF: {n.partitaIvaCodiceFiscale}</div>
+                          <div className="mt-1 flex flex-wrap gap-1.5 text-[10px]">
+                            {n.emailNonDisponibile ? (
+                              <span className="px-1.5 py-0.5 rounded bg-amber-950/70 border border-amber-600/50 text-amber-300 font-semibold">
+                                Email: Non in possesso
+                              </span>
+                            ) : n.emailDestinatario ? (
+                              <span className="px-1.5 py-0.5 rounded bg-slate-900 border border-slate-700 text-slate-300 font-mono">
+                                ✉ {n.emailDestinatario}
+                              </span>
+                            ) : null}
+                            {n.pecNonDisponibile ? (
+                              <span className="px-1.5 py-0.5 rounded bg-amber-950/70 border border-amber-600/50 text-amber-300 font-semibold">
+                                PEC: Non in possesso
+                              </span>
+                            ) : n.pecDestinatario ? (
+                              <span className="px-1.5 py-0.5 rounded bg-indigo-950/70 border border-indigo-600/50 text-indigo-300 font-mono">
+                                PEC: {n.pecDestinatario}
+                              </span>
+                            ) : null}
+                          </div>
                         </td>
                         <td className="py-3 px-4 text-slate-300 max-w-xs">
                           {n.causale}
@@ -3976,6 +4585,734 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
           </div>
         );
       })()}
+
+      {/* ===================================================================== */}
+      {/* 9. SOTTO-TAB: EMISSIONE RICEVUTE                                      */}
+      {/* ===================================================================== */}
+      {sottoTab === 'ricevute' && (() => {
+        const ricevuteValide = listaRicevute.filter((r) => r.stato !== 'Annullata');
+        const ricevuteAnnullate = listaRicevute.filter((r) => r.stato === 'Annullata');
+        const totaleRicevuteValide = ricevuteValide.reduce((acc, r) => acc + Number(r.importoTotale || 0), 0);
+
+        const q = ricercaRicevute.trim().toLowerCase();
+        const ricevuteFiltrate = listaRicevute.filter((r) => {
+          if (filtroStatoRicevuta !== 'tutte' && r.stato !== filtroStatoRicevuta) return false;
+          if (!q) return true;
+          return (
+            (r.numeroProgressivo || '').toLowerCase().includes(q) ||
+            (r.intestatario || '').toLowerCase().includes(q) ||
+            (r.codiceFiscalePartitaIva || '').toLowerCase().includes(q) ||
+            (r.emailDestinatario || '').toLowerCase().includes(q) ||
+            (r.pecDestinatario || '').toLowerCase().includes(q) ||
+            (r.causale || '').toLowerCase().includes(q) ||
+            (r.tipologia || '').toLowerCase().includes(q) ||
+            (r.codiceServizioRiferimento || '').toLowerCase().includes(q)
+          );
+        });
+
+        return (
+          <div className="space-y-4">
+            {/* KPI Ricevute */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800 flex items-center justify-between">
+                <div>
+                  <span className="text-[10px] uppercase font-bold text-slate-400">Totale Ricevute Emesse (Valide)</span>
+                  <div className="text-xl font-black text-emerald-400 font-mono mt-0.5">
+                    € {totaleRicevuteValide.toLocaleString('it-IT', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </div>
+                </div>
+                <div className="w-10 h-10 rounded-xl bg-emerald-950/80 border border-emerald-500/40 text-emerald-400 flex items-center justify-center">
+                  <Receipt className="w-5 h-5" />
+                </div>
+              </div>
+
+              <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800 flex items-center justify-between">
+                <div>
+                  <span className="text-[10px] uppercase font-bold text-slate-400">Ricevute Valide in Archivio</span>
+                  <div className="text-xl font-black text-white font-mono mt-0.5">{ricevuteValide.length}</div>
+                </div>
+                <div className="w-10 h-10 rounded-xl bg-purple-950/80 border border-purple-500/40 text-purple-400 flex items-center justify-center">
+                  <CheckCircle2 className="w-5 h-5" />
+                </div>
+              </div>
+
+              <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800 flex items-center justify-between">
+                <div>
+                  <span className="text-[10px] uppercase font-bold text-slate-400">Ricevute Annullate</span>
+                  <div className="text-xl font-black text-rose-400 font-mono mt-0.5">{ricevuteAnnullate.length}</div>
+                </div>
+                <div className="w-10 h-10 rounded-xl bg-rose-950/80 border border-rose-500/40 text-rose-400 flex items-center justify-center">
+                  <Ban className="w-5 h-5" />
+                </div>
+              </div>
+            </div>
+
+            {/* Header & Pulsante Nuova Ricevuta */}
+            <div className="bg-slate-900 p-4 rounded-2xl border border-slate-800 flex flex-col md:flex-row items-start md:items-center justify-between gap-3">
+              <div>
+                <h3 className="text-sm font-black text-white uppercase flex items-center gap-2">
+                  <Receipt className="w-4 h-4 text-emerald-400" />
+                  <span>Registro Emissione Ricevute Ufficiali</span>
+                </h3>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Emissione ricevute numerate per erogazioni liberali, rimborsi spese, contributi associativi e quietanze (con acquisizione obbligatoria di Email e PEC o dichiarazione di non possesso).
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={apriModaleNuovaRicevuta}
+                className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs uppercase flex items-center gap-1.5 shadow-md active:scale-95 cursor-pointer shrink-0"
+              >
+                <PlusCircle className="w-4 h-4" />
+                <span>Emetti Nuova Ricevuta</span>
+              </button>
+            </div>
+
+            {/* Ricerca e Filtri */}
+            <div className="bg-slate-950 p-3.5 rounded-2xl border border-slate-800 flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
+              <div className="relative flex-1">
+                <Search className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  value={ricercaRicevute}
+                  onChange={(e) => setRicercaRicevute(e.target.value)}
+                  placeholder="Cerca per numero, intestatario, CF/P.IVA, Email, PEC o causale..."
+                  className="w-full pl-9 pr-3 py-2 rounded-xl bg-slate-900 border border-slate-800 text-xs text-white focus:outline-none focus:border-emerald-500"
+                />
+              </div>
+
+              <div className="flex items-center gap-1.5 shrink-0">
+                {(['tutte', 'Emessa', 'Annullata'] as const).map((st) => (
+                  <button
+                    key={st}
+                    type="button"
+                    onClick={() => setFiltroStatoRicevuta(st)}
+                    className={`px-3 py-2 rounded-xl text-[11px] font-black uppercase cursor-pointer border transition-colors ${
+                      filtroStatoRicevuta === st
+                        ? 'bg-emerald-600 text-white border-emerald-400'
+                        : 'bg-slate-900 text-slate-400 border-slate-800 hover:text-white'
+                    }`}
+                  >
+                    {st === 'tutte' ? 'Tutte' : st}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Barra Selezione Multipla PDF Ricevute */}
+            {selectedRicevuteIds.length > 0 && (
+              <div className="bg-indigo-950/60 border-2 border-indigo-500/60 p-3.5 rounded-2xl flex flex-wrap items-center justify-between gap-3 shadow-lg animate-in fade-in">
+                <div className="flex items-center gap-2 text-xs font-bold text-indigo-200">
+                  <CheckSquare className="w-4 h-4 text-indigo-400 shrink-0" />
+                  <span>
+                    <strong>{selectedRicevuteIds.length}</strong> ricevuta/e selezionata/e
+                  </span>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setSelectedRicevuteIds([])}
+                    className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold cursor-pointer"
+                  >
+                    Deseleziona
+                  </button>
+                  <button
+                    type="button"
+                    disabled={batchPdfInCorso}
+                    onClick={() => handleBatchPdfRicevute('download')}
+                    className="px-3.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-black uppercase flex items-center gap-1.5 shadow-md active:scale-95 cursor-pointer"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    <span>Scarica PDF ({selectedRicevuteIds.length})</span>
+                  </button>
+                  <button
+                    type="button"
+                    disabled={batchPdfInCorso}
+                    onClick={() => handleBatchPdfRicevute('print')}
+                    className="px-3.5 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-black uppercase flex items-center gap-1.5 shadow-md active:scale-95 cursor-pointer"
+                  >
+                    <Printer className="w-3.5 h-3.5" />
+                    <span>Stampa PDF ({selectedRicevuteIds.length})</span>
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Tabella Ricevute Emesse */}
+            <div className="bg-slate-950 rounded-2xl border border-slate-800 overflow-hidden shadow-xl">
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse text-xs">
+                  <thead>
+                    <tr className="bg-slate-900/90 text-slate-400 uppercase text-[10px] font-black border-b border-slate-800">
+                      <th className="py-3 px-3 w-10 text-center">
+                        <button
+                          type="button"
+                          onClick={() => toggleSelezionaTutteRicevute(ricevuteFiltrate.map((r) => r.id))}
+                          className="text-slate-400 hover:text-white cursor-pointer"
+                          title="Seleziona tutte le ricevute visibili per download/stampa PDF"
+                        >
+                          {ricevuteFiltrate.length > 0 && ricevuteFiltrate.every((r) => selectedRicevuteIds.includes(r.id)) ? (
+                            <CheckSquare className="w-4 h-4 text-emerald-400" />
+                          ) : (
+                            <Square className="w-4 h-4" />
+                          )}
+                        </button>
+                      </th>
+                      <th className="py-3 px-4">Numero & Data</th>
+                      <th className="py-3 px-4">Tipologia</th>
+                      <th className="py-3 px-4">Intestatario, Email & PEC</th>
+                      <th className="py-3 px-4">Causale</th>
+                      <th className="py-3 px-4 font-mono">Importo (€)</th>
+                      <th className="py-3 px-4">Incasso</th>
+                      <th className="py-3 px-4">Stato</th>
+                      <th className="py-3 px-4 text-right">Azioni</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800/60">
+                    {ricevuteFiltrate.length === 0 ? (
+                      <tr>
+                        <td colSpan={9} className="py-10 text-center text-slate-500 text-xs">
+                          Nessuna ricevuta emessa corrispondente ai filtri selezionati. Clicca su <strong>Emetti Nuova Ricevuta</strong> per iniziare.
+                        </td>
+                      </tr>
+                    ) : (
+                      ricevuteFiltrate.map((r) => {
+                        const isAnnullata = r.stato === 'Annullata';
+                        const isSelected = selectedRicevuteIds.includes(r.id);
+                        return (
+                          <tr key={r.id} className={`transition-colors ${isSelected ? 'bg-indigo-950/25' : isAnnullata ? 'bg-rose-950/15 opacity-75' : 'hover:bg-slate-900/50'}`}>
+                            <td className="py-3 px-3 text-center">
+                              <button
+                                type="button"
+                                onClick={() => toggleSelezionaRicevuta(r.id)}
+                                className="text-slate-400 hover:text-white cursor-pointer"
+                                title="Seleziona ricevuta per download/stampa PDF"
+                              >
+                                {isSelected ? (
+                                  <CheckSquare className="w-4 h-4 text-emerald-400" />
+                                ) : (
+                                  <Square className="w-4 h-4" />
+                                )}
+                              </button>
+                            </td>
+                            <td className="py-3 px-4 font-mono font-black text-amber-400 whitespace-nowrap">
+                              <div className={isAnnullata ? 'line-through text-rose-400' : ''}>{r.numeroProgressivo}</div>
+                              <div className="text-[10px] text-slate-500 font-normal">{r.dataEmissione}</div>
+                            </td>
+                            <td className="py-3 px-4">
+                              <span className="px-2 py-0.5 rounded-lg bg-slate-900 border border-slate-700 text-slate-200 text-[10px] font-bold">
+                                {r.tipologia}
+                              </span>
+                            </td>
+                            <td className="py-3 px-4">
+                              <div className="font-bold text-white text-sm">{r.intestatario}</div>
+                              {r.codiceFiscalePartitaIva && (
+                                <div className="text-[11px] text-slate-400 font-mono">CF/P.IVA: {r.codiceFiscalePartitaIva}</div>
+                              )}
+                              {r.indirizzoIntestatario && (
+                                <div className="text-[10px] text-slate-500">{r.indirizzoIntestatario}</div>
+                              )}
+                              <div className="mt-1 flex flex-wrap gap-1.5 text-[10px]">
+                                {r.emailNonDisponibile ? (
+                                  <span className="px-1.5 py-0.5 rounded bg-amber-950/70 border border-amber-600/50 text-amber-300 font-semibold">
+                                    Email: Non in possesso
+                                  </span>
+                                ) : r.emailDestinatario ? (
+                                  <span className="px-1.5 py-0.5 rounded bg-slate-900 border border-slate-700 text-slate-300 font-mono">
+                                    ✉ {r.emailDestinatario}
+                                  </span>
+                                ) : null}
+                                {r.pecNonDisponibile ? (
+                                  <span className="px-1.5 py-0.5 rounded bg-amber-950/70 border border-amber-600/50 text-amber-300 font-semibold">
+                                    PEC: Non in possesso
+                                  </span>
+                                ) : r.pecDestinatario ? (
+                                  <span className="px-1.5 py-0.5 rounded bg-indigo-950/70 border border-indigo-600/50 text-indigo-300 font-mono">
+                                    PEC: {r.pecDestinatario}
+                                  </span>
+                                ) : null}
+                              </div>
+                            </td>
+                            <td className="py-3 px-4 text-slate-300 max-w-xs">
+                              <div>{r.causale}</div>
+                              {r.codiceServizioRiferimento && (
+                                <div className="text-[10px] text-purple-300 font-mono mt-0.5">Rif: {r.codiceServizioRiferimento}</div>
+                              )}
+                            </td>
+                            <td className={`py-3 px-4 font-mono font-black text-sm whitespace-nowrap ${isAnnullata ? 'text-rose-400 line-through' : 'text-emerald-400'}`}>
+                              € {Number(r.importoTotale || 0).toFixed(2)}
+                            </td>
+                            <td className="py-3 px-4 text-slate-300 text-[11px] max-w-[180px]">
+                              <span className="inline-block px-2 py-0.5 rounded-lg bg-slate-900 border border-slate-700 text-[10px] font-semibold">
+                                {r.metodoPagamento}
+                              </span>
+                            </td>
+                            <td className="py-3 px-4">
+                              <span className={`px-2 py-0.5 rounded-full text-[10px] font-black uppercase border ${
+                                isAnnullata
+                                  ? 'bg-rose-950 text-rose-300 border-rose-700/60'
+                                  : 'bg-emerald-950 text-emerald-300 border-emerald-700/60'
+                              }`}>
+                                {r.stato}
+                              </span>
+                              {isAnnullata && r.motivoAnnullamento && (
+                                <div className="text-[10px] text-rose-300/80 mt-0.5 max-w-[160px]">{r.motivoAnnullamento}</div>
+                              )}
+                            </td>
+                            <td className="py-3 px-4 text-right">
+                              <div className="flex items-center justify-end gap-1.5">
+                                <button
+                                  type="button"
+                                  onClick={() => setDocumentoPerStampa({ tipo: 'ricevuta', data: r })}
+                                  className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-purple-700 text-slate-200 hover:text-white font-bold text-[10px] uppercase flex items-center gap-1 cursor-pointer transition-colors"
+                                  title="Anteprima e Stampa Ricevuta PDF"
+                                >
+                                  <Printer className="w-3.5 h-3.5" />
+                                  <span>Stampa</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    scaricaRicevutaContabilePDF(r, getTesoriereAttivo(volontari));
+                                    mostraAvviso(`PDF Ricevuta ${r.numeroProgressivo} scaricato.`);
+                                  }}
+                                  className="p-1.5 rounded-lg bg-slate-800 hover:bg-emerald-700 text-emerald-400 hover:text-white cursor-pointer transition-colors"
+                                  title="Scarica subito PDF Ricevuta"
+                                >
+                                  <Download className="w-3.5 h-3.5" />
+                                </button>
+                                {!isAnnullata && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setRicevutaDaAnnullare(r);
+                                      setMotivoAnnullamentoRicevuta('Errore di compilazione / emissione duplicata');
+                                    }}
+                                    className="p-1.5 rounded-lg bg-slate-800 hover:bg-amber-700 text-amber-400 hover:text-white cursor-pointer transition-colors"
+                                    title="Annulla Ricevuta"
+                                  >
+                                    <Ban className="w-3.5 h-3.5" />
+                                  </button>
+                                )}
+                                {confermaEliminaRicevutaId === r.id ? (
+                                  <div className="flex items-center gap-1">
+                                    <button
+                                      type="button"
+                                      onClick={() => handleEliminaRicevuta(r.id)}
+                                      className="px-2 py-1 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-[10px] font-black uppercase cursor-pointer"
+                                    >
+                                      Conferma
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => setConfermaEliminaRicevutaId(null)}
+                                      className="px-1.5 py-1 rounded-lg bg-slate-800 text-slate-300 text-[10px] font-bold cursor-pointer"
+                                    >
+                                      No
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    onClick={() => setConfermaEliminaRicevutaId(r.id)}
+                                    className="p-1.5 rounded-lg bg-slate-800 hover:bg-rose-950 text-rose-400 cursor-pointer transition-colors"
+                                    title="Elimina ricevuta dall'archivio"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* MODALE EMISSIONE NUOVA RICEVUTA CONTABILE */}
+      {modaleNuovaRicevutaAperta && (
+        <div
+          className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-2 sm:p-4 backdrop-blur-sm animate-in fade-in overflow-y-auto"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setModaleNuovaRicevutaAperta(false);
+          }}
+        >
+          <div
+            className="bg-slate-900 border border-slate-700/80 rounded-2xl sm:rounded-3xl max-w-2xl w-full p-4 sm:p-6 shadow-2xl flex flex-col max-h-[92vh] sm:max-h-[90vh] my-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Header Fisso */}
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800 shrink-0">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-emerald-950 border border-emerald-500/50 text-emerald-400 flex items-center justify-center">
+                  <Receipt className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-sm sm:text-base font-black text-white uppercase tracking-tight">
+                    Emetti Nuova Ricevuta Ufficiale
+                  </h3>
+                  <p className="text-[11px] text-slate-400">
+                    Compila i dati dell'intestatario inclusi Email e PEC (o dichiara il non possesso)
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setModaleNuovaRicevutaAperta(false)}
+                className="w-8 h-8 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white flex items-center justify-center cursor-pointer transition-colors"
+                title="Chiudi finestra (Esc)"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Form Scrollabile */}
+            <form onSubmit={handleEmettiRicevutaContabile} className="flex flex-col flex-1 min-h-0 mt-3">
+              <div className="flex-1 overflow-y-auto pr-1 sm:pr-2 space-y-3.5 text-xs py-1 overscroll-contain">
+                {/* Tipologia, Data e Importo */}
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div>
+                    <label className="block text-slate-400 font-bold mb-1">Tipologia Ricevuta *</label>
+                    <select
+                      value={formRicTipologia}
+                      onChange={(e) => setFormRicTipologia(e.target.value as RicevutaContabile['tipologia'])}
+                      className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white focus:outline-none focus:border-emerald-500 cursor-pointer"
+                    >
+                      <option value="Erogazione Liberale / Donazione">Erogazione Liberale / Donazione</option>
+                      <option value="Rimborso Spese">Rimborso Spese</option>
+                      <option value="Contributo Associativo / Evento">Contributo Associativo / Evento</option>
+                      <option value="Quietanza di Pagamento">Quietanza di Pagamento</option>
+                      <option value="Altra Ricevuta">Altra Ricevuta</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-slate-400 font-bold mb-1">Data Emissione *</label>
+                    <input
+                      type="date"
+                      required
+                      value={formRicData}
+                      onChange={(e) => setFormRicData(e.target.value)}
+                      className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white font-mono focus:outline-none focus:border-emerald-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-slate-400 font-bold mb-1">Importo (€) *</label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0.01"
+                      required
+                      value={formRicImporto}
+                      onChange={(e) => setFormRicImporto(e.target.value)}
+                      placeholder="es. 50.00"
+                      className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-700 text-emerald-400 font-mono font-black focus:outline-none focus:border-emerald-500"
+                    />
+                  </div>
+                </div>
+
+                {/* Auto-compilazione da Contatti */}
+                {contatti && contatti.length > 0 && (
+                  <div>
+                    <label className="block text-[11px] font-bold text-emerald-300 mb-1 flex items-center gap-1">
+                      <Building2 className="w-3.5 h-3.5 text-emerald-400" />
+                      <span>Auto-compila da Rubrica Contatti (Opzionale)</span>
+                    </label>
+                    <select
+                      onChange={(e) => {
+                        const cid = e.target.value;
+                        if (!cid) return;
+                        const sel = contatti.find((c) => c.id === cid);
+                        if (sel) {
+                          setFormRicIntestatario(sel.ragioneSociale);
+                          setFormRicCfPiva(sel.partitaIvaCodiceFiscale || '');
+                          setFormRicIndirizzo(`${sel.indirizzo || ''}, ${sel.cap || ''} ${sel.citta || ''} (${sel.provincia || ''})`.replace(/^,\s*/, '').replace(/\(\)/g, '').trim());
+                          setFormRicEmail(sel.email || '');
+                          setFormRicEmailNonDisponibile(false);
+                          setFormRicPec(sel.pec || '');
+                          setFormRicPecNonDisponibile(false);
+                        }
+                      }}
+                      className="w-full p-2 rounded-xl bg-emerald-950/35 border border-emerald-500/45 text-emerald-200 text-xs font-semibold focus:outline-none focus:border-emerald-400 cursor-pointer"
+                    >
+                      <option value="">⚡ Seleziona da Contatti Fornitori / Clienti / Enti...</option>
+                      {contatti.map((c) => (
+                        <option key={c.id} value={c.id}>
+                          [{c.tipo.toUpperCase()}] {c.ragioneSociale} — CF/P.IVA: {c.partitaIvaCodiceFiscale || 'N/D'}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
+                {/* Intestatario & CF/P.IVA */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-slate-400 font-bold mb-1">Intestatario / Destinatario *</label>
+                    <input
+                      type="text"
+                      required
+                      value={formRicIntestatario}
+                      onChange={(e) => setFormRicIntestatario(e.target.value)}
+                      placeholder="Nome Cognome o Ragione Sociale"
+                      className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white focus:outline-none focus:border-emerald-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-slate-400 font-bold mb-1">Codice Fiscale / Partita IVA *</label>
+                    <input
+                      type="text"
+                      required
+                      value={formRicCfPiva}
+                      onChange={(e) => setFormRicCfPiva(e.target.value.toUpperCase())}
+                      placeholder="es. RSSMRA80A01F023K / 01234567890"
+                      className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white font-mono uppercase focus:outline-none focus:border-emerald-500"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-slate-400 font-bold mb-1">Indirizzo Residenza / Sede *</label>
+                  <input
+                    type="text"
+                    required
+                    value={formRicIndirizzo}
+                    onChange={(e) => setFormRicIndirizzo(e.target.value)}
+                    placeholder="Via, Civico, CAP, Comune e Provincia"
+                    className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white focus:outline-none focus:border-emerald-500"
+                  />
+                </div>
+
+                {/* RECAPITI OBBLIGATORI: EMAIL & PEC CON DICHIARAZIONE DI NON POSSESSO */}
+                <div className="bg-slate-950/90 border border-emerald-500/40 rounded-2xl p-3.5 space-y-3">
+                  <div className="text-[11px] font-black uppercase text-emerald-300 flex items-center gap-1.5">
+                    <Mail className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>Recapiti Elettronici Obbligatori (Email & PEC)</span>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    {/* Indirizzo Email */}
+                    <div className="space-y-1.5">
+                      <label className="block text-slate-300 font-bold">
+                        Indirizzo Email {!formRicEmailNonDisponibile && <span className="text-rose-400">*</span>}
+                      </label>
+                      <input
+                        type="email"
+                        required={!formRicEmailNonDisponibile}
+                        disabled={formRicEmailNonDisponibile}
+                        value={formRicEmailNonDisponibile ? '' : formRicEmail}
+                        onChange={(e) => setFormRicEmail(e.target.value)}
+                        placeholder={formRicEmailNonDisponibile ? 'Dichiarato non in possesso' : 'es. nome@dominio.it'}
+                        className={`w-full p-2.5 rounded-xl border text-white font-mono focus:outline-none ${
+                          formRicEmailNonDisponibile
+                            ? 'bg-slate-900/60 border-amber-500/40 text-amber-300/70 italic cursor-not-allowed'
+                            : 'bg-slate-900 border-slate-700 focus:border-emerald-500'
+                        }`}
+                      />
+                      <label className="flex items-start gap-2 cursor-pointer select-none p-2 rounded-xl bg-amber-950/25 border border-amber-500/35 hover:border-amber-400/60 transition-colors">
+                        <input
+                          type="checkbox"
+                          checked={formRicEmailNonDisponibile}
+                          onChange={(e) => {
+                            const checked = e.target.checked;
+                            setFormRicEmailNonDisponibile(checked);
+                            if (checked) setFormRicEmail('');
+                          }}
+                          className="mt-0.5 w-4 h-4 accent-amber-500 cursor-pointer shrink-0"
+                        />
+                        <span className="text-[11px] text-amber-200 leading-snug font-semibold">
+                          Dichiaro di non essere in possesso dell'indirizzo Email al momento dell'emissione
+                        </span>
+                      </label>
+                    </div>
+
+                    {/* Indirizzo PEC */}
+                    <div className="space-y-1.5">
+                      <label className="block text-slate-300 font-bold">
+                        Indirizzo PEC {!formRicPecNonDisponibile && <span className="text-rose-400">*</span>}
+                      </label>
+                      <input
+                        type="email"
+                        required={!formRicPecNonDisponibile}
+                        disabled={formRicPecNonDisponibile}
+                        value={formRicPecNonDisponibile ? '' : formRicPec}
+                        onChange={(e) => setFormRicPec(e.target.value)}
+                        placeholder={formRicPecNonDisponibile ? 'Dichiarato non in possesso' : 'es. destinatario@pec.it'}
+                        className={`w-full p-2.5 rounded-xl border text-white font-mono focus:outline-none ${
+                          formRicPecNonDisponibile
+                            ? 'bg-slate-900/60 border-amber-500/40 text-amber-300/70 italic cursor-not-allowed'
+                            : 'bg-slate-900 border-slate-700 focus:border-emerald-500'
+                        }`}
+                      />
+                      <label className="flex items-start gap-2 cursor-pointer select-none p-2 rounded-xl bg-amber-950/25 border border-amber-500/35 hover:border-amber-400/60 transition-colors">
+                        <input
+                          type="checkbox"
+                          checked={formRicPecNonDisponibile}
+                          onChange={(e) => {
+                            const checked = e.target.checked;
+                            setFormRicPecNonDisponibile(checked);
+                            if (checked) setFormRicPec('');
+                          }}
+                          className="mt-0.5 w-4 h-4 accent-amber-500 cursor-pointer shrink-0"
+                        />
+                        <span className="text-[11px] text-amber-200 leading-snug font-semibold">
+                          Dichiaro di non essere in possesso dell'indirizzo PEC al momento dell'emissione
+                        </span>
+                      </label>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Causale */}
+                <div>
+                  <label className="block text-slate-400 font-bold mb-1">Causale / Descrizione Ricevuta *</label>
+                  <textarea
+                    rows={2}
+                    required
+                    value={formRicCausale}
+                    onChange={(e) => setFormRicCausale(e.target.value)}
+                    placeholder="es. Erogazione liberale a sostegno delle attività istituzionali di pubblica assistenza"
+                    className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white focus:outline-none focus:border-emerald-500"
+                  />
+                </div>
+
+                {/* Metodo Pagamento & Rif. Servizio */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-slate-400 font-bold mb-1">Modalità di Incasso / Pagamento *</label>
+                    <select
+                      value={formRicMetodo}
+                      onChange={(e) => setFormRicMetodo(e.target.value)}
+                      className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white focus:outline-none focus:border-emerald-500 cursor-pointer"
+                    >
+                      <option value="Contanti">Contanti (Brevi Manu)</option>
+                      <option value={`Bonifico Bancario - ${bancaCreditAgricole} (IBAN: ${ibanCreditAgricole})`}>
+                        Bonifico - {bancaCreditAgricole} ({ibanCreditAgricole})
+                      </option>
+                      <option value={`Bonifico / C/C Postale - ${bancaPoste} (IBAN: ${ibanPoste} / C/C ${ccPostale})`}>
+                        Bonifico / C/C Postale - {bancaPoste} ({ibanPoste})
+                      </option>
+                      <option value="POS / Carta di Credito / Bancomat">POS / Carta / Bancomat</option>
+                      <option value="Assegno Bancario / Circolare">Assegno Bancario / Circolare</option>
+                      {metodiPerPagamenti.map((m) => {
+                        const label = formattaEtichettaMetodoPagamento(m);
+                        return (
+                          <option key={m.id} value={label}>
+                            {label}
+                          </option>
+                        );
+                      })}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-slate-400 font-bold mb-1">Riferimento Servizio (Opzionale)</label>
+                    <input
+                      type="text"
+                      value={formRicRiferimento}
+                      onChange={(e) => setFormRicRiferimento(e.target.value)}
+                      placeholder="es. SRV-2026-042"
+                      className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-700 text-amber-300 font-mono focus:outline-none focus:border-emerald-500"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-slate-400 font-bold mb-1">Note Aggiuntive (Opzionale)</label>
+                  <input
+                    type="text"
+                    value={formRicNote}
+                    onChange={(e) => setFormRicNote(e.target.value)}
+                    placeholder="Eventuali annotazioni riportate sulla ricevuta..."
+                    className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white focus:outline-none focus:border-emerald-500"
+                  />
+                </div>
+              </div>
+
+              {/* Footer Fisso */}
+              <div className="flex items-center justify-end gap-2 pt-3 mt-3 border-t border-slate-800 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setModaleNuovaRicevutaAperta(false)}
+                  className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs uppercase cursor-pointer"
+                >
+                  Annulla
+                </button>
+                <button
+                  type="submit"
+                  className="px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs uppercase flex items-center gap-2 shadow-lg active:scale-95 cursor-pointer"
+                >
+                  <Save className="w-4 h-4" />
+                  <span>Emetti & Registra Ricevuta</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODALE ANNULLAMENTO RICEVUTA CONTABILE */}
+      {ricevutaDaAnnullare && (
+        <div
+          className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setRicevutaDaAnnullare(null);
+          }}
+        >
+          <div
+            className="bg-slate-900 border border-amber-500/50 rounded-2xl max-w-md w-full p-5 shadow-2xl space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div className="flex items-center gap-2 text-amber-400 font-black text-sm uppercase">
+                <Ban className="w-5 h-5" />
+                <span>Annulla Ricevuta {ricevutaDaAnnullare.numeroProgressivo}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setRicevutaDaAnnullare(null)}
+                className="p-1.5 rounded-lg bg-slate-800 text-slate-400 hover:text-white cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <p className="text-xs text-slate-300">
+              La ricevuta intestata a <strong>{ricevutaDaAnnullare.intestatario}</strong> (€ {Number(ricevutaDaAnnullare.importoTotale || 0).toFixed(2)}) resterà in archivio con dicitura <strong>ANNULLATA</strong>.
+            </p>
+            <div>
+              <label className="block text-[11px] font-bold text-slate-400 uppercase mb-1">Motivazione Annullamento</label>
+              <input
+                type="text"
+                value={motivoAnnullamentoRicevuta}
+                onChange={(e) => setMotivoAnnullamentoRicevuta(e.target.value)}
+                className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white text-xs focus:outline-none focus:border-amber-500"
+              />
+            </div>
+            <div className="flex items-center justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setRicevutaDaAnnullare(null)}
+                className="px-4 py-2 rounded-xl bg-slate-800 text-slate-300 text-xs font-bold cursor-pointer"
+              >
+                Chiudi
+              </button>
+              <button
+                type="button"
+                onClick={handleConfermaAnnullaRicevuta}
+                className="px-4 py-2 rounded-xl bg-amber-600 hover:bg-amber-500 text-white text-xs font-black uppercase cursor-pointer"
+              >
+                Conferma Annullamento
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {modaleNuovaDonazioneAperta && (
         <div
           className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-2 sm:p-4 backdrop-blur-sm animate-in fade-in overflow-y-auto"
@@ -4647,6 +5984,10 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
                             setFormNotaDebitore(sel.ragioneSociale);
                             setFormNotaPiva(sel.partitaIvaCodiceFiscale || '');
                             setFormNotaIndirizzo(`${sel.indirizzo}, ${sel.cap} ${sel.citta} (${sel.provincia})`.replace(/,\s*,/g, ','));
+                            setFormNotaEmail(sel.email || '');
+                            setFormNotaEmailNonDisponibile(false);
+                            setFormNotaPec(sel.pec || '');
+                            setFormNotaPecNonDisponibile(false);
                           }
                         }}
                         className="w-full p-2 rounded-xl bg-purple-950/40 border border-purple-500/50 text-purple-200 text-xs font-semibold focus:ring-1 focus:ring-purple-400 focus:outline-none mb-1.5 cursor-pointer"
@@ -4714,6 +6055,86 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
                     className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white focus:outline-none focus:border-purple-500"
                     placeholder="Via, Civico, CAP, Comune e Provincia (Auto-compilato)"
                   />
+                </div>
+
+                {/* RECAPITI OBBLIGATORI: EMAIL & PEC CON DICHIARAZIONE DI NON POSSESSO */}
+                <div className="bg-slate-950/90 border border-purple-500/40 rounded-2xl p-3.5 space-y-3">
+                  <div className="text-[11px] font-black uppercase text-purple-300 flex items-center gap-1.5">
+                    <Mail className="w-3.5 h-3.5 text-purple-400" />
+                    <span>Recapiti Elettronici Obbligatori Destinatario (Email & PEC)</span>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    {/* Indirizzo Email */}
+                    <div className="space-y-1.5">
+                      <label className="block text-slate-300 font-bold">
+                        Indirizzo Email {!formNotaEmailNonDisponibile && <span className="text-rose-400">*</span>}
+                      </label>
+                      <input
+                        type="email"
+                        required={!formNotaEmailNonDisponibile}
+                        disabled={formNotaEmailNonDisponibile}
+                        value={formNotaEmailNonDisponibile ? '' : formNotaEmail}
+                        onChange={(e) => setFormNotaEmail(e.target.value)}
+                        placeholder={formNotaEmailNonDisponibile ? 'Dichiarato non in possesso' : 'es. amministrazione@ente.it'}
+                        className={`w-full p-2.5 rounded-xl border text-white font-mono focus:outline-none ${
+                          formNotaEmailNonDisponibile
+                            ? 'bg-slate-900/60 border-amber-500/40 text-amber-300/70 italic cursor-not-allowed'
+                            : 'bg-slate-900 border-slate-700 focus:border-purple-500'
+                        }`}
+                      />
+                      <label className="flex items-start gap-2 cursor-pointer select-none p-2 rounded-xl bg-amber-950/25 border border-amber-500/35 hover:border-amber-400/60 transition-colors">
+                        <input
+                          type="checkbox"
+                          checked={formNotaEmailNonDisponibile}
+                          onChange={(e) => {
+                            const checked = e.target.checked;
+                            setFormNotaEmailNonDisponibile(checked);
+                            if (checked) setFormNotaEmail('');
+                          }}
+                          className="mt-0.5 w-4 h-4 accent-amber-500 cursor-pointer shrink-0"
+                        />
+                        <span className="text-[11px] text-amber-200 leading-snug font-semibold">
+                          Dichiaro di non essere in possesso dell'indirizzo Email al momento dell'emissione
+                        </span>
+                      </label>
+                    </div>
+
+                    {/* Indirizzo PEC */}
+                    <div className="space-y-1.5">
+                      <label className="block text-slate-300 font-bold">
+                        Indirizzo PEC {!formNotaPecNonDisponibile && <span className="text-rose-400">*</span>}
+                      </label>
+                      <input
+                        type="email"
+                        required={!formNotaPecNonDisponibile}
+                        disabled={formNotaPecNonDisponibile}
+                        value={formNotaPecNonDisponibile ? '' : formNotaPec}
+                        onChange={(e) => setFormNotaPec(e.target.value)}
+                        placeholder={formNotaPecNonDisponibile ? 'Dichiarato non in possesso' : 'es. protocollo@pec.ente.it'}
+                        className={`w-full p-2.5 rounded-xl border text-white font-mono focus:outline-none ${
+                          formNotaPecNonDisponibile
+                            ? 'bg-slate-900/60 border-amber-500/40 text-amber-300/70 italic cursor-not-allowed'
+                            : 'bg-slate-900 border-slate-700 focus:border-purple-500'
+                        }`}
+                      />
+                      <label className="flex items-start gap-2 cursor-pointer select-none p-2 rounded-xl bg-amber-950/25 border border-amber-500/35 hover:border-amber-400/60 transition-colors">
+                        <input
+                          type="checkbox"
+                          checked={formNotaPecNonDisponibile}
+                          onChange={(e) => {
+                            const checked = e.target.checked;
+                            setFormNotaPecNonDisponibile(checked);
+                            if (checked) setFormNotaPec('');
+                          }}
+                          className="mt-0.5 w-4 h-4 accent-amber-500 cursor-pointer shrink-0"
+                        />
+                        <span className="text-[11px] text-amber-200 leading-snug font-semibold">
+                          Dichiaro di non essere in possesso dell'indirizzo PEC al momento dell'emissione
+                        </span>
+                      </label>
+                    </div>
+                  </div>
                 </div>
 
                 <div>
@@ -5249,7 +6670,11 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
               <div className="text-left">
                 <div className="text-xs uppercase font-black text-slate-500">Croce Oro Massa Carrara OdV • Carta Intestata</div>
                 <div className="text-lg font-black text-[#1d1a60] uppercase">
-                  {documentoPerStampa.tipo === 'tessera' ? 'Ricevuta Tesseramento & Quota Sociale' : 'Nota di Debito Ufficiale'}
+                  {documentoPerStampa.tipo === 'tessera'
+                    ? 'Ricevuta Tesseramento & Quota Sociale'
+                    : documentoPerStampa.tipo === 'ricevuta'
+                      ? 'Ricevuta Contabile Ufficiale'
+                      : 'Nota di Debito Ufficiale'}
                 </div>
               </div>
               <button
@@ -5353,6 +6778,22 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
                     {documentoPerStampa.data.indirizzoDebitore && (
                       <div>Indirizzo: {documentoPerStampa.data.indirizzoDebitore}</div>
                     )}
+                    <div>
+                      Email:{' '}
+                      {documentoPerStampa.data.emailNonDisponibile ? (
+                        <span className="italic text-amber-700 font-semibold">Non disponibile (dichiarato non in possesso all'emissione)</span>
+                      ) : (
+                        <strong className="font-mono">{documentoPerStampa.data.emailDestinatario || 'Non indicata'}</strong>
+                      )}
+                    </div>
+                    <div>
+                      PEC:{' '}
+                      {documentoPerStampa.data.pecNonDisponibile ? (
+                        <span className="italic text-amber-700 font-semibold">Non disponibile (dichiarato non in possesso all'emissione)</span>
+                      ) : (
+                        <strong className="font-mono">{documentoPerStampa.data.pecDestinatario || 'Non indicata'}</strong>
+                      )}
+                    </div>
                     {documentoPerStampa.data.proprietarioImmobile && (
                       <div className="p-2.5 rounded-xl bg-amber-50 border border-amber-200 text-amber-950 space-y-0.5">
                         <div className="font-bold text-[11px] uppercase">Dati Proprietario Immobile (Atto Esecutivo)</div>
@@ -5419,9 +6860,126 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
                   </div>
                 </div>
               )}
+
+              {documentoPerStampa.tipo === 'ricevuta' && (
+                <div className="space-y-3 text-xs">
+                  {documentoPerStampa.data.stato === 'Annullata' && (
+                    <div className="p-2.5 rounded-xl bg-rose-100 border border-rose-300 text-rose-800 font-black uppercase text-center">
+                      Documento Annullato {documentoPerStampa.data.motivoAnnullamento ? `— ${documentoPerStampa.data.motivoAnnullamento}` : ''}
+                    </div>
+                  )}
+                  <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200 space-y-2">
+                    <div className="flex justify-between font-mono font-bold text-[#1d1a60]">
+                      <span>Ricevuta N.: {documentoPerStampa.data.numeroProgressivo}</span>
+                      <span>Data: {documentoPerStampa.data.dataEmissione}</span>
+                    </div>
+                    <div className="text-[11px] font-bold text-slate-600 uppercase">
+                      Tipologia: {documentoPerStampa.data.tipologia}
+                    </div>
+                    <div>Intestatario: <strong>{documentoPerStampa.data.intestatario}</strong></div>
+                    {documentoPerStampa.data.codiceFiscalePartitaIva && (
+                      <div>CF / P.IVA: <strong className="font-mono">{documentoPerStampa.data.codiceFiscalePartitaIva}</strong></div>
+                    )}
+                    {documentoPerStampa.data.indirizzoIntestatario && (
+                      <div>Indirizzo: {documentoPerStampa.data.indirizzoIntestatario}</div>
+                    )}
+                    <div>
+                      Email:{' '}
+                      {documentoPerStampa.data.emailNonDisponibile ? (
+                        <span className="italic text-amber-700 font-semibold">Non disponibile (dichiarato non in possesso all'emissione)</span>
+                      ) : (
+                        <strong className="font-mono">{documentoPerStampa.data.emailDestinatario || 'Non indicata'}</strong>
+                      )}
+                    </div>
+                    <div>
+                      PEC:{' '}
+                      {documentoPerStampa.data.pecNonDisponibile ? (
+                        <span className="italic text-amber-700 font-semibold">Non disponibile (dichiarato non in possesso all'emissione)</span>
+                      ) : (
+                        <strong className="font-mono">{documentoPerStampa.data.pecDestinatario || 'Non indicata'}</strong>
+                      )}
+                    </div>
+                    {documentoPerStampa.data.codiceServizioRiferimento && (
+                      <div>Rif. Servizio: <strong className="font-mono">{documentoPerStampa.data.codiceServizioRiferimento}</strong></div>
+                    )}
+                    <div className="pt-2 border-t border-slate-200">
+                      <span className="font-bold">Causale:</span>
+                      <p className="mt-0.5">{documentoPerStampa.data.causale}</p>
+                    </div>
+                    {documentoPerStampa.data.note && (
+                      <div className="text-[11px] text-slate-600">
+                        <span className="font-bold">Note:</span> {documentoPerStampa.data.note}
+                      </div>
+                    )}
+                    <div className="text-base font-black text-emerald-700 pt-2 flex justify-between border-t border-slate-200">
+                      <span>Importo Quietanzato:</span>
+                      <span>€ {Number(documentoPerStampa.data.importoTotale || 0).toFixed(2)}</span>
+                    </div>
+                    <div className="text-slate-600 font-mono text-[11px]">
+                      Modalità Incasso: {documentoPerStampa.data.metodoPagamento}
+                    </div>
+                  </div>
+                  <div className="text-[10px] text-slate-500 italic">
+                    {DICITURA_ESENZIONE_BOLLO}
+                  </div>
+                </div>
+              )}
+              {(documentoPerStampa.tipo === 'nota' || documentoPerStampa.tipo === 'ricevuta') && (() => {
+                const tesoriere = getTesoriereAttivo(volontari);
+                return (
+                  <div className="bg-amber-50/90 border border-amber-300 p-3 rounded-2xl space-y-1 mt-3 text-xs">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[10px] font-black uppercase tracking-wider text-amber-900 flex items-center gap-1">
+                        <CheckCircle2 className="w-3.5 h-3.5 text-amber-700" />
+                        <span>Firma Ufficiale del Tesoriere (Inclusa sul PDF)</span>
+                      </span>
+                      <span className="text-[9px] font-mono font-bold text-amber-800 bg-amber-200/60 px-1.5 py-0.5 rounded">
+                        {tesoriere.firmaBase64 ? 'Autografa' : 'Automatica'}
+                      </span>
+                    </div>
+                    <div className="text-xs font-bold text-slate-800">
+                      Tesoriere in Carica: <strong>{tesoriere.nome} {tesoriere.cognome}</strong> ({tesoriere.carica})
+                    </div>
+                    <div className="text-[11px] text-slate-600 flex items-center gap-1">
+                      <Mail className="w-3 h-3 text-amber-700 shrink-0" />
+                      <span>
+                        In copia email (CC) automatica: <strong className="font-mono">{tesoriere.email}</strong>
+                      </span>
+                    </div>
+                  </div>
+                );
+              })()}
             </div>
 
-            <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-200 shrink-0 mt-2">
+            <div className="flex flex-wrap items-center justify-end gap-2 pt-3 border-t border-slate-200 shrink-0 mt-2">
+              {(documentoPerStampa.tipo === 'nota' || documentoPerStampa.tipo === 'ricevuta') && (() => {
+                const emailOrd = !documentoPerStampa.data.emailNonDisponibile
+                  ? (documentoPerStampa.data.emailDestinatario || '').trim()
+                  : '';
+                const hasEmailOrd = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(emailOrd);
+                return (
+                  <button
+                    type="button"
+                    disabled={inviandoEmailStampa || !hasEmailOrd}
+                    title={
+                      hasEmailOrd
+                        ? `Invia PDF a ${emailOrd} con CC automatico al Tesoriere`
+                        : 'Email ordinaria (non PEC) non presente per questo destinatario'
+                    }
+                    onClick={async () => {
+                      const ok = await inviaDocumentoContabileViaEmail(
+                        documentoPerStampa.tipo === 'nota' ? 'nota' : 'ricevuta',
+                        documentoPerStampa.data
+                      );
+                      if (ok) setDocumentoPerStampa(null);
+                    }}
+                    className="px-4 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 disabled:bg-slate-200 disabled:text-slate-400 text-slate-950 font-black text-xs uppercase flex items-center gap-2 shadow-md cursor-pointer disabled:cursor-not-allowed active:scale-95 transition-all"
+                  >
+                    <Send className="w-4 h-4" />
+                    <span>{inviandoEmailStampa ? 'Invio in corso...' : 'Invia Email (CC Tesoriere)'}</span>
+                  </button>
+                );
+              })()}
               <button
                 type="button"
                 disabled={inviandoEmailStampa}
@@ -5429,12 +6987,202 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
                 className="px-5 py-2.5 rounded-xl bg-[#1d1a60] hover:bg-[#141245] text-white font-black text-xs uppercase flex items-center gap-2 shadow-md cursor-pointer disabled:opacity-50 active:scale-95 transition-all"
               >
                 <Printer className="w-4 h-4" />
-                <span>{inviandoEmailStampa ? 'Stampa & Invio Email in corso...' : 'Stampa Documento'}</span>
+                <span>{inviandoEmailStampa ? 'Elaborazione in corso...' : 'Stampa Documento'}</span>
               </button>
             </div>
           </div>
         </div>
       )}
+
+      {/* MODALE WORKFLOW PRE-GENERAZIONE PDF (Anteprima / Anteprima & Stampa / Salva in Archivio / Salva & Invia / Torna alla Modifica) */}
+      {bozzaPdfWorkflow && (() => {
+        const tesoriereAttivo = getTesoriereAttivo(volontari);
+        const isNotaORicevuta = bozzaPdfWorkflow.tipo === 'nota' || bozzaPdfWorkflow.tipo === 'ricevuta';
+        const emailDestOrd = isNotaORicevuta && !bozzaPdfWorkflow.data.emailNonDisponibile
+          ? (bozzaPdfWorkflow.data.emailDestinatario || '').trim()
+          : '';
+        const hasValidEmailOrd = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(emailDestOrd);
+
+        return (
+          <PdfAnteprimaWorkflowModal
+            aperto={true}
+            titoloDocumento={
+              bozzaPdfWorkflow.tipo === 'tessera'
+                ? `Ricevuta Tesseramento ${bozzaPdfWorkflow.data.numeroTessera}`
+                : bozzaPdfWorkflow.tipo === 'nota'
+                  ? `Nota di Debito ${bozzaPdfWorkflow.data.numeroProgressivo}`
+                  : `Ricevuta Contabile ${bozzaPdfWorkflow.data.numeroProgressivo}`
+            }
+            sottotitolo={
+              bozzaPdfWorkflow.tipo === 'tessera'
+                ? `${bozzaPdfWorkflow.data.socioNome} ${bozzaPdfWorkflow.data.socioCognome} • € ${Number(bozzaPdfWorkflow.data.quotaVersata || 0).toFixed(2)}`
+                : bozzaPdfWorkflow.tipo === 'nota'
+                  ? `${bozzaPdfWorkflow.data.debitoreIntestatario} • € ${Number(bozzaPdfWorkflow.data.importoTotale || 0).toFixed(2)}`
+                  : `${bozzaPdfWorkflow.data.intestatario} • € ${Number(bozzaPdfWorkflow.data.importoTotale || 0).toFixed(2)}`
+            }
+            nomeFile={
+              bozzaPdfWorkflow.tipo === 'tessera'
+                ? `Ricevuta_Tesseramento_${String(bozzaPdfWorkflow.data.numeroTessera || 'tessera').replace(/[^a-zA-Z0-9_-]/g, '_')}.pdf`
+                : bozzaPdfWorkflow.tipo === 'nota'
+                  ? `Nota_Di_Debito_${String(bozzaPdfWorkflow.data.numeroProgressivo || 'nota').replace(/[^a-zA-Z0-9_-]/g, '_')}.pdf`
+                  : `Ricevuta_${String(bozzaPdfWorkflow.data.numeroProgressivo || 'ricevuta').replace(/[^a-zA-Z0-9_-]/g, '_')}.pdf`
+            }
+            giaSalvatoInArchivio={bozzaPdfWorkflow.salvato}
+            generaPdfBytes={() => {
+              if (bozzaPdfWorkflow.tipo === 'tessera') {
+                const vol = preparaVolontarioDaTessera(bozzaPdfWorkflow.data, volontari);
+                return generaBytesDaJsPDF(generaRicevutaTesseramentoPDF(vol, undefined, tesoriereAttivo));
+              }
+              if (bozzaPdfWorkflow.tipo === 'nota') {
+                return generaBytesDaJsPDF(generaNotaDiDebitoPDF(bozzaPdfWorkflow.data, tesoriereAttivo));
+              }
+              return generaBytesDaJsPDF(generaRicevutaContabilePDF(bozzaPdfWorkflow.data, tesoriereAttivo));
+            }}
+            riepilogoContenuto={
+              bozzaPdfWorkflow.tipo === 'tessera' ? (
+                <div className="space-y-2 text-xs">
+                  <div className="flex justify-between font-mono font-bold text-[#1d1a60]">
+                    <span>Tessera N.: {bozzaPdfWorkflow.data.numeroTessera}</span>
+                    <span>Data: {bozzaPdfWorkflow.data.dataEmissione}</span>
+                  </div>
+                  <div>Socio: <strong>{bozzaPdfWorkflow.data.socioNome} {bozzaPdfWorkflow.data.socioCognome}</strong></div>
+                  <div>Codice Fiscale: <strong className="font-mono">{bozzaPdfWorkflow.data.socioCodiceFiscale}</strong></div>
+                  <div>Qualifica: <strong>{bozzaPdfWorkflow.data.qualifica}</strong></div>
+                  <div className="pt-2 border-t border-slate-200 flex justify-between font-black text-emerald-700 text-sm">
+                    <span>Quota Associativa:</span>
+                    <span>€ {Number(bozzaPdfWorkflow.data.quotaVersata || 0).toFixed(2)}</span>
+                  </div>
+                </div>
+              ) : bozzaPdfWorkflow.tipo === 'nota' ? (
+                <div className="space-y-2 text-xs">
+                  <div className="flex justify-between font-mono font-bold text-[#1d1a60]">
+                    <span>Nota di Debito: {bozzaPdfWorkflow.data.numeroProgressivo}</span>
+                    <span>Data: {bozzaPdfWorkflow.data.dataEmissione}</span>
+                  </div>
+                  <div>Debitore: <strong>{bozzaPdfWorkflow.data.debitoreIntestatario}</strong></div>
+                  {bozzaPdfWorkflow.data.partitaIvaCodiceFiscale && (
+                    <div>P.IVA / CF: <strong className="font-mono">{bozzaPdfWorkflow.data.partitaIvaCodiceFiscale}</strong></div>
+                  )}
+                  <div>
+                    Email: {bozzaPdfWorkflow.data.emailNonDisponibile ? <em className="text-amber-700">Non in possesso</em> : <strong className="font-mono">{bozzaPdfWorkflow.data.emailDestinatario}</strong>}
+                  </div>
+                  <div>
+                    PEC: {bozzaPdfWorkflow.data.pecNonDisponibile ? <em className="text-amber-700">Non in possesso</em> : <strong className="font-mono">{bozzaPdfWorkflow.data.pecDestinatario}</strong>}
+                  </div>
+                  <div className="pt-1 border-t border-slate-200">
+                    <strong>Causale:</strong> {bozzaPdfWorkflow.data.causale}
+                  </div>
+                  <div className="pt-2 border-t border-slate-200 flex justify-between font-black text-purple-900 text-sm">
+                    <span>Totale da Liquidare:</span>
+                    <span>€ {Number(bozzaPdfWorkflow.data.importoTotale || 0).toFixed(2)}</span>
+                  </div>
+                  <div className="text-[11px] text-slate-600 font-mono">
+                    Scadenza: {bozzaPdfWorkflow.data.scadenzaPagamento} • {bozzaPdfWorkflow.data.metodoPagamento}
+                  </div>
+                  <div className="pt-2 border-t border-slate-200 text-[11px] text-amber-900 bg-amber-50 px-2.5 py-1.5 rounded-lg border border-amber-200">
+                    Firma sul PDF: <strong>{tesoriereAttivo.nome} {tesoriereAttivo.cognome}</strong> ({tesoriereAttivo.carica})
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-2 text-xs">
+                  <div className="flex justify-between font-mono font-bold text-[#1d1a60]">
+                    <span>Ricevuta N.: {bozzaPdfWorkflow.data.numeroProgressivo}</span>
+                    <span>Data: {bozzaPdfWorkflow.data.dataEmissione}</span>
+                  </div>
+                  <div className="text-[11px] uppercase font-bold text-slate-600">Tipologia: {bozzaPdfWorkflow.data.tipologia}</div>
+                  <div>Intestatario: <strong>{bozzaPdfWorkflow.data.intestatario}</strong></div>
+                  {bozzaPdfWorkflow.data.codiceFiscalePartitaIva && (
+                    <div>CF / P.IVA: <strong className="font-mono">{bozzaPdfWorkflow.data.codiceFiscalePartitaIva}</strong></div>
+                  )}
+                  <div>
+                    Email: {bozzaPdfWorkflow.data.emailNonDisponibile ? <em className="text-amber-700">Non in possesso</em> : <strong className="font-mono">{bozzaPdfWorkflow.data.emailDestinatario}</strong>}
+                  </div>
+                  <div>
+                    PEC: {bozzaPdfWorkflow.data.pecNonDisponibile ? <em className="text-amber-700">Non in possesso</em> : <strong className="font-mono">{bozzaPdfWorkflow.data.pecDestinatario}</strong>}
+                  </div>
+                  <div className="pt-1 border-t border-slate-200">
+                    <strong>Causale:</strong> {bozzaPdfWorkflow.data.causale}
+                  </div>
+                  <div className="pt-2 border-t border-slate-200 flex justify-between font-black text-emerald-700 text-sm">
+                    <span>Importo Quietanzato:</span>
+                    <span>€ {Number(bozzaPdfWorkflow.data.importoTotale || 0).toFixed(2)}</span>
+                  </div>
+                  <div className="text-[11px] text-slate-600 font-mono">
+                    Incasso: {bozzaPdfWorkflow.data.metodoPagamento}
+                  </div>
+                  <div className="pt-2 border-t border-slate-200 text-[11px] text-amber-900 bg-amber-50 px-2.5 py-1.5 rounded-lg border border-amber-200">
+                    Firma sul PDF: <strong>{tesoriereAttivo.nome} {tesoriereAttivo.cognome}</strong> ({tesoriereAttivo.carica})
+                  </div>
+                </div>
+              )
+            }
+            infoInvioEmail={
+              isNotaORicevuta ? (
+                hasValidEmailOrd ? (
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 rounded-xl bg-amber-950/40 border border-amber-500/40 text-[11px] text-amber-100">
+                    <span className="inline-flex items-center gap-1 font-black uppercase text-amber-300">
+                      <Mail className="w-3.5 h-3.5" />
+                      <span>Salva & Invia:</span>
+                    </span>
+                    <span>
+                      Destinatario: <strong className="font-mono text-white">{emailDestOrd}</strong>
+                    </span>
+                    <span className="text-amber-200/90">
+                      • In copia (CC) Tesoriere: <strong className="font-mono text-amber-300">{tesoriereAttivo.email}</strong> ({tesoriereAttivo.nome} {tesoriereAttivo.cognome})
+                    </span>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-[11px] text-slate-300">
+                    <AlertTriangle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                    <span>
+                      Email ordinaria (non PEC) non indicata per il destinatario: il tasto <strong>Salva & Invia</strong> è disabilitato. Puoi comunque usare <strong>Salva in Archivio</strong> o tornare indietro per inserirla.
+                    </span>
+                  </div>
+                )
+              ) : undefined
+            }
+            salvaEInviaDisabilitato={isNotaORicevuta ? !hasValidEmailOrd : undefined}
+            onSalvaEInvia={
+              isNotaORicevuta
+                ? async (pdfBytes) => {
+                    if (!bozzaPdfWorkflow.salvato) {
+                      if (bozzaPdfWorkflow.tipo === 'nota') {
+                        salvaBozzaNotaInArchivio(bozzaPdfWorkflow.data);
+                      } else {
+                        salvaBozzaRicevutaInArchivio(bozzaPdfWorkflow.data);
+                      }
+                      setBozzaPdfWorkflow((prev) => (prev ? { ...prev, salvato: true } : null));
+                    }
+                    return await inviaDocumentoContabileViaEmail(
+                      bozzaPdfWorkflow.tipo === 'nota' ? 'nota' : 'ricevuta',
+                      bozzaPdfWorkflow.data,
+                      pdfBytes
+                    );
+                  }
+                : undefined
+            }
+            onSalvaInArchivio={() => {
+              if (bozzaPdfWorkflow.tipo === 'tessera') {
+                salvaBozzaTesseraInArchivio(bozzaPdfWorkflow.data);
+              } else if (bozzaPdfWorkflow.tipo === 'nota') {
+                salvaBozzaNotaInArchivio(bozzaPdfWorkflow.data);
+              } else {
+                salvaBozzaRicevutaInArchivio(bozzaPdfWorkflow.data);
+              }
+              setBozzaPdfWorkflow((prev) => (prev ? { ...prev, salvato: true } : null));
+            }}
+            onTornaAllaModifica={() => {
+              const tipo = bozzaPdfWorkflow.tipo;
+              setBozzaPdfWorkflow(null);
+              if (tipo === 'tessera') setModaleNuovaTesseraAperta(true);
+              else if (tipo === 'nota') setModaleNuovaNotaAperta(true);
+              else setModaleNuovaRicevutaAperta(true);
+            }}
+            onChiudi={() => setBozzaPdfWorkflow(null)}
+            onFeedback={(msg) => mostraAvviso(msg)}
+          />
+        );
+      })()}
     </div>
   );
 };

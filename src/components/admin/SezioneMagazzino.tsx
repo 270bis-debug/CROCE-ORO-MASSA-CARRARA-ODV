@@ -402,8 +402,8 @@ export const SezioneMagazzino: React.FC<SezioneMagazzinoProps> = ({
         </div>
       )}
 
-      {/* Barra Navigazione Sotto-Categorie */}
-      <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-none border-b border-slate-800">
+      {/* Barra Navigazione Sotto-Categorie: tutte visibili senza scorrimento orizzontale */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5 sm:gap-2 pb-2 border-b border-slate-800">
         {canShowSubtab('vestiario') && (
         <button
           type="button"
@@ -411,14 +411,14 @@ export const SezioneMagazzino: React.FC<SezioneMagazzinoProps> = ({
             setSottoTab('vestiario');
             setFiltroCategoria('tutti');
           }}
-          className={`px-4 py-2.5 rounded-xl text-xs font-black uppercase flex items-center gap-2 transition-all cursor-pointer ${
+          className={`w-full min-w-0 px-2.5 sm:px-3.5 py-2 rounded-xl text-[10px] sm:text-xs font-black uppercase flex items-center justify-center sm:justify-start gap-1.5 sm:gap-2 text-left leading-tight transition-all cursor-pointer ${
             sottoTab === 'vestiario'
               ? 'bg-cyan-600 text-white shadow-lg shadow-cyan-600/30 border border-cyan-400'
               : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
           }`}
         >
-          <Shirt className="w-4 h-4" />
-          <span>1. {getTitoloSottosezione('magazzino', 'vestiario', 'Magazzino Vestiario & DPI', nomiSubCustom)} ({vestiarioMagazzino.length})</span>
+          <Shirt className="w-4 h-4 shrink-0" />
+          <span className="break-words">1. {getTitoloSottosezione('magazzino', 'vestiario', 'Magazzino Vestiario & DPI', nomiSubCustom)} ({vestiarioMagazzino.length})</span>
         </button>
         )}
 
@@ -429,14 +429,14 @@ export const SezioneMagazzino: React.FC<SezioneMagazzinoProps> = ({
             setSottoTab('attrezzature');
             setFiltroCategoria('tutti');
           }}
-          className={`px-4 py-2.5 rounded-xl text-xs font-black uppercase flex items-center gap-2 transition-all cursor-pointer ${
+          className={`w-full min-w-0 px-2.5 sm:px-3.5 py-2 rounded-xl text-[10px] sm:text-xs font-black uppercase flex items-center justify-center sm:justify-start gap-1.5 sm:gap-2 text-left leading-tight transition-all cursor-pointer ${
             sottoTab === 'attrezzature'
               ? 'bg-cyan-600 text-white shadow-lg shadow-cyan-600/30 border border-cyan-400'
               : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
           }`}
         >
-          <Radio className="w-4 h-4" />
-          <span>2. {getTitoloSottosezione('magazzino', 'attrezzature', 'Attrezzature & Presidi', nomiSubCustom)} ({attrezzature.length})</span>
+          <Radio className="w-4 h-4 shrink-0" />
+          <span className="break-words">2. {getTitoloSottosezione('magazzino', 'attrezzature', 'Attrezzature & Presidi', nomiSubCustom)} ({attrezzature.length})</span>
         </button>
         )}
 
@@ -444,14 +444,14 @@ export const SezioneMagazzino: React.FC<SezioneMagazzinoProps> = ({
         <button
           type="button"
           onClick={() => setSottoTab('movimenti')}
-          className={`px-4 py-2.5 rounded-xl text-xs font-black uppercase flex items-center gap-2 transition-all cursor-pointer ${
+          className={`w-full min-w-0 col-span-2 sm:col-span-1 px-2.5 sm:px-3.5 py-2 rounded-xl text-[10px] sm:text-xs font-black uppercase flex items-center justify-center sm:justify-start gap-1.5 sm:gap-2 text-left leading-tight transition-all cursor-pointer ${
             sottoTab === 'movimenti'
               ? 'bg-cyan-600 text-white shadow-lg shadow-cyan-600/30 border border-cyan-400'
               : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
           }`}
         >
-          <Layers className="w-4 h-4" />
-          <span>3. {getTitoloSottosezione('magazzino', 'movimenti', 'Registro Movimentazioni', nomiSubCustom)} ({movimenti.length})</span>
+          <Layers className="w-4 h-4 shrink-0" />
+          <span className="break-words">3. {getTitoloSottosezione('magazzino', 'movimenti', 'Registro Movimentazioni', nomiSubCustom)} ({movimenti.length})</span>
         </button>
         )}
       </div>

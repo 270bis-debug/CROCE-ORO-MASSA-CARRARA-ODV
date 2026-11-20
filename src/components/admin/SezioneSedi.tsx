@@ -42,6 +42,8 @@ import { realtime } from '../../services/realtime';
 import { useTitoloDatabase, useNomiSottosezioniCustom } from '../../hooks/useNomiDatabase';
 import { getTitoloSottosezione } from '../../constants/macroCategorie';
 import { GestioneMetodiPagamentoCustomPanel } from './GestioneMetodiPagamentoCustomPanel';
+import { PdfAnteprimaWorkflowModal } from './PdfAnteprimaWorkflowModal';
+import { generaBytesDaJsPDF } from '../../utils/pdfWorkflowUtils';
 import {
   DatiCartaIntestata,
   getDatiCartaIntestata,
@@ -408,100 +410,94 @@ export const SezioneSedi: React.FC<SezioneSediProps> = ({
     }
   };
 
-  const handleScaricaPDFProvaCarta = () => {
-    setAnteprimaPDFInCorso(true);
-    try {
-      if (syncCartaTimerRef.current) clearTimeout(syncCartaTimerRef.current);
-      const salvati = salvaDatiCartaIntestata(datiCarta);
-      realtime.syncCartaIntestata(salvati);
-      const socialAttivi = formattaSocialCartaIntestata(salvati);
-      const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
-      disegnaHeaderIstituzionale(doc, {
-        titoloDocumento: 'VERIFICA CONFORMITÀ CARTA INTESTATA UFFICIALE',
-        badge: {
-          riga1Tag: 'CARTA INTESTATA',
-          riga2Valore: 'MODELLO A4 ETS',
-          riga3Sotto: 'RUNTS • 1 Pagina'
-        },
-        pageWidth: 210,
-        margin: 12
-      });
+  const [pdfWorkflowSedi, setPdfWorkflowSedi] = useState<'carta' | 'bancaria' | null>(null);
+  const [pdfWorkflowSediSalvato, setPdfWorkflowSediSalvato] = useState(false);
 
-      let y = 44;
-      doc.setFillColor(248, 250, 252);
-      doc.setDrawColor(203, 213, 225);
-      doc.roundedRect(12, y, 186, 24, 2, 2, 'FD');
+  const costruisciDocCartaIntestata = (salvati: DatiCartaIntestata) => {
+    const socialAttivi = formattaSocialCartaIntestata(salvati);
+    const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+    disegnaHeaderIstituzionale(doc, {
+      titoloDocumento: 'VERIFICA CONFORMITÀ CARTA INTESTATA UFFICIALE',
+      badge: {
+        riga1Tag: 'CARTA INTESTATA',
+        riga2Valore: 'MODELLO A4 ETS',
+        riga3Sotto: 'RUNTS • 1 Pagina'
+      },
+      pageWidth: 210,
+      margin: 12
+    });
 
-      doc.setFont('helvetica', 'bold');
-      doc.setFontSize(10);
-      doc.setTextColor(29, 26, 96);
-      doc.text('ATTESTAZIONE DI CONFORMITÀ DELLA CARTA INTESTATA ISTITUZIONALE', 16, y + 8);
+    let y = 44;
+    doc.setFillColor(248, 250, 252);
+    doc.setDrawColor(203, 213, 225);
+    doc.roundedRect(12, y, 186, 24, 2, 2, 'FD');
 
-      doc.setFont('helvetica', 'normal');
-      doc.setFontSize(8);
-      doc.setTextColor(71, 85, 105);
-      doc.text('Tutti i documenti PDF generati nell\'applicazione attingono in tempo reale ai parametri impostati nella Sezione 4.', 16, y + 16);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(10);
+    doc.setTextColor(29, 26, 96);
+    doc.text('ATTESTAZIONE DI CONFORMITÀ DELLA CARTA INTESTATA ISTITUZIONALE', 16, y + 8);
 
-      y += 32;
-      doc.setFillColor(255, 255, 255);
-      doc.setDrawColor(191, 163, 83);
-      doc.setLineWidth(0.6);
-      doc.roundedRect(12, y, 186, socialAttivi ? 102 : 92, 2, 2, 'FD');
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8);
+    doc.setTextColor(71, 85, 105);
+    doc.text('Tutti i documenti PDF generati nell\'applicazione attingono in tempo reale ai parametri impostati nella Sezione 4.', 16, y + 16);
 
-      doc.setFont('helvetica', 'bold');
-      doc.setFontSize(9.5);
-      doc.setTextColor(191, 163, 83);
-      doc.text('RIEPILOGO PARAMETRI ISTITUZIONALI ATTUALMENTE ATTIVI:', 16, y + 8);
+    y += 32;
+    doc.setFillColor(255, 255, 255);
+    doc.setDrawColor(191, 163, 83);
+    doc.setLineWidth(0.6);
+    doc.roundedRect(12, y, 186, socialAttivi ? 102 : 92, 2, 2, 'FD');
 
-      doc.setFontSize(8.5);
-      doc.setFont('helvetica', 'bold');
-      doc.setTextColor(15, 23, 42);
-      doc.text(`Ente: ${salvati.denominazione}`, 16, y + 17);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(9.5);
+    doc.setTextColor(191, 163, 83);
+    doc.text('RIEPILOGO PARAMETRI ISTITUZIONALI ATTUALMENTE ATTIVI:', 16, y + 8);
 
-      doc.setFont('helvetica', 'normal');
-      doc.text(`• Sede Legale: ${salvati.sedeLegale}`, 16, y + 24);
-      doc.text(`• Sede Operativa Massa: ${salvati.sedeMassa}`, 16, y + 31);
-      doc.text(`• Sede Operativa Carrara: ${salvati.sedeCarrara}`, 16, y + 38);
-      doc.text(`• Sede Operativa Pietrasanta: ${salvati.sedePietrasanta}`, 16, y + 45);
-      doc.text(`• Centrale Tel: ${salvati.centraleTel}`, 16, y + 52);
-      doc.text(`• Codice Fiscale: ${salvati.codiceFiscale} • Portale Web: ${salvati.sitoWeb}`, 16, y + 59);
-      doc.text(`• Canali Ufficiali: Email: ${salvati.email} • Pec: ${salvati.pec}`, 16, y + 66);
+    doc.setFontSize(8.5);
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(15, 23, 42);
+    doc.text(`Ente: ${salvati.denominazione}`, 16, y + 17);
 
-      let yBank = y + 74;
-      if (socialAttivi) {
-        doc.setTextColor(30, 64, 175);
-        doc.text(`• Social Ufficiali: ${socialAttivi}`, 16, y + 73, { maxWidth: 178 });
-        yBank = y + 81;
-      }
+    doc.setFont('helvetica', 'normal');
+    doc.text(`• Sede Legale: ${salvati.sedeLegale}`, 16, y + 24);
+    doc.text(`• Sede Operativa Massa: ${salvati.sedeMassa}`, 16, y + 31);
+    doc.text(`• Sede Operativa Carrara: ${salvati.sedeCarrara}`, 16, y + 38);
+    doc.text(`• Sede Operativa Pietrasanta: ${salvati.sedePietrasanta}`, 16, y + 45);
+    doc.text(`• Centrale Tel: ${salvati.centraleTel}`, 16, y + 52);
+    doc.text(`• Codice Fiscale: ${salvati.codiceFiscale} • Portale Web: ${salvati.sitoWeb}`, 16, y + 59);
+    doc.text(`• Canali Ufficiali: Email: ${salvati.email} • Pec: ${salvati.pec}`, 16, y + 66);
 
-      doc.setFont('helvetica', 'bold');
-      doc.setTextColor(21, 128, 61);
-      doc.text(`• Conto Bancario: ${salvati.bancaAppoggio || 'Credit Agricole'} - IBAN: ${salvati.ibanBanca || 'IT79M0623024500000046980317'}`, 16, yBank);
-      doc.setTextColor(180, 83, 9);
-      doc.text(`• Conto Postale: ${salvati.bancaPoste || 'POSTE ITALIANE'} - IBAN: ${salvati.ibanPoste || 'IT40P0760113600001007035676'} (C/c: ${salvati.ccPostale || '00001007035676'})`, 16, yBank + 7);
-      doc.setTextColor(15, 23, 42);
-      doc.setFont('helvetica', 'normal');
-      doc.text(`• Intestatario Ufficiale: ${(salvati.intestatarioConti || salvati.denominazione || 'CROCE ORO MASSA CARRARA ODV').toUpperCase()}`, 16, yBank + 14);
-
-      disegnaFooterIstituzionale(doc, {
-        dicituraArchiviazione: `Documento di Prova Carta Intestata • Generato il ${new Date().toLocaleString('it-IT', { timeZone: 'Europe/Rome' })} • ${salvati.denominazione}`,
-        pageWidth: 210,
-        pageHeight: 297,
-        margin: 12
-      });
-
-      doc.save('Anteprima_Carta_Intestata_Croce_Oro.pdf');
-      mostraAvviso('PDF di prova generato e scaricato con successo!');
-    } catch (err) {
-      console.error(err);
-      mostraAvviso('Errore generazione PDF di prova');
-    } finally {
-      setAnteprimaPDFInCorso(false);
+    let yBank = y + 74;
+    if (socialAttivi) {
+      doc.setTextColor(30, 64, 175);
+      doc.text(`• Social Ufficiali: ${socialAttivi}`, 16, y + 73, { maxWidth: 178 });
+      yBank = y + 81;
     }
+
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(21, 128, 61);
+    doc.text(`• Conto Bancario: ${salvati.bancaAppoggio || 'Credit Agricole'} - IBAN: ${salvati.ibanBanca || 'IT79M0623024500000046980317'}`, 16, yBank);
+    doc.setTextColor(180, 83, 9);
+    doc.text(`• Conto Postale: ${salvati.bancaPoste || 'POSTE ITALIANE'} - IBAN: ${salvati.ibanPoste || 'IT40P0760113600001007035676'} (C/c: ${salvati.ccPostale || '00001007035676'})`, 16, yBank + 7);
+    doc.setTextColor(15, 23, 42);
+    doc.setFont('helvetica', 'normal');
+    doc.text(`• Intestatario Ufficiale: ${(salvati.intestatarioConti || salvati.denominazione || 'CROCE ORO MASSA CARRARA ODV').toUpperCase()}`, 16, yBank + 14);
+
+    disegnaFooterIstituzionale(doc, {
+      dicituraArchiviazione: `Documento di Prova Carta Intestata • Generato il ${new Date().toLocaleString('it-IT', { timeZone: 'Europe/Rome' })} • ${salvati.denominazione}`,
+      pageWidth: 210,
+      pageHeight: 297,
+      margin: 12
+    });
+    return doc;
   };
 
-  const handleScaricaSchedaBancariaPDF = () => {
-    try {
+  const handleScaricaPDFProvaCarta = () => {
+    setPdfWorkflowSediSalvato(false);
+    setPdfWorkflowSedi('carta');
+  };
+
+  const costruisciDocSchedaBancaria = () => {
       const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
       disegnaHeaderIstituzionale(doc, {
         titoloDocumento: 'COORDINATE BANCARIE E POSTALI UFFICIALI',
@@ -630,12 +626,12 @@ export const SezioneSedi: React.FC<SezioneSediProps> = ({
         margin: 12
       });
 
-      doc.save('Coordinate_Bancarie_Croce_Oro_Massa_Carrara.pdf');
-      mostraAvviso('Scheda Coordinate Bancarie generata e scaricata in formato PDF A4!');
-    } catch (e) {
-      console.error(e);
-      mostraAvviso('Errore generazione PDF Coordinate Bancarie');
-    }
+      return doc;
+  };
+
+  const handleScaricaSchedaBancariaPDF = () => {
+    setPdfWorkflowSediSalvato(false);
+    setPdfWorkflowSedi('bancaria');
   };
 
   return (
@@ -726,20 +722,20 @@ export const SezioneSedi: React.FC<SezioneSediProps> = ({
         </div>
       )}
 
-      {/* Barra Navigazione Sotto-Categorie */}
-      <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-none border-b border-slate-800">
+      {/* Barra Navigazione Sotto-Categorie: tutte visibili senza scorrimento orizzontale */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-1.5 sm:gap-2 pb-2 border-b border-slate-800">
         {canShowSubtab('elenco') && (
         <button
           type="button"
           onClick={() => setSottoTab('elenco')}
-          className={`px-4 py-2.5 rounded-xl text-xs font-black uppercase flex items-center gap-2 transition-all cursor-pointer ${
+          className={`w-full min-w-0 px-2.5 sm:px-3 py-2 rounded-xl text-[10px] sm:text-xs font-black uppercase flex items-center justify-center sm:justify-start gap-1.5 sm:gap-2 text-left leading-tight transition-all cursor-pointer ${
             sottoTab === 'elenco'
               ? 'bg-rose-600 text-white shadow-lg shadow-rose-600/30 border border-rose-400'
               : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
           }`}
         >
-          <Building2 className="w-4 h-4" />
-          <span>1. {getTitoloSottosezione('sedi', 'elenco', 'Elenco Sedi Ufficiali', nomiSubCustom)} ({sedi.length})</span>
+          <Building2 className="w-4 h-4 shrink-0" />
+          <span className="break-words">1. {getTitoloSottosezione('sedi', 'elenco', 'Elenco Sedi Ufficiali', nomiSubCustom)} ({sedi.length})</span>
         </button>
         )}
 
@@ -747,14 +743,14 @@ export const SezioneSedi: React.FC<SezioneSediProps> = ({
         <button
           type="button"
           onClick={() => setSottoTab('mappa')}
-          className={`px-4 py-2.5 rounded-xl text-xs font-black uppercase flex items-center gap-2 transition-all cursor-pointer ${
+          className={`w-full min-w-0 px-2.5 sm:px-3 py-2 rounded-xl text-[10px] sm:text-xs font-black uppercase flex items-center justify-center sm:justify-start gap-1.5 sm:gap-2 text-left leading-tight transition-all cursor-pointer ${
             sottoTab === 'mappa'
               ? 'bg-rose-600 text-white shadow-lg shadow-rose-600/30 border border-rose-400'
               : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
           }`}
         >
-          <Navigation className="w-4 h-4" />
-          <span>2. {getTitoloSottosezione('sedi', 'mappa', 'Mappa Territoriale Sedi', nomiSubCustom)}</span>
+          <Navigation className="w-4 h-4 shrink-0" />
+          <span className="break-words">2. {getTitoloSottosezione('sedi', 'mappa', 'Mappa Territoriale Sedi', nomiSubCustom)}</span>
         </button>
         )}
 
@@ -762,14 +758,14 @@ export const SezioneSedi: React.FC<SezioneSediProps> = ({
         <button
           type="button"
           onClick={() => setSottoTab('autoparco')}
-          className={`px-4 py-2.5 rounded-xl text-xs font-black uppercase flex items-center gap-2 transition-all cursor-pointer ${
+          className={`w-full min-w-0 px-2.5 sm:px-3 py-2 rounded-xl text-[10px] sm:text-xs font-black uppercase flex items-center justify-center sm:justify-start gap-1.5 sm:gap-2 text-left leading-tight transition-all cursor-pointer ${
             sottoTab === 'autoparco'
               ? 'bg-rose-600 text-white shadow-lg shadow-rose-600/30 border border-rose-400'
               : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
           }`}
         >
-          <Car className="w-4 h-4" />
-          <span>3. {getTitoloSottosezione('sedi', 'autoparco', 'Mezzi Assegnati per Sede', nomiSubCustom)}</span>
+          <Car className="w-4 h-4 shrink-0" />
+          <span className="break-words">3. {getTitoloSottosezione('sedi', 'autoparco', 'Mezzi Assegnati per Sede', nomiSubCustom)}</span>
         </button>
         )}
 
@@ -777,14 +773,14 @@ export const SezioneSedi: React.FC<SezioneSediProps> = ({
         <button
           type="button"
           onClick={() => setSottoTab('cartaIntestata')}
-          className={`px-4 py-2.5 rounded-xl text-xs font-black uppercase flex items-center gap-2 transition-all cursor-pointer ${
+          className={`w-full min-w-0 px-2.5 sm:px-3 py-2 rounded-xl text-[10px] sm:text-xs font-black uppercase flex items-center justify-center sm:justify-start gap-1.5 sm:gap-2 text-left leading-tight transition-all cursor-pointer ${
             sottoTab === 'cartaIntestata'
               ? 'bg-rose-600 text-white shadow-lg shadow-rose-600/30 border border-rose-400'
               : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
           }`}
         >
-          <FileText className="w-4 h-4" />
-          <span>4. {getTitoloSottosezione('sedi', 'cartaIntestata', 'DATI PER CARTA INTESTATA', nomiSubCustom)}</span>
+          <FileText className="w-4 h-4 shrink-0" />
+          <span className="break-words">4. {getTitoloSottosezione('sedi', 'cartaIntestata', 'DATI PER CARTA INTESTATA', nomiSubCustom)}</span>
         </button>
         )}
 
@@ -792,14 +788,14 @@ export const SezioneSedi: React.FC<SezioneSediProps> = ({
         <button
           type="button"
           onClick={() => setSottoTab('contiCorrenti')}
-          className={`px-4 py-2.5 rounded-xl text-xs font-black uppercase flex items-center gap-2 transition-all cursor-pointer ${
+          className={`w-full min-w-0 col-span-2 sm:col-span-1 px-2.5 sm:px-3 py-2 rounded-xl text-[10px] sm:text-xs font-black uppercase flex items-center justify-center sm:justify-start gap-1.5 sm:gap-2 text-left leading-tight transition-all cursor-pointer ${
             sottoTab === 'contiCorrenti'
               ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-600/30 border border-emerald-400'
               : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
           }`}
         >
-          <Landmark className="w-4 h-4 text-emerald-400" />
-          <span>5. {getTitoloSottosezione('sedi', 'contiCorrenti', 'COORDINATE BANCARIE & POSTALI', nomiSubCustom)} (2 CONTI)</span>
+          <Landmark className={`w-4 h-4 shrink-0 ${sottoTab === 'contiCorrenti' ? 'text-white' : 'text-emerald-400'}`} />
+          <span className="break-words">5. {getTitoloSottosezione('sedi', 'contiCorrenti', 'COORDINATE BANCARIE & POSTALI', nomiSubCustom)} (2 CONTI)</span>
         </button>
         )}
       </div>
@@ -2490,6 +2486,59 @@ export const SezioneSedi: React.FC<SezioneSediProps> = ({
             </div>
           </div>
         </div>
+      )}
+
+      {pdfWorkflowSedi && (
+        <PdfAnteprimaWorkflowModal
+          aperto={true}
+          titoloDocumento={
+            pdfWorkflowSedi === 'carta'
+              ? 'Anteprima Carta Intestata Ufficiale'
+              : 'Scheda Coordinate Bancarie & Postali'
+          }
+          sottotitolo={datiCarta.denominazione || 'Croce Oro Massa Carrara OdV'}
+          nomeFile={
+            pdfWorkflowSedi === 'carta'
+              ? 'Anteprima_Carta_Intestata_Croce_Oro.pdf'
+              : 'Coordinate_Bancarie_Croce_Oro_Massa_Carrara.pdf'
+          }
+          giaSalvatoInArchivio={pdfWorkflowSediSalvato}
+          generaPdfBytes={() =>
+            generaBytesDaJsPDF(
+              pdfWorkflowSedi === 'carta'
+                ? costruisciDocCartaIntestata(datiCarta)
+                : costruisciDocSchedaBancaria()
+            )
+          }
+          riepilogoContenuto={
+            pdfWorkflowSedi === 'carta' ? (
+              <div className="space-y-1.5 text-xs">
+                <div>Ente: <strong>{datiCarta.denominazione}</strong></div>
+                <div>Sede Legale: <strong>{datiCarta.sedeLegale}</strong></div>
+                <div>Codice Fiscale: <strong className="font-mono">{datiCarta.codiceFiscale}</strong></div>
+                <div>Email / PEC: <strong className="font-mono">{datiCarta.email} • {datiCarta.pec}</strong></div>
+              </div>
+            ) : (
+              <div className="space-y-1.5 text-xs">
+                <div>Intestatario: <strong>{datiCarta.intestatarioConti || datiCarta.denominazione}</strong></div>
+                <div>IBAN Banca ({datiCarta.bancaAppoggio || 'Credit Agricole'}): <strong className="font-mono">{datiCarta.ibanBanca}</strong></div>
+                <div>IBAN Poste ({datiCarta.bancaPoste || 'POSTE ITALIANE'}): <strong className="font-mono">{datiCarta.ibanPoste}</strong></div>
+                <div>C/C Postale: <strong className="font-mono">{datiCarta.ccPostale}</strong></div>
+              </div>
+            )
+          }
+          testoSalvaInArchivio="Salva Impostazioni in Archivio"
+          onSalvaInArchivio={() => {
+            if (syncCartaTimerRef.current) clearTimeout(syncCartaTimerRef.current);
+            const salvati = salvaDatiCartaIntestata(datiCarta);
+            realtime.syncCartaIntestata(salvati);
+            setPdfWorkflowSediSalvato(true);
+            mostraAvviso('Impostazioni carta intestata e coordinate salvate e sincronizzate in archivio!');
+          }}
+          onTornaAllaModifica={() => setPdfWorkflowSedi(null)}
+          onChiudi={() => setPdfWorkflowSedi(null)}
+          onFeedback={(msg) => mostraAvviso(msg)}
+        />
       )}
     </div>
   );

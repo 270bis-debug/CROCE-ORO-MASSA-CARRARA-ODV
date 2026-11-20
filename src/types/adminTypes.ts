@@ -246,6 +246,10 @@ export interface NotaDiDebito {
   debitoreIntestatario: string; // es. "Azienda USL Toscana Nord Ovest"
   partitaIvaCodiceFiscale: string;
   indirizzoDebitore: string;
+  emailDestinatario?: string;
+  emailNonDisponibile?: boolean; // Dichiarazione di non possesso indirizzo email al momento dell'emissione
+  pecDestinatario?: string;
+  pecNonDisponibile?: boolean; // Dichiarazione di non possesso indirizzo PEC al momento dell'emissione
   causale: string; // es. "Servizio Trasporto Paziente Dializzato codice ORO-412"
   codiceServizioRiferimento?: string;
   servizioCollegatoId?: string;
@@ -269,6 +273,38 @@ export interface NotaDiDebito {
   dataIncasso?: string;
   operatoreEmissione: string;
   note?: string;
+}
+
+export interface RicevutaContabile {
+  id: string;
+  numeroProgressivo: string; // es. "RIC-2026/001"
+  dataEmissione: string; // YYYY-MM-DD
+  tipologia:
+    | 'Erogazione Liberale / Donazione'
+    | 'Rimborso Spese'
+    | 'Contributo Associativo / Evento'
+    | 'Quietanza di Pagamento'
+    | 'Altra Ricevuta'
+    | string;
+  intestatario: string;
+  codiceFiscalePartitaIva: string;
+  indirizzoIntestatario: string;
+  emailDestinatario?: string;
+  emailNonDisponibile?: boolean; // Dichiarazione di non possesso indirizzo email al momento dell'emissione
+  pecDestinatario?: string;
+  pecNonDisponibile?: boolean; // Dichiarazione di non possesso indirizzo PEC al momento dell'emissione
+  causale: string;
+  codiceServizioRiferimento?: string;
+  importoTotale: number;
+  metodoPagamento: string;
+  contoAccredito?: string;
+  ibanAccredito?: string;
+  ccPostaleAccredito?: string;
+  stato: 'Emessa' | 'Annullata';
+  motivoAnnullamento?: string;
+  operatoreEmissione: string;
+  note?: string;
+  createdAt?: number;
 }
 
 export interface MovimentoAltreEntrateUscite {

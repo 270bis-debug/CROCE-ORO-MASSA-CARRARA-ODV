@@ -156,6 +156,7 @@ import {
   MOTIVI_FUORI_SERVIZIO_LABELS
 } from './data/suggerimentiMezzi';
 import {
+  generaDocumentoPDF,
   scaricaPDF,
   inviaPerEmailPDF,
   inviaAutomaticamenteEmailTesoreria,
@@ -164,6 +165,7 @@ import {
   stampaRegistroCartaceoPDF,
   isServizioVeterinario as checkIsServizioVeterinario
 } from './utils/pdfGenerator';
+import { generaBytesDaJsPDF, scaricaOStampaMultipliPDF, PdfBatchItem } from './utils/pdfWorkflowUtils';
 import { calcolaStatoScadenzaPatente } from './data/vestiarioDocumenti';
 import { TIPOLOGIE_SERVIZIO_ISTITUTO, TIPOLOGIE_PROTEZIONE_CIVILE } from './data/tipologieServizio';
 import { APP_VERSION, APP_VERSION_LABEL } from './version';
@@ -239,6 +241,7 @@ import {
   ArticoloMagazzinoMezzi,
   TesseraAssociativa,
   NotaDiDebito,
+  RicevutaContabile,
   TariffaCostoServizio,
   CorsoFormazione,
   ArticoloVestiarioMagazzino,
@@ -1555,6 +1558,25 @@ export default function App() {
       localStorage.setItem('CROCE_ORO_COSTI_GESTIONE', JSON.stringify(nuovi));
     } catch {}
     realtime.syncCostiGestione(nuovi);
+  };
+
+  // 6d-bis. Emissione Ricevute (Database Contabilità -> Sottosezione 9)
+  const [ricevuteContabilita, setRicevuteContabilita] = useState<RicevutaContabile[]>(() => {
+    try {
+      const saved = localStorage.getItem('CROCE_ORO_RICEVUTE_CONTABILITA');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) return parsed;
+      }
+    } catch {}
+    return [];
+  });
+  const handleAggiornaRicevuteContabilita = (nuove: RicevutaContabile[]) => {
+    setRicevuteContabilita(nuove);
+    try {
+      localStorage.setItem('CROCE_ORO_RICEVUTE_CONTABILITA', JSON.stringify(nuove));
+    } catch {}
+    realtime.syncRicevuteContabilita(nuove);
   };
 
   // 6e. Campagna attiva di sollecito caricamento firma digitale + cambio PIN 0000
@@ -6394,6 +6416,89 @@ export default function App() {
     }
   };
 
+  const [batchArchivePdfInCorso, setBatchArchivePdfInCorso] = useState(false);
+
+  const handleBatchPdfArchivioServizi = async (azione: 'download' | 'print') => {
+    const scelti = archivioPDF.filter((item) => selectedArchiveIds.includes(item.id || item.codice));
+    if (scelti.length === 0) return;
+    const validi = scelti.filter((item) => !item.inAttesaKm);
+    if (validi.length === 0) {
+      aggiungiNotifica('⚠️ Tutti i servizi selezionati sono in attesa di inserimento KM prima di generare il PDF.', 'allarme');
+      return;
+    }
+    setBatchArchivePdfInCorso(true);
+    try {
+      const items: PdfBatchItem[] = validi.map((item) => {
+        const destInfo = item.datiDestinazione || (item.codice === missione?.codice ? (datiDestinazione || (missione as any)?.datiDestinazione) : undefined);
+        const isVet = checkIsServizioVeterinario(item);
+        const doc = generaDocumentoPDF({
+          codice: item.codice,
+          mezzo: item.mezzo,
+          data: item.data,
+          kmInizio: item.kmInizio,
+          kmFine: item.kmFine,
+          kmTotali: item.kmTotali,
+          tempi: item.tempi,
+          testoCompleto: item.testoCompleto,
+          indirizzoIntervento: item.indirizzoIntervento,
+          destinazione: item.destinazione,
+          chiamante: item.chiamante,
+          telefono: item.telefono,
+          urgenza: item.urgenza,
+          ambito: item.ambito,
+          tipoAnimale: isVet ? (item.tipoAnimale || destInfo?.animale?.tipo || missione?.tipoAnimale) : undefined,
+          tipoAnimaleAltro: isVet ? (item.tipoAnimaleAltro || destInfo?.animale?.tipoAltro || missione?.tipoAnimaleAltro) : undefined,
+          nonDiProprieta: isVet ? (item.nonDiProprieta !== undefined ? item.nonDiProprieta : (destInfo?.animale?.nonDiProprieta ?? missione?.nonDiProprieta)) : false,
+          microchip: isVet ? (item.microchip || destInfo?.animale?.microchip || missione?.microchip) : undefined,
+          noMicrochip: isVet ? (item.noMicrochip !== undefined ? item.noMicrochip : (destInfo?.animale?.noMicrochip ?? missione?.noMicrochip)) : undefined,
+          datiProprietarioCentrale: isVet ? (item.datiProprietarioCentrale || missione?.datiProprietarioCentrale) : undefined,
+          proprietarioImmobile: item.proprietarioImmobile || (item.codice === missione?.codice ? missione?.proprietarioImmobile : undefined),
+          sottoAmbitoVet: item.sottoAmbitoVet,
+          dataInizioServizioSpecifico: item.dataInizioServizioSpecifico,
+          oraInizioServizioSpecifico: item.oraInizioServizioSpecifico,
+          dataArrivoRichiestaServizio: item.dataArrivoRichiestaServizio,
+          oraArrivoRichiestaServizio: item.oraArrivoRichiestaServizio,
+          noteCritiche: item.noteCritiche,
+          volontarioNome: item.volontarioNome,
+          qualificaTurno: item.qualificaTurno,
+          inAttesaKm: item.inAttesaKm,
+          coordinateSulPosto: item.coordinateSulPosto || item.tempi?.coordinateSulPosto,
+          coordinateDestinazione: item.coordinateDestinazione || item.tempi?.coordinateDestinazione,
+          isStrutturaVeterinaria: isVet ? (item.isStrutturaVeterinaria !== undefined ? item.isStrutturaVeterinaria : (item.codice === missione?.codice ? missione?.isStrutturaVeterinaria : undefined)) : false,
+          isStrutturaVeterinariaPartenza: isVet ? (item.isStrutturaVeterinariaPartenza !== undefined ? item.isStrutturaVeterinariaPartenza : (item.codice === missione?.codice ? missione?.isStrutturaVeterinariaPartenza : undefined)) : false,
+          manovreEffettuatePatologie: item.manovreEffettuatePatologie || (item.codice === missione?.codice ? manovreEffettuatePatologie : undefined) || destInfo?.manovreEffettuatePatologie || (item.codice === missione?.codice ? missione?.manovreEffettuatePatologie : undefined),
+          datiDestinazione: isVet ? destInfo : (destInfo ? { ...destInfo, animale: undefined, proprietario: undefined, strutturaVeterinaria: undefined } : undefined),
+          capoServizioNome: item.capoServizioNome || item.convalidaCapoServizio?.capoServizioNome,
+          convalidaCapoServizio: item.convalidaCapoServizio,
+          firmaVolontario: item.firmaVolontario || getFirmaVolontario(item.capoServizioNome || item.volontarioNome || sessioneTurno.volontarioNome),
+          firmaOperatoreCentrale: item.firmaOperatoreCentrale,
+          annullata: item.annullata,
+          motivoAnnullamento: item.motivoAnnullamento,
+          richiedenteAnnullamento: item.richiedenteAnnullamento,
+          orarioAnnullamento: item.orarioAnnullamento
+        });
+        const safeCode = (item.codice || item.id || 'Servizio').replace(/[^a-zA-Z0-9_-]/g, '_');
+        return {
+          nomeFile: `Foglio_Servizio_${safeCode}.pdf`,
+          bytes: generaBytesDaJsPDF(doc)
+        };
+      });
+      await scaricaOStampaMultipliPDF(items, azione, `Archivio_Servizi_${formatISODateItaly()}`);
+      const saltati = scelti.length - validi.length;
+      aggiungiNotifica(
+        azione === 'print'
+          ? `🖨️ Avviata stampa per ${validi.length} fogli di servizio${saltati > 0 ? ` (${saltati} in attesa KM esclusi)` : ''}.`
+          : `📥 Scaricati ${validi.length} PDF di servizi selezionati${saltati > 0 ? ` (${saltati} in attesa KM esclusi)` : ''}.`,
+        'sistema'
+      );
+    } catch (err: any) {
+      console.error('Errore batch PDF archivio servizi:', err);
+      aggiungiNotifica(`❌ Errore operazione PDF multipli: ${err?.message || 'Imprevisto'}`, 'allarme');
+    } finally {
+      setBatchArchivePdfInCorso(false);
+    }
+  };
+
   // Creazione e download del secondo file PDF: Verbale di Recupero Animale Non di Proprietà
   const handleScaricaVerbaleAnimaleNonProprieta = (item: PdfArchiveItem) => {
     if (!checkIsServizioVeterinario(item)) {
@@ -10645,6 +10750,10 @@ KM TOTALI: ${kmTot} KM`;
           setCostiGestione(s.costiGestione);
           try { localStorage.setItem('CROCE_ORO_COSTI_GESTIONE', JSON.stringify(s.costiGestione)); } catch {}
         }
+        if (Array.isArray(s.ricevuteContabilita)) {
+          setRicevuteContabilita(s.ricevuteContabilita);
+          try { localStorage.setItem('CROCE_ORO_RICEVUTE_CONTABILITA', JSON.stringify(s.ricevuteContabilita)); } catch {}
+        }
         if (s.sollecitoFirmaPin && typeof s.sollecitoFirmaPin === 'object' && s.sollecitoFirmaPin.id) {
           setSollecitoFirmaPin((prev) => {
             if (prev && Number(prev.createdAt || 0) > Number(s.sollecitoFirmaPin.createdAt || 0)) return prev;
@@ -10863,6 +10972,10 @@ KM TOTALI: ${kmTot} KM`;
         if (Array.isArray(s.costiGestione)) {
           setCostiGestione(s.costiGestione);
           try { localStorage.setItem('CROCE_ORO_COSTI_GESTIONE', JSON.stringify(s.costiGestione)); } catch {}
+        }
+        if (Array.isArray(s.ricevuteContabilita)) {
+          setRicevuteContabilita(s.ricevuteContabilita);
+          try { localStorage.setItem('CROCE_ORO_RICEVUTE_CONTABILITA', JSON.stringify(s.ricevuteContabilita)); } catch {}
         }
         if (Array.isArray(s.mezziFlotta) && s.mezziFlotta.length > 0) {
           const ordinati = [...s.mezziFlotta].sort((a, b) => (a.sigla || '').localeCompare(b.sigla || '', 'it', { numeric: true, sensitivity: 'base' }));
@@ -12918,6 +13031,14 @@ KM TOTALI: ${kmTot} KM`;
           } catch {}
         }
       }),
+      realtime.on('RICEVUTE_CONTABILITA_UPDATED', (payload: any) => {
+        if (Array.isArray(payload?.ricevuteContabilita)) {
+          setRicevuteContabilita(payload.ricevuteContabilita);
+          try {
+            localStorage.setItem('CROCE_ORO_RICEVUTE_CONTABILITA', JSON.stringify(payload.ricevuteContabilita));
+          } catch {}
+        }
+      }),
       realtime.on('SOLLECITO_FIRMA_PIN_UPDATED', (payload: any) => {
         if (payload?.sollecitoFirmaPin && typeof payload.sollecitoFirmaPin === 'object' && payload.sollecitoFirmaPin.id) {
           setSollecitoFirmaPin(payload.sollecitoFirmaPin);
@@ -13050,6 +13171,7 @@ KM TOTALI: ${kmTot} KM`;
           costiServizio: readLS('CROCE_ORO_COSTI_SERVIZIO', TARIFFE_COSTI_SERVIZIO_INIZIALI),
           altreEntrateUscite: readLS('CROCE_ORO_ALTRE_ENTRATE_USCITE', []),
           costiGestione: readLS('CROCE_ORO_COSTI_GESTIONE', []),
+          ricevuteContabilita: readLS('CROCE_ORO_RICEVUTE_CONTABILITA', []),
           mezziFlotta: readLS('CROCE_ORO_MEZZI_FLOTTA', MEZZI_FLOTTA_INIZIALI),
           catalogoMansioni: getMansioniCatalogo(),
           categorieMansioni: getCategorieMansioni(),
@@ -13627,6 +13749,9 @@ KM TOTALI: ${kmTot} KM`;
               noteDiDebito,
               tessereAssociative,
               costiServizio,
+              altreEntrateUscite,
+              costiGestione,
+              ricevuteContabilita,
               catalogoMansioni: getMansioniCatalogo(),
               categorieMansioni: getCategorieMansioni(),
               customEmojiIcons: getCustomEmojiIcons(),
@@ -14502,6 +14627,8 @@ KM TOTALI: ${kmTot} KM`;
             onAggiornaAltreEntrateUscite={handleAggiornaAltreEntrateUscite}
             costiGestione={costiGestione}
             onAggiornaCostiGestione={handleAggiornaCostiGestione}
+            ricevuteContabilita={ricevuteContabilita}
+            onAggiornaRicevuteContabilita={handleAggiornaRicevuteContabilita}
             operatoreCorrente={utenteCentrale?.nome ? `${utenteCentrale.nome} ${utenteCentrale.cognome || ''}` : 'Amministratore'}
             isAdmin={isCentraleAdmin}
             onNotificaRadio={aggiungiNotifica}
@@ -21023,6 +21150,28 @@ KM TOTALI: ${kmTot} KM`;
                           <span>Visiona Anteprime ({selectedArchiveIds.length})</span>
                         </button>
 
+                        <button
+                          type="button"
+                          disabled={batchArchivePdfInCorso}
+                          onClick={() => handleBatchPdfArchivioServizi('download')}
+                          className="flex-1 sm:flex-initial px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-black flex items-center justify-center gap-1.5 shadow-md active:scale-95 cursor-pointer transition-all"
+                          title="Scarica in PDF tutti i fogli di servizio selezionati"
+                        >
+                          <Download className="w-3.5 h-3.5" />
+                          <span>Scarica PDF ({selectedArchiveIds.length})</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          disabled={batchArchivePdfInCorso}
+                          onClick={() => handleBatchPdfArchivioServizi('print')}
+                          className="flex-1 sm:flex-initial px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-black flex items-center justify-center gap-1.5 shadow-md active:scale-95 cursor-pointer transition-all"
+                          title="Stampa in blocco tutti i fogli di servizio selezionati"
+                        >
+                          <Printer className="w-3.5 h-3.5" />
+                          <span>Stampa PDF ({selectedArchiveIds.length})</span>
+                        </button>
+
                         {archivioPDF.some(s => selectedArchiveIds.includes(s.id || s.codice) && !s.firmaOperatoreCentrale) && (
                           <button
                             type="button"
@@ -21851,6 +22000,9 @@ KM TOTALI: ${kmTot} KM`;
             noteDiDebito,
             tessereAssociative,
             costiServizio,
+            altreEntrateUscite,
+            costiGestione,
+            ricevuteContabilita,
             catalogoMansioni: getMansioniCatalogo(),
             categorieMansioni: getCategorieMansioni(),
             customEmojiIcons: getCustomEmojiIcons(),

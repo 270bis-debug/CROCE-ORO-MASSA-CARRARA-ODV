@@ -838,6 +838,9 @@ class RealtimeService {
       if (Array.isArray(payload.noteDiDebito)) {
         this.emit('NOTE_DEBITO_UPDATED', { noteDiDebito: payload.noteDiDebito });
       }
+      if (Array.isArray(payload.ricevuteContabilita)) {
+        this.emit('RICEVUTE_CONTABILITA_UPDATED', { ricevuteContabilita: payload.ricevuteContabilita });
+      }
       if (Array.isArray(payload.tessereAssociative)) {
         this.emit('TESSERE_UPDATED', { tessereAssociative: payload.tessereAssociative });
       }
@@ -1177,6 +1180,7 @@ class RealtimeService {
           codiciEliminati: Array.isArray(this.cloudState.codiciEliminati) ? this.cloudState.codiciEliminati : [],
           corsiFormazione: stripLegacyCorsi(this.cloudState.corsiFormazione),
           noteDiDebito: Array.isArray(this.cloudState.noteDiDebito) ? this.cloudState.noteDiDebito : [],
+          ricevuteContabilita: Array.isArray(this.cloudState.ricevuteContabilita) ? this.cloudState.ricevuteContabilita : [],
           tessereAssociative: Array.isArray(this.cloudState.tessereAssociative) ? this.cloudState.tessereAssociative : [],
           ...(Array.isArray(this.cloudState.altreEntrateUscite) ? { altreEntrateUscite: this.cloudState.altreEntrateUscite } : {}),
           ...(Array.isArray(this.cloudState.costiGestione) ? { costiGestione: this.cloudState.costiGestione } : {}),
@@ -1395,12 +1399,14 @@ class RealtimeService {
           (Array.isArray(snapshot.serviziArchivio) && snapshot.serviziArchivio.length > 0) ||
           (Array.isArray(snapshot.corsiFormazione) && stripLegacyCorsi(snapshot.corsiFormazione).length > 0) ||
           (Array.isArray(snapshot.noteDiDebito) && snapshot.noteDiDebito.length > 0) ||
+          (Array.isArray(snapshot.ricevuteContabilita) && snapshot.ricevuteContabilita.length > 0) ||
           (Array.isArray(snapshot.tessereAssociative) && snapshot.tessereAssociative.length > 0),
         patch: {
           serviziArchivio: snapshot.serviziArchivio || [],
           codiciEliminati: snapshot.codiciEliminati || [],
           corsiFormazione: stripLegacyCorsi(snapshot.corsiFormazione),
           noteDiDebito: snapshot.noteDiDebito || [],
+          ricevuteContabilita: snapshot.ricevuteContabilita || [],
           tessereAssociative: snapshot.tessereAssociative || [],
         },
       },
@@ -1565,6 +1571,7 @@ class RealtimeService {
           codiciEliminati: snapshot.codiciEliminati || this.cloudState.codiciEliminati || [],
           corsiFormazione: stripLegacyCorsi(snapshot.corsiFormazione ?? this.cloudState.corsiFormazione ?? []),
           noteDiDebito: snapshot.noteDiDebito ?? this.cloudState.noteDiDebito ?? [],
+          ricevuteContabilita: snapshot.ricevuteContabilita ?? this.cloudState.ricevuteContabilita ?? [],
           tessereAssociative: snapshot.tessereAssociative ?? this.cloudState.tessereAssociative ?? [],
         },
       },
@@ -2905,6 +2912,11 @@ class RealtimeService {
       case 'UPDATE_NOTE_DEBITO':
         if (Array.isArray(data?.noteDiDebito)) {
           this.scheduleShardWrite('servizi', { noteDiDebito: data.noteDiDebito });
+        }
+        break;
+      case 'UPDATE_RICEVUTE_CONTABILITA':
+        if (Array.isArray(data?.ricevuteContabilita)) {
+          this.scheduleShardWrite('servizi', { ricevuteContabilita: data.ricevuteContabilita });
         }
         break;
       case 'UPDATE_TESSERE':
@@ -4288,6 +4300,11 @@ class RealtimeService {
     this.send('UPDATE_NOTE_DEBITO', { noteDiDebito });
   }
 
+  public syncRicevuteContabilita(ricevuteContabilita: any[]) {
+    this.cloudState.ricevuteContabilita = ricevuteContabilita;
+    this.send('UPDATE_RICEVUTE_CONTABILITA', { ricevuteContabilita });
+  }
+
   public syncTessere(tessereAssociative: any[]) {
     this.send('UPDATE_TESSERE', { tessereAssociative });
   }
@@ -4340,6 +4357,8 @@ class RealtimeService {
 
   public syncNomiDatabase(nomiDatabase: Record<string, string>) {
     const updatedAt = getNomiDatabaseUpdatedAt() || Date.now();
+    this.cloudState.nomiDatabase = nomiDatabase;
+    this.cloudState.nomiDatabaseUpdatedAt = updatedAt;
     this.send('UPDATE_NOMI_DATABASE', { nomiDatabase, updatedAt });
   }
 

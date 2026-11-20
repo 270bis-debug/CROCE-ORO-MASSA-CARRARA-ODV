@@ -146,6 +146,7 @@ export const SOTTOSEZIONI_PER_DATABASE: Record<MacroCategoriaId, InfoSottosezion
     { id: 'contiCorrenti', numero: '6', titoloDefault: 'Coordinate Bancarie & Postali' },
     { id: 'altreEntrateUscite', numero: '7', titoloDefault: 'Altre Entrate / Uscite' },
     { id: 'costiGestione', numero: '8', titoloDefault: 'Costi di Gestione' },
+    { id: 'ricevute', numero: '9', titoloDefault: 'Emissione Ricevute' },
   ],
   formazione: [
     { id: 'corsi', numero: '1', titoloDefault: 'Catalogo Corsi & Piano Formativo' },
@@ -370,6 +371,17 @@ export function salvaNomiSottosezioniCustom(
   return clean;
 }
 
+function areStringMapsEqual(a: Record<string, string>, b: Record<string, string>): boolean {
+  const keysA = Object.keys(a);
+  const keysB = Object.keys(b);
+  if (keysA.length !== keysB.length) return false;
+  for (let i = 0; i < keysA.length; i += 1) {
+    const k = keysA[i];
+    if (a[k] !== b[k]) return false;
+  }
+  return true;
+}
+
 export function applicaNomiDatabaseDaSync(
   nomiMap?: Record<string, string> | null,
   updatedAt?: number
@@ -378,12 +390,14 @@ export function applicaNomiDatabaseDaSync(
   if (!nomiMap || typeof nomiMap !== 'object' || Array.isArray(nomiMap)) return false;
   const incomingTs = typeof updatedAt === 'number' && Number.isFinite(updatedAt) ? updatedAt : 0;
   const localTs = getNomiDatabaseUpdatedAt();
-  if (incomingTs > 0 && localTs > incomingTs) {
+  // Ignora snapshot più vecchi o privi di timestamp se esiste già uno stato locale salvato
+  if (localTs > 0 && (incomingTs === 0 || incomingTs < localTs)) {
     return false;
   }
   // Separa le chiavi database (es. 'mezzi') dalle chiavi sottosezioni (es. 'sub:mezzi.flotta')
   const dbClean: Record<string, string> = {};
   const subClean: Record<string, string> = {};
+  const hasSubsMarker = Object.prototype.hasOwnProperty.call(nomiMap, '__hasSubs');
   Object.entries(nomiMap).forEach(([k, v]) => {
     if (k === '__hasSubs') return;
     if (typeof v === 'string' && v.trim()) {
@@ -394,9 +408,26 @@ export function applicaNomiDatabaseDaSync(
       }
     }
   });
-  salvaNomiDatabaseCustom(dbClean, false, incomingTs > 0 ? incomingTs : undefined);
-  if (Object.keys(subClean).length > 0 || Object.keys(nomiMap).some((k) => k === '__hasSubs')) {
-    salvaNomiSottosezioniCustom(subClean, false, incomingTs > 0 ? incomingTs : undefined);
+
+  const currentDb = getNomiDatabaseCustom();
+  const currentSub = getNomiSottosezioniCustom();
+  const shouldUpdateSub = Object.keys(subClean).length > 0 || hasSubsMarker;
+  const dbChanged = !areStringMapsEqual(currentDb, dbClean);
+  const subChanged = shouldUpdateSub && !areStringMapsEqual(currentSub, subClean);
+
+  // Se non è cambiato nulla rispetto ai dati già locali, aggiorna eventualmente solo il timestamp
+  // SENZA emettere l'evento croceoro_nomi_db_updated (evita di resettare gli input in modifica durante il polling!)
+  if (!dbChanged && !subChanged) {
+    if (incomingTs > localTs) {
+      touchNomiDatabaseUpdatedAt(incomingTs);
+    }
+    return false;
+  }
+
+  const tsToStore = incomingTs > 0 ? incomingTs : Date.now();
+  salvaNomiDatabaseCustom(dbClean, false, tsToStore);
+  if (shouldUpdateSub) {
+    salvaNomiSottosezioniCustom(subClean, false, tsToStore);
   }
   try {
     window.dispatchEvent(new CustomEvent('croceoro_nomi_db_updated'));
@@ -407,15 +438,12 @@ export function applicaNomiDatabaseDaSync(
 export function getNomiDatabaseSyncPayload(): Record<string, string> {
   const db = getNomiDatabaseCustom();
   const subs = getNomiSottosezioniCustom();
-  const merged: Record<string, string> = { ...db };
-  if (Object.keys(subs).length > 0) {
-    merged['__hasSubs'] = '1';
-    Object.entries(subs).forEach(([k, v]) => {
-      if (v && v.trim()) {
-        merged[`sub:${k}`] = v.trim();
-      }
-    });
-  }
+  const merged: Record<string, string> = { ...db, __hasSubs: '1' };
+  Object.entries(subs).forEach(([k, v]) => {
+    if (v && v.trim()) {
+      merged[`sub:${k}`] = v.trim();
+    }
+  });
   return merged;
 }
 

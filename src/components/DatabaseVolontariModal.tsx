@@ -5232,7 +5232,7 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
             </div>
 
             {/* Tab Navigation Sticky */}
-            <div className="flex items-center border-b border-slate-800 bg-slate-950 px-4 pt-2 gap-2 shrink-0 overflow-x-auto">
+            <div className="flex flex-wrap items-center border-b border-slate-800 bg-slate-950 px-3 sm:px-4 pt-2 pb-1 gap-1.5 shrink-0">
               <button
                 type="button"
                 onClick={() => setTabModaleEdit('anagrafica')}

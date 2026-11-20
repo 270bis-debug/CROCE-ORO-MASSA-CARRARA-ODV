@@ -374,7 +374,8 @@ export function generaRicevutaTesseramentoPDF(
   // Firma del Tesoriere: Grafica trasparente se caricata, OPPURE Sigillo Istituzionale di Firma Digitale Automatica
   if (tesoriera?.firmaBase64) {
     try {
-      doc.addImage(tesoriera.firmaBase64, 'PNG', margin + 12, currentY + 17, 45, 17, undefined, 'FAST');
+      const { dataUrl, format } = preparaFirmaImmagine(tesoriera.firmaBase64);
+      doc.addImage(dataUrl, format, margin + 12, currentY + 17, 45, 17, undefined, 'FAST');
     } catch {
       disegnaFirmaAutomaticaTesoriere(doc, margin + 3, currentY + 17.5, colFirmaW - 6, 20, nomeTesoriera);
     }
@@ -445,16 +446,38 @@ export function generaRicevutaTesseramentoPDF(
   return doc;
 }
 
+export interface DatiTesorierePDF {
+  nome: string;
+  cognome: string;
+  carica?: string;
+  email?: string;
+  firmaBase64?: string;
+}
+
+function preparaFirmaImmagine(raw: string): { dataUrl: string; format: 'PNG' | 'JPEG' } {
+  const trimmed = raw.trim();
+  const isJpeg =
+    trimmed.toLowerCase().includes('image/jpeg') ||
+    trimmed.toLowerCase().includes('image/jpg') ||
+    trimmed.startsWith('/9j/');
+  const format: 'PNG' | 'JPEG' = isJpeg ? 'JPEG' : 'PNG';
+  const dataUrl = trimmed.startsWith('data:image/')
+    ? trimmed
+    : `data:image/${isJpeg ? 'jpeg' : 'png'};base64,${trimmed}`;
+  return { dataUrl, format };
+}
+
 /**
  * Disegna il sigillo grafico certificato di firma automatica del Tesoriere in carica
  */
-function disegnaFirmaAutomaticaTesoriere(
+export function disegnaFirmaAutomaticaTesoriere(
   doc: jsPDF,
   x: number,
   y: number,
   w: number,
   h: number,
-  nomeTesoriere: string
+  nomeTesoriere: string,
+  caricaTesoriere = 'Tesoriere del Consiglio Direttivo'
 ): void {
   // Box di sicurezza firma digitale con bordo dorato/blu
   doc.setFillColor(248, 250, 252);
@@ -474,7 +497,7 @@ function disegnaFirmaAutomaticaTesoriere(
   doc.setFont('times', 'bolditalic');
   doc.setFontSize(9.5);
   doc.setTextColor(29, 26, 96);
-  doc.text(nomeTesoriere, x + 3, y + 9.5);
+  doc.text(pulisciTesto(nomeTesoriere), x + 3, y + 9.5);
 
   // Linea ondulata di firma
   doc.setDrawColor(29, 26, 96);
@@ -485,7 +508,7 @@ function disegnaFirmaAutomaticaTesoriere(
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(4.8);
   doc.setTextColor(71, 85, 105);
-  doc.text('Carica: Tesoriere del Consiglio Direttivo • RUNTS OdV', x + 3, y + 14.5);
+  doc.text(`Carica: ${pulisciTesto(caricaTesoriere)} • RUNTS OdV`, x + 3, y + 14.5);
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(4.5);
   doc.setTextColor(180, 83, 9);
@@ -493,7 +516,85 @@ function disegnaFirmaAutomaticaTesoriere(
 }
 
 /**
+ * Disegna il riquadro ufficiale unico con la firma del Tesoriere (senza firma del Presidente)
+ * per Note di Debito e Ricevute Contabili.
+ */
+export function disegnaBoxFirmaTesoriere(
+  doc: jsPDF,
+  opts: {
+    x: number;
+    y: number;
+    width: number;
+    height?: number;
+    tesoriere?: DatiTesorierePDF;
+    denominazioneEnte?: string;
+    dataDocumento?: string;
+  }
+): number {
+  const { x, y, width } = opts;
+  const height = opts.height ?? 41;
+  const tes = opts.tesoriere;
+  const nomeCompleto = tes && (tes.nome || tes.cognome)
+    ? pulisciTesto(`${(tes.cognome || '').toUpperCase()} ${tes.nome || ''}`.trim())
+    : 'TESORIERE IN CARICA';
+  const carica = pulisciTesto(tes?.carica || 'Tesoriere del Consiglio Direttivo');
+  const ente = pulisciTesto(opts.denominazioneEnte || 'Croce Oro Massa Carrara OdV');
+
+  doc.setFillColor(255, 255, 255);
+  doc.setDrawColor(51, 65, 85);
+  doc.setLineWidth(0.35);
+  doc.roundedRect(x, y, width, height, 1.5, 1.5, 'FD');
+
+  // Intestazione box
+  doc.setFillColor(29, 26, 96);
+  doc.roundedRect(x, y, width, 6, 1.5, 1.5, 'F');
+  doc.rect(x, y + 3.2, width, 2.8, 'F');
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(6.8);
+  doc.setTextColor(255, 255, 255);
+  doc.text('A CURA E FIRMA DEL TESORIERE', x + width / 2, y + 4.1, { align: 'center' });
+
+  // Nominativo e Carica
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(7.4);
+  doc.setTextColor(15, 23, 42);
+  doc.text(nomeCompleto, x + 3.5, y + 10.5);
+
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(6.1);
+  doc.setTextColor(100, 116, 139);
+  doc.text(`${carica} - ${ente}`, x + 3.5, y + 14.2, { maxWidth: width - 7 });
+
+  // Firma autografa caricata oppure sigillo automatico certificato (mai vuoto)
+  if (tes?.firmaBase64 && tes.firmaBase64.trim().length > 20) {
+    try {
+      const { dataUrl, format } = preparaFirmaImmagine(tes.firmaBase64);
+      const imgW = Math.min(48, width - 16);
+      const imgH = 16.5;
+      const imgX = x + (width - imgW) / 2;
+      doc.addImage(dataUrl, format, imgX, y + 16.2, imgW, imgH, undefined, 'FAST');
+      doc.setDrawColor(203, 213, 225);
+      doc.setLineWidth(0.25);
+      doc.line(x + 6, y + 33.8, x + width - 6, y + 33.8);
+    } catch {
+      disegnaFirmaAutomaticaTesoriere(doc, x + 3, y + 16, width - 6, 19.5, nomeCompleto, carica);
+    }
+  } else {
+    disegnaFirmaAutomaticaTesoriere(doc, x + 3, y + 16, width - 6, 19.5, nomeCompleto, carica);
+  }
+
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(5.7);
+  doc.setTextColor(100, 116, 139);
+  const dataLabel = opts.dataDocumento ? `Emesso il ${pulisciTesto(opts.dataDocumento)}` : 'Ufficio Tesoreria & Contabilita';
+  doc.text(dataLabel, x + 3.5, y + height - 2.3);
+
+  return height;
+}
+
+/**
  * Individua in automatico chi ha la carica di Tesoriere all'interno del Consiglio Direttivo
+ * (o nelle mansioni/qualifiche dell'anagrafica volontari)
  */
 export function getTesoriereAttivo(volontari: Volontario[] = []): {
   nome: string;
@@ -501,30 +602,49 @@ export function getTesoriereAttivo(volontari: Volontario[] = []): {
   carica: string;
   email: string;
   firmaBase64?: string;
+  trovatoInAnagrafica: boolean;
 } {
-  const found = volontari.find(
+  const lista = Array.isArray(volontari) ? volontari : [];
+  const candidatiDirettivo = lista.filter(
     (v) =>
       v.caricaConsiglioDirettivo &&
       v.caricaConsiglioDirettivo.toLowerCase().includes('tesorier')
   );
+  const candidatiFallback = candidatiDirettivo.length > 0
+    ? candidatiDirettivo
+    : lista.filter((v) => {
+        const mans = (v.mansione || '').toLowerCase();
+        const qual = (v.qualifica || '').toLowerCase();
+        const mansArr = Array.isArray(v.mansioni) ? v.mansioni.join(' ').toLowerCase() : '';
+        return mans.includes('tesorier') || qual.includes('tesorier') || mansArr.includes('tesorier');
+      });
+
+  // Se presenti più match, privilegia chi ha firma caricata e/o email compilata
+  const found =
+    candidatiFallback.find((v) => Boolean(v.firmaBase64) && Boolean(v.email?.trim())) ||
+    candidatiFallback.find((v) => Boolean(v.firmaBase64)) ||
+    candidatiFallback.find((v) => Boolean(v.email?.trim())) ||
+    candidatiFallback[0];
 
   if (found) {
     return {
       nome: found.nome,
       cognome: found.cognome,
       carica: found.caricaConsiglioDirettivo || 'Tesoriere del Consiglio Direttivo',
-      email: found.email || 'tesoreria@croceoro.org',
-      firmaBase64: found.firmaBase64
+      email: (found.email || '').trim() || 'tesoreria@croceoro.org',
+      firmaBase64: found.firmaBase64,
+      trovatoInAnagrafica: true
     };
   }
 
   // Predefinito istituzionale dell'Ufficio di Tesoreria
   return {
-    nome: 'Sara',
-    cognome: 'Ferretti',
+    nome: 'Ufficio',
+    cognome: 'Tesoreria',
     carica: 'Tesoriere del Consiglio Direttivo',
     email: 'tesoreria@croceoro.org',
-    firmaBase64: undefined
+    firmaBase64: undefined,
+    trovatoInAnagrafica: false
   };
 }
 

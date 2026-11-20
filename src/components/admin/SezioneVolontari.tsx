@@ -192,6 +192,9 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
   const [draftNomiDb, setDraftNomiDb] = useState<Record<string, string>>(() => getNomiDatabaseCustom());
   const [draftNomiSub, setDraftNomiSub] = useState<Record<string, string>>(() => getNomiSottosezioniCustom());
   const [mostraRinominaSub, setMostraRinominaSub] = useState<boolean>(false);
+  const dirtyNomiDbKeysRef = React.useRef<Set<string>>(new Set());
+  const dirtyNomiSubKeysRef = React.useRef<Set<string>>(new Set());
+  const [hasUnsavedNomiDb, setHasUnsavedNomiDb] = useState<boolean>(false);
 
   // Modale di conferma in-app (sostituisce confirm() nativi)
   const [confermaAzioneModal, setConfermaAzioneModal] = useState<{
@@ -284,9 +287,25 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
     };
     const onNomiDbSync = () => {
       const agg = getNomiDatabaseCustom();
+      const aggSub = getNomiSottosezioniCustom();
       setNomiDbCustom(agg);
-      setDraftNomiDb(agg);
-      setDraftNomiSub(getNomiSottosezioniCustom());
+      // Preserva sempre eventuali campi che l'utente sta attualmente modificando prima di cliccare Salva
+      setDraftNomiDb((prev) => {
+        if (dirtyNomiDbKeysRef.current.size === 0) return agg;
+        const merged: Record<string, string> = { ...agg };
+        dirtyNomiDbKeysRef.current.forEach((k) => {
+          if (prev[k] !== undefined) merged[k] = prev[k];
+        });
+        return merged;
+      });
+      setDraftNomiSub((prev) => {
+        if (dirtyNomiSubKeysRef.current.size === 0) return aggSub;
+        const merged: Record<string, string> = { ...aggSub };
+        dirtyNomiSubKeysRef.current.forEach((k) => {
+          if (prev[k] !== undefined) merged[k] = prev[k];
+        });
+        return merged;
+      });
     };
     window.addEventListener('croceoro_mansioni_updated', onMansioniSync);
     window.addEventListener('croceoro_nomi_db_updated', onNomiDbSync);
@@ -1357,66 +1376,20 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
         </div>
       )}
 
-      {/* Selettore rapido sotto-categorie per Smartphone (evita di dover scorrere orizzontalmente) */}
-      <div className="md:hidden bg-slate-950 p-3 rounded-2xl border border-slate-800 space-y-1.5">
-        <label className="text-[10px] font-black uppercase text-slate-400 block flex items-center justify-between">
-          <span>Seleziona Sottosezione Database:</span>
-          <span className="text-amber-400 font-bold">
-            {['anagrafiche', 'vestiario', 'pin', 'domande', 'timbrature', 'gruppi', 'mansioni', 'permessi_database'].filter(canShowSubtab).length} Sottosezioni Disponibili
-          </span>
-        </label>
-        <select
-          value={sottoTab}
-          onChange={(e) => setSottoTab(e.target.value as any)}
-          className="w-full p-2.5 rounded-xl bg-slate-900 border-2 border-blue-500/60 text-white font-bold text-xs focus:ring-2 focus:ring-blue-400 cursor-pointer"
-        >
-          {canShowSubtab('anagrafiche') && <option value="anagrafiche">👥 1. {getTitoloSottosezione('volontari', 'anagrafiche', 'Anagrafiche Volontari', nomiSubCustom)} ({volontari.length})</option>}
-          {canShowSubtab('vestiario') && <option value="vestiario">👕 2. {getTitoloSottosezione('volontari', 'vestiario', 'Vestiario & DPI Personale', nomiSubCustom)}</option>}
-          {canShowSubtab('pin') && <option value="pin">🔑 3. {getTitoloSottosezione('volontari', 'pin', 'Gestione PIN & Sicurezza', nomiSubCustom)}</option>}
-          {canShowSubtab('domande') && <option value="domande">📄 4. {getTitoloSottosezione('volontari', 'domande', 'Domande Ammissione', nomiSubCustom)} {aspirantiInAttesa.length > 0 ? `(${aspirantiInAttesa.length})` : ''}</option>}
-          {canShowSubtab('timbrature') && <option value="timbrature">⏱️ 5. {getTitoloSottosezione('volontari', 'timbrature', 'Registro Timbrature', nomiSubCustom)}</option>}
-          {canShowSubtab('gruppi') && <option value="gruppi">🏢 6. {getTitoloSottosezione('volontari', 'gruppi', 'Gruppi & Sezioni Territoriali', nomiSubCustom)}</option>}
-          {canShowSubtab('mansioni') && <option value="mansioni">🎖️ 7. {getTitoloSottosezione('volontari', 'mansioni', 'Mansioni & Competenze', nomiSubCustom)} ({catalogoMansioni.length})</option>}
-          {canShowSubtab('permessi_database') && <option value="permessi_database">🔐 8. {getTitoloSottosezione('volontari', 'permessi_database', 'Accesso Database & Permessi', nomiSubCustom)}</option>}
-        </select>
-      </div>
-
-      {/* Suggerimento visivo per scorrimento orizzontale su mobile */}
-      <div className="md:hidden flex items-center justify-between px-1 text-[10px] text-slate-400">
-        <span>← Scorri le schede per visualizzarle tutte →</span>
-        {canShowSubtab('permessi_database') ? (
-          <button
-            type="button"
-            onClick={() => setSottoTab('permessi_database')}
-            className="text-indigo-300 font-bold underline cursor-pointer"
-          >
-            Scheda 8: Accesso Database
-          </button>
-        ) : canShowSubtab('mansioni') ? (
-          <button
-            type="button"
-            onClick={() => setSottoTab('mansioni')}
-            className="text-amber-400 font-bold underline cursor-pointer"
-          >
-            Scheda 7: Mansioni
-          </button>
-        ) : null}
-      </div>
-
       {/* Barra Navigazione Sotto-Categorie: Griglia Responsiva Completa Visibile Senza Scorrimento */}
-      <div className="flex flex-wrap items-stretch gap-2 pb-2 border-b border-slate-800">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-1.5 sm:gap-2 pb-2 border-b border-slate-800">
         {canShowSubtab('anagrafiche') && (
           <button
             type="button"
             onClick={() => setSottoTab('anagrafiche')}
-            className={`shrink-0 flex-1 min-w-[130px] sm:min-w-[160px] px-3.5 py-2.5 rounded-xl text-xs font-black uppercase flex items-center justify-center gap-2 transition-all cursor-pointer ${
+            className={`w-full min-w-0 px-2.5 sm:px-3 py-2 rounded-xl text-[10px] sm:text-xs font-black uppercase flex items-center justify-center sm:justify-start gap-1.5 sm:gap-2 text-left leading-tight transition-all cursor-pointer ${
               sottoTab === 'anagrafiche'
                 ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/30 border border-blue-400'
                 : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
             }`}
           >
             <Users className="w-4 h-4 shrink-0" />
-            <span>1. {getTitoloSottosezione('volontari', 'anagrafiche', 'Anagrafiche', nomiSubCustom)} ({volontari.length})</span>
+            <span className="break-words">1. {getTitoloSottosezione('volontari', 'anagrafiche', 'Anagrafiche', nomiSubCustom)} ({volontari.length})</span>
           </button>
         )}
 
@@ -1424,14 +1397,14 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
           <button
             type="button"
             onClick={() => setSottoTab('vestiario')}
-            className={`shrink-0 flex-1 min-w-[130px] sm:min-w-[160px] px-3.5 py-2.5 rounded-xl text-xs font-black uppercase flex items-center justify-center gap-2 transition-all cursor-pointer ${
+            className={`w-full min-w-0 px-2.5 sm:px-3 py-2 rounded-xl text-[10px] sm:text-xs font-black uppercase flex items-center justify-center sm:justify-start gap-1.5 sm:gap-2 text-left leading-tight transition-all cursor-pointer ${
               sottoTab === 'vestiario'
                 ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/30 border border-blue-400'
                 : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
             }`}
           >
             <Shirt className="w-4 h-4 shrink-0" />
-            <span>2. {getTitoloSottosezione('volontari', 'vestiario', 'Vestiario & DPI', nomiSubCustom)}</span>
+            <span className="break-words">2. {getTitoloSottosezione('volontari', 'vestiario', 'Vestiario & DPI', nomiSubCustom)}</span>
           </button>
         )}
 
@@ -1439,14 +1412,14 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
           <button
             type="button"
             onClick={() => setSottoTab('pin')}
-            className={`shrink-0 flex-1 min-w-[130px] sm:min-w-[160px] px-3.5 py-2.5 rounded-xl text-xs font-black uppercase flex items-center justify-center gap-2 transition-all cursor-pointer ${
+            className={`w-full min-w-0 px-2.5 sm:px-3 py-2 rounded-xl text-[10px] sm:text-xs font-black uppercase flex items-center justify-center sm:justify-start gap-1.5 sm:gap-2 text-left leading-tight transition-all cursor-pointer ${
               sottoTab === 'pin'
                 ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/30 border border-blue-400'
                 : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
             }`}
           >
             <KeyRound className="w-4 h-4 shrink-0" />
-            <span>3. {getTitoloSottosezione('volontari', 'pin', 'Gestione PIN', nomiSubCustom)}</span>
+            <span className="break-words">3. {getTitoloSottosezione('volontari', 'pin', 'Gestione PIN', nomiSubCustom)}</span>
           </button>
         )}
 
@@ -1454,14 +1427,14 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
           <button
             type="button"
             onClick={() => setSottoTab('domande')}
-            className={`shrink-0 flex-1 min-w-[130px] sm:min-w-[160px] px-3.5 py-2.5 rounded-xl text-xs font-black uppercase flex items-center justify-center gap-2 transition-all cursor-pointer relative ${
+            className={`w-full min-w-0 px-2.5 sm:px-3 py-2 rounded-xl text-[10px] sm:text-xs font-black uppercase flex items-center justify-center sm:justify-start gap-1.5 sm:gap-2 text-left leading-tight transition-all cursor-pointer relative ${
               sottoTab === 'domande'
                 ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/30 border border-blue-400'
                 : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
             }`}
           >
             <FileText className="w-4 h-4 shrink-0" />
-            <span>4. {getTitoloSottosezione('volontari', 'domande', 'Domande Ammissione', nomiSubCustom)}</span>
+            <span className="break-words">4. {getTitoloSottosezione('volontari', 'domande', 'Domande Ammissione', nomiSubCustom)}</span>
             {aspirantiInAttesa.length > 0 && (
               <span className="w-5 h-5 rounded-full bg-amber-500 text-slate-950 font-black text-[10px] flex items-center justify-center animate-pulse shrink-0">
                 {aspirantiInAttesa.length}
@@ -1474,14 +1447,14 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
           <button
             type="button"
             onClick={() => setSottoTab('timbrature')}
-            className={`shrink-0 flex-1 min-w-[130px] sm:min-w-[160px] px-3.5 py-2.5 rounded-xl text-xs font-black uppercase flex items-center justify-center gap-2 transition-all cursor-pointer ${
+            className={`w-full min-w-0 px-2.5 sm:px-3 py-2 rounded-xl text-[10px] sm:text-xs font-black uppercase flex items-center justify-center sm:justify-start gap-1.5 sm:gap-2 text-left leading-tight transition-all cursor-pointer ${
               sottoTab === 'timbrature'
                 ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/30 border border-blue-400'
                 : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
             }`}
           >
             <Clock className="w-4 h-4 shrink-0" />
-            <span>5. {getTitoloSottosezione('volontari', 'timbrature', 'Timbrature', nomiSubCustom)}</span>
+            <span className="break-words">5. {getTitoloSottosezione('volontari', 'timbrature', 'Timbrature', nomiSubCustom)}</span>
           </button>
         )}
 
@@ -1489,14 +1462,14 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
           <button
             type="button"
             onClick={() => setSottoTab('gruppi')}
-            className={`shrink-0 flex-1 min-w-[130px] sm:min-w-[160px] px-3.5 py-2.5 rounded-xl text-xs font-black uppercase flex items-center justify-center gap-2 transition-all cursor-pointer ${
+            className={`w-full min-w-0 px-2.5 sm:px-3 py-2 rounded-xl text-[10px] sm:text-xs font-black uppercase flex items-center justify-center sm:justify-start gap-1.5 sm:gap-2 text-left leading-tight transition-all cursor-pointer ${
               sottoTab === 'gruppi'
                 ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/30 border border-blue-400'
                 : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
             }`}
           >
             <Building2 className="w-4 h-4 shrink-0" />
-            <span>6. {getTitoloSottosezione('volontari', 'gruppi', 'Gruppi', nomiSubCustom)}</span>
+            <span className="break-words">6. {getTitoloSottosezione('volontari', 'gruppi', 'Gruppi', nomiSubCustom)}</span>
             {selectedVolontariGruppoIds.length > 0 && (
               <span className="w-5 h-5 rounded-full bg-amber-400 text-slate-950 font-black text-[10px] flex items-center justify-center shrink-0">
                 {selectedVolontariGruppoIds.length}
@@ -1509,7 +1482,7 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
           <button
             type="button"
             onClick={() => setSottoTab('mansioni')}
-            className={`shrink-0 flex-1 min-w-[140px] sm:min-w-[180px] px-3.5 py-2.5 rounded-xl text-xs font-black uppercase flex items-center justify-center gap-2 transition-all cursor-pointer shadow-md ${
+            className={`w-full min-w-0 px-2.5 sm:px-3 py-2 rounded-xl text-[10px] sm:text-xs font-black uppercase flex items-center justify-center sm:justify-start gap-1.5 sm:gap-2 text-left leading-tight transition-all cursor-pointer shadow-md ${
               sottoTab === 'mansioni'
                 ? 'bg-amber-400 text-slate-950 ring-2 ring-amber-300 shadow-amber-500/30'
                 : 'bg-amber-950/50 hover:bg-amber-900/60 text-amber-300 border-2 border-amber-500/70'
@@ -1517,7 +1490,7 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
             title="7. Mansioni & Competenze Volontari"
           >
             <Award className={`w-4 h-4 shrink-0 ${sottoTab === 'mansioni' ? 'text-slate-950' : 'text-amber-400'}`} />
-            <span>7. {getTitoloSottosezione('volontari', 'mansioni', 'Mansioni & Competenze', nomiSubCustom)} ({catalogoMansioni.length})</span>
+            <span className="break-words">7. {getTitoloSottosezione('volontari', 'mansioni', 'Mansioni & Competenze', nomiSubCustom)} ({catalogoMansioni.length})</span>
             {selectedVolontariMansioniIds.length > 0 && (
               <span className="w-5 h-5 rounded-full bg-slate-950 text-amber-300 font-black text-[10px] flex items-center justify-center shrink-0">
                 {selectedVolontariMansioniIds.length}
@@ -1530,7 +1503,7 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
           <button
             type="button"
             onClick={() => setSottoTab('permessi_database')}
-            className={`shrink-0 flex-1 min-w-[150px] sm:min-w-[190px] px-3.5 py-2.5 rounded-xl text-xs font-black uppercase flex items-center justify-center gap-2 transition-all cursor-pointer shadow-md ${
+            className={`w-full min-w-0 px-2.5 sm:px-3 py-2 rounded-xl text-[10px] sm:text-xs font-black uppercase flex items-center justify-center sm:justify-start gap-1.5 sm:gap-2 text-left leading-tight transition-all cursor-pointer shadow-md ${
               sottoTab === 'permessi_database'
                 ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/30 ring-2 ring-indigo-300 border border-indigo-300'
                 : 'bg-indigo-950/50 hover:bg-indigo-900/60 text-indigo-200 border-2 border-indigo-500/60'
@@ -1538,7 +1511,7 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
             title="8. Assegnazione Autorizzazioni Accesso ai Database & Sottosezioni"
           >
             <Shield className={`w-4 h-4 shrink-0 ${sottoTab === 'permessi_database' ? 'text-white' : 'text-indigo-400'}`} />
-            <span>8. Accesso Database</span>
+            <span className="break-words">8. {getTitoloSottosezione('volontari', 'permessi_database', 'Accesso Database', nomiSubCustom)}</span>
             {selectedVolontariPermessiIds.length > 0 && (
               <span className="w-5 h-5 rounded-full bg-amber-400 text-slate-950 font-black text-[10px] flex items-center justify-center shrink-0">
                 {selectedVolontariPermessiIds.length}
@@ -5037,10 +5010,15 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
         };
 
         const handleSalvaNomiDatabase = () => {
-          const saved = salvaNomiDatabaseCustom(draftNomiDb, false);
-          salvaNomiSottosezioniCustom(draftNomiSub, true);
+          const nowTs = Date.now();
+          dirtyNomiDbKeysRef.current.clear();
+          dirtyNomiSubKeysRef.current.clear();
+          setHasUnsavedNomiDb(false);
+          const saved = salvaNomiDatabaseCustom(draftNomiDb, false, nowTs);
+          const savedSub = salvaNomiSottosezioniCustom(draftNomiSub, true, nowTs);
           setNomiDbCustom(saved);
           setDraftNomiDb(saved);
+          setDraftNomiSub(savedSub);
           realtime.syncNomiDatabase(getNomiDatabaseSyncPayload());
           onNotificaRadio?.(
             `🏷️ NOMI DATABASE E SOTTOSEZIONI AGGIORNATI: ${operatoreCorrente} ha personalizzato i nomi (effetto immediato su tutti i dispositivi).`,
@@ -5050,8 +5028,12 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
         };
 
         const handleRipristinaNomiDatabase = () => {
-          const saved = salvaNomiDatabaseCustom({}, false);
-          salvaNomiSottosezioniCustom({}, true);
+          const nowTs = Date.now();
+          dirtyNomiDbKeysRef.current.clear();
+          dirtyNomiSubKeysRef.current.clear();
+          setHasUnsavedNomiDb(false);
+          const saved = salvaNomiDatabaseCustom({}, false, nowTs);
+          salvaNomiSottosezioniCustom({}, true, nowTs);
           setNomiDbCustom(saved);
           setDraftNomiDb(saved);
           setDraftNomiSub({});
@@ -5151,10 +5133,14 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
                   <button
                     type="button"
                     onClick={handleSalvaNomiDatabase}
-                    className="px-3.5 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs uppercase flex items-center gap-1.5 shadow-md cursor-pointer active:scale-95"
+                    className={`px-3.5 py-1.5 rounded-xl font-black text-xs uppercase flex items-center gap-1.5 shadow-md cursor-pointer active:scale-95 transition-all ${
+                      hasUnsavedNomiDb
+                        ? 'bg-emerald-400 hover:bg-emerald-300 text-slate-950 ring-2 ring-emerald-300/70'
+                        : 'bg-amber-500 hover:bg-amber-400 text-slate-950'
+                    }`}
                   >
                     <Save className="w-3.5 h-3.5" />
-                    <span>Salva & Applica Subito</span>
+                    <span>{hasUnsavedNomiDb ? 'Salva Modifiche Ora' : 'Salva & Applica Subito'}</span>
                   </button>
                 </div>
               </div>
@@ -5170,6 +5156,8 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
                       value={draftNomiDb[cat.id] !== undefined ? draftNomiDb[cat.id] : cat.titolo}
                       onChange={(e) => {
                         const val = e.target.value;
+                        dirtyNomiDbKeysRef.current.add(cat.id);
+                        setHasUnsavedNomiDb(true);
                         setDraftNomiDb((prev) => ({ ...prev, [cat.id]: val }));
                       }}
                       placeholder={cat.titolo}
@@ -5201,6 +5189,8 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
                                   value={draftNomiSub[key] !== undefined ? draftNomiSub[key] : sub.titoloDefault}
                                   onChange={(e) => {
                                     const val = e.target.value;
+                                    dirtyNomiSubKeysRef.current.add(key);
+                                    setHasUnsavedNomiDb(true);
                                     setDraftNomiSub((prev) => ({ ...prev, [key]: val }));
                                   }}
                                   placeholder={sub.titoloDefault}

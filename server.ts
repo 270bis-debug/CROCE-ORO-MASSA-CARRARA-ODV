@@ -411,6 +411,7 @@ export interface ServerState {
   movimentiMagazzino?: any[];
   corsiFormazione?: any[];
   noteDiDebito?: any[];
+  ricevuteContabilita?: any[];
   tessereAssociative?: any[];
   altreEntrateUscite?: any[];
   costiGestione?: any[];
@@ -905,6 +906,7 @@ function loadPersistedState(): ServerState {
           movimentiMagazzino: Array.isArray(parsed.movimentiMagazzino) ? parsed.movimentiMagazzino : undefined,
           corsiFormazione: filterLegacyCorsiServer(parsed.corsiFormazione),
           noteDiDebito: Array.isArray(parsed.noteDiDebito) ? parsed.noteDiDebito : undefined,
+          ricevuteContabilita: Array.isArray(parsed.ricevuteContabilita) ? parsed.ricevuteContabilita : undefined,
           tessereAssociative: Array.isArray(parsed.tessereAssociative) ? parsed.tessereAssociative : undefined,
           altreEntrateUscite: Array.isArray(parsed.altreEntrateUscite) ? parsed.altreEntrateUscite : undefined,
           costiGestione: Array.isArray(parsed.costiGestione) ? parsed.costiGestione : undefined,
@@ -5080,6 +5082,18 @@ async function startServer() {
             break;
           }
 
+          case 'UPDATE_RICEVUTE_CONTABILITA': {
+            if (Array.isArray(data?.ricevuteContabilita)) {
+              state.ricevuteContabilita = data.ricevuteContabilita;
+              persistState();
+              broadcast({
+                type: 'RICEVUTE_CONTABILITA_UPDATED',
+                ricevuteContabilita: state.ricevuteContabilita
+              });
+            }
+            break;
+          }
+
           case 'UPDATE_TESSERE': {
             if (Array.isArray(data?.tessereAssociative)) {
               state.tessereAssociative = data.tessereAssociative;
@@ -8272,6 +8286,252 @@ async function startServer() {
     } catch (err: any) {
       console.error('[Email Ricevuta Tesoriere] Errore endpoint:', err);
       return res.status(500).json({ success: false, error: err?.message || 'Errore elaborazione' });
+    }
+  });
+
+  // ENDPOINT: Invio Email Ufficiale per Note di Debito e Ricevute Contabili al destinatario (email ordinaria, non PEC)
+  // con l'indirizzo email del Tesoriere (recuperato automaticamente dall'anagrafica di sistema) sempre in copia (CC).
+  app.post('/api/invia-email-documento-contabile', async (req, res) => {
+    try {
+      const {
+        tipoDocumento,
+        numeroProgressivo,
+        dataEmissione,
+        destinatarioNome,
+        destinatarioEmail,
+        tesoriereEmail,
+        tesoriereNome,
+        importoTotale,
+        causale,
+        scadenzaPagamento,
+        metodoPagamento,
+        tipologia,
+        pdfBase64,
+        nomeFile
+      } = req.body || {};
+
+      const emailRegex = /^[^\s@<>(),;:"\\[\]\r\n]+@[^\s@<>(),;:"\\[\]\r\n]+\.[^\s@<>(),;:"\\[\]\r\n]{2,}$/;
+      const stripHeader = (val: unknown, maxLen = 200): string =>
+        String(val ?? '')
+          .replace(/[\r\n]+/g, ' ')
+          .trim()
+          .slice(0, maxLen);
+      const escapeHtmlSafe = (val: unknown): string =>
+        String(val ?? '')
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&#39;');
+
+      const tipoNorm = tipoDocumento === 'nota_debito' ? 'nota_debito' : 'ricevuta';
+      const emailDest = stripHeader(destinatarioEmail, 254).toLowerCase();
+      if (!emailDest || !emailRegex.test(emailDest)) {
+        return res.status(400).json({
+          success: false,
+          error: 'Indirizzo email ordinario (non PEC) del destinatario mancante o non valido.'
+        });
+      }
+
+      // Recupera automaticamente l'account Tesoriere dall'anagrafica volontari di sistema
+      const listaVol = Array.isArray(state.volontari) ? state.volontari : [];
+      const tesorieriDirettivo = listaVol.filter(
+        (v: any) =>
+          typeof v?.caricaConsiglioDirettivo === 'string' &&
+          v.caricaConsiglioDirettivo.toLowerCase().includes('tesorier')
+      );
+      const tesorieriFallback =
+        tesorieriDirettivo.length > 0
+          ? tesorieriDirettivo
+          : listaVol.filter((v: any) => {
+              const mans = String(v?.mansione || '').toLowerCase();
+              const qual = String(v?.qualifica || '').toLowerCase();
+              const mansArr = Array.isArray(v?.mansioni) ? v.mansioni.join(' ').toLowerCase() : '';
+              return mans.includes('tesorier') || qual.includes('tesorier') || mansArr.includes('tesorier');
+            });
+      const tesoriereSistema: any =
+        tesorieriFallback.find((v: any) => typeof v?.email === 'string' && emailRegex.test(v.email.trim())) ||
+        tesorieriFallback[0];
+
+      const rawTesoriereEmailSistema = stripHeader(tesoriereSistema?.email || '', 254).toLowerCase();
+      const rawTesoriereEmailReq = stripHeader(tesoriereEmail || '', 254).toLowerCase();
+      const ccTesoriere =
+        (rawTesoriereEmailSistema && emailRegex.test(rawTesoriereEmailSistema) ? rawTesoriereEmailSistema : '') ||
+        (rawTesoriereEmailReq && emailRegex.test(rawTesoriereEmailReq) ? rawTesoriereEmailReq : '') ||
+        'tesoreria@croceoro.org';
+
+      const nomeTesoriere = tesoriereSistema
+        ? stripHeader(`${tesoriereSistema.nome || ''} ${tesoriereSistema.cognome || ''}`, 120) || 'Tesoriere'
+        : stripHeader(tesoriereNome || 'Tesoriere', 120) || 'Tesoriere';
+
+      const numDoc = stripHeader(numeroProgressivo || (tipoNorm === 'nota_debito' ? 'ND-2026' : 'RIC-2026'), 60);
+      const dataDoc = stripHeader(dataEmissione || formatDateItaly(), 40);
+      const nomeDest = stripHeader(destinatarioNome || 'Gentile Intestatario', 160);
+      const causaleDoc = String(causale || '').trim().slice(0, 1000);
+      const importoVal = Number(importoTotale) || 0;
+      const scadenzaDoc = stripHeader(scadenzaPagamento || '', 40);
+      const metodoDoc = stripHeader(metodoPagamento || '', 80);
+      const tipologiaDoc = stripHeader(tipologia || '', 120);
+
+      const safeFileBase = stripHeader(nomeFile || `${tipoNorm === 'nota_debito' ? 'Nota_Di_Debito' : 'Ricevuta'}_${numDoc}.pdf`, 120)
+        .replace(/[^a-zA-Z0-9._-]/g, '_');
+      const filename = safeFileBase.toLowerCase().endsWith('.pdf') ? safeFileBase : `${safeFileBase}.pdf`;
+
+      let pdfBuffer: Buffer | null = null;
+      if (typeof pdfBase64 === 'string' && pdfBase64.trim().length > 50) {
+        try {
+          let cleanBase64 = pdfBase64.trim();
+          if (cleanBase64.includes('base64,')) {
+            cleanBase64 = cleanBase64.substring(cleanBase64.indexOf('base64,') + 7);
+          }
+          cleanBase64 = cleanBase64.replace(/[\r\n\s]/g, '');
+          const decoded = Buffer.from(cleanBase64, 'base64');
+          const MAX_PDF_BYTES = 10 * 1024 * 1024;
+          if (decoded.length > 200 && decoded.length <= MAX_PDF_BYTES && decoded.slice(0, 4).toString() === '%PDF') {
+            pdfBuffer = decoded;
+          }
+        } catch (e) {
+          console.error('[Email Documento Contabile] Errore decodifica PDF:', e);
+        }
+      }
+
+      const etichettaDoc = tipoNorm === 'nota_debito' ? 'Nota di Debito' : 'Ricevuta';
+      const carta = state.datiCartaIntestata || DATI_CARTA_INTESTATA_DEFAULT;
+      const denom = stripHeader(carta.denominazione || 'Croce Oro Massa Carrara OdV', 140);
+      const oggetto = `[${etichettaDoc.toUpperCase()} ${numDoc}] ${nomeDest} - ${denom}`;
+
+      const testoEmail =
+        `Gentile ${nomeDest},\n\n` +
+        `Si trasmette in allegato il documento ufficiale (${etichettaDoc} n. ${numDoc}) emesso in data ${dataDoc} da ${denom}:\n\n` +
+        `• Documento: ${etichettaDoc} n. ${numDoc}\n` +
+        (tipologiaDoc ? `• Tipologia: ${tipologiaDoc}\n` : '') +
+        `• Intestatario: ${nomeDest}\n` +
+        `• Importo: € ${importoVal.toFixed(2)}\n` +
+        (metodoDoc ? `• Modalità di pagamento: ${metodoDoc}\n` : '') +
+        (scadenzaDoc ? `• Scadenza pagamento: ${scadenzaDoc}\n` : '') +
+        (causaleDoc ? `• Causale: ${causaleDoc}\n` : '') +
+        `\nIl documento PDF ufficiale recante la firma del Tesoriere (${nomeTesoriere}) è allegato alla presente comunicazione.\n` +
+        `In copia conoscenza (CC): ${ccTesoriere}.\n\n` +
+        `Cordiali saluti,\nUfficio Tesoreria & Contabilità\n${denom}`;
+
+      const htmlEmail = `
+        <div style="font-family: Arial, sans-serif; color: #1e293b; max-width: 650px; line-height: 1.6; border: 1px solid #e2e8f0; border-radius: 12px; overflow: hidden;">
+          <div style="background-color: #1d1a60; color: #fbbf24; padding: 20px; text-align: center;">
+            <h2 style="margin: 0; font-size: 20px; font-weight: 800;">${escapeHtmlSafe(denom.toUpperCase())}</h2>
+            <p style="margin: 6px 0 0; font-size: 13px; color: #e2e8f0;">Ufficio Tesoreria &bull; ${escapeHtmlSafe(etichettaDoc)} Ufficiale</p>
+          </div>
+          <div style="padding: 24px; background-color: #ffffff;">
+            <p style="margin-top: 0; font-size: 14px; color: #334155;">Gentile <strong>${escapeHtmlSafe(nomeDest)}</strong>,</p>
+            <p style="font-size: 14px; color: #334155;">
+              si trasmette in allegato il documento contabile ufficiale emesso dall'Ufficio Tesoreria:
+            </p>
+            <div style="background-color: #f8fafc; border-left: 4px solid #bfa353; padding: 14px 18px; border-radius: 6px; margin: 18px 0; font-size: 13px;">
+              <p style="margin: 4px 0;"><strong>&bull; Documento:</strong> <span style="font-family: monospace; font-weight: bold; color: #1d1a60;">${escapeHtmlSafe(etichettaDoc)} ${escapeHtmlSafe(numDoc)}</span></p>
+              <p style="margin: 4px 0;"><strong>&bull; Data Emissione:</strong> ${escapeHtmlSafe(dataDoc)}</p>
+              ${tipologiaDoc ? `<p style="margin: 4px 0;"><strong>&bull; Tipologia:</strong> ${escapeHtmlSafe(tipologiaDoc)}</p>` : ''}
+              <p style="margin: 4px 0;"><strong>&bull; Importo:</strong> <span style="color: #15803d; font-size: 15px; font-weight: bold;">&euro; ${importoVal.toFixed(2)}</span></p>
+              ${metodoDoc ? `<p style="margin: 4px 0;"><strong>&bull; Modalit&agrave; Pagamento:</strong> ${escapeHtmlSafe(metodoDoc)}</p>` : ''}
+              ${scadenzaDoc ? `<p style="margin: 4px 0;"><strong>&bull; Scadenza:</strong> ${escapeHtmlSafe(scadenzaDoc)}</p>` : ''}
+              ${causaleDoc ? `<p style="margin: 4px 0;"><strong>&bull; Causale:</strong> ${escapeHtmlSafe(causaleDoc)}</p>` : ''}
+              <p style="margin: 4px 0;"><strong>&bull; Firmato dal Tesoriere:</strong> ${escapeHtmlSafe(nomeTesoriere)}</p>
+            </div>
+            <p style="font-size: 13px; color: #475569;">
+              In allegato &egrave; disponibile il documento PDF originale (<strong>${escapeHtmlSafe(filename)}</strong>). Per eventuali chiarimenti &egrave; possibile rispondere mantenendo in copia l'Ufficio Tesoreria (<strong>${escapeHtmlSafe(ccTesoriere)}</strong>).
+            </p>
+          </div>
+          <div style="background-color: #f1f5f9; padding: 14px 20px; font-size: 11px; color: #64748b; text-align: center; border-top: 1px solid #e2e8f0;">
+            ${escapeHtmlSafe(denom)} &bull; CF ${escapeHtmlSafe(carta.codiceFiscale || '')}
+          </div>
+        </div>
+      `;
+
+      let speditoViaSmtp = false;
+      let erroreSmtp = '';
+
+      const smtpHost = process.env.SMTP_HOST || '';
+      const smtpPort = parseInt(process.env.SMTP_PORT || '587', 10);
+      const isSecure = smtpPort === 465;
+      const smtpUser = process.env.SMTP_USER || '';
+      const smtpPass = process.env.SMTP_PASS || '';
+      const smtpFrom = process.env.SMTP_FROM || '';
+
+      if (smtpHost && smtpUser && smtpPass) {
+        try {
+          const transporter = nodemailer.createTransport({
+            host: smtpHost,
+            port: smtpPort,
+            secure: isSecure,
+            auth: { user: smtpUser, pass: smtpPass },
+            tls: { rejectUnauthorized: false }
+          });
+
+          const mailOptions: any = {
+            from: smtpFrom || `"${MITTENTE_UFFICIALE}" <${smtpUser}>`,
+            to: emailDest,
+            subject: oggetto,
+            text: testoEmail,
+            html: htmlEmail,
+            replyTo: ccTesoriere
+          };
+          if (ccTesoriere && ccTesoriere.toLowerCase() !== emailDest.toLowerCase()) {
+            mailOptions.cc = ccTesoriere;
+          }
+          if (pdfBuffer) {
+            mailOptions.attachments = [
+              {
+                filename,
+                content: pdfBuffer,
+                contentType: 'application/pdf',
+                contentDisposition: 'attachment'
+              }
+            ];
+          }
+
+          const infoMail = await transporter.sendMail(mailOptions);
+          speditoViaSmtp = true;
+          console.log(
+            `[Email Documento Contabile] ${etichettaDoc} ${numDoc} inviata via SMTP a ${emailDest} (CC: ${ccTesoriere}) - MsgID: ${infoMail.messageId}`
+          );
+        } catch (err: any) {
+          erroreSmtp = err?.message || 'Errore invio SMTP';
+          console.error('[Email Documento Contabile] Errore invio SMTP:', err);
+        }
+      } else {
+        console.log(
+          `[Email Documento Contabile] SMTP non configurato; invio registrato per ${emailDest} (CC: ${ccTesoriere}, file: ${filename}, allegato: ${pdfBuffer ? pdfBuffer.length : 0} bytes)`
+        );
+      }
+
+      const notificaRadio: RadioNotification = {
+        id: generateUniqueNotifId(),
+        orario: formatTimeItaly(),
+        testo: `📧 ${etichettaDoc.toUpperCase()} ${numDoc} (${nomeDest}): salvata e predisposto invio email a ${emailDest} con CC Tesoriere ${ccTesoriere}`,
+        tipo: 'sistema'
+      };
+      state.notifiche.push(notificaRadio);
+      if (state.notifiche.length > 50) state.notifiche.shift();
+
+      broadcast({
+        type: 'NOTIFICATION_BROADCAST',
+        notification: notificaRadio
+      });
+
+      return res.json({
+        success: true,
+        destinatario: emailDest,
+        ccTesoriere,
+        tesoriereNome: nomeTesoriere,
+        speditoViaSmtp,
+        erroreSmtp,
+        filename,
+        dimensioneAllegatoBytes: pdfBuffer ? pdfBuffer.length : 0,
+        message: speditoViaSmtp
+          ? `${etichettaDoc} ${numDoc} inviata via email a ${emailDest} (CC Tesoriere: ${ccTesoriere}).`
+          : `${etichettaDoc} ${numDoc} salvata. Client email predisposto per ${emailDest} (CC Tesoriere: ${ccTesoriere}).`
+      });
+    } catch (err: any) {
+      console.error('[Email Documento Contabile] Errore endpoint:', err);
+      return res.status(500).json({ success: false, error: err?.message || 'Errore elaborazione invio email' });
     }
   });
 

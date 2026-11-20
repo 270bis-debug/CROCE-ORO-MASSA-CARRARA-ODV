@@ -12,7 +12,9 @@ import {
 } from 'lucide-react';
 import { Volontario } from './DatabaseVolontariModal';
 import { CAUZIONE_PANTALONI, CAUZIONE_GIUBBETTO } from '../data/vestiarioDocumenti';
-import { scaricaPDFRestituzioneDivisa, DatiRestituzioneDivisa } from '../utils/pdfRestituzioneDivisa';
+import { generaPDFRestituzioneDivisa, DatiRestituzioneDivisa } from '../utils/pdfRestituzioneDivisa';
+import { PdfAnteprimaWorkflowModal } from './admin/PdfAnteprimaWorkflowModal';
+import { generaBytesDaJsPDF } from '../utils/pdfWorkflowUtils';
 import { formatISODateItaly } from '../utils/italianTime';
 
 interface ModalRestituzioneDivisaProps {
@@ -53,38 +55,15 @@ export const ModalRestituzioneDivisa: React.FC<ModalRestituzioneDivisaProps> = (
   );
   const [scaricato, setScaricato] = useState(false);
   const [aggiornaDatabase, setAggiornaDatabase] = useState(true);
+  const [erroreValidazione, setErroreValidazione] = useState<string | null>(null);
+  const [bozzaRestituzione, setBozzaRestituzione] = useState<{ dati: DatiRestituzioneDivisa; salvato: boolean } | null>(null);
 
   // Calcolo automatico della cauzione da restituire
   const rimborsoPantaloni = restituisciPantaloni ? CAUZIONE_PANTALONI : 0;
   const rimborsoGiubbetto = restituisciGiubbetto ? CAUZIONE_GIUBBETTO : 0;
   const cifraTotaleRimborso = rimborsoPantaloni + rimborsoGiubbetto;
 
-  const handleScaricaPDF = () => {
-    if (!iban.trim()) {
-      alert('Inserisci l\'IBAN per il bonifico di restituzione della cauzione.');
-      return;
-    }
-
-    const altri: string[] = [];
-    if (restituisciFelpa) altri.push('Felpa con loghi');
-    if (restituisciPile) altri.push('Pile Tecnico');
-    if (restituisciGiubbotto) altri.push('Giubbotto Invernale D.P.I.');
-    if (restituisciTshirt) altri.push('T-shirt Istituzionali');
-
-    const dati: DatiRestituzioneDivisa = {
-      dataRestituzione,
-      ibanBonifico: iban.trim().toUpperCase(),
-      intestatarioBonifico: intestatario.trim(),
-      restituitoPantaloni: restituisciPantaloni,
-      restituitoGiubbetto: restituisciGiubbetto,
-      altriCapiRestituiti: altri,
-      cifraRimborsoTotale: cifraTotaleRimborso,
-      annotazioniAdmin: annotazioni.trim()
-    };
-
-    scaricaPDFRestituzioneDivisa(volontario, dati);
-    setScaricato(true);
-
+  const salvaRestituzioneInArchivio = () => {
     if (onNotificaRadio) {
       onNotificaRadio(
         `📄 Generato Verbale Restituzione Divisa per ${volontario.nome} ${volontario.cognome}: rimborso cauzione € ${cifraTotaleRimborso.toFixed(2)} con bonifico`,
@@ -92,7 +71,6 @@ export const ModalRestituzioneDivisa: React.FC<ModalRestituzioneDivisaProps> = (
       );
     }
 
-    // Se l'amministratore desidera aggiornare il database togliendo i capi restituiti
     if (aggiornaDatabase && onConfermaRestituzione && vest) {
       const vestAggiornato = JSON.parse(JSON.stringify(vest));
       if (restituisciPantaloni && vestAggiornato.pantaloni) {
@@ -116,6 +94,34 @@ export const ModalRestituzioneDivisa: React.FC<ModalRestituzioneDivisaProps> = (
         vestiario: vestAggiornato
       });
     }
+    setScaricato(true);
+  };
+
+  const handleApriAnteprimaPDF = () => {
+    if (!iban.trim()) {
+      setErroreValidazione('Inserisci l\'IBAN per il bonifico di restituzione della cauzione.');
+      return;
+    }
+    setErroreValidazione(null);
+
+    const altri: string[] = [];
+    if (restituisciFelpa) altri.push('Felpa con loghi');
+    if (restituisciPile) altri.push('Pile Tecnico');
+    if (restituisciGiubbotto) altri.push('Giubbotto Invernale D.P.I.');
+    if (restituisciTshirt) altri.push('T-shirt Istituzionali');
+
+    const dati: DatiRestituzioneDivisa = {
+      dataRestituzione,
+      ibanBonifico: iban.trim().toUpperCase(),
+      intestatarioBonifico: intestatario.trim(),
+      restituitoPantaloni: restituisciPantaloni,
+      restituitoGiubbetto: restituisciGiubbetto,
+      altriCapiRestituiti: altri,
+      cifraRimborsoTotale: cifraTotaleRimborso,
+      annotazioniAdmin: annotazioni.trim()
+    };
+
+    setBozzaRestituzione({ dati, salvato: false });
   };
 
   return (
@@ -323,6 +329,13 @@ export const ModalRestituzioneDivisa: React.FC<ModalRestituzioneDivisaProps> = (
           <span>Aggiorna automaticamente il database rimuovendo i capi restituiti dalla dotazione del volontario</span>
         </label>
 
+        {erroreValidazione && (
+          <div className="p-2.5 rounded-xl bg-rose-500/20 border border-rose-500/50 text-rose-200 text-xs font-semibold flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 shrink-0 text-rose-400" />
+            <span>{erroreValidazione}</span>
+          </div>
+        )}
+
         {/* Pulsanti Azione */}
         <div className="pt-2 flex items-center justify-between gap-3 border-t border-slate-800">
           <button
@@ -335,21 +348,50 @@ export const ModalRestituzioneDivisa: React.FC<ModalRestituzioneDivisaProps> = (
 
           <button
             type="button"
-            onClick={handleScaricaPDF}
+            onClick={handleApriAnteprimaPDF}
             className="px-5 py-2.5 bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-500 hover:to-emerald-400 text-white font-bold text-xs rounded-xl flex items-center gap-2 shadow-lg active:scale-95 transition-all cursor-pointer"
           >
             <FileDown className="w-4 h-4" />
-            <span>Genera e Scarica PDF Restituzione & Bonifico</span>
+            <span>Anteprima, Stampa o Salva PDF Restituzione</span>
           </button>
         </div>
 
         {scaricato && (
           <div className="p-2.5 rounded-xl bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-xs font-semibold flex items-center gap-2">
             <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-400" />
-            <span>PDF del Verbale di Restituzione generato con successo! Il bonifico di € {cifraTotaleRimborso.toFixed(2)} verrà liquidato sull'IBAN indicato.</span>
+            <span>Verbale di Restituzione salvato in archivio! Il bonifico di € {cifraTotaleRimborso.toFixed(2)} verrà liquidato sull'IBAN indicato.</span>
           </div>
         )}
       </div>
+
+      {bozzaRestituzione && (
+        <PdfAnteprimaWorkflowModal
+          aperto={true}
+          titoloDocumento={`Verbale Restituzione Divisa - ${volontario.nome} ${volontario.cognome}`}
+          sottotitolo={`Rimborso Cauzione € ${bozzaRestituzione.dati.cifraRimborsoTotale.toFixed(2)} • IBAN ${bozzaRestituzione.dati.ibanBonifico}`}
+          nomeFile={`Verbale_Restituzione_Divisa_${(volontario.cognome || 'Volontario').replace(/[^a-zA-Z0-9_-]/g, '_')}.pdf`}
+          giaSalvatoInArchivio={bozzaRestituzione.salvato}
+          generaPdfBytes={() => generaBytesDaJsPDF(generaPDFRestituzioneDivisa(volontario, bozzaRestituzione.dati))}
+          riepilogoContenuto={
+            <div className="space-y-2 text-xs">
+              <div>Volontario: <strong>{volontario.nome} {volontario.cognome}</strong> ({volontario.matricola || 'VOL'})</div>
+              <div>Data Restituzione: <strong className="font-mono">{bozzaRestituzione.dati.dataRestituzione}</strong></div>
+              <div>IBAN Rimborso: <strong className="font-mono">{bozzaRestituzione.dati.ibanBonifico}</strong></div>
+              <div>Intestatario: <strong>{bozzaRestituzione.dati.intestatarioBonifico}</strong></div>
+              <div className="pt-2 border-t border-slate-200 flex justify-between font-black text-emerald-700 text-sm">
+                <span>Totale Cauzione da Rimborsare:</span>
+                <span>€ {bozzaRestituzione.dati.cifraRimborsoTotale.toFixed(2)}</span>
+              </div>
+            </div>
+          }
+          onSalvaInArchivio={() => {
+            salvaRestituzioneInArchivio();
+            setBozzaRestituzione((prev) => (prev ? { ...prev, salvato: true } : null));
+          }}
+          onTornaAllaModifica={() => setBozzaRestituzione(null)}
+          onChiudi={() => setBozzaRestituzione(null)}
+        />
+      )}
     </div>
   );
 };

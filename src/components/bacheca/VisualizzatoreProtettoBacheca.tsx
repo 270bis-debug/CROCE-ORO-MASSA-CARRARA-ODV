@@ -14,6 +14,7 @@ import {
   AlertTriangle,
 } from 'lucide-react';
 import { TipoAllegatoBacheca, formatDimensioneFile } from '../../utils/bachecaMedia';
+import { PdfCanvasViewer } from '../common/PdfCanvasViewer';
 
 // ---------------------------------------------------------------------------
 // Estrattore leggero client-side (ZERO download) per anteprima protetta di
@@ -689,14 +690,14 @@ export const ModalVisualizzatoreProtetto: React.FC<ModalVisualizzatoreProtettoPr
                 </div>
               )}
 
-              {/* 2. PDF protetto (senza toolbar/download, con barriera contextmenu) */}
+              {/* 2. PDF protetto (rendering canvas su smartphone e PC, zero download) */}
               {contenuto.tipo === 'pdf' && (
-                <div className="relative w-full h-full rounded-xl overflow-hidden border border-slate-800 bg-slate-900">
+                <div className="relative w-full h-full rounded-xl overflow-hidden bg-slate-900">
                   {pdfBlobUrl ? (
-                    <iframe
-                      title={contenuto.nomeFile}
-                      src={`${pdfBlobUrl}#toolbar=0&navpanes=0&scrollbar=1&view=FitH`}
-                      className="w-full h-full border-0 bg-white"
+                    <PdfCanvasViewer
+                      pdfUrl={pdfBlobUrl}
+                      protectedMode={true}
+                      className="w-full h-full border-slate-800"
                     />
                   ) : (
                     <div className="p-8 text-center text-xs text-slate-400">Caricamento PDF protetto...</div>

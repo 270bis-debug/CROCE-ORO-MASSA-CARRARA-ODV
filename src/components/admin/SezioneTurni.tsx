@@ -1316,45 +1316,45 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
       </div>
 
       {/* Navigazione Sottosezioni Database Calendario Turni */}
-      <div className="flex items-center gap-2 flex-wrap">
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5 sm:gap-2 pb-1">
         {canShowSubtab('calendario') && (
           <button
             type="button"
             onClick={() => setVistaSottosezione('calendario')}
-            className={`px-3 py-1.5 rounded-xl border text-xs font-black uppercase transition-all cursor-pointer active:scale-95 ${
+            className={`w-full min-w-0 px-2.5 sm:px-3 py-2 rounded-xl border text-[10px] sm:text-xs font-black uppercase leading-tight text-center transition-all cursor-pointer active:scale-95 ${
               vistaSottosezione === 'calendario'
                 ? 'bg-teal-500 text-slate-950 border-teal-300 shadow-md shadow-teal-500/20'
                 : 'bg-teal-950/80 hover:bg-teal-900/80 border-teal-500/40 text-teal-200'
             }`}
           >
-            1. {getTitoloSottosezione('turni', 'calendario', 'Calendario Turni & Equipaggi', nomiSubCustom)}
+            <span className="break-words">1. {getTitoloSottosezione('turni', 'calendario', 'Calendario Turni & Equipaggi', nomiSubCustom)}</span>
           </button>
         )}
         {canShowSubtab('candidature') && (
           <button
             type="button"
             onClick={() => setVistaSottosezione('candidature')}
-            className={`px-3 py-1.5 rounded-xl border text-xs font-black uppercase transition-all cursor-pointer active:scale-95 ${
+            className={`w-full min-w-0 px-2.5 sm:px-3 py-2 rounded-xl border text-[10px] sm:text-xs font-black uppercase leading-tight text-center transition-all cursor-pointer active:scale-95 ${
               vistaSottosezione === 'candidature'
                 ? 'bg-amber-500 text-slate-950 border-amber-300 shadow-md shadow-amber-500/20'
                 : 'bg-amber-950/80 hover:bg-amber-900/80 border-amber-500/40 text-amber-200'
             }`}
           >
-            2. {getTitoloSottosezione('turni', 'candidature', 'Gestione Candidature Turni', nomiSubCustom)} ({tutteCandidatureInAttesa.length})
+            <span className="break-words">2. {getTitoloSottosezione('turni', 'candidature', 'Gestione Candidature Turni', nomiSubCustom)} ({tutteCandidatureInAttesa.length})</span>
           </button>
         )}
         {canShowSubtab('tipi_turno') && (
           <button
             type="button"
             onClick={() => setVistaSottosezione('tipi_turno')}
-            className={`px-3 py-1.5 rounded-xl border text-xs font-black uppercase transition-all cursor-pointer active:scale-95 flex items-center gap-1.5 ${
+            className={`w-full min-w-0 col-span-2 sm:col-span-1 px-2.5 sm:px-3 py-2 rounded-xl border text-[10px] sm:text-xs font-black uppercase leading-tight transition-all cursor-pointer active:scale-95 flex items-center justify-center gap-1.5 ${
               vistaSottosezione === 'tipi_turno'
                 ? 'bg-indigo-500 text-white border-indigo-300 shadow-md shadow-indigo-500/20'
                 : 'bg-indigo-950/80 hover:bg-indigo-900/80 border-indigo-500/40 text-indigo-200'
             }`}
           >
-            <Layers className="w-3.5 h-3.5" />
-            <span>3. {getTitoloSottosezione('turni', 'tipi_turno', 'Tipi di Turni', nomiSubCustom)} ({tipiTurno.length})</span>
+            <Layers className="w-3.5 h-3.5 shrink-0" />
+            <span className="break-words">3. {getTitoloSottosezione('turni', 'tipi_turno', 'Tipi di Turni', nomiSubCustom)} ({tipiTurno.length})</span>
           </button>
         )}
       </div>

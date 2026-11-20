@@ -282,7 +282,7 @@ export const MonitoraggioFlotta: React.FC<MonitoraggioFlottaProps> = ({
       {/* Barra Controlli: Filtri Tipologia e Ordinamento */}
       <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800 flex flex-col md:flex-row items-center justify-between gap-3 shadow-lg">
         {/* Filtri Categoria */}
-        <div className="flex items-center gap-1.5 overflow-x-auto w-full md:w-auto scrollbar-none pb-1 md:pb-0">
+        <div className="flex flex-wrap items-center gap-1.5 w-full md:w-auto pb-1 md:pb-0">
           <span className="text-[11px] font-bold uppercase text-slate-400 mr-1 flex items-center gap-1">
             <Filter className="w-3.5 h-3.5 text-amber-400" /> Filtra:
           </span>

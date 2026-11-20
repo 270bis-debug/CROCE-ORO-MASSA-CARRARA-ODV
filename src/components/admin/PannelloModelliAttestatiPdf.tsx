@@ -19,6 +19,7 @@ import {
   RefreshCw,
   FileCheck2
 } from 'lucide-react';
+import { PdfCanvasViewer } from '../common/PdfCanvasViewer';
 import {
   CorsoFormazione,
   ModelloAttestatoCategoria,
@@ -1101,10 +1102,9 @@ export const PannelloModelliAttestatiPdf: React.FC<PannelloModelliAttestatiPdfPr
                 )}
 
                 {previewBlobUrl ? (
-                  <iframe
-                    src={`${previewBlobUrl}#toolbar=0&navpanes=0&view=FitH`}
-                    title={`Anteprima prestampato ${categoriaSelezionata}`}
-                    className="w-full h-full border-0 bg-white"
+                  <PdfCanvasViewer
+                    pdfUrl={previewBlobUrl}
+                    className="w-full h-full border-0 rounded-none"
                   />
                 ) : (
                   <div className="p-6 text-center space-y-2 text-slate-400 text-xs">

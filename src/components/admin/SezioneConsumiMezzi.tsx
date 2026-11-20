@@ -302,9 +302,9 @@ export const SezioneConsumiMezzi: React.FC<SezioneConsumiMezziProps> = ({
           />
         </div>
 
-        <div className="flex items-center gap-2 w-full sm:w-auto justify-end overflow-x-auto">
+        <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto justify-start sm:justify-end">
           {/* Filtro Flotta */}
-          <div className="flex items-center bg-slate-950 p-1 rounded-xl border border-slate-800 text-[11px] shrink-0">
+          <div className="flex flex-wrap items-center bg-slate-950 p-1 rounded-xl border border-slate-800 text-[11px]">
             <button
               type="button"
               onClick={() => setFiltroFlotta('tutte')}

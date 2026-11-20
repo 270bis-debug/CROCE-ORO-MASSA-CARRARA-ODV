@@ -38,7 +38,9 @@ import {
   calcolaProssimoNumeroTessera,
   DATA_LIMITE_MANUALE_TESSERE
 } from '../data/tesseramento';
-import { generaPDFDomandaIscrizione, scaricaPDFDomandaIscrizione, recuperaFirmaPresidente } from '../utils/pdfDomandaIscrizione';
+import { generaPDFDomandaIscrizione, recuperaFirmaPresidente } from '../utils/pdfDomandaIscrizione';
+import { PdfAnteprimaWorkflowModal } from './admin/PdfAnteprimaWorkflowModal';
+import { generaBytesDaJsPDF } from '../utils/pdfWorkflowUtils';
 import { formatDateItaly, formatISODateItaly, formatTimeItaly, getCurrentYearItaly } from '../utils/italianTime';
 
 interface ModalCompilaDomandaIscrizioneProps {
@@ -66,6 +68,8 @@ export const ModalCompilaDomandaIscrizione: React.FC<ModalCompilaDomandaIscrizio
   const [tabAttiva, setTabAttiva] = useState<'sanitari' | 'dichiarazioni' | 'tutore' | 'privacy' | 'foto' | 'associazione'>('sanitari');
   const [messaggioConferma, setMessaggioConferma] = useState<{ tipo: 'ok' | 'err'; testo: string } | null>(null);
   const [confermaRimuoviFirmata, setConfermaRimuoviFirmata] = useState(false);
+  const [anteprimaWorkflowAperta, setAnteprimaWorkflowAperta] = useState(false);
+  const [salvatoWorkflow, setSalvatoWorkflow] = useState(false);
   const fileInputDomandaFirmataRef = useRef<HTMLInputElement>(null);
   const loadedKeyRef = useRef<string | null>(null);
 
@@ -161,42 +165,9 @@ export const ModalCompilaDomandaIscrizione: React.FC<ModalCompilaDomandaIscrizio
     }
   };
 
-  const handleScaricaPDF = () => {
-    try {
-      sincronizzaVolontario();
-      scaricaPDFDomandaIscrizione(volontario, dati, { volontari });
-      const msg = `✅ Domanda di Iscrizione PDF scaricata per ${volontario.nome} ${volontario.cognome}!`;
-      setMessaggioConferma({ tipo: 'ok', testo: msg });
-      if (onNotificaRadio) {
-        onNotificaRadio(`📄 Domanda di Iscrizione PDF generata per ${volontario.nome} ${volontario.cognome} (Tessera N. ${dati.numeroTessera || 'N/D'})`, 'centrale');
-      }
-      setTimeout(() => setMessaggioConferma(null), 4000);
-    } catch (err) {
-      console.error('Errore generazione PDF:', err);
-      setMessaggioConferma({ tipo: 'err', testo: 'Errore durante la generazione del PDF della Domanda di Iscrizione.' });
-      setTimeout(() => setMessaggioConferma(null), 4000);
-    }
-  };
-
-  const handleStampaPDF = () => {
-    try {
-      sincronizzaVolontario();
-      const doc = generaPDFDomandaIscrizione(volontario, dati, { volontari });
-      const blobUrl = doc.output('bloburl');
-      const win = window.open(blobUrl, '_blank');
-      if (win) {
-        win.focus();
-        setMessaggioConferma({ tipo: 'ok', testo: '🖨️ Anteprima di stampa aperta in nuova scheda!' });
-      } else {
-        scaricaPDFDomandaIscrizione(volontario, dati, { volontari });
-        setMessaggioConferma({ tipo: 'ok', testo: '📄 Anteprima diretta bloccata dal browser: PDF scaricato sul dispositivo per la stampa.' });
-      }
-      setTimeout(() => setMessaggioConferma(null), 4000);
-    } catch (err) {
-      console.error('Errore stampa:', err);
-      setMessaggioConferma({ tipo: 'err', testo: 'Errore durante la preparazione della stampa PDF.' });
-      setTimeout(() => setMessaggioConferma(null), 4000);
-    }
+  const handleApriWorkflowPDF = () => {
+    setSalvatoWorkflow(false);
+    setAnteprimaWorkflowAperta(true);
   };
 
   const handleSalvaSoloDati = () => {
@@ -375,79 +346,79 @@ export const ModalCompilaDomandaIscrizione: React.FC<ModalCompilaDomandaIscrizio
             </div>
           </div>
 
-          {/* Tab Selector per Sezioni Compilabili */}
-          <div className="flex items-center gap-1.5 overflow-x-auto pb-1 border-b border-slate-800 text-[11px] font-bold">
+          {/* Tab Selector per Sezioni Compilabili (a griglia adattiva, senza scroll orizzontale) */}
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5 pb-2 border-b border-slate-800 text-[10px] sm:text-[11px] font-bold">
             <button
               type="button"
               onClick={() => setTabAttiva('sanitari')}
-              className={`px-3 py-2 rounded-xl transition-all flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
+              className={`w-full px-2.5 py-2 rounded-xl transition-all flex items-center justify-center gap-1.5 text-center leading-tight cursor-pointer ${
                 tabAttiva === 'sanitari'
                   ? 'bg-amber-500 text-slate-950 font-black shadow-md'
                   : 'bg-slate-800/80 text-slate-300 hover:bg-slate-800'
               }`}
             >
-              <Heart className="w-3.5 h-3.5" />
-              1. Informazioni Sanitarie
+              <Heart className="w-3.5 h-3.5 shrink-0" />
+              <span>1. Informazioni Sanitarie</span>
             </button>
             <button
               type="button"
               onClick={() => setTabAttiva('dichiarazioni')}
-              className={`px-3 py-2 rounded-xl transition-all flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
+              className={`w-full px-2.5 py-2 rounded-xl transition-all flex items-center justify-center gap-1.5 text-center leading-tight cursor-pointer ${
                 tabAttiva === 'dichiarazioni'
                   ? 'bg-amber-500 text-slate-950 font-black shadow-md'
                   : 'bg-slate-800/80 text-slate-300 hover:bg-slate-800'
               }`}
             >
-              <CheckCircle2 className="w-3.5 h-3.5" />
-              2. Dichiarazioni
+              <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+              <span>2. Dichiarazioni</span>
             </button>
             <button
               type="button"
               onClick={() => setTabAttiva('tutore')}
-              className={`px-3 py-2 rounded-xl transition-all flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
+              className={`w-full px-2.5 py-2 rounded-xl transition-all flex items-center justify-center gap-1.5 text-center leading-tight cursor-pointer ${
                 tabAttiva === 'tutore'
                   ? 'bg-amber-500 text-slate-950 font-black shadow-md'
                   : 'bg-slate-800/80 text-slate-300 hover:bg-slate-800'
               }`}
             >
-              <User className="w-3.5 h-3.5" />
-              3. Genitore / Tutore (Minorenni)
+              <User className="w-3.5 h-3.5 shrink-0" />
+              <span>3. Genitore / Tutore</span>
             </button>
             <button
               type="button"
               onClick={() => setTabAttiva('privacy')}
-              className={`px-3 py-2 rounded-xl transition-all flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
+              className={`w-full px-2.5 py-2 rounded-xl transition-all flex items-center justify-center gap-1.5 text-center leading-tight cursor-pointer ${
                 tabAttiva === 'privacy'
                   ? 'bg-amber-500 text-slate-950 font-black shadow-md'
                   : 'bg-slate-800/80 text-slate-300 hover:bg-slate-800'
               }`}
             >
-              <ShieldCheck className="w-3.5 h-3.5" />
-              4-5. Privacy & Dati Sanitari
+              <ShieldCheck className="w-3.5 h-3.5 shrink-0" />
+              <span>4-5. Privacy & Dati Sanitari</span>
             </button>
             <button
               type="button"
               onClick={() => setTabAttiva('foto')}
-              className={`px-3 py-2 rounded-xl transition-all flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
+              className={`w-full px-2.5 py-2 rounded-xl transition-all flex items-center justify-center gap-1.5 text-center leading-tight cursor-pointer ${
                 tabAttiva === 'foto'
                   ? 'bg-amber-500 text-slate-950 font-black shadow-md'
                   : 'bg-slate-800/80 text-slate-300 hover:bg-slate-800'
               }`}
             >
-              <Camera className="w-3.5 h-3.5" />
-              6. Consenso Foto / Video
+              <Camera className="w-3.5 h-3.5 shrink-0" />
+              <span>6. Consenso Foto / Video</span>
             </button>
             <button
               type="button"
               onClick={() => setTabAttiva('associazione')}
-              className={`px-3 py-2 rounded-xl transition-all flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
+              className={`w-full px-2.5 py-2 rounded-xl transition-all flex items-center justify-center gap-1.5 text-center leading-tight cursor-pointer ${
                 tabAttiva === 'associazione'
                   ? 'bg-amber-500 text-slate-950 font-black shadow-md'
                   : 'bg-slate-800/80 text-slate-300 hover:bg-slate-800'
               }`}
             >
-              <Building className="w-3.5 h-3.5" />
-              7. Riservato Associazione
+              <Building className="w-3.5 h-3.5 shrink-0" />
+              <span>7. Riservato Associazione</span>
             </button>
           </div>
 
@@ -1297,11 +1268,11 @@ export const ModalCompilaDomandaIscrizione: React.FC<ModalCompilaDomandaIscrizio
 
         <button
           type="button"
-          onClick={handleStampaPDF}
+          onClick={handleApriWorkflowPDF}
           className="px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold flex items-center justify-center gap-1.5 transition-all shadow-md cursor-pointer"
         >
           <Printer className="w-3.5 h-3.5" />
-          <span>Stampa</span>
+          <span>Anteprima & Stampa</span>
         </button>
 
         {/* Input file nascosto per upload scansione domanda firmata */}
@@ -1315,11 +1286,11 @@ export const ModalCompilaDomandaIscrizione: React.FC<ModalCompilaDomandaIscrizio
 
         <button
           type="button"
-          onClick={handleScaricaPDF}
+          onClick={handleApriWorkflowPDF}
           className="flex-1 sm:flex-none px-4 py-2 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 text-xs font-black flex items-center justify-center gap-2 transition-all shadow-lg hover:shadow-amber-500/20 cursor-pointer"
         >
           <Download className="w-3.5 h-3.5" />
-          <span>Scarica PDF Domanda</span>
+          <span>Genera PDF (Anteprima / Salva)</span>
         </button>
 
         {/* PULSANTE UPLOAD DOCUMENTO STAMPATO E FIRMATO ACCANTO A SCARICA PDF */}
@@ -1388,6 +1359,38 @@ export const ModalCompilaDomandaIscrizione: React.FC<ModalCompilaDomandaIscrizio
         <div className="p-3.5 rounded-2xl bg-slate-950/80 border border-slate-800">
           {renderAzioniDomanda(false)}
         </div>
+
+        <PdfAnteprimaWorkflowModal
+          aperto={anteprimaWorkflowAperta}
+          titoloDocumento={`Domanda di Iscrizione - ${volontario.nome} ${volontario.cognome}`}
+          sottotitolo={`Tessera N. ${dati.numeroTessera || 'N/D'} • Quota: ${dati.esenteQuota ? 'Esente' : `€ ${Number(dati.quotaVersata || 0).toFixed(2)}`}`}
+          nomeFile={`Domanda_Iscrizione_${(volontario.cognome || 'Socio').replace(/[^a-zA-Z0-9_-]/g, '_')}_${(volontario.nome || '').replace(/[^a-zA-Z0-9_-]/g, '_')}.pdf`}
+          giaSalvatoInArchivio={salvatoWorkflow}
+          generaPdfBytes={() => generaBytesDaJsPDF(generaPDFDomandaIscrizione(volontario, dati, { volontari }))}
+          riepilogoContenuto={
+            <div className="space-y-2 text-xs">
+              <div>Richiedente: <strong>{volontario.cognome.toUpperCase()} {volontario.nome}</strong></div>
+              <div>Codice Fiscale: <strong className="font-mono">{volontario.codiceFiscale || 'N/D'}</strong></div>
+              <div>Numero Tessera: <strong className="font-mono">{dati.numeroTessera || 'N/D'}</strong></div>
+              <div>Libro Soci: <strong className="font-mono">{dati.numeroIscrizioneLibroSoci || 'N/D'}</strong></div>
+              <div>Quota Sociale: <strong>{dati.esenteQuota ? `Esente (${dati.motivoEsenzione || 'Benemerito'})` : `€ ${Number(dati.quotaVersata || 0).toFixed(2)}`}</strong></div>
+            </div>
+          }
+          onSalvaInArchivio={() => {
+            sincronizzaVolontario();
+            setSalvatoWorkflow(true);
+            setMessaggioConferma({
+              tipo: 'ok',
+              testo: `💾 Domanda di Iscrizione e tessera ${dati.numeroTessera} salvate in archivio per ${volontario.nome} ${volontario.cognome}!`
+            });
+            if (onNotificaRadio) {
+              onNotificaRadio(`📄 Domanda di Iscrizione salvata in archivio per ${volontario.nome} ${volontario.cognome} (Tessera N. ${dati.numeroTessera || 'N/D'})`, 'centrale');
+            }
+          }}
+          onTornaAllaModifica={() => setAnteprimaWorkflowAperta(false)}
+          onChiudi={() => setAnteprimaWorkflowAperta(false)}
+          onFeedback={(msg) => setMessaggioConferma({ tipo: 'ok', testo: msg })}
+        />
       </div>
     );
   }
@@ -1439,6 +1442,38 @@ export const ModalCompilaDomandaIscrizione: React.FC<ModalCompilaDomandaIscrizio
           {renderAzioniDomanda(true)}
         </div>
       </div>
+
+      <PdfAnteprimaWorkflowModal
+        aperto={anteprimaWorkflowAperta}
+        titoloDocumento={`Domanda di Iscrizione - ${volontario.nome} ${volontario.cognome}`}
+        sottotitolo={`Tessera N. ${dati.numeroTessera || 'N/D'} • Quota: ${dati.esenteQuota ? 'Esente' : `€ ${Number(dati.quotaVersata || 0).toFixed(2)}`}`}
+        nomeFile={`Domanda_Iscrizione_${(volontario.cognome || 'Socio').replace(/[^a-zA-Z0-9_-]/g, '_')}_${(volontario.nome || '').replace(/[^a-zA-Z0-9_-]/g, '_')}.pdf`}
+        giaSalvatoInArchivio={salvatoWorkflow}
+        generaPdfBytes={() => generaBytesDaJsPDF(generaPDFDomandaIscrizione(volontario, dati, { volontari }))}
+        riepilogoContenuto={
+          <div className="space-y-2 text-xs">
+            <div>Richiedente: <strong>{volontario.cognome.toUpperCase()} {volontario.nome}</strong></div>
+            <div>Codice Fiscale: <strong className="font-mono">{volontario.codiceFiscale || 'N/D'}</strong></div>
+            <div>Numero Tessera: <strong className="font-mono">{dati.numeroTessera || 'N/D'}</strong></div>
+            <div>Libro Soci: <strong className="font-mono">{dati.numeroIscrizioneLibroSoci || 'N/D'}</strong></div>
+            <div>Quota Sociale: <strong>{dati.esenteQuota ? `Esente (${dati.motivoEsenzione || 'Benemerito'})` : `€ ${Number(dati.quotaVersata || 0).toFixed(2)}`}</strong></div>
+          </div>
+        }
+        onSalvaInArchivio={() => {
+          sincronizzaVolontario();
+          setSalvatoWorkflow(true);
+          setMessaggioConferma({
+            tipo: 'ok',
+            testo: `💾 Domanda di Iscrizione e tessera ${dati.numeroTessera} salvate in archivio per ${volontario.nome} ${volontario.cognome}!`
+          });
+          if (onNotificaRadio) {
+            onNotificaRadio(`📄 Domanda di Iscrizione salvata in archivio per ${volontario.nome} ${volontario.cognome} (Tessera N. ${dati.numeroTessera || 'N/D'})`, 'centrale');
+          }
+        }}
+        onTornaAllaModifica={() => setAnteprimaWorkflowAperta(false)}
+        onChiudi={() => setAnteprimaWorkflowAperta(false)}
+        onFeedback={(msg) => setMessaggioConferma({ tipo: 'ok', testo: msg })}
+      />
     </div>
   );
 };
