@@ -1316,4 +1316,230 @@ export async function segnaCandidaturaTurnoApplicataFirestore(signupId: string):
   }
 }
 
+// ============================================================================
+// RADIO WALKIE-TALKIE RING BUFFER (radio_slots) & PUSH SUBSCRIPTIONS (Firestore)
+// ============================================================================
+
+export const RADIO_RING_SLOT_IDS = [
+  'slot_0',
+  'slot_1',
+  'slot_2',
+  'slot_3',
+  'slot_4',
+  'slot_5',
+  'slot_6',
+  'slot_7',
+  'slot_8',
+  'slot_9',
+  'slot_10',
+  'slot_11',
+] as const;
+
+export type RadioSlotId = 'live_state' | 'last_tx' | (typeof RADIO_RING_SLOT_IDS)[number];
+
+export interface FirestorePushSubRecord {
+  subId: string;
+  scope: 'croce_oro_push';
+  role: 'admin' | 'centrale' | 'volontario' | 'all';
+  volontarioId: string;
+  endpoint: string;
+  p256dh: string;
+  auth: string;
+  ownerUid: string;
+}
+
+export function listenRadioSlotDoc(
+  slotId: RadioSlotId,
+  onData: (exists: boolean, data: any, fromLocalPendingWrite: boolean) => void,
+  onError?: (err: Error) => void
+): Unsubscribe {
+  const path = `radio_slots/${slotId}`;
+  return onSnapshot(
+    doc(db, 'radio_slots', slotId),
+    (snapshot) => {
+      if (!snapshot.exists()) {
+        onData(false, null, snapshot.metadata.hasPendingWrites);
+      } else {
+        onData(true, snapshot.data(), snapshot.metadata.hasPendingWrites);
+      }
+    },
+    (error) => {
+      try {
+        handleFirestoreError(error, OperationType.GET, path);
+      } catch (wrapped: any) {
+        onError?.(wrapped);
+      }
+    }
+  );
+}
+
+export async function readRadioSlotDoc(slotId: RadioSlotId): Promise<{ exists: boolean; data: any }> {
+  const path = `radio_slots/${slotId}`;
+  try {
+    const snap = await getDocFromServer(doc(db, 'radio_slots', slotId));
+    return {
+      exists: snap.exists(),
+      data: snap.exists() ? snap.data() : null,
+    };
+  } catch (err) {
+    try {
+      const snap = await getDoc(doc(db, 'radio_slots', slotId));
+      return {
+        exists: snap.exists(),
+        data: snap.exists() ? snap.data() : null,
+      };
+    } catch (innerErr) {
+      handleFirestoreError(innerErr, OperationType.GET, path);
+    }
+  }
+}
+
+export async function writeRadioSlotDoc(params: {
+  slotId: RadioSlotId;
+  txId: string;
+  channelId: string;
+  payload: Record<string, any>;
+  sentAtMs?: number;
+  knownExists?: boolean;
+}): Promise<boolean> {
+  const user = auth.currentUser;
+  if (!user || !user.emailVerified) return false;
+  const cleanPayload = sanitizeForFirestore(params.payload || {});
+  const ref = doc(db, 'radio_slots', params.slotId);
+  const safeTxId = String(params.txId || '').slice(0, 96);
+  const safeChannelId = (String(params.channelId || 'general').trim() || 'general').slice(0, 96);
+  const safeSentAtMs = typeof params.sentAtMs === 'number' && Number.isFinite(params.sentAtMs) && params.sentAtMs >= 0
+    ? Math.floor(params.sentAtMs)
+    : Date.now();
+
+  if (params.knownExists) {
+    try {
+      await updateDoc(ref, {
+        txId: safeTxId,
+        channelId: safeChannelId,
+        payload: cleanPayload,
+        sentAtMs: safeSentAtMs,
+        updatedByUid: user.uid,
+        updatedAt: serverTimestamp(),
+      });
+      return true;
+    } catch (err: any) {
+      const code = String(err?.code || '');
+      if (code !== 'not-found' && !String(err?.message || '').includes('No document to update')) {
+        return false;
+      }
+    }
+  }
+
+  try {
+    await setDoc(ref, {
+      slotId: params.slotId,
+      scope: 'croce_oro_radio',
+      txId: safeTxId,
+      channelId: safeChannelId,
+      payload: cleanPayload,
+      sentAtMs: safeSentAtMs,
+      updatedByUid: user.uid,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+    return true;
+  } catch (err: any) {
+    // Se il documento esisteva già (race tra due trasmettitori), ritenta con updateDoc
+    try {
+      await updateDoc(ref, {
+        txId: safeTxId,
+        channelId: safeChannelId,
+        payload: cleanPayload,
+        sentAtMs: safeSentAtMs,
+        updatedByUid: user.uid,
+        updatedAt: serverTimestamp(),
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
+
+function hashStringSimpleHex(input: string): string {
+  let h1 = 0xdeadbeef ^ input.length;
+  let h2 = 0x41c6ce57 ^ input.length;
+  for (let i = 0; i < input.length; i++) {
+    const ch = input.charCodeAt(i);
+    h1 = Math.imul(h1 ^ ch, 2654435761);
+    h2 = Math.imul(h2 ^ ch, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return ((h1 >>> 0).toString(16).padStart(8, '0') + (h2 >>> 0).toString(16).padStart(8, '0')).slice(0, 16);
+}
+
+export async function savePushSubscriptionFirestore(params: {
+  role: 'admin' | 'centrale' | 'volontario' | 'all';
+  volontarioId?: string;
+  endpoint: string;
+  p256dh: string;
+  authKey: string;
+}): Promise<boolean> {
+  const user = auth.currentUser;
+  if (!user || !user.emailVerified) return false;
+  const endpoint = String(params.endpoint || '').trim();
+  const p256dh = String(params.p256dh || '').trim();
+  const authKey = String(params.authKey || '').trim();
+  if (!endpoint.startsWith('https://') || p256dh.length < 16 || authKey.length < 8) return false;
+
+  const safeRole: 'admin' | 'centrale' | 'volontario' | 'all' =
+    params.role === 'admin' || params.role === 'centrale' || params.role === 'volontario' ? params.role : 'all';
+  const safeVolId = String(params.volontarioId || '').trim().slice(0, 128);
+  const cleanUid = user.uid.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 20);
+  const subId = `sub_${cleanUid}_${hashStringSimpleHex(endpoint)}`;
+  const ref = doc(db, 'push_subscriptions', subId);
+
+  try {
+    await updateDoc(ref, {
+      role: safeRole,
+      volontarioId: safeVolId,
+      endpoint: endpoint.slice(0, 1024),
+      p256dh: p256dh.slice(0, 256),
+      auth: authKey.slice(0, 128),
+      updatedAt: serverTimestamp(),
+    });
+    return true;
+  } catch {
+    try {
+      await setDoc(ref, {
+        subId,
+        scope: 'croce_oro_push',
+        role: safeRole,
+        volontarioId: safeVolId,
+        endpoint: endpoint.slice(0, 1024),
+        p256dh: p256dh.slice(0, 256),
+        auth: authKey.slice(0, 128),
+        ownerUid: user.uid,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
+
+export async function fetchPushSubscriptionsFirestore(): Promise<FirestorePushSubRecord[]> {
+  const user = auth.currentUser;
+  if (!user || !user.emailVerified) return [];
+  try {
+    const q = query(collection(db, 'push_subscriptions'), where('scope', '==', 'croce_oro_push'));
+    const snap = await getDocs(q);
+    return snap.docs
+      .map((d) => d.data() as FirestorePushSubRecord)
+      .filter((r) => r && typeof r.endpoint === 'string' && r.endpoint.startsWith('https://'));
+  } catch {
+    return [];
+  }
+}
+
+
 

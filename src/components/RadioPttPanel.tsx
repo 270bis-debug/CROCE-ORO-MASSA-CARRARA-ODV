@@ -98,6 +98,12 @@ interface RadioPttPanelProps {
   onChangeMessaggioInput: (val: string) => void;
   onSendText: () => void;
   onSendAudioMessage: (audio: { dataUrl: string; durationSec: number; mimeType: string }) => void;
+  bgRadioArmed?: boolean;
+  bgPushSubscribed?: boolean;
+  bgPermission?: NotificationPermission;
+  bgInIframe?: boolean;
+  onToggleBgRadio?: () => void;
+  onTestPushRadio?: () => void;
   compact?: boolean;
 }
 
@@ -133,6 +139,12 @@ export const RadioPttPanel: React.FC<RadioPttPanelProps> = ({
   onChangeMessaggioInput,
   onSendText,
   onSendAudioMessage,
+  bgRadioArmed = false,
+  bgPushSubscribed = false,
+  bgPermission = 'default',
+  bgInIframe = false,
+  onToggleBgRadio,
+  onTestPushRadio,
   compact = false,
 }) => {
   const [isRecordingClip, setIsRecordingClip] = useState(false);
@@ -824,7 +836,7 @@ export const RadioPttPanel: React.FC<RadioPttPanelProps> = ({
                     ? codecInfo.txCodec === 'opus'
                     : isRemoteSpeaking
                     ? codecInfo.rxCodec === 'opus'
-                    : radioPttState.codecMode === 'opus-48k')
+                    : false)
                     ? 'OPUS 48kHz HD'
                     : 'HD-ADPCM 24kHz'}
                 </span>
@@ -934,6 +946,71 @@ export const RadioPttPanel: React.FC<RadioPttPanelProps> = ({
             />
           )}
         </div>
+
+        {/* Controllo Walkie-Talkie Background (stile Zello / BTtalk: schermo spento + Push) */}
+        {onToggleBgRadio && (
+          <div className="mt-2.5 rounded-xl bg-slate-900/90 border border-slate-800 px-2.5 py-2 flex flex-col gap-1.5">
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <div className="flex items-center gap-2 min-w-0">
+                <span
+                  className={`w-2.5 h-2.5 rounded-full shrink-0 ${
+                    bgRadioArmed && bgPushSubscribed
+                      ? 'bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.85)]'
+                      : bgRadioArmed
+                      ? 'bg-amber-400 animate-pulse'
+                      : 'bg-slate-500'
+                  }`}
+                />
+                <div className="min-w-0">
+                  <div className="text-[11px] font-black uppercase tracking-wide text-slate-100 truncate">
+                    {bgRadioArmed && bgPushSubscribed
+                      ? 'Walkie-Talkie Background: ATTIVO'
+                      : bgRadioArmed
+                      ? 'Audio Schermo Spento ATTIVO • Abilita Push'
+                      : 'Walkie-Talkie Background: NON ATTIVO'}
+                  </div>
+                  <div className="text-[10px] text-slate-400 leading-tight">
+                    {bgRadioArmed && bgPushSubscribed
+                      ? 'Ascolto live a schermo spento/app ridotta; se chiudi l’app ricevi Push ad alta priorità con replay immediato.'
+                      : 'Tocca ATTIVA ORA per ricevere Emergenza, Tutti e Gruppi anche a schermo spento o app in background.'}
+                  </div>
+                </div>
+              </div>
+              <div className="flex items-center gap-1.5 shrink-0">
+                {bgPushSubscribed && onTestPushRadio && (
+                  <button
+                    type="button"
+                    onClick={onTestPushRadio}
+                    className="px-2 py-1 rounded-lg text-[10px] font-bold bg-sky-500/20 hover:bg-sky-500/30 text-sky-300 border border-sky-500/40 cursor-pointer"
+                  >
+                    Test Push
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={onToggleBgRadio}
+                  className={`px-2.5 py-1 rounded-lg text-[10px] font-black uppercase tracking-wide cursor-pointer border transition-colors ${
+                    bgRadioArmed && bgPushSubscribed
+                      ? 'bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border-emerald-500/50'
+                      : 'bg-amber-500 hover:bg-amber-400 text-slate-950 border-amber-300 shadow-sm'
+                  }`}
+                >
+                  {bgRadioArmed && bgPushSubscribed ? '✓ Attivo' : 'Attiva Ora'}
+                </button>
+              </div>
+            </div>
+            {bgInIframe && !bgPushSubscribed && (
+              <div className="text-[10px] text-amber-300/90 leading-snug">
+                Per la ricezione a schermo spento su smartphone apri l&apos;app dal link diretto (www.croceoro.org) o installata su Home.
+              </div>
+            )}
+            {!bgInIframe && bgPermission === 'denied' && (
+              <div className="text-[10px] text-red-300 leading-snug">
+                Notifiche bloccate sul browser: sbloccale dalle impostazioni del sito per ricevere Push quando l&apos;app è chiusa.
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Banner Guida Operatore Emergenza: ATTENDI annuncio vs ORA PUOI PARLARE */}
         {isAdmin && emergencyPhase !== 'idle' && (

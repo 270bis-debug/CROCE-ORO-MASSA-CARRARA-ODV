@@ -991,7 +991,18 @@ function loadPersistedState(): ServerState {
             phoneNumberId: (parsed.whatsappConfig?.phoneNumberId && parsed.whatsappConfig.phoneNumberId.trim()) || process.env.WHATSAPP_PHONE_NUMBER_ID || '1692890819217239',
             businessNumber: parsed.whatsappConfig?.businessNumber || '0585625410'
           },
-          turni: Array.isArray(parsed.turni) ? normalizzaTurniSedi(parsed.turni) : [],
+          turni: (() => {
+            if (!Array.isArray(parsed.turni)) return [];
+            const norm = normalizzaTurniSedi(parsed.turni);
+            const isDemoId = (id: any) => {
+              const s = String(id || '').trim();
+              return s.startsWith('turno-oggi-') || s.startsWith('turno-domani-');
+            };
+            if (norm.length > 0 && norm.every((t: any) => isDemoId(t?.id))) {
+              return [];
+            }
+            return norm;
+          })(),
           checklistsTemplates: Array.isArray(parsed.checklistsTemplates) ? parsed.checklistsTemplates : undefined,
           checklistsCompilate: Array.isArray(parsed.checklistsCompilate) ? parsed.checklistsCompilate : [],
           sedi: Array.isArray(parsed.sedi) ? normalizzaListaSediAssociative(parsed.sedi) : [],
@@ -6355,6 +6366,23 @@ async function startServer() {
   app.post('/api/turni', (req, res) => {
     const turni = Array.isArray(req.body?.turni) ? req.body.turni : (Array.isArray(req.body) ? req.body : null);
     if (turni) {
+      const isDemoId = (id: any) => {
+        const s = String(id || '').trim();
+        return s.startsWith('turno-oggi-') || s.startsWith('turno-domani-');
+      };
+      const incomingIsOnlyDemo =
+        turni.length > 0 && turni.every((t: any) => isDemoId(t?.id));
+      const existingHasReal =
+        Array.isArray(state.turni) &&
+        state.turni.some((t: any) => !isDemoId(t?.id));
+      if (incomingIsOnlyDemo && existingHasReal) {
+        return res.json({
+          success: true,
+          count: state.turni?.length || 0,
+          turni: state.turni || [],
+          protected: true,
+        });
+      }
       state.turni = turni;
       persistState();
       broadcast({
@@ -7847,15 +7875,19 @@ async function startServer() {
     res.json({ success: true, count: subscribers.size });
   });
 
-  // Self-test Push sul proprio dispositivo (invia solo all'endpoint chiamante già registrato, con rate-limit 5s)
+  // Self-test Push sul proprio dispositivo (invia solo all'endpoint chiamante già registrato o passato nel body, con rate-limit 5s)
   app.post('/api/push-test', async (req, res) => {
-    const endpoint = typeof req.body?.endpoint === 'string' ? req.body.endpoint.trim() : '';
+    const directSub = req.body?.subscription;
+    const endpoint = typeof req.body?.endpoint === 'string'
+      ? req.body.endpoint.trim()
+      : (typeof directSub?.endpoint === 'string' ? directSub.endpoint.trim() : '');
     if (!endpoint.startsWith('https://')) {
       return res.status(400).json({ success: false, error: 'Endpoint Push non valido.' });
     }
-    const sub = subscribers.get(endpoint);
-    if (!sub) {
-      return res.status(404).json({ success: false, error: 'Dispositivo non registrato sul server Push. Premi prima "Attiva Background".' });
+    const storedSub = subscribers.get(endpoint);
+    const targetSubscription = storedSub?.subscription || (directSub?.keys?.p256dh && directSub?.keys?.auth ? directSub : null);
+    if (!targetSubscription) {
+      return res.status(404).json({ success: false, error: 'Dispositivo non registrato sul server Push. Premi prima "Attiva Walkie-Talkie Background".' });
     }
     const lastAt = pushTestRateLimit.get(endpoint) || 0;
     if (Date.now() - lastAt < 5000) {
@@ -7864,10 +7896,10 @@ async function startServer() {
     pushTestRateLimit.set(endpoint, Date.now());
     try {
       await webpush.sendNotification(
-        sub.subscription,
+        targetSubscription,
         JSON.stringify({
-          title: '📻 TEST RADIO IN BACKGROUND OK',
-          body: 'Questo dispositivo riceve correttamente le chiamate radio (Emergenza, Gruppi e Tutti) anche a schermo spento.',
+          title: '📻 WALKIE-TALKIE BACKGROUND ATTIVO',
+          body: 'Test riuscito! Questo dispositivo riceve correttamente le chiamate radio (Emergenza, Gruppi e Tutti) anche a schermo spento.',
           tag: `radio-test-${Date.now()}`,
           soundType: 'cicalino',
           urgenza: 'GIALLO',
@@ -7889,6 +7921,52 @@ async function startServer() {
         error: `Invio Push rifiutato dal servizio browser (${err?.statusCode || 'errore rete'}). Riattiva le notifiche.`
       });
     }
+  });
+
+  // Inoltro diretto Push ad alta priorità a sottoscrizioni sincronizzate via Firestore
+  app.post('/api/push-send', async (req, res) => {
+    const rawSubs = Array.isArray(req.body?.subscriptions) ? req.body.subscriptions.slice(0, 80) : [];
+    const notifPayload = req.body?.payload && typeof req.body.payload === 'object' ? req.body.payload : null;
+    if (rawSubs.length === 0 || !notifPayload) {
+      return res.json({ success: true, sent: 0, expiredEndpoints: [] });
+    }
+    const serializedPayload = JSON.stringify({
+      title: String(notifPayload.title || '📻 RADIO CROCE ORO').slice(0, 140),
+      body: String(notifPayload.body || 'Comunicazione radio in arrivo.').slice(0, 260),
+      tag: String(notifPayload.tag || `radio-${Date.now()}`).slice(0, 80),
+      urgenza: String(notifPayload.urgenza || (notifPayload.isEmergency ? 'ROSSO' : 'GIALLO')),
+      soundType: String(notifPayload.soundType || 'cicalino'),
+      tipo: String(notifPayload.tipo || 'radio_ptt'),
+      channelId: String(notifPayload.channelId || 'general'),
+      transmissionId: String(notifPayload.transmissionId || ''),
+      speakerName: String(notifPayload.speakerName || ''),
+      isEmergency: Boolean(notifPayload.isEmergency),
+      requireInteraction: Boolean(notifPayload.requireInteraction ?? notifPayload.isEmergency),
+      timestamp: Date.now(),
+    });
+    let sent = 0;
+    const expiredEndpoints: string[] = [];
+    await Promise.all(
+      rawSubs.map(async (entry: any) => {
+        const endpoint = typeof entry?.endpoint === 'string' ? entry.endpoint.trim() : '';
+        const p256dh = typeof entry?.p256dh === 'string' ? entry.p256dh.trim() : '';
+        const auth = typeof entry?.auth === 'string' ? entry.auth.trim() : '';
+        if (!endpoint.startsWith('https://') || !p256dh || !auth) return;
+        try {
+          await webpush.sendNotification(
+            { endpoint, keys: { p256dh, auth } },
+            serializedPayload,
+            { urgency: 'high', TTL: notifPayload.isEmergency ? 120 : 60, headers: { Urgency: 'high' } }
+          );
+          sent++;
+        } catch (err: any) {
+          if (err?.statusCode === 410 || err?.statusCode === 404) {
+            expiredEndpoints.push(endpoint);
+          }
+        }
+      })
+    );
+    return res.json({ success: true, sent, expiredEndpoints });
   });
 
   // Endpoint per forzare o testare l'invio del promemoria per i turni di domani

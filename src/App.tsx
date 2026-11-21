@@ -133,7 +133,7 @@ import { ModalAnteprimaMultipla } from './components/ModalAnteprimaMultipla';
 import { attivaServiceWorkerEPush, getPushSubscriptionStatus, inviaTestPushRadioLocale, isRunningInEmbeddedIframe, mostraNotificaNativa } from './services/pushManager';
 import { soundEngine } from './services/soundEngine';
 import { vhfRadioEngine } from './services/vhfRadioEngine';
-import { realtime, ConnectionInfo, mergeOperativeTimesImmutable } from './services/realtime';
+import { realtime, ConnectionInfo, mergeOperativeTimesImmutable, mergeTurniSediSafe } from './services/realtime';
 import {
   creaTicketResetPinFirestore,
   generaTokenResetPinSicuro,
@@ -903,16 +903,22 @@ const VistaDedicataTabelloneSenzaLogin: React.FC<{
 
   const ricaricaDati = () => {
     try {
-      fetch('/api/turni')
-        .then((res) => res.json())
-        .then((data) => {
-          if (data?.turni && Array.isArray(data.turni) && data.turni.length > 0) {
-            const norm = normalizzaTurniSedi(data.turni);
-            setTurni(norm);
-            localStorage.setItem('CROCE_ORO_TURNI_SEDI', JSON.stringify(norm));
-          }
-        })
-        .catch(() => {});
+      if (!realtime.isServerlessStatic()) {
+        fetch('/api/turni')
+          .then((res) => res.json())
+          .then((data) => {
+            if (data?.turni && Array.isArray(data.turni) && data.turni.length > 0) {
+              setTurni((prev) => {
+                const safe = normalizzaTurniSedi(mergeTurniSediSafe(prev, data.turni));
+                try {
+                  localStorage.setItem('CROCE_ORO_TURNI_SEDI', JSON.stringify(safe));
+                } catch {}
+                return safe;
+              });
+            }
+          })
+          .catch(() => {});
+      }
       fetch('/api/volontari')
         .then((res) => res.json())
         .then((data) => {
@@ -951,11 +957,13 @@ const VistaDedicataTabelloneSenzaLogin: React.FC<{
     // Sottoscrizione WebSocket in tempo reale: riceve aggiornamenti istantanei senza alcun ritardo
     const unsubTurni = realtime.on('TURNI_UPDATED', (payload: any) => {
       if (payload?.turni && Array.isArray(payload.turni)) {
-        const norm = normalizzaTurniSedi(payload.turni);
-        setTurni(norm);
-        try {
-          localStorage.setItem('CROCE_ORO_TURNI_SEDI', JSON.stringify(norm));
-        } catch {}
+        setTurni((prev) => {
+          const safe = normalizzaTurniSedi(mergeTurniSediSafe(prev, payload.turni));
+          try {
+            localStorage.setItem('CROCE_ORO_TURNI_SEDI', JSON.stringify(safe));
+          } catch {}
+          return safe;
+        });
       }
     });
 
@@ -1923,19 +1931,19 @@ export default function App() {
         })
         .catch(() => {});
 
-      // Sincronizzazione Turni
+      // Sincronizzazione Turni (protetta da mergeTurniSediSafe: mai sovrascrivere turni reali con turni demo)
       fetch('/api/turni')
         .then(async (r) => {
           if (r.headers.get('X-Sync-Mode') === 'cloud-firestore') return;
           const d = await r.json();
           if (d?.mode === 'cloud-firestore') return;
           if (d?.turni && Array.isArray(d.turni) && d.turni.length > 0) {
-            const turniNorm = normalizzaTurniSedi(d.turni);
-            setTurniSedi(turniNorm);
-            localStorage.setItem('CROCE_ORO_TURNI_SEDI', JSON.stringify(turniNorm));
-          } else if (d?.turni && d.turni.length === 0 && turniSedi.length > 0) {
-            // Se il server non ha ancora turni archiviati, invia subito la configurazione di partenza
-            realtime.syncTurni(normalizzaTurniSedi(turniSedi));
+            const merged = normalizzaTurniSedi(mergeTurniSediSafe(turniSediRef.current, d.turni));
+            turniSediRef.current = merged;
+            setTurniSedi(merged);
+            try {
+              localStorage.setItem('CROCE_ORO_TURNI_SEDI', JSON.stringify(merged));
+            } catch {}
           }
         })
         .catch(() => {});
@@ -4918,6 +4926,27 @@ export default function App() {
     return { armed, pushRes };
   }, []);
 
+  const handleTestPushRadio = useCallback(async () => {
+    const r = await inviaTestPushRadioLocale();
+    mostraFeedbackPtt(
+      r.ok
+        ? 'Notifica Push di test inviata: verifica arrivo anche a schermo spento.'
+        : (r.error || 'Impossibile inviare il test Push su questo dispositivo.')
+    );
+  }, []);
+
+  // Armamento automatico stile Zello/BTtalk al primo tocco ovunque nell'app + aggiornamento stato UI in tempo reale
+  useEffect(() => {
+    vhfRadioEngine.enableAutoArmOnUserGesture();
+    const unsubArmed = vhfRadioEngine.subscribeBackgroundArmed((armedNow) => {
+      setBgRadioStatus((prev) => (prev.audioArmed === armedNow ? prev : { ...prev, audioArmed: armedNow }));
+    });
+    aggiornaStatoRadioBackground();
+    return () => {
+      unsubArmed();
+    };
+  }, [aggiornaStatoRadioBackground]);
+
   useEffect(() => {
     if (modalNotificheAperta) {
       aggiornaStatoRadioBackground();
@@ -5016,62 +5045,92 @@ export default function App() {
         }
 
         try {
-          const currentRole = ruoloRef.current === 'admin' ? 'admin' : 'volontario';
-          const currentVolId =
-            currentRole === 'admin'
-              ? (utenteCentraleRef.current?.id || 'vol-admin')
-              : (sessioneTurnoRef.current?.volontarioId || '');
-          const lastSeq = lastPlayedSeqByTxRef.current.get(transmissionId) || 0;
-          const qs = new URLSearchParams({
-            role: currentRole,
-            volontarioId: currentVolId,
-            afterSeq: String(lastSeq),
-          });
-          const pushBase = realtime.getPushBackendBaseUrl();
-          const res = await fetch(
-            `${pushBase}/api/radio-transmission/${encodeURIComponent(transmissionId)}?${qs.toString()}`,
-            { cache: 'no-store' }
-          );
-          if (res.status === 403 || res.status === 404) {
-            // Non autorizzato a questo gruppo oppure trasmissione scaduta
-            if (res.status === 403) {
-              markTransmissionFinished(transmissionId);
-              return;
-            }
-            if (Date.now() - startedPollAt > 10000) {
-              activeStreamPollersRef.current.delete(transmissionId);
-              return;
-            }
-          } else if (res.ok) {
-            const json = await res.json();
-            const txObj = json?.transmission;
-            const chunks = Array.isArray(txObj?.chunks) ? txObj.chunks : [];
-            const txEmergency = Boolean(isEmergency || txObj?.isEmergency);
-            const txSpeaker = speakerName || txObj?.speakerName || (txEmergency ? 'Centrale Operativa' : 'Radio');
-            const stillActive = Boolean(txObj?.active);
-
-            if (chunks.length > 0) {
-              let maxSeq = lastSeq;
-              for (const c of chunks) {
-                const sq = Number(c?.seq || 0);
-                if (sq > maxSeq) maxSeq = sq;
+          // Su hosting statico Vercel (www.croceoro.org) usa direttamente Cloud Firestore radio_slots/last_tx
+          if (realtime.isServerlessStatic()) {
+            const cloudTx = await realtime.fetchLatestCloudRadioTransmission();
+            if (cloudTx && Array.isArray(cloudTx.chunks) && cloudTx.chunks.length > 0) {
+              const currentRole = ruoloRef.current === 'admin' ? 'admin' : 'volontario';
+              const currentVolId =
+                currentRole === 'admin'
+                  ? (utenteCentraleRef.current?.id || 'vol-admin')
+                  : (sessioneTurnoRef.current?.volontarioId || '');
+              const allowed =
+                cloudTx.isEmergency ||
+                !cloudTx.groupId ||
+                currentRole === 'admin' ||
+                radioGroupsRef.current.some(
+                  (g) => g.id === cloudTx.groupId && Array.isArray(g.memberIds) && g.memberIds.includes(currentVolId)
+                );
+              if (allowed && !replayedTransmissionIdsRef.current.has(cloudTx.id)) {
+                playedAnyChunk = true;
+                await vhfRadioEngine.playBufferedTransmission(cloudTx.chunks, {
+                  isEmergency: Boolean(isEmergency || cloudTx.isEmergency),
+                  speakerName: speakerName || cloudTx.speakerName || 'Radio',
+                  playIntroTone: !cloudTx.isEmergency,
+                });
+                vhfRadioEngine.playVhfRogerBeep(cloudTx.isEmergency ? 'emergency' : 'normal');
+                markTransmissionFinished(cloudTx.id);
+                markTransmissionFinished(transmissionId);
+                return;
               }
-              lastPlayedSeqByTxRef.current.set(transmissionId, maxSeq);
-              const isFirstBatch = !playedAnyChunk;
-              playedAnyChunk = true;
-              await vhfRadioEngine.playBufferedTransmission(chunks, {
-                isEmergency: txEmergency,
-                speakerName: txSpeaker,
-                playIntroTone: isFirstBatch && !txEmergency,
-              });
             }
-
-            if (!stillActive) {
-              if (playedAnyChunk) {
-                vhfRadioEngine.playVhfRogerBeep(txEmergency ? 'emergency' : 'normal');
+          } else {
+            const currentRole = ruoloRef.current === 'admin' ? 'admin' : 'volontario';
+            const currentVolId =
+              currentRole === 'admin'
+                ? (utenteCentraleRef.current?.id || 'vol-admin')
+                : (sessioneTurnoRef.current?.volontarioId || '');
+            const lastSeq = lastPlayedSeqByTxRef.current.get(transmissionId) || 0;
+            const qs = new URLSearchParams({
+              role: currentRole,
+              volontarioId: currentVolId,
+              afterSeq: String(lastSeq),
+            });
+            const pushBase = realtime.getPushBackendBaseUrl();
+            const res = await fetch(
+              `${pushBase}/api/radio-transmission/${encodeURIComponent(transmissionId)}?${qs.toString()}`,
+              { cache: 'no-store' }
+            );
+            if (res.status === 403 || res.status === 404) {
+              if (res.status === 403) {
+                markTransmissionFinished(transmissionId);
+                return;
               }
-              markTransmissionFinished(transmissionId);
-              return;
+              if (Date.now() - startedPollAt > 10000) {
+                activeStreamPollersRef.current.delete(transmissionId);
+                return;
+              }
+            } else if (res.ok) {
+              const json = await res.json();
+              const txObj = json?.transmission;
+              const chunks = Array.isArray(txObj?.chunks) ? txObj.chunks : [];
+              const txEmergency = Boolean(isEmergency || txObj?.isEmergency);
+              const txSpeaker = speakerName || txObj?.speakerName || (txEmergency ? 'Centrale Operativa' : 'Radio');
+              const stillActive = Boolean(txObj?.active);
+
+              if (chunks.length > 0) {
+                let maxSeq = lastSeq;
+                for (const c of chunks) {
+                  const sq = Number(c?.seq || 0);
+                  if (sq > maxSeq) maxSeq = sq;
+                }
+                lastPlayedSeqByTxRef.current.set(transmissionId, maxSeq);
+                const isFirstBatch = !playedAnyChunk;
+                playedAnyChunk = true;
+                await vhfRadioEngine.playBufferedTransmission(chunks, {
+                  isEmergency: txEmergency,
+                  speakerName: txSpeaker,
+                  playIntroTone: isFirstBatch && !txEmergency,
+                });
+              }
+
+              if (!stillActive) {
+                if (playedAnyChunk) {
+                  vhfRadioEngine.playVhfRogerBeep(txEmergency ? 'emergency' : 'normal');
+                }
+                markTransmissionFinished(transmissionId);
+                return;
+              }
             }
           }
         } catch {}
@@ -5105,6 +5164,50 @@ export default function App() {
             ? (utenteCentraleRef.current?.id || 'vol-admin')
             : (sessioneTurnoRef.current?.attivo ? sessioneTurnoRef.current?.volontarioId || '' : '');
         if (currentRole !== 'admin' && !currentVolId) return;
+        const myLocalSpeakerId = getLocalPttIdentity(currentRole).speakerId;
+
+        // 1) Controlla SEMPRE prima Cloud Firestore radio_slots/last_tx (universale tra www.croceoro.org, Cloud Run, 4G/Wi-Fi)
+        const cloudTx = await realtime.fetchLatestCloudRadioTransmission();
+        if (
+          cloudTx &&
+          cloudTx.id &&
+          Array.isArray(cloudTx.chunks) &&
+          cloudTx.chunks.length > 0 &&
+          cloudTx.speakerId !== myLocalSpeakerId &&
+          !replayedTransmissionIdsRef.current.has(cloudTx.id) &&
+          Date.now() - Math.max(cloudTx.endedAt || 0, cloudTx.startedAt || 0) < 120000 &&
+          Math.max(cloudTx.endedAt || 0, cloudTx.startedAt || 0) > lastWsRadioChunkAtRef.current - 1200
+        ) {
+          const allowedGroup =
+            cloudTx.isEmergency ||
+            !cloudTx.groupId ||
+            currentRole === 'admin' ||
+            radioGroupsRef.current.some(
+              (g) => g.id === cloudTx.groupId && Array.isArray(g.memberIds) && g.memberIds.includes(currentVolId)
+            );
+          if (allowedGroup) {
+            markTransmissionFinished(cloudTx.id);
+            if (cloudTx.groupId && !localPttTransmittingIdRef.current) {
+              setSelectedRadioChannelId(String(cloudTx.groupId));
+            }
+            if (cloudTx.isEmergency && Date.now() - lastRemoteEmergencyTriggerRef.current > 4000) {
+              lastRemoteEmergencyTriggerRef.current = Date.now();
+              vhfRadioEngine.armBackgroundReception(`🚨 EMERGENZA: ${cloudTx.speakerName || 'Centrale'}`).catch(() => {});
+              vhfRadioEngine.interruptPlayback();
+              vhfRadioEngine.playEmergencyAnnouncement({ isSender: false });
+            }
+            await vhfRadioEngine.playBufferedTransmission(cloudTx.chunks, {
+              isEmergency: Boolean(cloudTx.isEmergency),
+              speakerName: cloudTx.speakerName || 'Radio',
+              playIntroTone: !cloudTx.isEmergency,
+            });
+            vhfRadioEngine.playVhfRogerBeep(cloudTx.isEmergency ? 'emergency' : 'normal');
+            return;
+          }
+        }
+
+        // 2) Fallback locale Express /api/radio-recent (solo quando siamo su server Express, mai su Vercel statico)
+        if (realtime.isServerlessStatic()) return;
         const since = Math.max(Date.now() - 120000, lastRadioRecentCheckRef.current - 5000);
         lastRadioRecentCheckRef.current = Date.now();
         const qs = new URLSearchParams({
@@ -9132,7 +9235,7 @@ export default function App() {
             );
           },
           {
-            preferOpus: stateNow.codecMode === 'opus-48k' && realtime.getConnectionInfo().websocketActive,
+            preferOpus: false,
             onError: (errMsg) => {
               mostraFeedbackPtt(errMsg);
               handleStopEmergencyTx();
@@ -9262,7 +9365,7 @@ export default function App() {
         );
       },
       {
-        preferOpus: stateNow.codecMode === 'opus-48k' && realtime.getConnectionInfo().websocketActive,
+        preferOpus: false,
         onError: (errMsg) => {
           localPttTransmittingIdRef.current = null;
           setLocalPttTransmittingId(null);
@@ -11058,7 +11161,8 @@ KM TOTALI: ${kmTot} KM`;
           applicaVolontari(Array.isArray(s.volontari) ? s.volontari : [], s.volontariEliminatiIds);
         }
         if (s.turni && Array.isArray(s.turni) && s.turni.length > 0) {
-          const turniNorm = normalizzaTurniSedi(s.turni);
+          const turniNorm = normalizzaTurniSedi(mergeTurniSediSafe(turniSediRef.current, s.turni));
+          turniSediRef.current = turniNorm;
           setTurniSedi(turniNorm);
           try {
             localStorage.setItem('CROCE_ORO_TURNI_SEDI', JSON.stringify(turniNorm));
@@ -11452,7 +11556,8 @@ KM TOTALI: ${kmTot} KM`;
           applicaVolontari(Array.isArray(s.volontari) ? s.volontari : [], s.volontariEliminatiIds);
         }
         if (s.turni && Array.isArray(s.turni) && s.turni.length > 0) {
-          const turniNorm = normalizzaTurniSedi(s.turni);
+          const turniNorm = normalizzaTurniSedi(mergeTurniSediSafe(turniSediRef.current, s.turni));
+          turniSediRef.current = turniNorm;
           setTurniSedi(turniNorm);
           try {
             localStorage.setItem('CROCE_ORO_TURNI_SEDI', JSON.stringify(turniNorm));
@@ -11849,7 +11954,8 @@ KM TOTALI: ${kmTot} KM`;
       // Ricezione aggiornamento calendario turni in tempo reale (visibile a tutti i ruoli e visitatori)
       realtime.on('TURNI_UPDATED', (payload: any) => {
         if (payload && Array.isArray(payload.turni)) {
-          const turniNorm = normalizzaTurniSedi(payload.turni);
+          const turniNorm = normalizzaTurniSedi(mergeTurniSediSafe(turniSediRef.current, payload.turni));
+          turniSediRef.current = turniNorm;
           setTurniSedi(turniNorm);
           try {
             localStorage.setItem('CROCE_ORO_TURNI_SEDI', JSON.stringify(turniNorm));
@@ -12405,6 +12511,7 @@ KM TOTALI: ${kmTot} KM`;
             prevRemoteSpeakerIdRef.current = nextSpeaker.speakerId;
           } else {
             if (prevRemoteSpeakerIdRef.current && prevRemoteSpeakerIdRef.current !== localId) {
+              vhfRadioEngine.flushBackgroundVoiceQueue();
               vhfRadioEngine.playVhfRogerBeep('normal');
               vhfRadioEngine.updateMediaSessionState({
                 title: 'Radio VHF/UHF • Ascolto Attivo',
@@ -12448,6 +12555,7 @@ KM TOTALI: ${kmTot} KM`;
               vhfRadioEngine.stopEmergencyAnnouncement();
             }
             if (prevRemoteId && prevRemoteId !== localId) {
+              vhfRadioEngine.flushBackgroundVoiceQueue();
               vhfRadioEngine.playVhfRogerBeep(chId === 'emergency' ? 'emergency' : 'normal');
               vhfRadioEngine.updateMediaSessionState({
                 title: 'Radio VHF/UHF • Ascolto Attivo',
@@ -20899,6 +21007,14 @@ KM TOTALI: ${kmTot} KM`;
                 onChangeMessaggioInput={setMessaggioRadioInput}
                 onSendText={() => inviaMessaggioRadio(undefined, undefined, 'admin')}
                 onSendAudioMessage={(clip) => inviaMessaggioRadio('', clip, 'admin')}
+                bgRadioArmed={bgRadioStatus.audioArmed}
+                bgPushSubscribed={bgRadioStatus.pushSubscribed}
+                bgPermission={bgRadioStatus.permission}
+                bgInIframe={bgRadioStatus.inIframe}
+                onToggleBgRadio={() => {
+                  attivaAscoltoRadioBackground().catch(() => {});
+                }}
+                onTestPushRadio={handleTestPushRadio}
                 compact={true}
               />
             </div>
@@ -22178,6 +22294,14 @@ KM TOTALI: ${kmTot} KM`;
                   onChangeMessaggioInput={setMessaggioRadioInput}
                   onSendText={() => inviaMessaggioRadio(undefined, undefined, ctxRole)}
                   onSendAudioMessage={(clip) => inviaMessaggioRadio('', clip, ctxRole)}
+                  bgRadioArmed={bgRadioStatus.audioArmed}
+                  bgPushSubscribed={bgRadioStatus.pushSubscribed}
+                  bgPermission={bgRadioStatus.permission}
+                  bgInIframe={bgRadioStatus.inIframe}
+                  onToggleBgRadio={() => {
+                    attivaAscoltoRadioBackground().catch(() => {});
+                  }}
+                  onTestPushRadio={handleTestPushRadio}
                 />
               );
             })()}

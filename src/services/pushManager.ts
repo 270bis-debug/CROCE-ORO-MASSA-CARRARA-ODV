@@ -2,6 +2,7 @@
 // Garantisce che il telefono riceva gli allarmi anche a schermo spento / app in background
 
 import { realtime } from './realtime';
+import { savePushSubscriptionFirestore } from './firebase';
 
 function urlBase64ToUint8Array(base64String: string): Uint8Array {
   const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
@@ -148,18 +149,20 @@ export async function attivaServiceWorkerEPush(
     });
     await navigator.serviceWorker.ready;
 
-    // 4. Recupera la chiave pubblica VAPID dal backend Push (funziona anche da domini statici/Vercel e reti esterne)
-    const pushBackendBase = realtime.getPushBackendBaseUrl();
+    // 4. Recupera la chiave pubblica VAPID dal proprio origin (Vercel /api/vapid-public-key o Express locale)
+    // evitando il vecchio redirect 302 verso ais-pre su cross-origin
+    const sameOriginBase = typeof window !== 'undefined' ? window.location.origin.replace(/\/$/, '') : '';
+    const pushBackendBase = realtime.getPushBackendBaseUrl().replace(/\/$/, '');
     const candidateBases = Array.from(
-      new Set([pushBackendBase, realtime.getApiBaseUrl(), ''].map((b) => String(b || '').replace(/\/$/, '')))
+      new Set([sameOriginBase, '', pushBackendBase, realtime.getApiBaseUrl().replace(/\/$/, '')])
     );
 
     let vapidKey = '';
-    let activePushBase = pushBackendBase;
+    let activePushBase = sameOriginBase;
     for (const base of candidateBases) {
       try {
         const res = await fetch(`${base}/api/vapid-public-key`, { cache: 'no-store' });
-        if (res.ok) {
+        if (res.ok && res.headers.get('content-type')?.includes('application/json')) {
           const json = await res.json();
           if (json && typeof json.publicKey === 'string' && json.publicKey.length > 20) {
             vapidKey = json.publicKey;
@@ -202,20 +205,35 @@ export async function attivaServiceWorkerEPush(
       });
     }
 
-    // 6. Invia la sottoscrizione al backend Push (e al server locale se diverso)
+    // 6. Registra la sottoscrizione sia su Cloud Firestore (cross-device globale) sia sul backend same-origin
     if (subscription) {
       saveCurrentPushEndpoint(subscription.endpoint);
+      const subJson = subscription.toJSON();
       const subBody = JSON.stringify({
         role: ruolo,
         volontarioId: effectiveVolId,
         volontarioNome: effectiveVolNome,
-        subscription: subscription.toJSON()
+        subscription: subJson
       });
 
-      const registerTargets = Array.from(
-        new Set([activePushBase, pushBackendBase, realtime.getApiBaseUrl()].filter((x) => typeof x === 'string'))
-      );
       let registeredOk = false;
+
+      // 6a. Persistenza Firestore globale (funziona su www.croceoro.org, Vercel, Cloud Run, 4G/5G/Wi-Fi)
+      if (subJson?.endpoint && subJson?.keys?.p256dh && subJson?.keys?.auth) {
+        const savedCloud = await savePushSubscriptionFirestore({
+          role: ruolo,
+          volontarioId: effectiveVolId,
+          endpoint: subJson.endpoint,
+          p256dh: subJson.keys.p256dh,
+          authKey: subJson.keys.auth,
+        }).catch(() => false);
+        if (savedCloud) registeredOk = true;
+      }
+
+      // 6b. Registrazione same-origin Express / Vercel
+      const registerTargets = Array.from(
+        new Set([activePushBase, sameOriginBase].filter((x) => typeof x === 'string'))
+      );
       for (const base of registerTargets) {
         try {
           const cleanBase = base.replace(/\/$/, '');
@@ -240,16 +258,29 @@ export async function attivaServiceWorkerEPush(
 }
 
 export async function inviaTestPushRadioLocale(): Promise<{ ok: boolean; error?: string }> {
-  const endpoint = getCurrentPushEndpoint();
-  if (!endpoint) {
+  let subscriptionJson: any = null;
+  let endpoint = getCurrentPushEndpoint();
+  try {
+    if ('serviceWorker' in navigator) {
+      const reg = await navigator.serviceWorker.getRegistration('/');
+      const sub = reg ? await reg.pushManager.getSubscription() : null;
+      if (sub) {
+        subscriptionJson = sub.toJSON();
+        endpoint = sub.endpoint || endpoint;
+        if (endpoint) saveCurrentPushEndpoint(endpoint);
+      }
+    }
+  } catch {}
+  if (!endpoint && !subscriptionJson?.endpoint) {
     return { ok: false, error: 'Sottoscrizione Push non ancora registrata su questo dispositivo.' };
   }
-  const pushBase = realtime.getPushBackendBaseUrl().replace(/\/$/, '');
+  const sameOriginBase = typeof window !== 'undefined' ? window.location.origin.replace(/\/$/, '') : '';
+  const pushBase = sameOriginBase || realtime.getPushBackendBaseUrl().replace(/\/$/, '');
   try {
     const res = await fetch(`${pushBase}/api/push-test`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ endpoint }),
+      body: JSON.stringify({ endpoint, subscription: subscriptionJson }),
       cache: 'no-store',
     });
     const json = await res.json().catch(() => ({}));

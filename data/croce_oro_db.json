@@ -194,7 +194,7 @@
       "sezioneAppartenenzaId": "sede-carrara-fossone",
       "mansione": "Autista",
       "esenteQuotaAssociativa": false,
-      "loggatoUpdatedAt": 1795217221790
+      "loggatoUpdatedAt": 1795250379405
     },
     {
       "id": "vol-1792318394496",
@@ -3711,6 +3711,24 @@
       "orario": "00:30:22",
       "testo": "🔇 RADIO DIRETTA VHF/UHF DISATTIVATA da Operatore Centrale: trasmissioni PTT in diretta sospese.",
       "tipo": "centrale"
+    },
+    {
+      "id": "notif-1795251567805-1-iin2",
+      "orario": "09:59:27",
+      "testo": "📡 RADIO DIRETTA VHF/UHF ATTIVATA da Sim Centrale: canale PTT aperto a tutti i terminali loggati.",
+      "tipo": "centrale"
+    },
+    {
+      "id": "notif-1795251685858-1-o8rq",
+      "orario": "10:01:25",
+      "testo": "📡 RADIO DIRETTA VHF/UHF ATTIVATA da Sim Centrale: canale PTT aperto a tutti i terminali loggati.",
+      "tipo": "centrale"
+    },
+    {
+      "id": "notif-1795251686408-2-qept",
+      "orario": "10:01:26",
+      "testo": "🔇 RADIO DIRETTA VHF/UHF DISATTIVATA da Sim Centrale: trasmissioni PTT in diretta sospese.",
+      "tipo": "centrale"
     }
   ],
   "serviziArchivio": [],
@@ -3721,116 +3739,7 @@
     "phoneNumberId": "1692890819217239",
     "businessNumber": "0585625410"
   },
-  "turni": [
-    {
-      "id": "turno-oggi-massa-mattina",
-      "sedeId": "sede-massa-lejare",
-      "sedeNome": "Sede Operativa Massa (Le Jare)",
-      "data": "2026-10-24",
-      "fasciaOraria": "Mattina (08:00 - 14:00)",
-      "orarioInizio": "08:00",
-      "orarioFine": "14:00",
-      "mezzoAssegnato": "T4609",
-      "statoCopertura": "Coperto",
-      "autista": {
-        "id": "vol-001",
-        "nome": "Mario Rossi"
-      },
-      "caposervizio": {
-        "id": "vol-002",
-        "nome": "Luca Bianchi"
-      },
-      "soccorritore2": {
-        "id": "vol-005",
-        "nome": "Francesca Esposito"
-      },
-      "operatoreCentrale": {
-        "id": "vol-003",
-        "nome": "Giulia Neri"
-      },
-      "note": "Equipaggio pronto per emergenze primarie H24"
-    },
-    {
-      "id": "turno-oggi-massa-pomeriggio",
-      "sedeId": "sede-massa-lejare",
-      "sedeNome": "Sede Operativa Massa (Le Jare)",
-      "data": "2026-10-24",
-      "fasciaOraria": "Pomeriggio (14:00 - 20:00)",
-      "orarioInizio": "14:00",
-      "orarioFine": "20:00",
-      "mezzoAssegnato": "T4606",
-      "statoCopertura": "Parziale",
-      "autista": {
-        "id": "vol-004",
-        "nome": "Alessandro Conti"
-      },
-      "caposervizio": {
-        "id": "vol-001",
-        "nome": "Mario Rossi"
-      },
-      "operatoreCentrale": {
-        "id": "vol-003",
-        "nome": "Giulia Neri"
-      },
-      "note": "Necessario reperire secondo soccorritore per equipaggio completo"
-    },
-    {
-      "id": "turno-oggi-massa-notte",
-      "sedeId": "sede-massa-lejare",
-      "sedeNome": "Sede Operativa Massa (Le Jare)",
-      "data": "2026-10-24",
-      "fasciaOraria": "Notte (20:00 - 08:00)",
-      "orarioInizio": "20:00",
-      "orarioFine": "08:00",
-      "mezzoAssegnato": "T4609",
-      "statoCopertura": "Coperto",
-      "autista": {
-        "id": "vol-001",
-        "nome": "Mario Rossi"
-      },
-      "caposervizio": {
-        "id": "vol-002",
-        "nome": "Luca Bianchi"
-      },
-      "soccorritore2": {
-        "id": "vol-005",
-        "nome": "Francesca Esposito"
-      },
-      "note": "Turno notturno guardia attiva"
-    },
-    {
-      "id": "turno-oggi-carrara-mattina",
-      "sedeId": "sede-carrara-fossone",
-      "sedeNome": "Sezione Territoriale Carrara (Fossone / Monteverde)",
-      "data": "2026-10-24",
-      "fasciaOraria": "Mattina (08:00 - 14:00)",
-      "orarioInizio": "08:00",
-      "orarioFine": "14:00",
-      "mezzoAssegnato": "T4608",
-      "statoCopertura": "Coperto",
-      "autista": {
-        "id": "vol-004",
-        "nome": "Alessandro Conti"
-      },
-      "caposervizio": {
-        "id": "vol-002",
-        "nome": "Luca Bianchi"
-      },
-      "note": "Presidio e ricognizione territorio di Carrara"
-    },
-    {
-      "id": "turno-domani-carrara-pomeriggio",
-      "sedeId": "sede-carrara-fossone",
-      "sedeNome": "Sezione Territoriale Carrara (Fossone / Monteverde)",
-      "data": "2026-10-25",
-      "fasciaOraria": "Pomeriggio (14:00 - 20:00)",
-      "orarioInizio": "14:00",
-      "orarioFine": "20:00",
-      "mezzoAssegnato": "T4613",
-      "statoCopertura": "Scoperto",
-      "note": "Turno programmato da assegnare urgentemente"
-    }
-  ],
+  "turni": [],
   "checklistsCompilate": [],
   "sedi": [
     {
@@ -4172,13 +4081,28 @@
     },
     "vol-1790806001919": {
       "loggato": true,
-      "updatedAt": 1795217221790,
+      "updatedAt": 1795250379405,
       "volontarioNome": "Claudio Simonini",
       "mezzoScelto": "",
       "orarioInizio": "09:49:53"
     }
   },
-  "pushSubscribers": [],
+  "pushSubscribers": [
+    {
+      "endpoint": "https://example.invalid/push/test-sim",
+      "role": "admin",
+      "volontarioId": "vol-sim-test",
+      "volontarioNome": "Sim Test",
+      "subscription": {
+        "endpoint": "https://example.invalid/push/test-sim",
+        "keys": {
+          "p256dh": "test",
+          "auth": "test"
+        }
+      },
+      "timestamp": 1795251567756
+    }
+  ],
   "indirizziCollezionati": [
     {
       "id": "ind-1794523662855-iq3m",
@@ -4197,16 +4121,15 @@
   ],
   "radioPtt": {
     "enabled": false,
-    "toggledBy": "Operatore Centrale",
-    "toggledAt": 1795217422542,
-    "activeSpeaker": null,
-    "codecMode": "adpcm-24k"
+    "toggledBy": "Sim Centrale",
+    "toggledAt": 1795251686408,
+    "activeSpeaker": null
   },
   "radioGroups": [],
   "radioEmergency": {
     "active": false,
-    "triggeredBy": "Operatore Centrale",
-    "triggeredAt": 1795217421306,
+    "triggeredBy": "Sim Centrale",
+    "triggeredAt": 1795251686403,
     "message": ""
   },
   "publicAppUrl": ""

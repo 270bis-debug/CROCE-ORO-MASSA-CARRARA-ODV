@@ -274,8 +274,8 @@ class VhfRxRingProcessor extends AudioWorkletProcessor {
     this.readIdx = 0;
     this.writeIdx = 0;
     this.count = 0;
-    this.prebufferThreshold = Math.floor(sr * 0.085); // 85ms jitter buffer anti-scatti
-    this.maxBuffered = Math.floor(sr * 0.36);        // 360ms cap anti-latenza
+    this.prebufferThreshold = Math.floor(sr * 0.045); // 45ms jitter buffer ultra-reattivo stile Zello/BTtalk
+    this.maxBuffered = Math.floor(sr * 0.24);        // 240ms cap anti-latenza
     this.playing = false;
     this.lastOut = 0;
 
@@ -397,13 +397,27 @@ class VhfRadioEngine {
   private emergencyLoadPromise: Promise<AudioBuffer | null> | null = null;
   private activeEmergencyCancel: (() => void) | null = null;
 
-  // Background Radio Reception Keep-Alive (DOM-mounted looping WAV dither + MediaSession reale + ctx.destination diretto)
+  // Background Radio Reception Keep-Alive (DOM-mounted looping WAV dither + Pre-Unlocked Voice Player + MediaSession + WakeLock)
   private masterBus: GainNode | null = null;
   private bgKeepAliveAudio: HTMLAudioElement | null = null;
   private bgKeepAliveBlobUrl: string | null = null;
+  private bgVoicePlayerAudio: HTMLAudioElement | null = null;
+  private bgVoicePlayerPrimed: boolean = false;
+  private bgWavQueue: string[] = [];
+  private bgWavPlaying: boolean = false;
+  private bgStreamChunks: Array<{
+    speakerId?: string;
+    codec?: RadioAudioCodec;
+    payloadBase64?: string;
+    pcm16Base64?: string;
+    sampleRate?: number;
+  }> = [];
+  private bgStreamFlushTimer: any = null;
   private bgReceptionArmed: boolean = false;
   private bgVisibilityHooked: boolean = false;
+  private bgGestureHooked: boolean = false;
   private bgKeepAliveWatchdog: any = null;
+  private wakeLockSentinel: any = null;
   private pendingRxPackets: Array<{
     speakerId?: string;
     codec?: RadioAudioCodec;
@@ -414,6 +428,22 @@ class VhfRadioEngine {
   private pendingRxFallbackTimer: any = null;
   private activeVoiceClipAudio: HTMLAudioElement | null = null;
   private activeFallbackWavUrl: string | null = null;
+  private bgStatusListeners: Set<(armed: boolean) => void> = new Set();
+
+  public subscribeBackgroundArmed(cb: (armed: boolean) => void): () => void {
+    this.bgStatusListeners.add(cb);
+    cb(this.isBackgroundReceptionArmed());
+    return () => this.bgStatusListeners.delete(cb);
+  }
+
+  private notifyBackgroundArmed() {
+    const armed = this.isBackgroundReceptionArmed();
+    this.bgStatusListeners.forEach((cb) => {
+      try {
+        cb(armed);
+      } catch {}
+    });
+  }
 
   public subscribeTxLevel(cb: (level: number) => void): () => void {
     this.txLevelListeners.add(cb);
@@ -635,6 +665,151 @@ class VhfRadioEngine {
     return null;
   }
 
+  private buildWavBlobUrlFromChunks(
+    chunks: Array<{
+      codec?: RadioAudioCodec;
+      payloadBase64?: string;
+      pcm16Base64?: string;
+      sampleRate?: number;
+    }>
+  ): string | null {
+    try {
+      const decodedParts: Float32Array[] = [];
+      const targetRate = this.ADPCM_SAMPLE_RATE;
+      let totalLen = 0;
+      for (const ch of chunks) {
+        const dec = this.decodePacketToFloat32Sync(ch);
+        if (!dec) continue;
+        const aligned =
+          dec.sampleRate === targetRate ? dec.samples : resampleFloat32(dec.samples, dec.sampleRate, targetRate);
+        decodedParts.push(aligned);
+        totalLen += aligned.length;
+      }
+      if (totalLen === 0) return null;
+      const merged = new Float32Array(totalLen);
+      let pos = 0;
+      for (const part of decodedParts) {
+        merged.set(part, pos);
+        pos += part.length;
+      }
+      return this.encodeFloat32ToWavBlobUrl(merged, targetRate);
+    } catch {
+      return null;
+    }
+  }
+
+  private ensureBgVoicePlayerElement(): HTMLAudioElement | null {
+    if (typeof document === 'undefined') return null;
+    if (!this.bgVoicePlayerAudio) {
+      const el = document.createElement('audio');
+      el.volume = 1.0;
+      el.preload = 'auto';
+      (el as any).playsInline = true;
+      el.setAttribute('playsinline', 'true');
+      el.setAttribute('webkit-playsinline', 'true');
+      el.onended = () => {
+        const finishedUrl = el.dataset.activeBlobUrl || '';
+        if (finishedUrl) {
+          el.dataset.activeBlobUrl = '';
+          try {
+            URL.revokeObjectURL(finishedUrl);
+          } catch {}
+        }
+        this.bgWavPlaying = false;
+        this.pumpBgWavQueue();
+      };
+      el.onerror = () => {
+        const failedUrl = el.dataset.activeBlobUrl || '';
+        if (failedUrl) {
+          el.dataset.activeBlobUrl = '';
+          try {
+            URL.revokeObjectURL(failedUrl);
+          } catch {}
+        }
+        this.bgWavPlaying = false;
+        this.pumpBgWavQueue();
+      };
+      this.attachHiddenAudioElement(el, 'croce-oro-radio-bg-voice');
+      this.bgVoicePlayerAudio = el;
+    } else {
+      this.attachHiddenAudioElement(this.bgVoicePlayerAudio, 'croce-oro-radio-bg-voice');
+    }
+    return this.bgVoicePlayerAudio;
+  }
+
+  private createTinySilentWavDataUrl(): string {
+    // WAV 40ms silenzioso per sbloccare permanentemente bgVoicePlayerAudio durante il gesto utente (iOS Safari + Android Chrome)
+    const sampleRate = 8000;
+    const numSamples = 320;
+    const buffer = new ArrayBuffer(44 + numSamples);
+    const view = new DataView(buffer);
+    const writeStr = (offset: number, s: string) => {
+      for (let i = 0; i < s.length; i++) view.setUint8(offset + i, s.charCodeAt(i));
+    };
+    writeStr(0, 'RIFF');
+    view.setUint32(4, 36 + numSamples, true);
+    writeStr(8, 'WAVE');
+    writeStr(12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, 1, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate, true);
+    view.setUint16(32, 1, true);
+    view.setUint16(34, 8, true);
+    writeStr(36, 'data');
+    view.setUint32(40, numSamples, true);
+    new Uint8Array(buffer, 44).fill(128);
+    return URL.createObjectURL(new Blob([buffer], { type: 'audio/wav' }));
+  }
+
+  private pumpBgWavQueue() {
+    if (this.bgWavPlaying || this.bgWavQueue.length === 0) return;
+    const el = this.ensureBgVoicePlayerElement();
+    if (!el) return;
+    const nextUrl = this.bgWavQueue.shift();
+    if (!nextUrl) return;
+    this.bgWavPlaying = true;
+    el.dataset.activeBlobUrl = nextUrl;
+    el.src = nextUrl;
+    el.volume = 1.0;
+    el.play().catch(() => {
+      el.dataset.activeBlobUrl = '';
+      try {
+        URL.revokeObjectURL(nextUrl);
+      } catch {}
+      this.bgWavPlaying = false;
+      this.pumpBgWavQueue();
+    });
+  }
+
+  private enqueueBackgroundWavUrl(wavUrl: string) {
+    if (!wavUrl) return;
+    if (this.bgWavQueue.length >= 12) {
+      const dropped = this.bgWavQueue.shift();
+      if (dropped) {
+        try {
+          URL.revokeObjectURL(dropped);
+        } catch {}
+      }
+    }
+    this.bgWavQueue.push(wavUrl);
+    this.pumpBgWavQueue();
+  }
+
+  public flushBackgroundVoiceQueue() {
+    if (this.bgStreamFlushTimer) {
+      clearTimeout(this.bgStreamFlushTimer);
+      this.bgStreamFlushTimer = null;
+    }
+    if (this.bgStreamChunks.length === 0) return;
+    const batch = this.bgStreamChunks.splice(0, this.bgStreamChunks.length);
+    const wavUrl = this.buildWavBlobUrlFromChunks(batch);
+    if (wavUrl) {
+      this.enqueueBackgroundWavUrl(wavUrl);
+    }
+  }
+
   private playChunksViaHtmlAudioWav(
     chunks: Array<{
       codec?: RadioAudioCodec;
@@ -645,37 +820,13 @@ class VhfRadioEngine {
   ): Promise<boolean> {
     return new Promise((resolve) => {
       try {
-        const decodedParts: Float32Array[] = [];
-        let targetRate = this.ADPCM_SAMPLE_RATE;
-        let totalLen = 0;
-        for (const ch of chunks) {
-          const dec = this.decodePacketToFloat32Sync(ch);
-          if (!dec) continue;
-          const aligned =
-            dec.sampleRate === targetRate ? dec.samples : resampleFloat32(dec.samples, dec.sampleRate, targetRate);
-          decodedParts.push(aligned);
-          totalLen += aligned.length;
-        }
-        if (totalLen === 0) {
-          resolve(false);
-          return;
-        }
-        const merged = new Float32Array(totalLen);
-        let pos = 0;
-        for (const part of decodedParts) {
-          merged.set(part, pos);
-          pos += part.length;
-        }
-        const wavUrl = this.encodeFloat32ToWavBlobUrl(merged, targetRate);
+        const wavUrl = this.buildWavBlobUrlFromChunks(chunks);
         if (!wavUrl) {
           resolve(false);
           return;
         }
-        if (this.activeFallbackWavUrl) {
-          try { URL.revokeObjectURL(this.activeFallbackWavUrl); } catch {}
-        }
-        this.activeFallbackWavUrl = wavUrl;
-        this.playAudioDataUrl(wavUrl).then(resolve).catch(() => resolve(false));
+        this.enqueueBackgroundWavUrl(wavUrl);
+        resolve(true);
       } catch {
         resolve(false);
       }
@@ -798,12 +949,86 @@ class VhfRadioEngine {
           await this.bgKeepAliveAudio.play();
         }
       }
+
+      // Pre-sblocca il secondo elemento <audio> dedicato alla voce in background (indispensabile su iOS Safari e Android Chrome)
+      if (!this.bgVoicePlayerPrimed) {
+        const voiceEl = this.ensureBgVoicePlayerElement();
+        if (voiceEl && !this.bgWavPlaying) {
+          const tinyUrl = this.createTinySilentWavDataUrl();
+          try {
+            voiceEl.src = tinyUrl;
+            voiceEl.volume = 0.001;
+            await voiceEl.play();
+            voiceEl.pause();
+            voiceEl.volume = 1.0;
+            this.bgVoicePlayerPrimed = true;
+          } catch {
+          } finally {
+            try {
+              URL.revokeObjectURL(tinyUrl);
+            } catch {}
+          }
+        }
+      }
+
+      // Richiede Screen WakeLock opzionale se supportato (previene sospensione radio durante turno attivo)
+      try {
+        const navAny = navigator as any;
+        if (navAny?.wakeLock?.request && !this.wakeLockSentinel && !document.hidden) {
+          navAny.wakeLock
+            .request('screen')
+            .then((sentinel: any) => {
+              this.wakeLockSentinel = sentinel;
+              sentinel.addEventListener?.('release', () => {
+                if (this.wakeLockSentinel === sentinel) {
+                  this.wakeLockSentinel = null;
+                }
+              });
+            })
+            .catch(() => {});
+        }
+      } catch {}
+
       this.updateMediaSessionState(label ? { title: label } : undefined);
+      this.notifyBackgroundArmed();
       return Boolean(this.bgKeepAliveAudio && !this.bgKeepAliveAudio.paused);
     } catch {
+      this.notifyBackgroundArmed();
       // L'autoplay potrà completarsi al primo gesto utente successivo
       return Boolean(ctx && ctx.state === 'running');
     }
+  }
+
+  public enableAutoArmOnUserGesture() {
+    if (typeof window === 'undefined' || this.bgGestureHooked) return;
+    this.bgGestureHooked = true;
+    const armOnce = () => {
+      if (this.isBackgroundReceptionArmed() && this.bgVoicePlayerPrimed) return;
+      this.armBackgroundReception('Radio VHF/UHF • Ascolto Attivo').catch(() => {});
+    };
+    window.addEventListener('pointerdown', armOnce, { passive: true, capture: true });
+    window.addEventListener('keydown', armOnce, { passive: true, capture: true });
+  }
+
+  public disarmBackgroundReception() {
+    this.bgReceptionArmed = false;
+    if (this.bgKeepAliveAudio) {
+      try {
+        this.bgKeepAliveAudio.pause();
+      } catch {}
+    }
+    if (this.wakeLockSentinel) {
+      try {
+        this.wakeLockSentinel.release?.();
+      } catch {}
+      this.wakeLockSentinel = null;
+    }
+    try {
+      if ('mediaSession' in navigator) {
+        (navigator as any).mediaSession.playbackState = 'none';
+      }
+    } catch {}
+    this.notifyBackgroundArmed();
   }
 
   public isBackgroundReceptionArmed(): boolean {
@@ -988,16 +1213,16 @@ class VhfRadioEngine {
     lowPass.frequency.value = 11500;
     lowPass.Q.value = 0.7;
 
-    // 4. Livellatore morbido broadcast (ratio 2.5:1 senza schiacciamento o distorsione)
+    // 4. Livellatore morbido broadcast stile Zello/BTtalk (voce sempre forte e nitida su altoparlante smartphone)
     const compressor = ctx.createDynamicsCompressor();
-    compressor.threshold.value = -14;
-    compressor.knee.value = 12;
-    compressor.ratio.value = 2.5;
-    compressor.attack.value = 0.008;
-    compressor.release.value = 0.16;
+    compressor.threshold.value = -16;
+    compressor.knee.value = 10;
+    compressor.ratio.value = 3.0;
+    compressor.attack.value = 0.005;
+    compressor.release.value = 0.14;
 
     const masterOut = ctx.createGain();
-    masterOut.gain.value = 1.15;
+    masterOut.gain.value = 1.38;
 
     inputNode.connect(highPass);
     highPass.connect(presence);
@@ -1605,7 +1830,9 @@ class VhfRadioEngine {
       }
 
       const workletsReady = await this.ensureWorkletsLoaded(ctx);
-      const canUseOpus = Boolean(options?.preferOpus && (await this.supportsOpusCodec()));
+      // Trasmissione SEMPRE in IMA-ADPCM 24kHz HD Wideband stateless:
+      // 100% compatibile su Android Chrome, iOS Safari, Desktop e riproduzione background WAV, immune a perdita pacchetti
+      const canUseOpus = false;
 
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
@@ -1908,41 +2135,31 @@ class VhfRadioEngine {
   }) {
     try {
       const ctx = this.ensureAudioContext();
-      if (!ctx) return;
-      if (ctx.state !== 'running') {
-        // Non scartare l'audio in background: accoda i pacchetti mentre AudioContext si risveglia
-        if (this.pendingRxPackets.length >= 60) {
-          this.pendingRxPackets.shift();
+      const isHiddenBg = typeof document !== 'undefined' && document.hidden === true;
+
+      // Modalità Background / Schermo Spento (stile Zello / BTtalk):
+      // Se la scheda è nascosta o AudioContext è sospeso dall'OS mobile, accoda in segmenti WAV fluidi da ~640ms
+      // sul player <audio> pre-sbloccato (FIFO senza mai tagliare le sillabe!)
+      if (!ctx || ctx.state !== 'running' || isHiddenBg) {
+        if (ctx && ctx.state === 'suspended') {
+          ctx.resume().catch(() => {});
         }
-        this.pendingRxPackets.push(packet);
-        ctx
-          .resume()
-          .then(() => {
-            if (this.pendingRxFallbackTimer) {
-              clearTimeout(this.pendingRxFallbackTimer);
-              this.pendingRxFallbackTimer = null;
-            }
-            this.flushPendingRxPackets();
-          })
-          .catch(() => {});
         if (this.bgKeepAliveAudio && this.bgKeepAliveAudio.paused) {
           this.bgKeepAliveAudio.play().catch(() => {});
         }
-        // Se AudioContext resta sospeso dopo 450ms (es. background mobile), riproduci via WAV HTMLAudioElement
-        if (!this.pendingRxFallbackTimer) {
-          this.pendingRxFallbackTimer = setTimeout(() => {
-            this.pendingRxFallbackTimer = null;
-            if (this.pendingRxPackets.length === 0) return;
-            if (this.audioCtx && this.audioCtx.state === 'running') {
-              this.flushPendingRxPackets();
-              return;
-            }
-            const batch = this.pendingRxPackets.splice(0, this.pendingRxPackets.length);
-            this.playChunksViaHtmlAudioWav(batch).catch(() => {});
-          }, 450);
+        this.bgStreamChunks.push(packet);
+        if (this.bgStreamChunks.length >= 16) {
+          // 16 frame x 40ms = ~640ms: riproduzione continua senza tagli e con bassissima latenza
+          this.flushBackgroundVoiceQueue();
+        } else if (!this.bgStreamFlushTimer) {
+          this.bgStreamFlushTimer = setTimeout(() => {
+            this.bgStreamFlushTimer = null;
+            this.flushBackgroundVoiceQueue();
+          }, 580);
         }
         return;
       }
+
       if (!this.workletsLoadedCtx.has(ctx) && !this.workletLoadingPromise) {
         this.ensureWorkletsLoaded(ctx).catch(() => {});
       }
@@ -1997,9 +2214,33 @@ class VhfRadioEngine {
   public interruptPlayback() {
     this.nextPlaybackTime = 0;
     this.pendingRxPackets = [];
+    this.bgStreamChunks = [];
+    if (this.bgStreamFlushTimer) {
+      clearTimeout(this.bgStreamFlushTimer);
+      this.bgStreamFlushTimer = null;
+    }
     if (this.pendingRxFallbackTimer) {
       clearTimeout(this.pendingRxFallbackTimer);
       this.pendingRxFallbackTimer = null;
+    }
+    while (this.bgWavQueue.length > 0) {
+      const url = this.bgWavQueue.shift();
+      if (url) {
+        try {
+          URL.revokeObjectURL(url);
+        } catch {}
+      }
+    }
+    if (this.bgVoicePlayerAudio && this.bgWavPlaying) {
+      try {
+        this.bgVoicePlayerAudio.pause();
+        const activeUrl = this.bgVoicePlayerAudio.dataset.activeBlobUrl || '';
+        if (activeUrl) {
+          this.bgVoicePlayerAudio.dataset.activeBlobUrl = '';
+          URL.revokeObjectURL(activeUrl);
+        }
+      } catch {}
+      this.bgWavPlaying = false;
     }
     this.closeOpusDecoder();
     if (this.rxWorkletNode) {
