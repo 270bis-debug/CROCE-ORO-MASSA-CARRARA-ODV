@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
 import {
   Grid,
   Headphones,
@@ -40,6 +40,136 @@ const GRID_COLS_CLASS: Record<number, string> = {
   8: 'grid-cols-4 lg:grid-cols-8',
   9: 'grid-cols-5 xl:grid-cols-9',
   10: 'grid-cols-5 xl:grid-cols-10'
+};
+
+// Scala progressiva di dimensioni e crenatura per adattamento automatico del nome DB all'icona
+const AUTO_FIT_FONT_CLASSES = [
+  'text-[10.5px] tracking-normal',
+  'text-[10px] tracking-normal',
+  'text-[9.5px] tracking-tight',
+  'text-[9px] tracking-tight',
+  'text-[8.5px] tracking-tight',
+  'text-[8px] tracking-tighter',
+  'text-[7.5px] tracking-tighter',
+  'text-[7px] tracking-tighter',
+  'text-[6.5px] tracking-tighter',
+  'text-[6px] tracking-tighter'
+] as const;
+
+interface AutoFitDatabaseLabelProps {
+  label: string;
+  layoutKey: number;
+}
+
+/**
+ * Regola di auto-adattamento del nome del Database nell'icona in alto:
+ * - Nome composto da 1 sola parola: resta sempre intero su una sola riga senza mai troncare con "...".
+ * - Nome composto da più parole: va a capo naturalmente su una 2ª riga (e all'occorrenza su una 3ª)
+ *   senza spezzare le parole e adattando la dimensione del testo allo spazio disponibile.
+ */
+const AutoFitDatabaseLabel: React.FC<AutoFitDatabaseLabelProps> = ({ label, layoutKey }) => {
+  const normalizedLabel = label.trim().replace(/\s+/g, ' ');
+  const words = normalizedLabel.split(' ').filter(Boolean);
+  const isSingleWord = words.length <= 1;
+
+  const boxRef = useRef<HTMLDivElement | null>(null);
+  const textRef = useRef<HTMLSpanElement | null>(null);
+  const [sizeIdx, setSizeIdx] = useState<number>(1);
+  const [fallbackBreakWord, setFallbackBreakWord] = useState<boolean>(false);
+
+  const computeBestFit = useCallback(() => {
+    const box = boxRef.current;
+    const text = textRef.current;
+    if (!box || !text) return;
+
+    const availWidth = box.clientWidth;
+    if (availWidth <= 0) return;
+
+    const baseClass = isSingleWord
+      ? 'inline-block text-center leading-none whitespace-nowrap'
+      : 'block w-full text-center leading-[1.12] whitespace-normal break-normal';
+
+    let best = AUTO_FIT_FONT_CLASSES.length - 1;
+    let fittedWithoutBreak = false;
+
+    for (let i = 0; i < AUTO_FIT_FONT_CLASSES.length; i += 1) {
+      text.className = `${baseClass} ${AUTO_FIT_FONT_CLASSES[i]}`;
+      const fitsWidth = text.scrollWidth <= availWidth + 0.5;
+      if (isSingleWord) {
+        if (fitsWidth) {
+          best = i;
+          fittedWithoutBreak = true;
+          break;
+        }
+      } else {
+        const computed = window.getComputedStyle(text);
+        const fontSizePx = parseFloat(computed.fontSize) || 8;
+        const lineHeightPx = parseFloat(computed.lineHeight) || fontSizePx * 1.15;
+        const maxThreeLinesHeight = lineHeightPx * 3.25;
+        const fitsHeight = text.scrollHeight <= maxThreeLinesHeight;
+        if (fitsWidth && fitsHeight) {
+          best = i;
+          fittedWithoutBreak = true;
+          break;
+        }
+      }
+    }
+
+    const useBreakFallback = !isSingleWord && !fittedWithoutBreak;
+    const finalBase = useBreakFallback
+      ? 'block w-full text-center leading-[1.12] whitespace-normal break-words'
+      : baseClass;
+
+    text.className = `${finalBase} ${AUTO_FIT_FONT_CLASSES[best]}`;
+    setSizeIdx((prev) => (prev === best ? prev : best));
+    setFallbackBreakWord((prev) => (prev === useBreakFallback ? prev : useBreakFallback));
+  }, [isSingleWord]);
+
+  useLayoutEffect(() => {
+    computeBestFit();
+  }, [normalizedLabel, layoutKey, computeBestFit]);
+
+  useEffect(() => {
+    const box = boxRef.current;
+    if (!box) return;
+
+    let rafId: number | null = null;
+    const schedule = () => {
+      if (rafId !== null) window.cancelAnimationFrame(rafId);
+      rafId = window.requestAnimationFrame(() => {
+        rafId = null;
+        computeBestFit();
+      });
+    };
+
+    const observer =
+      typeof ResizeObserver !== 'undefined' ? new ResizeObserver(schedule) : null;
+    observer?.observe(box);
+    window.addEventListener('resize', schedule);
+    if (document.fonts && document.fonts.ready) {
+      document.fonts.ready.then(schedule).catch(() => {});
+    }
+
+    return () => {
+      if (rafId !== null) window.cancelAnimationFrame(rafId);
+      observer?.disconnect();
+      window.removeEventListener('resize', schedule);
+    };
+  }, [computeBestFit]);
+
+  const baseClass = isSingleWord
+    ? 'inline-block text-center leading-none whitespace-nowrap'
+    : fallbackBreakWord
+      ? 'block w-full text-center leading-[1.12] whitespace-normal break-words'
+      : 'block w-full text-center leading-[1.12] whitespace-normal break-normal';
+
+  return (
+    <div ref={boxRef} className="w-full min-w-0 flex items-center justify-center">
+      <span ref={textRef} className={`${baseClass} ${AUTO_FIT_FONT_CLASSES[sizeIdx]}`}>
+        {normalizedLabel}
+      </span>
+    </div>
+  );
 };
 
 export const AdminTopNavbar: React.FC<AdminTopNavbarProps> = ({
@@ -98,11 +228,11 @@ export const AdminTopNavbar: React.FC<AdminTopNavbarProps> = ({
   return (
     <nav
       aria-label="Navigazione database gestionali"
-      className="bg-slate-950/95 border-b border-slate-800 px-2 sm:px-4 py-1.5 shadow-md w-full max-w-full relative z-30"
+      className="bg-slate-950/95 border-b border-slate-800 px-1.5 sm:px-4 py-1.5 shadow-md w-full max-w-full relative z-30"
     >
       <div className="max-w-[1440px] mx-auto flex items-center justify-between gap-2 w-full min-w-0">
-        {/* TUTTI I DATABASE DIRETTI IN 1 RIGA (desktop) O MASSIMO 2 RIGHE (mobile/tablet) — SENZA MENÙ A TENDINA E SENZA PULSANTI HOME */}
-        <div className={`grid ${gridColsClass} gap-1 flex-1 min-w-0`}>
+        {/* TUTTI I DATABASE DIRETTI IN 1 RIGA (desktop) O MASSIMO 2 RIGHE (mobile/tablet) CON AUTO-ADATTAMENTO DEL NOME */}
+        <div className={`grid ${gridColsClass} gap-1 flex-1 min-w-0 items-stretch`}>
           {tabsVisibili.map((tab) => {
             const Icona = tab.icona;
             const isAttivo = currentSection === tab.id;
@@ -112,16 +242,14 @@ export const AdminTopNavbar: React.FC<AdminTopNavbarProps> = ({
                 type="button"
                 onClick={() => onSelectSection(tab.id)}
                 title={`${tab.numero}. ${tab.label}`}
-                className={`px-1 sm:px-2 py-1.5 sm:py-1.5 rounded-lg font-bold uppercase flex flex-col sm:flex-row items-center justify-center gap-0.5 sm:gap-1 min-w-0 transition-all cursor-pointer border active:scale-95 ${
+                className={`px-1 sm:px-1.5 py-1.5 rounded-lg font-bold uppercase flex flex-col items-center justify-center gap-1 min-w-0 h-full transition-all cursor-pointer border active:scale-95 ${
                   isAttivo
                     ? 'bg-amber-500 text-slate-950 border-amber-400 shadow-sm font-black'
                     : 'bg-slate-900/90 hover:bg-slate-800 text-slate-300 border-slate-800 hover:border-slate-700 hover:text-white'
                 }`}
               >
-                <Icona className="w-3.5 h-3.5 sm:w-3 sm:h-3 shrink-0" />
-                <span className="text-[9px] sm:text-[10px] leading-none truncate max-w-full">
-                  {tab.label}
-                </span>
+                <Icona className="w-3.5 h-3.5 shrink-0" />
+                <AutoFitDatabaseLabel label={tab.label} layoutKey={tabsVisibili.length} />
               </button>
             );
           })}

@@ -60,13 +60,8 @@ import {
   MacroCategoriaId,
   LISTA_MACRO_CATEGORIE,
   TUTTE_LE_MACRO_CATEGORIE,
-  SOTTOSEZIONI_PER_DATABASE,
   getSottosezioniDelegabili,
   getNomiDatabaseCustom,
-  salvaNomiDatabaseCustom,
-  getNomiSottosezioniCustom,
-  salvaNomiSottosezioniCustom,
-  getNomiDatabaseSyncPayload,
   getTitoloDatabase,
   getTitoloSottosezione
 } from '../../constants/macroCategorie';
@@ -185,16 +180,10 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
   const [formCategoriaEmoji, setFormCategoriaEmoji] = useState('📁');
   const [formCategoriaParentId, setFormCategoriaParentId] = useState<string>('');
 
-  // Rinomina Nomi Database & Sottosezioni (effetto immediato su tutti i device)
+  // Nomi Database & Sottosezioni personalizzati (gestiti dal menù Strumenti -> Rinomina DB / Rinomina SUB)
   const titoloDbVolontari = useTitoloDatabase('volontari', 'Database Volontari & Personale Operativo');
   const nomiSubCustom = useNomiSottosezioniCustom();
   const [nomiDbCustom, setNomiDbCustom] = useState<Record<string, string>>(() => getNomiDatabaseCustom());
-  const [draftNomiDb, setDraftNomiDb] = useState<Record<string, string>>(() => getNomiDatabaseCustom());
-  const [draftNomiSub, setDraftNomiSub] = useState<Record<string, string>>(() => getNomiSottosezioniCustom());
-  const [mostraRinominaSub, setMostraRinominaSub] = useState<boolean>(false);
-  const dirtyNomiDbKeysRef = React.useRef<Set<string>>(new Set());
-  const dirtyNomiSubKeysRef = React.useRef<Set<string>>(new Set());
-  const [hasUnsavedNomiDb, setHasUnsavedNomiDb] = useState<boolean>(false);
 
   // Modale di conferma in-app (sostituisce confirm() nativi)
   const [confermaAzioneModal, setConfermaAzioneModal] = useState<{
@@ -286,26 +275,7 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
       setCategorieMansioni(getCategorieMansioni());
     };
     const onNomiDbSync = () => {
-      const agg = getNomiDatabaseCustom();
-      const aggSub = getNomiSottosezioniCustom();
-      setNomiDbCustom(agg);
-      // Preserva sempre eventuali campi che l'utente sta attualmente modificando prima di cliccare Salva
-      setDraftNomiDb((prev) => {
-        if (dirtyNomiDbKeysRef.current.size === 0) return agg;
-        const merged: Record<string, string> = { ...agg };
-        dirtyNomiDbKeysRef.current.forEach((k) => {
-          if (prev[k] !== undefined) merged[k] = prev[k];
-        });
-        return merged;
-      });
-      setDraftNomiSub((prev) => {
-        if (dirtyNomiSubKeysRef.current.size === 0) return aggSub;
-        const merged: Record<string, string> = { ...aggSub };
-        dirtyNomiSubKeysRef.current.forEach((k) => {
-          if (prev[k] !== undefined) merged[k] = prev[k];
-        });
-        return merged;
-      });
+      setNomiDbCustom(getNomiDatabaseCustom());
     };
     window.addEventListener('croceoro_mansioni_updated', onMansioniSync);
     window.addEventListener('croceoro_nomi_db_updated', onNomiDbSync);
@@ -1329,17 +1299,6 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
         </div>
 
         <div className="flex items-center gap-2 flex-wrap">
-          {canShowSubtab('permessi_database') && (
-            <button
-              type="button"
-              onClick={() => setSottoTab('permessi_database')}
-              className="px-3 py-2 rounded-xl bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-200 border border-indigo-500/40 text-xs font-bold uppercase flex items-center gap-1.5 transition-all cursor-pointer"
-              title="Rinomina i nomi dei Database / Sottosezioni o gestisci gli accessi"
-            >
-              <Edit2 className="w-3.5 h-3.5 text-indigo-300" />
-              <span>Rinomina DB</span>
-            </button>
-          )}
           {canShowSubtab('mansioni') && (
             <button
               type="button"
@@ -5009,42 +4968,6 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
           onAggiornaVolontari(aggiornati);
         };
 
-        const handleSalvaNomiDatabase = () => {
-          const nowTs = Date.now();
-          dirtyNomiDbKeysRef.current.clear();
-          dirtyNomiSubKeysRef.current.clear();
-          setHasUnsavedNomiDb(false);
-          const saved = salvaNomiDatabaseCustom(draftNomiDb, false, nowTs);
-          const savedSub = salvaNomiSottosezioniCustom(draftNomiSub, true, nowTs);
-          setNomiDbCustom(saved);
-          setDraftNomiDb(saved);
-          setDraftNomiSub(savedSub);
-          realtime.syncNomiDatabase(getNomiDatabaseSyncPayload());
-          onNotificaRadio?.(
-            `🏷️ NOMI DATABASE E SOTTOSEZIONI AGGIORNATI: ${operatoreCorrente} ha personalizzato i nomi (effetto immediato su tutti i dispositivi).`,
-            'sistema'
-          );
-          mostraAvviso('✓ Nomi dei Database e delle Sottosezioni salvati e propagati immediatamente a tutti i dispositivi!');
-        };
-
-        const handleRipristinaNomiDatabase = () => {
-          const nowTs = Date.now();
-          dirtyNomiDbKeysRef.current.clear();
-          dirtyNomiSubKeysRef.current.clear();
-          setHasUnsavedNomiDb(false);
-          const saved = salvaNomiDatabaseCustom({}, false, nowTs);
-          salvaNomiSottosezioniCustom({}, true, nowTs);
-          setNomiDbCustom(saved);
-          setDraftNomiDb(saved);
-          setDraftNomiSub({});
-          realtime.syncNomiDatabase(getNomiDatabaseSyncPayload());
-          onNotificaRadio?.(
-            `🏷️ NOMI DATABASE RIPRISTINATI: ${operatoreCorrente} ha ripristinato i nomi standard dei database e sottosezioni.`,
-            'sistema'
-          );
-          mostraAvviso('✓ Nomi dei Database e delle Sottosezioni ripristinati ai valori predefiniti su tutti i dispositivi.');
-        };
-
         const accountInDettaglio = accountDettaglioPermessiId
           ? volontari.find((v) => v.id === accountDettaglioPermessiId) || null
           : null;
@@ -5099,112 +5022,6 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
                   {selectedVolontariPermessiIds.length} Account • {selectedCategoriePermessi.length} DB scelti
                 </span>
               </div>
-            </div>
-
-            {/* Riquadro Amministratore: Personalizza e Rinomina Nomi dei Database e Sottosezioni */}
-            <div className="bg-slate-900 border-2 border-amber-500/40 rounded-2xl p-4 sm:p-5 shadow-xl space-y-3">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2.5 border-b border-slate-800">
-                <div>
-                  <h4 className="text-xs sm:text-sm font-black text-amber-300 uppercase tracking-wider flex items-center gap-2">
-                    <Edit2 className="w-4 h-4 text-amber-400" />
-                    <span>Rinomina Nomi Database & Sottosezioni (Effetto Immediato, Collegamenti Invariati)</span>
-                  </h4>
-                  <p className="text-[11px] text-slate-400 mt-0.5">
-                    Personalizza il titolo di qualsiasi Database o Sottosezione senza alterare permessi, comandi o collegamenti operativi anche dopo rinomine successive.
-                  </p>
-                </div>
-                <div className="flex items-center gap-2 shrink-0 flex-wrap">
-                  <button
-                    type="button"
-                    onClick={() => setMostraRinominaSub((v) => !v)}
-                    className="px-3 py-1.5 rounded-xl bg-indigo-950/70 hover:bg-indigo-900 text-indigo-200 text-xs font-bold flex items-center gap-1.5 border border-indigo-500/40 cursor-pointer"
-                  >
-                    <Layers className="w-3.5 h-3.5 text-indigo-300" />
-                    <span>{mostraRinominaSub ? 'Nascondi Sottosezioni' : 'Rinomina Sottosezioni'}</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleRipristinaNomiDatabase}
-                    className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold flex items-center gap-1.5 border border-slate-700 cursor-pointer"
-                  >
-                    <RotateCcw className="w-3.5 h-3.5 text-amber-400" />
-                    <span>Ripristina Standard</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleSalvaNomiDatabase}
-                    className={`px-3.5 py-1.5 rounded-xl font-black text-xs uppercase flex items-center gap-1.5 shadow-md cursor-pointer active:scale-95 transition-all ${
-                      hasUnsavedNomiDb
-                        ? 'bg-emerald-400 hover:bg-emerald-300 text-slate-950 ring-2 ring-emerald-300/70'
-                        : 'bg-amber-500 hover:bg-amber-400 text-slate-950'
-                    }`}
-                  >
-                    <Save className="w-3.5 h-3.5" />
-                    <span>{hasUnsavedNomiDb ? 'Salva Modifiche Ora' : 'Salva & Applica Subito'}</span>
-                  </button>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2.5">
-                {LISTA_MACRO_CATEGORIE.map((cat) => (
-                  <div key={cat.id} className="p-2.5 rounded-xl bg-slate-950 border border-slate-800 space-y-1">
-                    <label className="block text-[10px] font-bold text-slate-400 uppercase truncate">
-                      {cat.icona} DB {cat.numero} (Predef.: {cat.titolo})
-                    </label>
-                    <input
-                      type="text"
-                      value={draftNomiDb[cat.id] !== undefined ? draftNomiDb[cat.id] : cat.titolo}
-                      onChange={(e) => {
-                        const val = e.target.value;
-                        dirtyNomiDbKeysRef.current.add(cat.id);
-                        setHasUnsavedNomiDb(true);
-                        setDraftNomiDb((prev) => ({ ...prev, [cat.id]: val }));
-                      }}
-                      placeholder={cat.titolo}
-                      className="w-full px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-white text-xs font-semibold focus:outline-none focus:border-amber-400"
-                    />
-                  </div>
-                ))}
-              </div>
-
-              {mostraRinominaSub && (
-                <div className="pt-3 border-t border-slate-800 grid grid-cols-1 md:grid-cols-2 gap-3 max-h-80 overflow-y-auto pr-1">
-                  {LISTA_MACRO_CATEGORIE.map((cat) => {
-                    const subs = SOTTOSEZIONI_PER_DATABASE[cat.id] || [];
-                    return (
-                      <div key={`rsub-${cat.id}`} className="p-3 rounded-xl bg-slate-950 border border-slate-800 space-y-2">
-                        <div className="text-[11px] font-black text-amber-300 uppercase">
-                          {cat.icona} {cat.numero}. {getTitoloDatabase(cat.id, cat.titolo, draftNomiDb)}
-                        </div>
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                          {subs.map((sub) => {
-                            const key = `${cat.id}.${sub.id}`;
-                            return (
-                              <div key={key} className="space-y-0.5">
-                                <label className="block text-[9.5px] font-bold text-slate-400 truncate">
-                                  {sub.numero}. {sub.titoloDefault}
-                                </label>
-                                <input
-                                  type="text"
-                                  value={draftNomiSub[key] !== undefined ? draftNomiSub[key] : sub.titoloDefault}
-                                  onChange={(e) => {
-                                    const val = e.target.value;
-                                    dirtyNomiSubKeysRef.current.add(key);
-                                    setHasUnsavedNomiDb(true);
-                                    setDraftNomiSub((prev) => ({ ...prev, [key]: val }));
-                                  }}
-                                  placeholder={sub.titoloDefault}
-                                  className="w-full px-2 py-1 rounded-lg bg-slate-900 border border-slate-700 text-white text-[11px] focus:outline-none focus:border-amber-400"
-                                />
-                              </div>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
             </div>
 
             {/* Step 1 + Step 2: Scelta Autorizzazioni Database E Singole Sottosezioni */}

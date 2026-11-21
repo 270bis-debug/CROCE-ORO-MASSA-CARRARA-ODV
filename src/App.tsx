@@ -74,10 +74,12 @@ import {
   Info,
   Server,
   PlusCircle,
-  Paintbrush
+  Paintbrush,
+  Layers
 } from 'lucide-react';
 import { ModalAccessoWeb } from './components/ModalAccessoWeb';
 import { ModalSyncServerCroceOro } from './components/admin/ModalSyncServerCroceOro';
+import { ModalRinominaDbSub } from './components/admin/ModalRinominaDbSub';
 import { ModalModificaFoglioViaggio } from './components/ModalModificaFoglioViaggio';
 import {
   ModalSchedaDirettaArchivio,
@@ -2339,6 +2341,9 @@ export default function App() {
 
   // Modale Sincronizzazione Dati & Backup sul Dominio www.croceoro.org (10 GB Hosting)
   const [modalSyncServerAperta, setModalSyncServerAperta] = useState<boolean>(false);
+
+  // Modale Rinomina DB / Rinomina SUB (dal menù Strumenti)
+  const [modalRinominaMode, setModalRinominaMode] = useState<'db' | 'sub' | null>(null);
 
   // Gestione Iscrizione e Timbratura Presenza GPS per il Volontario
   const handleIscrivitiAlCorso = (corsoId: string, vol: Volontario) => {
@@ -14949,6 +14954,30 @@ KM TOTALI: ${kmTot} KM`;
                               <Server className="w-4 h-4 text-amber-400 shrink-0" />
                               <span>Server Backup (10 GB)</span>
                             </button>
+
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setMenuHeaderAzioniAperto(false);
+                                setModalRinominaMode('db');
+                              }}
+                              className="w-full px-2.5 py-2 rounded-lg bg-slate-900 hover:bg-slate-800 text-indigo-300 border border-indigo-500/30 font-bold text-xs flex items-center gap-2 cursor-pointer"
+                            >
+                              <Edit3 className="w-4 h-4 text-indigo-400 shrink-0" />
+                              <span>Rinomina DB</span>
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setMenuHeaderAzioniAperto(false);
+                                setModalRinominaMode('sub');
+                              }}
+                              className="w-full px-2.5 py-2 rounded-lg bg-slate-900 hover:bg-slate-800 text-purple-300 border border-purple-500/30 font-bold text-xs flex items-center gap-2 cursor-pointer"
+                            >
+                              <Layers className="w-4 h-4 text-purple-400 shrink-0" />
+                              <span>Rinomina SUB</span>
+                            </button>
                           </>
                         )}
 
@@ -15082,6 +15111,36 @@ KM TOTALI: ${kmTot} KM`;
                       >
                         <Server className="w-3 h-3 shrink-0" />
                         <span>10 GB</span>
+                      </button>
+                    )}
+
+                    {isAdminAttivoInHeader && (
+                      <button
+                        type="button"
+                        onClick={() => setModalRinominaMode('db')}
+                        className={`px-2 py-1 rounded-lg font-bold text-[11px] flex items-center gap-1 cursor-pointer border whitespace-nowrap ${
+                          isWeb ? 'bg-indigo-100 hover:bg-indigo-200 text-indigo-950 border-indigo-400' : 'bg-slate-800 hover:bg-slate-700 text-indigo-300 border-indigo-500/40'
+                        }`}
+                        style={isWeb ? { backgroundColor: '#e0e7ff', color: '#312e81', borderColor: '#818cf8' } : undefined}
+                        title="Rinomina i nomi dei Database"
+                      >
+                        <Edit3 className="w-3 h-3 shrink-0" />
+                        <span>Rinomina DB</span>
+                      </button>
+                    )}
+
+                    {isAdminAttivoInHeader && (
+                      <button
+                        type="button"
+                        onClick={() => setModalRinominaMode('sub')}
+                        className={`px-2 py-1 rounded-lg font-bold text-[11px] flex items-center gap-1 cursor-pointer border whitespace-nowrap ${
+                          isWeb ? 'bg-purple-100 hover:bg-purple-200 text-purple-950 border-purple-400' : 'bg-slate-800 hover:bg-slate-700 text-purple-300 border-purple-500/40'
+                        }`}
+                        style={isWeb ? { backgroundColor: '#f3e8ff', color: '#581c87', borderColor: '#c084fc' } : undefined}
+                        title="Rinomina i nomi delle Sottosezioni"
+                      >
+                        <Layers className="w-3 h-3 shrink-0" />
+                        <span>Rinomina SUB</span>
                       </button>
                     )}
 
@@ -22497,6 +22556,15 @@ KM TOTALI: ${kmTot} KM`;
           contatti,
           magazzino: magazzinoMezzi
         }}
+      />
+
+      {/* MODALE RINOMINA DB & RINOMINA SUB (DAL MENÙ STRUMENTI) */}
+      <ModalRinominaDbSub
+        mode={isCentraleAdmin ? modalRinominaMode : null}
+        onChangeMode={(next) => setModalRinominaMode(next)}
+        onClose={() => setModalRinominaMode(null)}
+        operatoreCorrente={utenteCentrale?.nome ? `${utenteCentrale.nome} ${utenteCentrale.cognome || ''}`.trim() : 'Amministratore'}
+        onNotificaRadio={aggiungiNotifica}
       />
 
       {/* MODALE DECISIONE AMMINISTRATORE SU BLOCCO 3 TENTATIVI PIN */}
