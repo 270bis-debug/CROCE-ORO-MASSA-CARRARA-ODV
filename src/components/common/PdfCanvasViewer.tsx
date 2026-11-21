@@ -1,10 +1,26 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Loader2, ZoomIn, ZoomOut, RotateCcw, AlertTriangle, FileText } from 'lucide-react';
-import * as pdfjsLib from 'pdfjs-dist';
-import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 
-if (typeof window !== 'undefined' && pdfjsLib.GlobalWorkerOptions) {
-  pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+let pdfJsLoaderPromise: Promise<any> | null = null;
+
+async function loadPdfJsLegacy(): Promise<any> {
+  if (!pdfJsLoaderPromise) {
+    pdfJsLoaderPromise = (async () => {
+      const [pdfjsLib, workerModule] = await Promise.all([
+        import('pdfjs-dist/legacy/build/pdf.mjs'),
+        import('pdfjs-dist/legacy/build/pdf.worker.min.mjs?url'),
+      ]);
+      const workerUrl = workerModule?.default;
+      if (typeof window !== 'undefined' && pdfjsLib?.GlobalWorkerOptions && workerUrl) {
+        pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
+      }
+      return pdfjsLib;
+    })().catch((err) => {
+      pdfJsLoaderPromise = null;
+      throw err;
+    });
+  }
+  return pdfJsLoaderPromise;
 }
 
 export interface PdfCanvasViewerProps {
@@ -56,7 +72,7 @@ export const PdfCanvasViewer: React.FC<PdfCanvasViewerProps> = ({
     return () => window.removeEventListener('resize', updateWidth);
   }, []);
 
-  // Rendering diretto su Canvas ad alta definizione (compatibile al 100% con Android Chrome, iOS Safari e Desktop)
+  // Rendering diretto su Canvas ad alta definizione (caricamento dinamico compatibile con iOS Safari, Android Chrome e Desktop)
   useEffect(() => {
     const hasBytes = pdfBytes && pdfBytes.byteLength > 0;
     const hasUrl = Boolean(pdfUrl);
@@ -69,14 +85,17 @@ export const PdfCanvasViewer: React.FC<PdfCanvasViewerProps> = ({
     }
 
     let cancelled = false;
-    let loadingTask: pdfjsLib.PDFDocumentLoadingTask | null = null;
-    let pdfDoc: pdfjsLib.PDFDocumentProxy | null = null;
+    let loadingTask: any = null;
+    let pdfDoc: any = null;
 
     const renderPdf = async () => {
       setLoading(true);
       setError(null);
 
       try {
+        const pdfjsLib = await loadPdfJsLegacy();
+        if (cancelled) return;
+
         // IMPORTANTE: passare una copia (.slice()) perché PDF.js trasferisce l'ArrayBuffer al Web Worker
         loadingTask = hasBytes
           ? pdfjsLib.getDocument({ data: pdfBytes!.slice() })

@@ -198,12 +198,13 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // 3. Asset statici di build con hash univoco (/assets/*): Stale-While-Revalidate
+  // 3. Asset statici di build con hash univoco (/assets/*): Stale-While-Revalidate (esclude sempre risposte HTML errate)
   if (url.pathname.startsWith('/assets/')) {
     event.respondWith(
       caches.match(req).then((cachedResponse) => {
         const fetchPromise = fetch(req).then((networkResponse) => {
-          if (networkResponse && networkResponse.status === 200) {
+          const ct = (networkResponse.headers.get('content-type') || '').toLowerCase();
+          if (networkResponse && networkResponse.status === 200 && !ct.includes('text/html')) {
             const responseClone = networkResponse.clone();
             caches.open(CACHE_NAME).then((cache) => {
               cache.put(req, responseClone);
