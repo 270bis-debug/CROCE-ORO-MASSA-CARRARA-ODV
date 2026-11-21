@@ -12,34 +12,47 @@ import {
   Flame,
   BatteryCharging,
   Wifi,
-  Sparkles
+  Sparkles,
+  Radio
 } from 'lucide-react';
 import { CroceOroLogo } from './CroceOroLogo';
-import { attivaServiceWorkerEPush, mostraNotificaNativa } from '../services/pushManager';
+import { attivaServiceWorkerEPush, getPushSubscriptionStatus, mostraNotificaNativa } from '../services/pushManager';
 import { soundEngine } from '../services/soundEngine';
+import { vhfRadioEngine } from '../services/vhfRadioEngine';
 import {
   richiediSingolaAutorizzazione,
   assicuraPersistenzaStorageApp,
   apriCentroPermessiDispositivo,
-  segnaSetupPermessiCompletato
+  segnaSetupPermessiCompletato,
+  markRadioBgConsentAccepted,
+  EVENT_RADIO_BG_STATUS_CHANGED
 } from '../utils/devicePermissions';
 
 interface ModalSetupPermessiInizialiProps {
   isOpen: boolean;
   ruoloAttuale: 'volontario' | 'admin';
+  volontarioId?: string;
+  volontarioNome?: string;
+  obbligatorioAggiornamento?: boolean;
   onCompleta: () => void;
   onTestSuoneria: () => void;
+  onRadioBgUpdated?: () => void;
 }
 
 export const ModalSetupPermessiIniziali: React.FC<ModalSetupPermessiInizialiProps> = ({
   isOpen,
   ruoloAttuale,
+  volontarioId,
+  volontarioNome,
+  obbligatorioAggiornamento = false,
   onCompleta,
-  onTestSuoneria
+  onTestSuoneria,
+  onRadioBgUpdated
 }) => {
   const [statoPermessi, setStatoPermessi] = useState({
     notifiche: 'default' as NotificationPermission,
     audio: false,
+    radioBgAudio: false,
     gps: false,
     fotocameraMicrofono: false,
     contatti: false,
@@ -53,17 +66,20 @@ export const ModalSetupPermessiIniziali: React.FC<ModalSetupPermessiInizialiProp
 
   const [inAttesa, setInAttesa] = useState(false);
   const [testEseguito, setTestEseguito] = useState(false);
+  const [confermatoObbligatorio, setConfermatoObbligatorio] = useState(false);
   const [messaggioFeedback, setMessaggioFeedback] = useState<string | null>(null);
 
   useEffect(() => {
-    if (typeof window !== 'undefined') {
+    if (typeof window !== 'undefined' && isOpen) {
       const notif = ('Notification' in window) ? Notification.permission : 'denied';
       const giaAutorizzato = localStorage.getItem('CROCE_ORO_DEVICE_PERMISSIONS_GRANTED') === 'true';
+      const bgArmedNow = vhfRadioEngine.isBackgroundReceptionArmed();
 
       setStatoPermessi(p => ({
         ...p,
         notifiche: notif,
-        audio: giaAutorizzato || p.audio,
+        audio: giaAutorizzato || bgArmedNow || p.audio,
+        radioBgAudio: bgArmedNow || p.radioBgAudio,
         gps: giaAutorizzato || p.gps,
         fotocameraMicrofono: giaAutorizzato || p.fotocameraMicrofono,
         contatti: giaAutorizzato || p.contatti,
@@ -73,6 +89,17 @@ export const ModalSetupPermessiIniziali: React.FC<ModalSetupPermessiInizialiProp
         serviceWorker: 'serviceWorker' in navigator,
         storagePersist: giaAutorizzato
       }));
+
+      getPushSubscriptionStatus()
+        .then((ps) => {
+          setStatoPermessi((p) => ({
+            ...p,
+            notifiche: ps.permission,
+            push: ps.subscribed,
+            radioBgAudio: vhfRadioEngine.isBackgroundReceptionArmed() || p.radioBgAudio,
+          }));
+        })
+        .catch(() => {});
     }
   }, [isOpen]);
 
@@ -94,12 +121,18 @@ export const ModalSetupPermessiIniziali: React.FC<ModalSetupPermessiInizialiProp
       console.error('Errore richiesta notifiche:', e);
     }
 
-    // 2. Sblocco Canale Audio & Sirena ad Alto Volume
+    // 2. Sblocco Canale Audio, Sirena & Ricezione Radio Walkie-Talkie in Background (Audio a Schermo Spento)
     try {
       await soundEngine.startStandbyAudio();
       nuovoStato.audio = true;
     } catch {
       nuovoStato.audio = true;
+    }
+    try {
+      const armed = await vhfRadioEngine.armBackgroundReception('Radio VHF/UHF • Ascolto Attivo');
+      nuovoStato.radioBgAudio = armed || vhfRadioEngine.isBackgroundReceptionArmed();
+    } catch {
+      nuovoStato.radioBgAudio = vhfRadioEngine.isBackgroundReceptionArmed();
     }
 
     // 3. Geolocalizzazione GPS Mezzo in Tempo Reale
@@ -153,25 +186,38 @@ export const ModalSetupPermessiIniziali: React.FC<ModalSetupPermessiInizialiProp
       nuovoStato.wakeLock = true;
     }
 
-    // 9. Registrazione Service Worker & Push in Background
+    // 9. Registrazione Service Worker & Push ad Alta Priorità per Ricezione Radio in Background
     try {
-      const pushRes = await attivaServiceWorkerEPush(ruoloAttuale);
+      const pushRes = await attivaServiceWorkerEPush(ruoloAttuale, volontarioId, volontarioNome);
       nuovoStato.serviceWorker = pushRes.supported;
       nuovoStato.push = pushRes.subscribed;
+      if (pushRes.permission) {
+        nuovoStato.notifiche = pushRes.permission;
+      }
     } catch (e) {
       console.error('Errore setup push:', e);
     }
 
     setStatoPermessi(nuovoStato);
     setInAttesa(false);
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent(EVENT_RADIO_BG_STATUS_CHANGED));
+    }
+    onRadioBgUpdated?.();
 
     // Salva in modo permanente sul dispositivo: non verrà mai più rimosso se l'app è inutilizzata
     localStorage.setItem('CROCE_ORO_DEVICE_PERMISSIONS_GRANTED', 'true');
     localStorage.setItem('CROCE_ORO_SETUP_COMPLETO', 'true');
     localStorage.setItem('CROCE_ORO_PERMESSI_PERMANENTI', 'true');
+    markRadioBgConsentAccepted();
+    setConfermatoObbligatorio(true);
     segnaSetupPermessiCompletato();
 
-    setMessaggioFeedback('✅ Autorizzazioni registrate in modo permanente sul terminale (verranno rimosse solo se l\'app viene disinstallata).');
+    setMessaggioFeedback(
+      nuovoStato.radioBgAudio && nuovoStato.push
+        ? '✅ Autorizzazioni e Ricezione Radio in Background (Audio + Push) attivate in modo permanente sul terminale.'
+        : '✅ Autorizzazioni registrate sul terminale (Audio Radio in Background attivo; se necessario apri dal link diretto per completare Push).'
+    );
   };
 
   const handleTestCompleto = async () => {
@@ -186,8 +232,10 @@ export const ModalSetupPermessiIniziali: React.FC<ModalSetupPermessiInizialiProp
   };
 
   const tuttoConfigurato =
+    (!obbligatorioAggiornamento || confermatoObbligatorio) &&
     statoPermessi.notifiche === 'granted' &&
     statoPermessi.audio &&
+    statoPermessi.radioBgAudio &&
     (statoPermessi.gps || localStorage.getItem('CROCE_ORO_DEVICE_PERMISSIONS_GRANTED') === 'true');
 
   return (
@@ -200,19 +248,38 @@ export const ModalSetupPermessiIniziali: React.FC<ModalSetupPermessiInizialiProp
           <div className="flex-1">
             <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 text-[10px] font-bold tracking-wider uppercase border border-amber-500/30 mb-1">
               <Flame className="w-3 h-3 text-amber-400" />
-              Autorizzazioni Permanenti Dispositivo
+              {obbligatorioAggiornamento
+                ? 'Aggiornamento Obbligatorio Autorizzazioni'
+                : 'Autorizzazioni Permanenti Dispositivo'}
             </div>
             <h2 className="text-base sm:text-lg font-black tracking-tight text-white leading-tight">
-              Configurazione Completa Terminale
+              {obbligatorioAggiornamento
+                ? 'Conferma Ricezione Radio in Background'
+                : 'Configurazione Completa Terminale'}
             </h2>
             <p className="text-xs text-slate-300">
-              Restano attive anche se l'app è inutilizzata • Rimosse solo disinstallando l'app
+              {obbligatorioAggiornamento
+                ? 'Richiesta obbligatoria una tantum per attivare Audio + Push a schermo spento'
+                : "Restano attive anche se l'app è inutilizzata • Rimosse solo disinstallando l'app"}
             </p>
           </div>
         </div>
 
         {/* Corpo Informativo */}
         <div className="p-4 sm:p-5 space-y-3 text-xs overflow-y-auto flex-1 min-h-0">
+          {obbligatorioAggiornamento && (
+            <div className="bg-amber-500/15 border-2 border-amber-400/80 rounded-xl p-3 text-amber-100 flex items-start gap-2.5 shadow-md">
+              <Radio className="w-5 h-5 text-amber-300 shrink-0 mt-0.5 animate-pulse" />
+              <div className="space-y-0.5">
+                <span className="font-black text-amber-300 block text-xs uppercase tracking-wide">
+                  Accettazione Obbligatoria Nuova Funzione Radio
+                </span>
+                <p className="text-[11px] text-amber-100/95 leading-relaxed">
+                  Abbiamo integrato la <strong>Ricezione in Background Attiva (Audio + Push)</strong> nelle autorizzazioni iniziali per garantirti la ricezione di <strong>Emergenza, Tutti e Gruppi</strong> anche a schermo spento o app ridotta. Premi il pulsante qui sotto per confermare e continuare.
+                </p>
+              </div>
+            </div>
+          )}
           
           <div className="bg-red-950/45 border border-red-500/40 rounded-xl p-3 text-red-100 flex items-start gap-2.5">
             <ShieldCheck className="w-5 h-5 text-red-400 shrink-0 mt-0.5" />
@@ -233,19 +300,30 @@ export const ModalSetupPermessiIniziali: React.FC<ModalSetupPermessiInizialiProp
             </p>
           </div>
 
-          {/* Griglia delle 6 Autorizzazioni Dispositivo + Audio/WakeLock */}
+          {/* Griglia delle Autorizzazioni Dispositivo + Ricezione Radio in Background (Audio + Push) */}
           <div className="space-y-2">
             {[
               {
                 label: 'Notifiche & Allarmi',
                 desc: 'Missioni urgenti, blocco schermo e promemoria turni ore 09:00',
                 ok: statoPermessi.notifiche === 'granted',
+                badgeOk: 'Attivo',
                 icon: BellRing
+              },
+              {
+                label: 'Ricezione in Background Attiva (Audio + Push)',
+                desc: 'Walkie-Talkie live (Emergenza, Tutti, Gruppi) a schermo spento + Push ad app chiusa',
+                ok: statoPermessi.radioBgAudio && statoPermessi.push,
+                partialOk: statoPermessi.radioBgAudio || statoPermessi.push,
+                badgeOk: 'Audio + Push',
+                badgePartial: statoPermessi.radioBgAudio ? 'Audio OK' : 'Push OK',
+                icon: Radio
               },
               {
                 label: 'Posizione GPS',
                 desc: 'Localizzazione mezzo live, timbratura in sede e navigatore',
                 ok: statoPermessi.gps,
+                badgeOk: 'Attivo',
                 icon: MapPin
               },
               {
@@ -272,7 +350,7 @@ export const ModalSetupPermessiIniziali: React.FC<ModalSetupPermessiInizialiProp
                 ok: statoPermessi.chiamateSms,
                 icon: Check
               }
-            ].map((item) => {
+            ].map((item: any) => {
               const Icon = item.icon;
               return (
                 <div
@@ -280,11 +358,17 @@ export const ModalSetupPermessiIniziali: React.FC<ModalSetupPermessiInizialiProp
                   className={`p-2.5 rounded-xl border flex items-center justify-between gap-2 ${
                     item.ok
                       ? 'bg-emerald-950/40 border-emerald-500/40 text-emerald-200'
+                      : item.partialOk
+                      ? 'bg-sky-950/40 border-sky-500/40 text-sky-200'
                       : 'bg-slate-800/80 border-amber-500/40 text-slate-200'
                   }`}
                 >
                   <div className="flex items-center gap-2.5 min-w-0">
-                    <Icon className={`w-4 h-4 shrink-0 ${item.ok ? 'text-emerald-400' : 'text-amber-400'}`} />
+                    <Icon
+                      className={`w-4 h-4 shrink-0 ${
+                        item.ok ? 'text-emerald-400' : item.partialOk ? 'text-sky-400' : 'text-amber-400'
+                      }`}
+                    />
                     <div className="min-w-0">
                       <span className="font-bold text-xs text-white block truncate">{item.label}</span>
                       <span className="text-[10px] text-slate-400 block leading-snug">{item.desc}</span>
@@ -292,7 +376,11 @@ export const ModalSetupPermessiIniziali: React.FC<ModalSetupPermessiInizialiProp
                   </div>
                   {item.ok ? (
                     <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-400 shrink-0">
-                      <CheckCircle2 className="w-4 h-4" /> Attivo
+                      <CheckCircle2 className="w-4 h-4" /> {item.badgeOk || 'Attivo'}
+                    </span>
+                  ) : item.partialOk ? (
+                    <span className="text-[10px] bg-sky-500/20 text-sky-300 font-bold px-2 py-0.5 rounded border border-sky-500/40 shrink-0">
+                      {item.badgePartial}
                     </span>
                   ) : (
                     <span className="text-[10px] bg-amber-500/20 text-amber-300 font-bold px-2 py-0.5 rounded border border-amber-500/40 shrink-0">
@@ -352,7 +440,11 @@ export const ModalSetupPermessiIniziali: React.FC<ModalSetupPermessiInizialiProp
               className="w-full py-3.5 px-4 rounded-xl bg-gradient-to-r from-red-600 via-amber-600 to-red-600 text-white font-extrabold text-sm uppercase tracking-wider shadow-lg shadow-red-900/40 hover:brightness-110 active:scale-[0.99] transition flex items-center justify-center gap-2 border border-amber-400/40 cursor-pointer"
             >
               <BellRing className="w-5 h-5 animate-bounce" />
-              {inAttesa ? 'ATTIVAZIONE IN CORSO...' : 'CONCEDI TUTTE LE AUTORIZZAZIONI PERMANENTI'}
+              {inAttesa
+                ? 'ATTIVAZIONE IN CORSO...'
+                : obbligatorioAggiornamento
+                ? 'ACCETTA E ATTIVA RICEZIONE IN BACKGROUND (OBBLIGATORIO)'
+                : 'CONCEDI TUTTE LE AUTORIZZAZIONI PERMANENTI'}
             </button>
           ) : (
             <div className="flex flex-col sm:flex-row gap-2">
@@ -365,9 +457,20 @@ export const ModalSetupPermessiIniziali: React.FC<ModalSetupPermessiInizialiProp
               </button>
 
               <button
-                onClick={() => {
+                onClick={async () => {
+                  if (!vhfRadioEngine.isBackgroundReceptionArmed()) {
+                    await vhfRadioEngine.armBackgroundReception('Radio VHF/UHF • Ascolto Attivo').catch(() => {});
+                  }
+                  if (!statoPermessi.push) {
+                    await attivaServiceWorkerEPush(ruoloAttuale, volontarioId, volontarioNome).catch(() => {});
+                  }
+                  if (typeof window !== 'undefined') {
+                    window.dispatchEvent(new CustomEvent(EVENT_RADIO_BG_STATUS_CHANGED));
+                  }
+                  onRadioBgUpdated?.();
                   localStorage.setItem('CROCE_ORO_DEVICE_PERMISSIONS_GRANTED', 'true');
                   localStorage.setItem('CROCE_ORO_SETUP_COMPLETO', 'true');
+                  markRadioBgConsentAccepted();
                   segnaSetupPermessiCompletato();
                   onCompleta();
                 }}
@@ -379,29 +482,31 @@ export const ModalSetupPermessiIniziali: React.FC<ModalSetupPermessiInizialiProp
             </div>
           )}
 
-          <div className="flex items-center justify-between text-[11px] text-slate-400 px-1 pt-0.5 gap-2 flex-wrap">
-            <button
-              type="button"
-              onClick={() => {
-                onCompleta();
-                apriCentroPermessiDispositivo();
-              }}
-              className="flex items-center gap-1 text-amber-300 hover:text-amber-200 font-medium underline cursor-pointer"
-            >
-              <ShieldCheck className="w-3.5 h-3.5 text-amber-400" />
-              Gestisci singole autorizzazioni
-            </button>
-            <button
-              onClick={() => {
-                localStorage.setItem('CROCE_ORO_DEVICE_PERMISSIONS_GRANTED', 'true');
-                localStorage.setItem('CROCE_ORO_SETUP_COMPLETO', 'true');
-                onCompleta();
-              }}
-              className="text-slate-400 hover:text-white underline text-[11px] cursor-pointer"
-            >
-              Chiudi
-            </button>
-          </div>
+          {!obbligatorioAggiornamento && (
+            <div className="flex items-center justify-between text-[11px] text-slate-400 px-1 pt-0.5 gap-2 flex-wrap">
+              <button
+                type="button"
+                onClick={() => {
+                  onCompleta();
+                  apriCentroPermessiDispositivo();
+                }}
+                className="flex items-center gap-1 text-amber-300 hover:text-amber-200 font-medium underline cursor-pointer"
+              >
+                <ShieldCheck className="w-3.5 h-3.5 text-amber-400" />
+                Gestisci singole autorizzazioni
+              </button>
+              <button
+                onClick={() => {
+                  localStorage.setItem('CROCE_ORO_DEVICE_PERMISSIONS_GRANTED', 'true');
+                  localStorage.setItem('CROCE_ORO_SETUP_COMPLETO', 'true');
+                  onCompleta();
+                }}
+                className="text-slate-400 hover:text-white underline text-[11px] cursor-pointer"
+              >
+                Chiudi
+              </button>
+            </div>
+          )}
 
         </div>
 

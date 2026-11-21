@@ -302,6 +302,10 @@ import {
   apriCentroPermessiDispositivo,
   assicuraPersistenzaStorageApp,
   invitaAutorizzazioneNecessaria,
+  hasAcceptedRadioBgConsent,
+  markRadioBgConsentAccepted,
+  needsMandatoryRadioBgUpdate,
+  RADIO_BG_NOTIF_SENT_LS_KEY,
 } from './utils/devicePermissions';
 import {
   getRubricaNumeriUtili,
@@ -3490,22 +3494,71 @@ export default function App() {
   const [modalGuidaVolumeAperta, setModalGuidaVolumeAperta] = useState(false);
   const [copiedClean, setCopiedClean] = useState(false);
 
-  // Modale di Setup Permessi Iniziali (Notifiche Push, Sblocco Audio, GPS, Schermo Sempre Acceso)
-  // Non viene MAI richiesta al cambio di persona o PIN: solo 1 volta per dispositivo
-  const [modalSetupPermessiAperta, setModalSetupPermessiAperta] = useState<boolean>(() => {
+  // Aggiornamento obbligatorio autorizzazioni per dispositivi che avevano già accettato le autorizzazioni precedenti
+  // prima dell'integrazione della Ricezione Radio in Background (Audio + Push), anche senza incremento versione app
+  const [aggiornamentoPermessiObbligatorio, setAggiornamentoPermessiObbligatorio] = useState<boolean>(() => {
     try {
       if (typeof window === 'undefined') return false;
-      const deviceGiaConfigurato = 
-        localStorage.getItem('CROCE_ORO_DEVICE_PERMISSIONS_GRANTED') === 'true' ||
-        localStorage.getItem('CROCE_ORO_SETUP_COMPLETO') === 'true';
-      if (deviceGiaConfigurato) {
-        return false; // Già autorizzato in modo permanente su questo terminale!
-      }
-      return true; // Solo alla primissima installazione assoluta sul dispositivo
+      const params = new URLSearchParams(window.location.search);
+      const fromNotif = params.get('permessiObbligatori') === 'radio_bg';
+      return needsMandatoryRadioBgUpdate() || (fromNotif && !hasAcceptedRadioBgConsent());
     } catch {
       return false;
     }
   });
+
+  // Modale di Setup Permessi Iniziali (Notifiche Push, Ricezione Radio Background Audio + Push, GPS, Wake Lock)
+  const [modalSetupPermessiAperta, setModalSetupPermessiAperta] = useState<boolean>(() => {
+    try {
+      if (typeof window === 'undefined') return false;
+      const params = new URLSearchParams(window.location.search);
+      const fromNotif = params.get('permessiObbligatori') === 'radio_bg';
+      if (needsMandatoryRadioBgUpdate() || (fromNotif && !hasAcceptedRadioBgConsent())) {
+        return true; // Obbligatorio per chi aveva già accettato le vecchie autorizzazioni
+      }
+      const deviceGiaConfigurato =
+        localStorage.getItem('CROCE_ORO_DEVICE_PERMISSIONS_GRANTED') === 'true' ||
+        localStorage.getItem('CROCE_ORO_SETUP_COMPLETO') === 'true';
+      if (deviceGiaConfigurato) {
+        return false; // Già autorizzato in modo permanente (incluso Radio Background Audio + Push)
+      }
+      return true; // Primissima installazione assoluta sul dispositivo
+    } catch {
+      return false;
+    }
+  });
+
+  // Invia una notifica una tantum sullo smartphone a chi aveva già accettato le autorizzazioni precedenti
+  // per invitarlo ad accettare obbligatoriamente la nuova Ricezione Radio in Background (Audio + Push)
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      const url = new URL(window.location.href);
+      if (url.searchParams.has('permessiObbligatori')) {
+        url.searchParams.delete('permessiObbligatori');
+        window.history.replaceState({}, '', url.pathname + url.search + url.hash);
+      }
+    } catch {}
+
+    if (!aggiornamentoPermessiObbligatorio || hasAcceptedRadioBgConsent()) return;
+
+    try {
+      const alreadySent = localStorage.getItem(RADIO_BG_NOTIF_SENT_LS_KEY) === 'true';
+      if (!alreadySent && 'Notification' in window && Notification.permission === 'granted') {
+        localStorage.setItem(RADIO_BG_NOTIF_SENT_LS_KEY, 'true');
+        mostraNotificaNativa('📻 AGGIORNAMENTO OBBLIGATORIO AUTORIZZAZIONI - CROCE ORO', {
+          body: 'È stata integrata la Ricezione Radio in Background (Audio + Push). Conferma ora in modo obbligatorio per ricevere Emergenza, Tutti e Gruppi a schermo spento.',
+          tag: 'croce-oro-mandatory-perms-radio-bg-audio-push-v1',
+          requireInteraction: true,
+          vibrate: [400, 150, 400, 150, 600],
+          data: {
+            tipo: 'mandatory_permissions_update',
+            url: '/?permessiObbligatori=radio_bg'
+          }
+        });
+      }
+    } catch {}
+  }, [aggiornamentoPermessiObbligatorio]);
 
   // Sistema Suoneria Telefono & Allarme Acustico
   const [isPhoneRinging, setIsPhoneRinging] = useState(false);
@@ -4941,9 +4994,14 @@ export default function App() {
     const unsubArmed = vhfRadioEngine.subscribeBackgroundArmed((armedNow) => {
       setBgRadioStatus((prev) => (prev.audioArmed === armedNow ? prev : { ...prev, audioArmed: armedNow }));
     });
+    const onRadioBgEvent = () => {
+      aggiornaStatoRadioBackground();
+    };
+    window.addEventListener('croceoro_radio_bg_status_changed', onRadioBgEvent);
     aggiornaStatoRadioBackground();
     return () => {
       unsubArmed();
+      window.removeEventListener('croceoro_radio_bg_status_changed', onRadioBgEvent);
     };
   }, [aggiornaStatoRadioBackground]);
 
@@ -5300,13 +5358,23 @@ export default function App() {
     const onSwMessage = (event: MessageEvent) => {
       const msg = event.data;
       if (!msg || typeof msg !== 'object') return;
-      if (msg.type === 'RADIO_BACKGROUND_TRIGGER') {
+      if (msg.type === 'OPEN_MANDATORY_PERMISSIONS_UPDATE') {
+        if (!hasAcceptedRadioBgConsent()) {
+          setAggiornamentoPermessiObbligatorio(true);
+          setModalSetupPermessiAperta(true);
+        }
+      } else if (msg.type === 'RADIO_BACKGROUND_TRIGGER') {
         handleRadioWakePayload(msg.data, false);
       } else if (msg.type === 'RADIO_NOTIFICATION_CLICKED') {
         handleRadioWakePayload(msg.data, true);
       } else if (msg.type === 'REMOTE_PUSH_RECEIVED') {
         const d = msg.data || {};
-        if (
+        if (d.tipo === 'mandatory_permissions_update') {
+          if (!hasAcceptedRadioBgConsent()) {
+            setAggiornamentoPermessiObbligatorio(true);
+            setModalSetupPermessiAperta(true);
+          }
+        } else if (
           d.tipo === 'radio_emergency' ||
           d.tipo === 'radio_ptt' ||
           d.tipo === 'radio_message' ||
@@ -14537,18 +14605,25 @@ KM TOTALI: ${kmTot} KM`;
         <ModalSetupPermessiIniziali
           isOpen={modalSetupPermessiAperta}
           ruoloAttuale="volontario"
+          volontarioId={sessioneTurno.attivo ? sessioneTurno.volontarioId : undefined}
+          volontarioNome={sessioneTurno.attivo ? sessioneTurno.volontarioNome : undefined}
+          obbligatorioAggiornamento={aggiornamentoPermessiObbligatorio}
+          onRadioBgUpdated={aggiornaStatoRadioBackground}
           onCompleta={() => {
             if (typeof window !== 'undefined') {
               localStorage.setItem('CROCE_ORO_DEVICE_PERMISSIONS_GRANTED', 'true');
               localStorage.setItem('CROCE_ORO_SETUP_COMPLETO', 'true');
               localStorage.setItem('CROCE_ORO_PERMESSI_PERMANENTI', 'true');
             }
+            markRadioBgConsentAccepted();
+            setAggiornamentoPermessiObbligatorio(false);
             setStatoPermessi({
               notifiche: 'granted',
               audio: 'granted',
               gps: 'granted',
               wakeLock: 'granted'
             });
+            aggiornaStatoRadioBackground();
             setModalSetupPermessiAperta(false);
           }}
           onTestSuoneria={() => faiSuonareTelefono('Centrale Operativa (Test)', 'telefono', false)}
@@ -22872,18 +22947,33 @@ KM TOTALI: ${kmTot} KM`;
       <ModalSetupPermessiIniziali
         isOpen={modalSetupPermessiAperta}
         ruoloAttuale={ruolo}
+        volontarioId={
+          ruolo === 'admin'
+            ? (utenteCentrale?.id || 'vol-admin')
+            : (sessioneTurno.attivo ? sessioneTurno.volontarioId : undefined)
+        }
+        volontarioNome={
+          ruolo === 'admin'
+            ? (`${utenteCentrale?.nome || ''} ${utenteCentrale?.cognome || ''}`.trim() || 'Centrale Operativa')
+            : (sessioneTurno.attivo ? sessioneTurno.volontarioNome : undefined)
+        }
+        obbligatorioAggiornamento={aggiornamentoPermessiObbligatorio}
+        onRadioBgUpdated={aggiornaStatoRadioBackground}
         onCompleta={() => {
           if (typeof window !== 'undefined') {
             localStorage.setItem('CROCE_ORO_DEVICE_PERMISSIONS_GRANTED', 'true');
             localStorage.setItem('CROCE_ORO_SETUP_COMPLETO', 'true');
             localStorage.setItem('CROCE_ORO_PERMESSI_PERMANENTI', 'true');
           }
+          markRadioBgConsentAccepted();
+          setAggiornamentoPermessiObbligatorio(false);
           setStatoPermessi({
             notifiche: 'granted',
             audio: 'granted',
             gps: 'granted',
             wakeLock: 'granted'
           });
+          aggiornaStatoRadioBackground();
           setModalSetupPermessiAperta(false);
         }}
         onTestSuoneria={() => faiSuonareTelefono('Centrale Operativa (Test)', 'telefono', false)}
@@ -24869,7 +24959,19 @@ KM TOTALI: ${kmTot} KM`;
       />
 
       {/* CENTRO PERMESSI PERMANENTI DISPOSITIVO + INVITI CONTESTUALI ON-DEMAND (EMERGENZE SEMPRE ATTIVE) */}
-      <ModalPermessiDispositivo />
+      <ModalPermessiDispositivo
+        ruoloAttuale={ruolo}
+        volontarioId={
+          ruolo === 'admin'
+            ? (utenteCentrale?.id || 'vol-admin')
+            : (sessioneTurno.attivo ? sessioneTurno.volontarioId : undefined)
+        }
+        volontarioNome={
+          ruolo === 'admin'
+            ? (`${utenteCentrale?.nome || ''} ${utenteCentrale?.cognome || ''}`.trim() || 'Centrale Operativa')
+            : (sessioneTurno.attivo ? sessioneTurno.volontarioNome : undefined)
+        }
+      />
 
       {/* MODALE OBBLIGATORIA FIRMA DIGITALE & CAMBIO PIN 0000 (CENTRALE / ACCESSO AVANZATO) */}
       {obbligoAdeguamentoCentrale && (

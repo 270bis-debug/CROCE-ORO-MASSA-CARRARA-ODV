@@ -5,6 +5,8 @@
 // 3. Notifiche Push in Background ad Alta Priorità e Risveglio Schermo Bloccato
 
 const CACHE_NAME = 'croce-oro-cache-v5.0.6';
+const MANDATORY_PERMS_REVISION = 'radio-bg-audio-push-v1';
+const MANDATORY_PERMS_META_CACHE = 'croce-oro-perm-revisions-v1';
 
 const PRECACHE_ASSETS = [
   '/',
@@ -73,9 +75,45 @@ self.addEventListener('activate', (event) => {
         client.postMessage({
           type: 'SW_VERSION_ACTIVATED',
           version: CACHE_NAME,
+          mandatoryPermsRevision: MANDATORY_PERMS_REVISION,
           timestamp: Date.now()
         });
       });
+    }).then(async () => {
+      // Notifica una tantum sugli smartphone che avevano già concesso le autorizzazioni iniziali
+      // per invitarli ad accettare obbligatoriamente la Ricezione Radio in Background (Audio + Push)
+      // anche senza incremento della versione app (v5.0.6).
+      try {
+        if (typeof self.Notification === 'undefined' || self.Notification.permission !== 'granted') return;
+        const metaCache = await caches.open(MANDATORY_PERMS_META_CACHE);
+        const sentinelKey = `/__notified_${MANDATORY_PERMS_REVISION}`;
+        const acceptedKey = `/__accepted_${MANDATORY_PERMS_REVISION}`;
+        const [alreadyNotified, alreadyAccepted] = await Promise.all([
+          metaCache.match(sentinelKey),
+          metaCache.match(acceptedKey)
+        ]);
+        if (alreadyNotified || alreadyAccepted) return;
+
+        await metaCache.put(sentinelKey, new Response(String(Date.now())));
+        await self.registration.showNotification('📻 AGGIORNAMENTO OBBLIGATORIO AUTORIZZAZIONI', {
+          body: 'Nuova Ricezione Radio in Background (Audio + Push) disponibile: apri l’app per confermare obbligatoriamente le autorizzazioni.',
+          icon: '/icon-192-v2.png',
+          badge: '/icon-192-v2.png',
+          tag: `croce-oro-mandatory-perms-${MANDATORY_PERMS_REVISION}`,
+          renotify: true,
+          requireInteraction: true,
+          silent: false,
+          vibrate: [400, 150, 400, 150, 600],
+          data: {
+            tipo: 'mandatory_permissions_update',
+            revision: MANDATORY_PERMS_REVISION,
+            url: '/?permessiObbligatori=radio_bg'
+          },
+          actions: [
+            { action: 'open_mandatory_perms', title: '✅ ACCETTA AUTORIZZAZIONI' }
+          ]
+        });
+      } catch {}
     })
   );
 });
@@ -91,6 +129,11 @@ self.addEventListener('message', (event) => {
       type: 'VERSION_INFO',
       version: CACHE_NAME
     });
+  } else if (event.data.type === 'MARK_MANDATORY_PERMS_ACCEPTED') {
+    caches.open(MANDATORY_PERMS_META_CACHE).then((metaCache) => {
+      metaCache.put(`/__accepted_${MANDATORY_PERMS_REVISION}`, new Response(String(Date.now())));
+      metaCache.put(`/__notified_${MANDATORY_PERMS_REVISION}`, new Response(String(Date.now())));
+    }).catch(() => {});
   }
 });
 
@@ -227,13 +270,16 @@ self.addEventListener('push', (event) => {
     }
   }
 
+  const isMandatoryPermsUpdate = data.tipo === 'mandatory_permissions_update';
   const isRadioEmergency = data.tipo === 'radio_emergency' || Boolean(data.isEmergency);
   const isRadioChannelOn = data.tipo === 'radio_channel_on';
   const isRadioPtt = data.tipo === 'radio_ptt' || data.tipo === 'radio_message' || isRadioChannelOn;
 
-  // Schema di vibrazione distinto per Emergenza Radio, Attivazione Canale, PTT o Missione
+  // Schema di vibrazione distinto per Emergenza Radio, Attivazione Canale, PTT, Aggiornamento Permessi o Missione
   const vibrationPattern = isRadioEmergency
     ? [900, 180, 900, 180, 1200, 250, 1200, 250, 1600]
+    : isMandatoryPermsUpdate
+    ? [400, 150, 400, 150, 600]
     : isRadioChannelOn
     ? [360, 110, 360, 110, 520]
     : isRadioPtt
@@ -242,12 +288,17 @@ self.addEventListener('push', (event) => {
     ? [1000, 300, 1000, 300, 1500, 400, 1500, 400, 2000]
     : [600, 200, 600, 200, 1000, 300, 1000];
 
-  const targetUrl =
-    isRadioEmergency || isRadioPtt
+  const targetUrl = isMandatoryPermsUpdate
+    ? '/?permessiObbligatori=radio_bg'
+    : isRadioEmergency || isRadioPtt
       ? `/?radioWake=1&radioTipo=${encodeURIComponent(data.tipo || (isRadioEmergency ? 'radio_emergency' : 'radio_ptt'))}&channelId=${encodeURIComponent(data.channelId || 'general')}&transmissionId=${encodeURIComponent(data.transmissionId || '')}&source=${encodeURIComponent(data.speakerName || data.source || 'Radio')}`
       : `/?ring=1&soundType=${data.soundType || 'telefono'}&source=${encodeURIComponent(data.source || 'Centrale')}&codice=${data.codice || ''}`;
 
-  const actions = isRadioEmergency
+  const actions = isMandatoryPermsUpdate
+    ? [
+        { action: 'open_mandatory_perms', title: '✅ ACCETTA AUTORIZZAZIONI' }
+      ]
+    : isRadioEmergency
     ? [
         { action: 'open_radio', title: '🚨 ASCOLTA EMERGENZA RADIO' },
         { action: 'silence_alarm', title: '🔕 Silenzia' }
@@ -317,6 +368,9 @@ self.addEventListener('notificationclick', (event) => {
   }
 
   const notifData = event.notification.data || {};
+  const isMandatoryPermsNotif =
+    event.action === 'open_mandatory_perms' ||
+    notifData.tipo === 'mandatory_permissions_update';
   const isRadioNotif =
     event.action === 'open_radio' ||
     notifData.tipo === 'radio_emergency' ||
@@ -324,14 +378,24 @@ self.addEventListener('notificationclick', (event) => {
     notifData.tipo === 'radio_message' ||
     notifData.tipo === 'radio_channel_on' ||
     Boolean(notifData.isEmergency);
-  const targetUrl = notifData.url || (isRadioNotif ? '/?radioWake=1' : '/?ring=1');
+  const targetUrl =
+    notifData.url ||
+    (isMandatoryPermsNotif
+      ? '/?permessiObbligatori=radio_bg'
+      : isRadioNotif
+      ? '/?radioWake=1'
+      : '/?ring=1');
 
   event.waitUntil(
     self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
       for (const client of clientList) {
         if (client.url && 'focus' in client) {
           client.postMessage({
-            type: isRadioNotif ? 'RADIO_NOTIFICATION_CLICKED' : 'FOCUS_WITH_RING',
+            type: isMandatoryPermsNotif
+              ? 'OPEN_MANDATORY_PERMISSIONS_UPDATE'
+              : isRadioNotif
+              ? 'RADIO_NOTIFICATION_CLICKED'
+              : 'FOCUS_WITH_RING',
             data: notifData
           });
           return client.focus();

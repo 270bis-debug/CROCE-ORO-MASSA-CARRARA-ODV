@@ -14,6 +14,7 @@ import {
   Siren,
   RefreshCw,
   Lock,
+  Radio,
 } from 'lucide-react';
 import {
   DevicePermissionId,
@@ -31,6 +32,8 @@ const iconForPerm = (id: DevicePermissionId) => {
   switch (id) {
     case 'notifiche':
       return <Bell className="w-4 h-4 text-amber-400" />;
+    case 'radio_background':
+      return <Radio className="w-4 h-4 text-emerald-400" />;
     case 'gps':
       return <MapPin className="w-4 h-4 text-emerald-400" />;
     case 'fotocamera_microfono':
@@ -44,7 +47,17 @@ const iconForPerm = (id: DevicePermissionId) => {
   }
 };
 
-export const ModalPermessiDispositivo: React.FC = () => {
+interface ModalPermessiDispositivoProps {
+  ruoloAttuale?: 'admin' | 'volontario';
+  volontarioId?: string;
+  volontarioNome?: string;
+}
+
+export const ModalPermessiDispositivo: React.FC<ModalPermessiDispositivoProps> = ({
+  ruoloAttuale = 'volontario',
+  volontarioId,
+  volontarioNome,
+}) => {
   const [apertaCentro, setApertaCentro] = useState(false);
   const [permessi, setPermessi] = useState<DevicePermissionStateItem[]>([]);
   const [loadingId, setLoadingId] = useState<DevicePermissionId | 'all' | null>(null);
@@ -83,7 +96,11 @@ export const ModalPermessiDispositivo: React.FC = () => {
   const handleRichiediUno = async (id: DevicePermissionId) => {
     setLoadingId(id);
     setFeedback(null);
-    const res = await richiediSingolaAutorizzazione(id);
+    const res = await richiediSingolaAutorizzazione(id, {
+      role: ruoloAttuale,
+      volontarioId,
+      volontarioNome,
+    });
     await ricaricaStato();
     setFeedback(res.message);
     setLoadingId(null);
@@ -102,6 +119,7 @@ export const ModalPermessiDispositivo: React.FC = () => {
     setFeedback(null);
     const ordine: DevicePermissionId[] = [
       'notifiche',
+      'radio_background',
       'gps',
       'fotocamera_microfono',
       'file_memoria',
@@ -109,11 +127,15 @@ export const ModalPermessiDispositivo: React.FC = () => {
       'chiamate_sms',
     ];
     for (const id of ordine) {
-      await richiediSingolaAutorizzazione(id);
+      await richiediSingolaAutorizzazione(id, {
+        role: ruoloAttuale,
+        volontarioId,
+        volontarioNome,
+      });
     }
     segnaSetupPermessiCompletato();
     await ricaricaStato();
-    setFeedback('Verifica di tutte le autorizzazioni completata. Ricorda di disattivare su Android "Rimuovi autorizzazioni se l\'app è inutilizzata".');
+    setFeedback('Verifica di tutte le autorizzazioni e della Ricezione Radio in Background (Audio + Push) completata.');
     setLoadingId(null);
   };
 

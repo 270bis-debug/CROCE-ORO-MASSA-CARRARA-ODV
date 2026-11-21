@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { APP_VERSION } from '../version';
+import { BUILD_INFO } from '../buildInfo';
 
 interface BeforeInstallPromptEvent extends Event {
   prompt: () => Promise<void>;
@@ -216,8 +217,21 @@ export async function checkForAppUpdate(): Promise<boolean> {
       return false;
     }
 
-    if (info.version && info.version !== APP_VERSION) {
-      console.log(`[PWA Updater] Rilevata nuova release v${info.version} (locale: v${APP_VERSION}).`);
+    const hasNewVersion = Boolean(info.version && info.version !== APP_VERSION);
+    const hasNewSameVersionBuild = Boolean(
+      !import.meta.env.DEV &&
+      info.version === APP_VERSION &&
+      info.buildId &&
+      BUILD_INFO.buildId &&
+      info.buildId !== BUILD_INFO.buildId &&
+      Number(info.buildTimestamp || 0) > Number(BUILD_INFO.buildTimestamp || 0) + 5000
+    );
+
+    if (hasNewVersion || hasNewSameVersionBuild) {
+      const targetKey = hasNewVersion ? info.version : (info.buildId || info.version);
+      console.log(
+        `[PWA Updater] Rilevata nuova release v${info.version} (build ${info.buildId || '-'} vs locale v${APP_VERSION} / ${BUILD_INFO.buildId}).`
+      );
       pendingUpdateInfo = info;
 
       // Invia un evento Custom su window affinché l'interfaccia possa mostrare un badge discreto se desiderato
@@ -227,7 +241,7 @@ export async function checkForAppUpdate(): Promise<boolean> {
         })
       );
 
-      const applicato = await applicaAggiornamento(info.version, false);
+      const applicato = await applicaAggiornamento(targetKey, false);
       isCheckInProgress = false;
       return applicato;
     }

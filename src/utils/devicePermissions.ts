@@ -10,13 +10,23 @@
 // GARANZIA CRITICA: La Comunicazione di Emergenza funziona SEMPRE anche se non sono state
 // concesse tutte le autorizzazioni.
 
+import { attivaServiceWorkerEPush, getPushSubscriptionStatus } from '../services/pushManager';
+import { vhfRadioEngine } from '../services/vhfRadioEngine';
+
 export type DevicePermissionId =
   | 'notifiche'
+  | 'radio_background'
   | 'gps'
   | 'fotocamera_microfono'
   | 'contatti'
   | 'file_memoria'
   | 'chiamate_sms';
+
+export interface RadioBgPermissionContext {
+  role?: 'admin' | 'volontario';
+  volontarioId?: string;
+  volontarioNome?: string;
+}
 
 export type DevicePermissionStatus = 'granted' | 'prompt' | 'denied' | 'device_managed';
 
@@ -37,9 +47,54 @@ export interface PermissionNeededEventDetail {
 const LS_PERMESSI_CONFIGURATI_KEY = 'CROCE_ORO_DEVICE_PERMISSIONS_SETUP_V1';
 const LS_CONTACTS_GRANTED_KEY = 'CROCE_ORO_PERM_CONTATTI_OK';
 const LS_CALL_SMS_ACK_KEY = 'CROCE_ORO_PERM_CHIAMATE_SMS_ACK';
+export const RADIO_BG_CONSENT_LS_KEY = 'CROCE_ORO_RADIO_BG_CONSENT_V1';
+export const RADIO_BG_NOTIF_SENT_LS_KEY = 'CROCE_ORO_RADIO_BG_NOTIF_SENT_V1';
 
 export const EVENT_PERMISSION_REQUIRED = 'croceoro_permission_required';
 export const EVENT_OPEN_PERMISSIONS_MODAL = 'croceoro_open_permissions_modal';
+export const EVENT_RADIO_BG_STATUS_CHANGED = 'croceoro_radio_bg_status_changed';
+
+export function hasAcceptedRadioBgConsent(): boolean {
+  try {
+    return typeof window !== 'undefined' && localStorage.getItem(RADIO_BG_CONSENT_LS_KEY) === 'true';
+  } catch {
+    return false;
+  }
+}
+
+export function markRadioBgConsentAccepted(): void {
+  try {
+    if (typeof window === 'undefined') return;
+    localStorage.setItem(RADIO_BG_CONSENT_LS_KEY, 'true');
+    localStorage.setItem(RADIO_BG_NOTIF_SENT_LS_KEY, 'true');
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.ready
+        .then((reg) => {
+          reg.active?.postMessage({ type: 'MARK_MANDATORY_PERMS_ACCEPTED' });
+        })
+        .catch(() => {});
+      navigator.serviceWorker.controller?.postMessage({ type: 'MARK_MANDATORY_PERMS_ACCEPTED' });
+    }
+  } catch {}
+}
+
+/**
+ * Restituisce true per i dispositivi che avevano GIA' accettato le vecchie autorizzazioni iniziali
+ * prima dell'integrazione obbligatoria della Ricezione Radio in Background (Audio + Push).
+ */
+export function needsMandatoryRadioBgUpdate(): boolean {
+  try {
+    if (typeof window === 'undefined') return false;
+    const giaConfigurato =
+      localStorage.getItem('CROCE_ORO_DEVICE_PERMISSIONS_GRANTED') === 'true' ||
+      localStorage.getItem('CROCE_ORO_SETUP_COMPLETO') === 'true' ||
+      localStorage.getItem('CROCE_ORO_PERMESSI_PERMANENTI') === 'true';
+    if (!giaConfigurato) return false;
+    return localStorage.getItem(RADIO_BG_CONSENT_LS_KEY) !== 'true';
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Richiede al browser/OS lo storage persistente così i dati e le autorizzazioni
@@ -126,12 +181,44 @@ export async function leggiStatoTutteAutorizzazioni(): Promise<DevicePermissionS
     }
   } catch {}
 
+  // 1b. Ricezione Radio in Background (Audio + Push)
+  const audioArmed = vhfRadioEngine.isBackgroundReceptionArmed();
+  let pushStat: { subscribed: boolean; permission: NotificationPermission; inIframe: boolean } = {
+    subscribed: false,
+    permission: typeof Notification !== 'undefined' ? Notification.permission : 'default',
+    inIframe: false,
+  };
+  try {
+    pushStat = await getPushSubscriptionStatus();
+  } catch {}
+  let radioBgStatus: DevicePermissionStatus = 'prompt';
+  if (audioArmed && pushStat.subscribed) {
+    radioBgStatus = 'granted';
+  } else if (!pushStat.inIframe && pushStat.permission === 'denied') {
+    radioBgStatus = 'denied';
+  } else {
+    radioBgStatus = 'prompt';
+  }
+  const radioBgDettaglio =
+    audioArmed && pushStat.subscribed
+      ? 'Audio schermo spento ATTIVO • Push ad alta priorità ATTIVO'
+      : pushStat.inIframe && !pushStat.subscribed
+      ? 'Audio: ' + (audioArmed ? 'Attivo' : 'Da attivare') + ' • Apri dal link diretto (www.croceoro.org) o app su Home per Push a schermo spento'
+      : `Audio Background: ${audioArmed ? 'Attivo' : 'Da attivare'} • Push: ${pushStat.subscribed ? 'Attivo' : 'Da abilitare'}`;
+
   return [
     {
       id: 'notifiche',
       titolo: 'Notifiche',
       descrizione: 'Avvisi missioni, promemoria turni delle 09:00 e comunicazioni di servizio.',
       status: notifStatus,
+    },
+    {
+      id: 'radio_background',
+      titolo: 'Ricezione in Background (Audio + Push)',
+      descrizione: 'Ascolto live Walkie-Talkie (Emergenza, Tutti, Gruppi) anche a schermo spento o app ridotta, più Push ad alta priorità ad app chiusa.',
+      status: radioBgStatus,
+      dettaglio: radioBgDettaglio,
     },
     {
       id: 'gps',
@@ -180,7 +267,8 @@ export async function leggiStatoTutteAutorizzazioni(): Promise<DevicePermissionS
 }
 
 export async function richiediSingolaAutorizzazione(
-  id: DevicePermissionId
+  id: DevicePermissionId,
+  ctx?: RadioBgPermissionContext
 ): Promise<{ status: DevicePermissionStatus; message: string }> {
   try {
     switch (id) {
@@ -198,6 +286,44 @@ export async function richiediSingolaAutorizzazione(
             perm === 'denied'
               ? 'Notifiche bloccate sul browser/device: riabilitale dalle impostazioni del sito o dell\'app.'
               : 'Autorizzazione notifiche non ancora confermata.',
+        };
+      }
+
+      case 'radio_background': {
+        const armed = await vhfRadioEngine.armBackgroundReception('Radio VHF/UHF • Ascolto Attivo');
+        const pushRes = await attivaServiceWorkerEPush(
+          ctx?.role || 'volontario',
+          ctx?.volontarioId,
+          ctx?.volontarioNome
+        );
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent(EVENT_RADIO_BG_STATUS_CHANGED));
+        }
+        if (armed && pushRes.subscribed) {
+          return {
+            status: 'granted',
+            message: 'Ricezione in Background Attiva (Audio + Push): pronto per Emergenza, Tutti e Gruppi anche a schermo spento.',
+          };
+        }
+        if (pushRes.inIframe && !pushRes.subscribed) {
+          return {
+            status: armed ? 'prompt' : 'denied',
+            message:
+              'Audio Background armato. Per attivare anche le notifiche Push a schermo spento apri l\'app dal link diretto (www.croceoro.org) o installata sulla Home.',
+          };
+        }
+        if (pushRes.permission === 'denied') {
+          return {
+            status: 'denied',
+            message:
+              'Audio Background armato ma Notifiche Push bloccate sul browser: sbloccale nelle impostazioni del sito per ricevere chiamate ad app chiusa.',
+          };
+        }
+        return {
+          status: armed || pushRes.subscribed ? 'prompt' : 'denied',
+          message: armed
+            ? 'Audio in background attivo. Conferma il consenso Notifiche per completare il canale Push.'
+            : 'Tocca nuovamente Consenti per sbloccare il canale Audio + Push in background.',
         };
       }
 
