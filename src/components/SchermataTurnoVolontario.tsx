@@ -161,28 +161,41 @@ export const SchermataTurnoVolontario: React.FC<SchermataTurnoVolontarioProps> =
   // Modale Reset PIN / Password
   const [modaleResetAperta, setModaleResetAperta] = useState(false);
 
-  // Aggiornamento manuale elenco nominativi dal Cloud
+  // Aggiornamento manuale e automatico elenco nominativi dal Cloud
   const [aggiornamentoElencoInCorso, setAggiornamentoElencoInCorso] = useState(false);
   const [feedbackElenco, setFeedbackElenco] = useState<string>('');
 
-  const handleAggiornaElencoCloud = async () => {
+  const handleAggiornaElencoCloud = async (silenzioso: boolean = false) => {
     if (aggiornamentoElencoInCorso) return;
     setAggiornamentoElencoInCorso(true);
-    setFeedbackElenco('');
+    if (!silenzioso) setFeedbackElenco('');
     try {
       const res = await realtime.refreshPublicVolunteerRoster();
       if (res.ok && res.count > 0) {
-        setFeedbackElenco(`✓ ${res.count} profili`);
-      } else {
-        setFeedbackElenco('Elenco non ancora pubblicato dal Cloud');
+        if (!silenzioso) setFeedbackElenco(`✓ ${res.count} profili`);
+      } else if (!silenzioso) {
+        setFeedbackElenco(
+          res.status === 'not_found'
+            ? 'In attesa pubblicazione Centrale'
+            : 'Errore di rete, riprova'
+        );
       }
     } catch {
-      setFeedbackElenco('Errore di rete');
+      if (!silenzioso) setFeedbackElenco('Errore di rete');
     } finally {
       setAggiornamentoElencoInCorso(false);
-      setTimeout(() => setFeedbackElenco(''), 4000);
+      if (!silenzioso) {
+        setTimeout(() => setFeedbackElenco(''), 4500);
+      }
     }
   };
+
+  // All'apertura della schermata di accesso volontario su iPhone/smartphone, scarica subito
+  // l'elenco aggiornato dal Cloud (via HTTPS REST ultra-rapido)
+  useEffect(() => {
+    if (sessione.attivo) return;
+    handleAggiornaElencoCloud(true);
+  }, [sessione.attivo]);
 
   // L'Amministratore non può entrare come volontario di bordo mezzo
   const volontariOperativi = React.useMemo(() => {
@@ -785,7 +798,7 @@ export const SchermataTurnoVolontario: React.FC<SchermataTurnoVolontarioProps> =
             )}
             <button
               type="button"
-              onClick={handleAggiornaElencoCloud}
+              onClick={() => handleAggiornaElencoCloud(false)}
               disabled={aggiornamentoElencoInCorso}
               className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-slate-100 hover:bg-slate-200 border border-slate-300 text-slate-700 text-[10px] font-bold transition-colors disabled:opacity-50 cursor-pointer"
               title="Scarica l'elenco aggiornato dei volontari dal Cloud"

@@ -3,8 +3,8 @@
  * NON modificare a mano.
  */
 export const BUILD_INFO = {
-  "version": "5.0.6",
-  "buildId": "croce-oro-v5.0.6-1795255562903",
-  "buildTimestamp": 1795255562903,
-  "builtAt": "2026-11-21T10:06:02.903Z"
+  "version": "5.0.7",
+  "buildId": "croce-oro-v5.0.7-1795258664877",
+  "buildTimestamp": 1795258664877,
+  "builtAt": "2026-11-21T10:57:44.877Z"
 } as const;

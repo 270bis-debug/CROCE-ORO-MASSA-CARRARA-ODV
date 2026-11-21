@@ -112,7 +112,7 @@ export async function fetchPublishedVersion(): Promise<VersionInfo | null> {
  * Esegue la pulizia selettiva ESCLUSIVAMENTE delle vecchie cache dell'applicazione.
  * NON tocca mai IndexedDB, LocalStorage, sessioni utente, PIN, o dati missioni operative!
  */
-export async function pulisciCacheObsolete(targetVersion: string) {
+export async function pulisciCacheObsolete(targetVersion: string, purgeAllAppCaches: boolean = false) {
   if (typeof window === 'undefined' || !('caches' in window)) return;
 
   try {
@@ -120,7 +120,7 @@ export async function pulisciCacheObsolete(targetVersion: string) {
     const currentCacheName = `croce-oro-cache-v${targetVersion}`;
 
     const obsoleteKeys = keys.filter(
-      (k) => k.startsWith('croce-oro-cache-') && k !== currentCacheName
+      (k) => k.startsWith('croce-oro-cache-') && (purgeAllAppCaches || k !== currentCacheName)
     );
 
     if (obsoleteKeys.length > 0) {
@@ -165,8 +165,9 @@ export async function applicaAggiornamento(targetVersion: string, forzato: boole
     sessionStorage.setItem(STORAGE_LAST_RELOAD_VERSION, targetVersion);
   } catch {}
 
-  // Pulizia selettiva delle cache dell'applicazione
-  await pulisciCacheObsolete(targetVersion);
+  // Pulizia selettiva delle cache dell'applicazione (svuota tutte le cache app se cambio build a parità di versione)
+  const isBuildIdKey = targetVersion.startsWith('croce-oro-');
+  await pulisciCacheObsolete(isBuildIdKey ? APP_VERSION : targetVersion, isBuildIdKey);
 
   // Forza skipWaiting sul Service Worker se presente
   if ('serviceWorker' in navigator) {
@@ -312,6 +313,10 @@ export function initPWAUpdater() {
           console.log(`[PWA Updater] Service Worker versione attivata: ${event.data.version}`);
         }
       });
+      // Controllo versione immediato subito dopo l'avvio (fondamentale su iPhone/Android PWA)
+      setTimeout(() => {
+        checkForAppUpdate();
+      }, 1500);
     });
 
     // Controllo quando l'utente riprende l'app (risveglio schermo, cambio app, ritorno da background su iOS/Android)

@@ -37,6 +37,7 @@ import {
   writeRadioSlotDoc,
   fetchPushSubscriptionsFirestore,
   syncPublicVolunteerRosterFirestore,
+  publishPublicVolunteerRosterNow,
   listenPublicVolunteerRosterFirestore,
   readPublicVolunteerRosterFromServer,
   convertPublicRosterEntriesToVolontari,
@@ -583,6 +584,26 @@ class RealtimeService {
       } catch {}
       this.publicRosterUnsub = null;
     }
+
+    // Fast-path immediato via HTTPS REST (immune a WebChannel stall su iPhone Safari / Private Relay)
+    readPublicVolunteerRosterFromServer()
+      .then((res) => {
+        if (res.exists && res.data) {
+          this.applyPublicRosterSnapshot(res.data);
+        } else if (res.status === 'error') {
+          setTimeout(() => {
+            readPublicVolunteerRosterFromServer()
+              .then((r2) => {
+                if (r2.exists && r2.data) {
+                  this.applyPublicRosterSnapshot(r2.data);
+                }
+              })
+              .catch(() => {});
+          }, 2500);
+        }
+      })
+      .catch(() => {});
+
     try {
       this.publicRosterUnsub = listenPublicVolunteerRosterFirestore(
         (exists, docData) => {
@@ -601,6 +622,7 @@ class RealtimeService {
     ok: boolean;
     count: number;
     fromFullCloud?: boolean;
+    status?: 'ok' | 'not_found' | 'error';
   }> {
     try {
       if (this.firebaseSession.isAuthorized) {
@@ -612,18 +634,93 @@ class RealtimeService {
         if (list.length > 0) {
           syncPublicVolunteerRosterFirestore(list, deleted).catch(() => {});
         }
-        return { ok: true, count: list.length, fromFullCloud: true };
+        return { ok: true, count: list.length, fromFullCloud: true, status: 'ok' };
       }
 
       const res = await readPublicVolunteerRosterFromServer();
       if (!res.exists || !res.data) {
-        return { ok: false, count: 0, fromFullCloud: false };
+        return {
+          ok: false,
+          count: 0,
+          fromFullCloud: false,
+          status: res.status || 'not_found',
+        };
       }
       const count = this.applyPublicRosterSnapshot(res.data);
-      return { ok: count > 0, count, fromFullCloud: false };
+      return {
+        ok: count > 0,
+        count,
+        fromFullCloud: false,
+        status: count > 0 ? 'ok' : 'not_found',
+      };
     } catch {
-      return { ok: false, count: 0, fromFullCloud: false };
+      return { ok: false, count: 0, fromFullCloud: false, status: 'error' };
     }
+  }
+
+  public async checkPublicRosterStatus(): Promise<{
+    exists: boolean;
+    count: number;
+    version?: number;
+    status?: 'ok' | 'not_found' | 'error';
+  }> {
+    try {
+      const res = await readPublicVolunteerRosterFromServer();
+      if (!res.exists || !res.data) {
+        return {
+          exists: false,
+          count: 0,
+          status: res.status || 'not_found',
+        };
+      }
+      const count = Array.isArray(res.data.entries) ? res.data.entries.length : 0;
+      return {
+        exists: true,
+        count,
+        version: typeof res.data.version === 'number' ? res.data.version : undefined,
+        status: 'ok',
+      };
+    } catch {
+      return { exists: false, count: 0, status: 'error' };
+    }
+  }
+
+  public async publishPublicVolunteerRosterForAdmin(
+    volontariOverride?: any[],
+    deletedOverride?: string[]
+  ): Promise<{ ok: boolean; count: number; error?: string }> {
+    if (!this.firebaseSession.isAuthorized) {
+      return {
+        ok: false,
+        count: 0,
+        error: 'Accesso Google Admin/Operatore non attivo su questo dispositivo.',
+      };
+    }
+    const deletedIds = normalizeDeletedIds([
+      ...(Array.isArray(this.cloudState.volontariEliminatiIds) ? this.cloudState.volontariEliminatiIds : []),
+      ...(Array.isArray(deletedOverride) ? deletedOverride : []),
+    ]);
+    const cloudList = Array.isArray(this.cloudState.volontari)
+      ? this.cloudState.volontari.filter((v) => !v?.isPublicRosterOnly)
+      : [];
+    const overrideList = Array.isArray(volontariOverride)
+      ? volontariOverride.filter((v) => !v?.isPublicRosterOnly)
+      : [];
+
+    let targetList: any[] = [];
+    if (cloudList.length > 0 && overrideList.length > 0) {
+      targetList = mergeVolontariListsSafe(cloudList, overrideList, deletedIds);
+    } else if (cloudList.length > 0) {
+      targetList = cloudList;
+    } else {
+      targetList = overrideList;
+    }
+
+    if (targetList.length === 0) {
+      return { ok: false, count: 0, error: 'Nessun volontario disponibile da pubblicare.' };
+    }
+
+    return publishPublicVolunteerRosterNow(targetList, deletedIds);
   }
 
   private detachFirestoreShardListeners() {
@@ -1098,6 +1195,16 @@ class RealtimeService {
               if (pubOrigin) {
                 this.scheduleShardWrite('config', { publicAppUrl: pubOrigin });
               }
+            }
+            if (
+              this.firebaseSession.isAuthorized &&
+              Array.isArray(this.cloudState.volontari) &&
+              this.cloudState.volontari.length > 0
+            ) {
+              syncPublicVolunteerRosterFirestore(
+                this.cloudState.volontari,
+                this.cloudState.volontariEliminatiIds
+              ).catch(() => {});
             }
             this.emit('cloud_shards_ready', { shardExists: { ...this.shardExists } });
           }

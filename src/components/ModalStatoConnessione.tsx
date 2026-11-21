@@ -51,6 +51,62 @@ export const ModalStatoConnessione: React.FC<ModalStatoConnessioneProps> = ({
   const [pendingRequests, setPendingRequests] = useState<OperatorRequestRecord[]>([]);
   const [approvedOps, setApprovedOps] = useState<ApprovedOperatorRecord[]>([]);
   const [loadingAdminOps, setLoadingAdminOps] = useState(false);
+  const [publicRosterStatus, setPublicRosterStatus] = useState<{
+    checked: boolean;
+    exists: boolean;
+    count: number;
+    version?: number;
+  }>({ checked: false, exists: false, count: 0 });
+  const [publishingRoster, setPublishingRoster] = useState(false);
+
+  const loadPublicRosterStatus = async () => {
+    try {
+      const st = await realtime.checkPublicRosterStatus();
+      setPublicRosterStatus({
+        checked: true,
+        exists: st.exists,
+        count: st.count,
+        version: st.version,
+      });
+    } catch {
+      setPublicRosterStatus((prev) => ({ ...prev, checked: true }));
+    }
+  };
+
+  const handlePubblicaRubricaIphone = async () => {
+    setPublishingRoster(true);
+    setAuthMsg(null);
+    try {
+      let localVols: any[] | undefined;
+      let localDeleted: string[] | undefined;
+      try {
+        const rawV = localStorage.getItem('CROCE_ORO_VOLONTARI_DB');
+        if (rawV) {
+          const parsed = JSON.parse(rawV);
+          if (Array.isArray(parsed) && parsed.length > 0) localVols = parsed;
+        }
+        const rawD = localStorage.getItem('CROCE_ORO_VOLONTARI_ELIMINATI');
+        if (rawD) {
+          const parsedD = JSON.parse(rawD);
+          if (Array.isArray(parsedD)) localDeleted = parsedD;
+        }
+      } catch {}
+
+      const res = await realtime.publishPublicVolunteerRosterForAdmin(localVols, localDeleted);
+      if (res.ok) {
+        setAuthMsg(
+          `✅ Rubrica Login iPhone/Android pubblicata su Cloud Firestore (${res.count} volontari visibili subito sui nuovi dispositivi)!`
+        );
+        await loadPublicRosterStatus();
+      } else {
+        setAuthMsg(`❌ Pubblicazione rubrica iPhone non riuscita: ${res.error || 'errore sconosciuto'}`);
+      }
+    } catch (err: any) {
+      setAuthMsg(`❌ Errore pubblicazione rubrica iPhone: ${err?.message || 'imprevisto'}`);
+    } finally {
+      setPublishingRoster(false);
+    }
+  };
 
   const loadAdminOperators = async () => {
     if (!info.firebaseIsAdmin) return;
@@ -70,8 +126,11 @@ export const ModalStatoConnessione: React.FC<ModalStatoConnessioneProps> = ({
   };
 
   useEffect(() => {
-    if (isOpen && info.firebaseIsAdmin) {
-      loadAdminOperators();
+    if (isOpen) {
+      loadPublicRosterStatus();
+      if (info.firebaseIsAdmin) {
+        loadAdminOperators();
+      }
     }
   }, [isOpen, info.firebaseIsAdmin]);
 
@@ -437,6 +496,31 @@ export const ModalStatoConnessione: React.FC<ModalStatoConnessioneProps> = ({
                   >
                     <DownloadCloud className={`w-4 h-4 shrink-0 ${pullingCloud ? 'animate-bounce' : ''}`} />
                     <span>{pullingCloud ? 'Scaricamento...' : 'Scarica dal Cloud'}</span>
+                  </button>
+                </div>
+
+                {/* Stato e Pubblicazione 1-Tap Rubrica Login iPhone / Nuovi Dispositivi (Zero-PII) */}
+                <div className="p-2.5 rounded-xl bg-slate-900/90 border border-slate-700/80 flex items-center justify-between gap-2">
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[10px] font-black uppercase text-slate-300 flex items-center gap-1.5">
+                      <Smartphone className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                      <span>Elenco Login iPhone / Nuovi Smartphone</span>
+                    </div>
+                    <div className={`text-[10.5px] font-semibold mt-0.5 ${publicRosterStatus.exists && publicRosterStatus.count > 0 ? 'text-emerald-300' : 'text-amber-300'}`}>
+                      {!publicRosterStatus.checked
+                        ? 'Verifica rubrica Cloud in corso...'
+                        : publicRosterStatus.exists && publicRosterStatus.count > 0
+                        ? `✅ Attiva sul Cloud: ${publicRosterStatus.count} volontari (rev. ${publicRosterStatus.version || 1})`
+                        : '⚠️ Non ancora pubblicata sul Cloud: clicca "Pubblica"'}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handlePubblicaRubricaIphone}
+                    disabled={publishingRoster || pushingCloud}
+                    className="px-2.5 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-[10px] uppercase shrink-0 cursor-pointer transition-all disabled:opacity-50"
+                  >
+                    {publishingRoster ? 'Invio...' : 'Pubblica'}
                   </button>
                 </div>
               </div>

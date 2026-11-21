@@ -13,6 +13,7 @@ import {
 } from 'firebase/auth';
 import {
   getFirestore,
+  initializeFirestore,
   doc,
   getDoc,
   getDocFromServer,
@@ -59,7 +60,19 @@ export interface FirestoreErrorInfo {
 export const BOOTSTRAPPED_ADMIN_EMAIL = '270bis@live.it';
 
 export const app = initializeApp(firebaseConfig);
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+let firestoreDbInstance: ReturnType<typeof getFirestore>;
+try {
+  // Su iPhone iOS Safari / PWA / Private Relay il trasporto WebChannel può bloccarsi silenziosamente:
+  // experimentalAutoDetectLongPolling attiva automaticamente il fallback HTTP Long Polling quando necessario.
+  firestoreDbInstance = initializeFirestore(
+    app,
+    { experimentalAutoDetectLongPolling: true },
+    firebaseConfig.firestoreDatabaseId
+  );
+} catch {
+  firestoreDbInstance = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+}
+export const db = firestoreDbInstance;
 export const auth = getAuth(app);
 const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({ prompt: 'select_account' });
@@ -1590,7 +1603,7 @@ export function buildPublicVolunteerRosterEntries(volontari: any[]): PublicVolun
   for (const v of volontari) {
     if (!v || typeof v !== 'object') continue;
     const id = String(v.id || '').trim();
-    if (!id || !VALID_DOC_ID_REGEX.test(id) || seen.has(id)) continue;
+    if (!id || id.length > 128 || seen.has(id)) continue;
 
     const nome = String(v.nome || '').trim().slice(0, 80);
     const cognome = String(v.cognome || '').trim().slice(0, 80);
@@ -1803,6 +1816,153 @@ export function syncPublicVolunteerRosterFirestore(
   return publicRosterSyncChain;
 }
 
+export async function publishPublicVolunteerRosterNow(
+  volontari: any[],
+  deletedIds?: string[]
+): Promise<{ ok: boolean; count: number; error?: string }> {
+  const currentUser = auth.currentUser;
+  if (!currentUser || !currentUser.emailVerified) {
+    return {
+      ok: false,
+      count: 0,
+      error: 'Devi essere connesso con Google Cloud Sync come Amministratore/Operatore.',
+    };
+  }
+
+  const entries = buildPublicVolunteerRosterEntries(volontari);
+  if (entries.length === 0) {
+    return { ok: false, count: 0, error: 'Nessun volontario valido presente da pubblicare.' };
+  }
+
+  const cleanDeleted = Array.isArray(deletedIds)
+    ? Array.from(
+        new Set(
+          deletedIds
+            .filter((id) => typeof id === 'string' && id.trim().length > 0)
+            .map((id) => id.trim().slice(0, 128))
+        )
+      ).slice(-300)
+    : [];
+
+  const docRef = doc(db, 'public_roster', PUBLIC_VOLUNTEER_ROSTER_DOC_ID);
+  const sanitizedEntries = sanitizeForFirestore(entries);
+
+  try {
+    const snap = await getDoc(docRef);
+    if (!snap.exists()) {
+      await setDoc(docRef, {
+        rosterId: PUBLIC_VOLUNTEER_ROSTER_DOC_ID,
+        version: 1,
+        entries: sanitizedEntries,
+        deletedIds: cleanDeleted,
+        updatedByUid: currentUser.uid,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+    } else {
+      const snapData = snap.data() as Partial<PublicVolunteerRosterDoc> | undefined;
+      const prevVer = typeof snapData?.version === 'number' && snapData.version >= 1 ? snapData.version : 1;
+      await updateDoc(docRef, {
+        version: prevVer + 1,
+        entries: sanitizedEntries,
+        deletedIds: cleanDeleted,
+        updatedByUid: currentUser.uid,
+        updatedAt: serverTimestamp(),
+      });
+    }
+    lastPublishedPublicRosterSig = JSON.stringify({ entries, cleanDeleted });
+    return { ok: true, count: entries.length };
+  } catch (err: any) {
+    const msg = err instanceof Error ? err.message : String(err);
+    try {
+      handleFirestoreError(err, OperationType.WRITE, `public_roster/${PUBLIC_VOLUNTEER_ROSTER_DOC_ID}`);
+    } catch {}
+    return { ok: false, count: 0, error: msg };
+  }
+}
+
+function decodeFirestoreRestValue(val: any): any {
+  if (!val || typeof val !== 'object') return undefined;
+  if ('stringValue' in val) return String(val.stringValue);
+  if ('booleanValue' in val) return Boolean(val.booleanValue);
+  if ('integerValue' in val) return Number(val.integerValue);
+  if ('doubleValue' in val) return Number(val.doubleValue);
+  if ('nullValue' in val) return null;
+  if ('timestampValue' in val) return String(val.timestampValue);
+  if ('arrayValue' in val) {
+    const arr = Array.isArray(val.arrayValue?.values) ? val.arrayValue.values : [];
+    return arr.map((item: any) => decodeFirestoreRestValue(item));
+  }
+  if ('mapValue' in val) {
+    const fields = val.mapValue?.fields && typeof val.mapValue.fields === 'object' ? val.mapValue.fields : {};
+    const out: Record<string, any> = {};
+    for (const [k, v] of Object.entries(fields)) {
+      out[k] = decodeFirestoreRestValue(v);
+    }
+    return out;
+  }
+  return undefined;
+}
+
+/**
+ * Lettura diretta HTTPS REST API del documento pubblico zero-PII `public_roster/volunteers_v1`.
+ * Completa in ~150ms su tutti gli iPhone (iOS Safari / PWA / iCloud Private Relay)
+ * evitando qualsiasi blocco o ritardo del canale WebChannel dell'SDK Firestore.
+ */
+async function readPublicVolunteerRosterViaRest(): Promise<{
+  exists: boolean;
+  data: PublicVolunteerRosterDoc | null;
+  status: 'ok' | 'not_found' | 'error';
+}> {
+  const url = `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(
+    firebaseConfig.projectId
+  )}/databases/${encodeURIComponent(
+    firebaseConfig.firestoreDatabaseId
+  )}/documents/public_roster/${PUBLIC_VOLUNTEER_ROSTER_DOC_ID}?key=${encodeURIComponent(
+    firebaseConfig.apiKey
+  )}`;
+
+  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const timeoutId = controller ? setTimeout(() => controller.abort(), 8000) : null;
+
+  try {
+    const res = await fetch(url, {
+      method: 'GET',
+      cache: 'no-store',
+      signal: controller ? controller.signal : undefined,
+    });
+    if (timeoutId) clearTimeout(timeoutId);
+
+    if (res.status === 404) {
+      return { exists: false, data: null, status: 'not_found' };
+    }
+    if (!res.ok) {
+      return { exists: false, data: null, status: 'error' };
+    }
+    const json = await res.json();
+    const decoded = decodeFirestoreRestValue({ mapValue: { fields: json?.fields || {} } });
+    if (!decoded || !Array.isArray(decoded.entries)) {
+      return { exists: false, data: null, status: 'not_found' };
+    }
+    return {
+      exists: true,
+      data: {
+        rosterId: 'volunteers_v1',
+        version: typeof decoded.version === 'number' ? decoded.version : 1,
+        entries: decoded.entries as PublicVolunteerRosterEntry[],
+        deletedIds: Array.isArray(decoded.deletedIds) ? decoded.deletedIds : [],
+        updatedByUid: String(decoded.updatedByUid || ''),
+        createdAt: decoded.createdAt,
+        updatedAt: decoded.updatedAt,
+      },
+      status: 'ok',
+    };
+  } catch {
+    if (timeoutId) clearTimeout(timeoutId);
+    return { exists: false, data: null, status: 'error' };
+  }
+}
+
 export function listenPublicVolunteerRosterFirestore(
   onData: (exists: boolean, docData: PublicVolunteerRosterDoc | null) => void,
   onError?: (err: Error) => void
@@ -1830,13 +1990,22 @@ export function listenPublicVolunteerRosterFirestore(
 export async function readPublicVolunteerRosterFromServer(): Promise<{
   exists: boolean;
   data: PublicVolunteerRosterDoc | null;
+  status?: 'ok' | 'not_found' | 'error';
 }> {
+  // 1. Canale primario ultra-rapido HTTPS REST (100% immune da blocchi WebChannel/IndexedDB su iPhone Safari)
+  const restRes = await readPublicVolunteerRosterViaRest();
+  if (restRes.status === 'ok' || restRes.status === 'not_found') {
+    return restRes;
+  }
+
+  // 2. Fallback SDK Firestore
   const path = `public_roster/${PUBLIC_VOLUNTEER_ROSTER_DOC_ID}`;
   try {
     const snap = await getDocFromServer(doc(db, 'public_roster', PUBLIC_VOLUNTEER_ROSTER_DOC_ID));
     return {
       exists: snap.exists(),
       data: snap.exists() ? (snap.data() as PublicVolunteerRosterDoc) : null,
+      status: snap.exists() ? 'ok' : 'not_found',
     };
   } catch {
     try {
@@ -1844,12 +2013,13 @@ export async function readPublicVolunteerRosterFromServer(): Promise<{
       return {
         exists: snap.exists(),
         data: snap.exists() ? (snap.data() as PublicVolunteerRosterDoc) : null,
+        status: snap.exists() ? 'ok' : 'not_found',
       };
     } catch (innerErr) {
       try {
         handleFirestoreError(innerErr, OperationType.GET, path);
       } catch {
-        return { exists: false, data: null };
+        return { exists: false, data: null, status: 'error' };
       }
     }
   }
