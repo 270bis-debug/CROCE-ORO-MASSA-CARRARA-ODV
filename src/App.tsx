@@ -96,6 +96,7 @@ import { MappaOperativa, PosizioneGPS } from './components/MappaOperativa';
 import { VistaCittadinoLiveTracking } from './components/VistaCittadinoLiveTracking';
 import { DatabaseVolontariModal, Volontario } from './components/DatabaseVolontariModal';
 import { mergeVolontariListsSafe, mergeLoggedSessionsSafe, LoggedSessionEntry, normalizeDeletedIds } from './utils/volontariMerge';
+import { buildPinResetHash } from './utils/hashReset';
 import {
   getCorsiVisibiliInBacheca,
   mergeNotificheBachecaRecenti,
@@ -9693,7 +9694,9 @@ export default function App() {
           (v.caricaConsiglioDirettivo && v.caricaConsiglioDirettivo.toLowerCase().includes('presidente')) ||
           (v.macroCategorieAbilitate && v.macroCategorieAbilitate.length > 0) ||
           haSottosezioniAbilitate(v)
-        ) && v.pin === pin
+        ) &&
+        ((Boolean(v.pin) && v.pin === pin) ||
+          (Boolean(v.pinHash) && buildPinResetHash(v.id, pin) === v.pinHash))
     );
 
     if (op) {
@@ -9709,7 +9712,7 @@ export default function App() {
           nome: op.nome,
           cognome: op.cognome,
           matricola: op.matricola,
-          pin: op.pin,
+          pin: op.pin || pin,
           isAdmin: isPres ? true : false, // Amministratore e Presidente godono degli stessi identici privilegi
           caricaConsiglioDirettivo: op.caricaConsiglioDirettivo,
           firmaBase64: op.firmaBase64,

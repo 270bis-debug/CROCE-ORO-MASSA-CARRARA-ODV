@@ -173,6 +173,10 @@ export interface Volontario {
   telefono: string;
   email: string; // Indirizzo email obbligatorio
   pin: string; // 4 cifre
+  pinHash?: string; // Hash SHA-256 del PIN per verifica sicura su terminali non autenticati Google
+  pinIsEmergency?: boolean; // True se il PIN attuale è il codice di emergenza 0000 (roster pubblico zero-PII)
+  hasFirma?: boolean; // True se il volontario ha già una firma digitale salvata (roster pubblico zero-PII)
+  isPublicRosterOnly?: boolean; // True se il record proviene dal roster pubblico zero-PII
   pinProvvisorio?: boolean; // Se true, generato provvisororiamente dal sistema
   resetToken?: string; // Token univoco per reimpostazione autonoma da pagina web dedicata
   dataInvioInvitoReset?: string; // Data e ora invio email con PIN provvisorio e link

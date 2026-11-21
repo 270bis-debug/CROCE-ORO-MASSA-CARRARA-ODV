@@ -15,13 +15,17 @@ interface ModalObbligoFirmaEPinProps {
   onAnnullaEdEsci: () => void;
 }
 
-export const isFirmaMancante = (v?: { firmaBase64?: string } | null): boolean =>
-  !v?.firmaBase64 || v.firmaBase64.trim().length < 20;
+export const isFirmaMancante = (v?: { firmaBase64?: string; hasFirma?: boolean } | null): boolean => {
+  if (v?.hasFirma === true) return false;
+  return !v?.firmaBase64 || v.firmaBase64.trim().length < 20;
+};
 
-export const isPinEmergenza = (v?: { pin?: string } | null): boolean =>
-  String(v?.pin || '').trim() === '0000';
+export const isPinEmergenza = (v?: { pin?: string; pinIsEmergency?: boolean } | null): boolean =>
+  String(v?.pin || '').trim() === '0000' || v?.pinIsEmergency === true;
 
-export const richiedeAdeguamentoLogin = (v?: { id?: string; firmaBase64?: string; pin?: string } | null): boolean => {
+export const richiedeAdeguamentoLogin = (
+  v?: { id?: string; firmaBase64?: string; hasFirma?: boolean; pin?: string; pinIsEmergency?: boolean } | null
+): boolean => {
   if (!v) return false;
   if (v.id === 'vol-admin' || v.id === 'admin-centrale-root' || String(v.pin || '').trim() === '4451') {
     return false;

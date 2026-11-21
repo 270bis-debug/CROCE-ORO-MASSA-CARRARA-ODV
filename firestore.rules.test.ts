@@ -179,5 +179,32 @@ export const DIRTY_DOZEN_PAYLOADS = [
       status: 'applied'
     },
     expected: 'PERMISSION_DENIED'
+  },
+  {
+    name: '21_public_roster_unauthenticated_write',
+    path: '/public_roster/volunteers_v1',
+    operation: 'update',
+    auth: null,
+    payload: {
+      rosterId: 'volunteers_v1',
+      version: 2,
+      entries: [],
+      deletedIds: []
+    },
+    expected: 'PERMISSION_DENIED'
+  },
+  {
+    name: '22_public_roster_collection_list_scraping',
+    path: '/public_roster',
+    operation: 'list',
+    auth: null,
+    expected: 'PERMISSION_DENIED'
+  },
+  {
+    name: '23_public_roster_arbitrary_doc_id',
+    path: '/public_roster/admin_dump',
+    operation: 'get',
+    auth: null,
+    expected: 'PERMISSION_DENIED'
   }
 ];

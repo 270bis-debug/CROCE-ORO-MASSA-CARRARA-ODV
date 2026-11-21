@@ -1541,5 +1541,319 @@ export async function fetchPushSubscriptionsFirestore(): Promise<FirestorePushSu
   }
 }
 
+// ============================================================================
+// ZERO-PII PUBLIC VOLUNTEER LOGIN ROSTER (public_roster/volunteers_v1)
+// Consente ai nuovi smartphone/iPhone (non ancora loggati su Google Cloud Sync)
+// di caricare in tempo reale tutti i nominativi reali dei volontari e verificare
+// il PIN tramite digest SHA-256, senza esporre alcun dato personale (PII).
+// ============================================================================
+
+export const PUBLIC_VOLUNTEER_ROSTER_DOC_ID = 'volunteers_v1';
+
+export interface PublicVolunteerRosterEntry {
+  id: string;
+  nome: string;
+  cognome: string;
+  qualifica: string;
+  mansione?: string;
+  mansioni?: string[];
+  matricola?: string;
+  pinHash: string;
+  pinIsEmergency: boolean;
+  hasFirma: boolean;
+  approvato: boolean;
+  profiloCentrale: boolean;
+  caricaConsiglioDirettivo?: string;
+  macroCategorieAbilitate?: string[];
+  sottosezioniAbilitate?: Record<string, string[]>;
+  sediTurniAbilitate?: string[];
+  bloccatoPerTentativi?: boolean;
+  tentativiErrati?: number;
+  richiedeResetPassword?: boolean;
+}
+
+export interface PublicVolunteerRosterDoc {
+  rosterId: 'volunteers_v1';
+  version: number;
+  entries: PublicVolunteerRosterEntry[];
+  deletedIds: string[];
+  updatedByUid: string;
+  createdAt?: any;
+  updatedAt?: any;
+}
+
+export function buildPublicVolunteerRosterEntries(volontari: any[]): PublicVolunteerRosterEntry[] {
+  if (!Array.isArray(volontari)) return [];
+  const seen = new Set<string>();
+  const entries: PublicVolunteerRosterEntry[] = [];
+
+  for (const v of volontari) {
+    if (!v || typeof v !== 'object') continue;
+    const id = String(v.id || '').trim();
+    if (!id || !VALID_DOC_ID_REGEX.test(id) || seen.has(id)) continue;
+
+    const nome = String(v.nome || '').trim().slice(0, 80);
+    const cognome = String(v.cognome || '').trim().slice(0, 80);
+    const cleanPin = String(v.pin || '').trim();
+    if (
+      id === 'vol-admin' ||
+      id === 'admin-centrale-root' ||
+      cleanPin === '4451' ||
+      nome.toLowerCase().includes('amministratore') ||
+      cognome.toLowerCase().includes('amministratore')
+    ) {
+      continue;
+    }
+    if (!nome && !cognome) continue;
+
+    seen.add(id);
+
+    const computedHash = /^\d{4}$/.test(cleanPin)
+      ? buildPinResetHash(id, cleanPin)
+      : (typeof v.pinHash === 'string' && SHA256_HEX_REGEX.test(v.pinHash) ? v.pinHash : '');
+
+    const pinIsEmergency = cleanPin
+      ? cleanPin === '0000'
+      : Boolean(v.pinIsEmergency);
+
+    const hasFirma =
+      (typeof v.firmaBase64 === 'string' && v.firmaBase64.trim().length >= 20) ||
+      Boolean(v.hasFirma);
+
+    const entry: PublicVolunteerRosterEntry = {
+      id,
+      nome: nome || 'Volontario',
+      cognome,
+      qualifica: String(v.qualifica || 'Soccorritore').trim().slice(0, 80) || 'Soccorritore',
+      pinHash: computedHash,
+      pinIsEmergency,
+      hasFirma,
+      approvato: Boolean(v.approvato),
+      profiloCentrale: Boolean(v.profiloCentrale),
+    };
+
+    if (typeof v.mansione === 'string' && v.mansione.trim()) {
+      entry.mansione = v.mansione.trim().slice(0, 80);
+    }
+    if (Array.isArray(v.mansioni) && v.mansioni.length > 0) {
+      entry.mansioni = v.mansioni
+        .filter((m: any) => typeof m === 'string' && m.trim())
+        .map((m: string) => m.trim().slice(0, 80))
+        .slice(0, 12);
+    }
+    if (typeof v.matricola === 'string' && v.matricola.trim()) {
+      entry.matricola = v.matricola.trim().slice(0, 40);
+    }
+    if (typeof v.caricaConsiglioDirettivo === 'string' && v.caricaConsiglioDirettivo.trim()) {
+      entry.caricaConsiglioDirettivo = v.caricaConsiglioDirettivo.trim().slice(0, 80);
+    }
+    if (Array.isArray(v.macroCategorieAbilitate) && v.macroCategorieAbilitate.length > 0) {
+      entry.macroCategorieAbilitate = v.macroCategorieAbilitate
+        .filter((c: any) => typeof c === 'string' && c.trim())
+        .map((c: string) => c.trim().slice(0, 40))
+        .slice(0, 20);
+    }
+    if (v.sottosezioniAbilitate && typeof v.sottosezioniAbilitate === 'object' && !Array.isArray(v.sottosezioniAbilitate)) {
+      const cleanSubs: Record<string, string[]> = {};
+      for (const [k, arr] of Object.entries(v.sottosezioniAbilitate as Record<string, any>)) {
+        if (!k || !Array.isArray(arr)) continue;
+        cleanSubs[String(k).slice(0, 40)] = arr
+          .filter((x: any) => typeof x === 'string' && x.trim())
+          .map((x: string) => x.trim().slice(0, 40))
+          .slice(0, 25);
+      }
+      if (Object.keys(cleanSubs).length > 0) {
+        entry.sottosezioniAbilitate = cleanSubs;
+      }
+    }
+    if (Array.isArray(v.sediTurniAbilitate) && v.sediTurniAbilitate.length > 0) {
+      entry.sediTurniAbilitate = v.sediTurniAbilitate
+        .filter((s: any) => typeof s === 'string' && s.trim())
+        .map((s: string) => s.trim().slice(0, 64))
+        .slice(0, 20);
+    }
+    if (v.bloccatoPerTentativi) {
+      entry.bloccatoPerTentativi = true;
+    }
+    if (typeof v.tentativiErrati === 'number' && v.tentativiErrati > 0) {
+      entry.tentativiErrati = Math.min(3, Math.floor(v.tentativiErrati));
+    }
+    if (v.richiedeResetPassword) {
+      entry.richiedeResetPassword = true;
+    }
+
+    entries.push(entry);
+    if (entries.length >= 400) break;
+  }
+
+  return entries;
+}
+
+export function convertPublicRosterEntriesToVolontari(entries: PublicVolunteerRosterEntry[]): any[] {
+  if (!Array.isArray(entries)) return [];
+  return entries
+    .filter((e) => e && typeof e === 'object' && typeof e.id === 'string' && e.id.trim().length > 0)
+    .map((e) => ({
+      id: String(e.id).trim(),
+      nome: String(e.nome || '').trim() || 'Volontario',
+      cognome: String(e.cognome || '').trim(),
+      qualifica: String(e.qualifica || 'Soccorritore').trim() || 'Soccorritore',
+      ...(e.mansione ? { mansione: e.mansione } : {}),
+      ...(Array.isArray(e.mansioni) ? { mansioni: e.mansioni } : {}),
+      ...(e.matricola ? { matricola: e.matricola } : {}),
+      telefono: '',
+      email: '',
+      pin: '',
+      pinHash: typeof e.pinHash === 'string' ? e.pinHash : '',
+      pinIsEmergency: Boolean(e.pinIsEmergency),
+      hasFirma: Boolean(e.hasFirma),
+      isPublicRosterOnly: true,
+      dataRegistrazione: '',
+      inTurno: false,
+      approvato: Boolean(e.approvato),
+      profiloCentrale: Boolean(e.profiloCentrale),
+      ...(e.caricaConsiglioDirettivo ? { caricaConsiglioDirettivo: e.caricaConsiglioDirettivo } : {}),
+      ...(Array.isArray(e.macroCategorieAbilitate) ? { macroCategorieAbilitate: e.macroCategorieAbilitate } : {}),
+      ...(e.sottosezioniAbilitate && typeof e.sottosezioniAbilitate === 'object'
+        ? { sottosezioniAbilitate: e.sottosezioniAbilitate }
+        : {}),
+      ...(Array.isArray(e.sediTurniAbilitate) ? { sediTurniAbilitate: e.sediTurniAbilitate } : {}),
+      ...(e.bloccatoPerTentativi ? { bloccatoPerTentativi: true } : {}),
+      ...(typeof e.tentativiErrati === 'number' ? { tentativiErrati: e.tentativiErrati } : {}),
+      ...(e.richiedeResetPassword ? { richiedeResetPassword: true } : {}),
+    }));
+}
+
+let lastPublishedPublicRosterSig = '';
+let publicRosterSyncChain: Promise<void> = Promise.resolve();
+
+export function resetPublicRosterSyncCache(): void {
+  lastPublishedPublicRosterSig = '';
+}
+
+export function syncPublicVolunteerRosterFirestore(
+  volontari: any[],
+  deletedIds?: string[]
+): Promise<void> {
+  const user = auth.currentUser;
+  if (!user || !user.emailVerified || !Array.isArray(volontari)) {
+    return Promise.resolve();
+  }
+
+  const entries = buildPublicVolunteerRosterEntries(volontari);
+  if (entries.length === 0) return Promise.resolve();
+
+  const cleanDeleted = Array.isArray(deletedIds)
+    ? Array.from(
+        new Set(
+          deletedIds
+            .filter((id) => typeof id === 'string' && id.trim().length > 0)
+            .map((id) => id.trim().slice(0, 128))
+        )
+      ).slice(-300)
+    : [];
+
+  const sig = JSON.stringify({ entries, cleanDeleted });
+  if (sig === lastPublishedPublicRosterSig) {
+    return Promise.resolve();
+  }
+
+  publicRosterSyncChain = publicRosterSyncChain
+    .then(async () => {
+      const currentUser = auth.currentUser;
+      if (!currentUser || !currentUser.emailVerified) return;
+      if (sig === lastPublishedPublicRosterSig) return;
+
+      const docRef = doc(db, 'public_roster', PUBLIC_VOLUNTEER_ROSTER_DOC_ID);
+      const sanitizedEntries = sanitizeForFirestore(entries);
+      try {
+        const snap = await getDoc(docRef);
+        if (!snap.exists()) {
+          await setDoc(docRef, {
+            rosterId: PUBLIC_VOLUNTEER_ROSTER_DOC_ID,
+            version: 1,
+            entries: sanitizedEntries,
+            deletedIds: cleanDeleted,
+            updatedByUid: currentUser.uid,
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          });
+        } else {
+          const snapData = snap.data() as Partial<PublicVolunteerRosterDoc> | undefined;
+          const prevVer = typeof snapData?.version === 'number' && snapData.version >= 1 ? snapData.version : 1;
+          await updateDoc(docRef, {
+            version: prevVer + 1,
+            entries: sanitizedEntries,
+            deletedIds: cleanDeleted,
+            updatedByUid: currentUser.uid,
+            updatedAt: serverTimestamp(),
+          });
+        }
+        lastPublishedPublicRosterSig = sig;
+      } catch (err) {
+        try {
+          handleFirestoreError(err, OperationType.WRITE, `public_roster/${PUBLIC_VOLUNTEER_ROSTER_DOC_ID}`);
+        } catch {
+          // Non bloccare il sync principale se la pubblicazione del roster pubblico fallisce temporaneamente
+        }
+      }
+    })
+    .catch(() => {});
+
+  return publicRosterSyncChain;
+}
+
+export function listenPublicVolunteerRosterFirestore(
+  onData: (exists: boolean, docData: PublicVolunteerRosterDoc | null) => void,
+  onError?: (err: Error) => void
+): Unsubscribe {
+  const path = `public_roster/${PUBLIC_VOLUNTEER_ROSTER_DOC_ID}`;
+  return onSnapshot(
+    doc(db, 'public_roster', PUBLIC_VOLUNTEER_ROSTER_DOC_ID),
+    (snapshot) => {
+      if (!snapshot.exists()) {
+        onData(false, null);
+      } else {
+        onData(true, snapshot.data() as PublicVolunteerRosterDoc);
+      }
+    },
+    (error) => {
+      try {
+        handleFirestoreError(error, OperationType.GET, path);
+      } catch (wrapped: any) {
+        onError?.(wrapped);
+      }
+    }
+  );
+}
+
+export async function readPublicVolunteerRosterFromServer(): Promise<{
+  exists: boolean;
+  data: PublicVolunteerRosterDoc | null;
+}> {
+  const path = `public_roster/${PUBLIC_VOLUNTEER_ROSTER_DOC_ID}`;
+  try {
+    const snap = await getDocFromServer(doc(db, 'public_roster', PUBLIC_VOLUNTEER_ROSTER_DOC_ID));
+    return {
+      exists: snap.exists(),
+      data: snap.exists() ? (snap.data() as PublicVolunteerRosterDoc) : null,
+    };
+  } catch {
+    try {
+      const snap = await getDoc(doc(db, 'public_roster', PUBLIC_VOLUNTEER_ROSTER_DOC_ID));
+      return {
+        exists: snap.exists(),
+        data: snap.exists() ? (snap.data() as PublicVolunteerRosterDoc) : null,
+      };
+    } catch (innerErr) {
+      try {
+        handleFirestoreError(innerErr, OperationType.GET, path);
+      } catch {
+        return { exists: false, data: null };
+      }
+    }
+  }
+}
+
 
 

@@ -238,6 +238,46 @@ service cloud.firestore {
         data.updatedAt == request.time;
     }
 
+    function isValidPublicRosterData(data, rosterId) {
+      return data.keys().hasAll([
+          'rosterId',
+          'version',
+          'entries',
+          'deletedIds',
+          'updatedByUid',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'rosterId',
+          'version',
+          'entries',
+          'deletedIds',
+          'updatedByUid',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.rosterId is string &&
+        data.rosterId == rosterId &&
+        data.rosterId == 'volunteers_v1' &&
+        data.rosterId.size() == 13 &&
+        data.rosterId.matches('^volunteers_v1$') &&
+        data.version is number &&
+        data.version >= 1 &&
+        data.entries is list &&
+        data.entries.size() <= 400 &&
+        (data.entries.size() == 0 || data.entries[0] is map) &&
+        data.deletedIds is list &&
+        data.deletedIds.size() <= 300 &&
+        (data.deletedIds.size() == 0 || data.deletedIds[0] is string) &&
+        data.updatedByUid is string &&
+        data.updatedByUid == request.auth.uid &&
+        isValidId(data.updatedByUid) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp &&
+        data.updatedAt == request.time;
+    }
+
     function isValidAdminData(data, targetUid) {
       return data.keys().hasAll(['uid', 'email', 'displayName', 'updatedByUid', 'createdAt', 'updatedAt']) &&
         data.keys().hasOnly(['uid', 'email', 'displayName', 'updatedByUid', 'createdAt', 'updatedAt']) &&
@@ -740,7 +780,32 @@ service cloud.firestore {
       allow delete: if isValidId(subId) && (isAdmin() || (isOperator() && existing().ownerUid == request.auth.uid));
     }
 
-    // 13. Boot Health Check Doc (no PII)
+    // 13. Zero-PII Public Volunteer Login Roster (Single Whitelisted Document volunteers_v1, Zero List Queries)
+    match /public_roster/{rosterId} {
+      allow get: if isValidId(rosterId) && rosterId == 'volunteers_v1';
+      allow list: if false;
+      allow create: if isValidId(rosterId) &&
+        rosterId == 'volunteers_v1' &&
+        isOperator() &&
+        isValidPublicRosterData(incoming(), rosterId) &&
+        incoming().createdAt == request.time;
+      allow update: if isValidId(rosterId) &&
+        rosterId == 'volunteers_v1' &&
+        isOperator() &&
+        isValidPublicRosterData(incoming(), rosterId) &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().rosterId == existing().rosterId &&
+        (
+          isAdmin() ||
+          (
+            incoming().version > existing().version &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['version', 'entries', 'deletedIds', 'updatedByUid', 'updatedAt'])
+          )
+        );
+      allow delete: if isValidId(rosterId) && rosterId == 'volunteers_v1' && isAdmin();
+    }
+
+    // 14. Boot Health Check Doc (no PII)
     match /test/{docId} {
       allow get: if isValidId(docId) && docId == 'connection' && isOperator();
       allow list, write: if false;

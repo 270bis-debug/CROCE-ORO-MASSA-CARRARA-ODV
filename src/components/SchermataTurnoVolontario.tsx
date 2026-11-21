@@ -19,7 +19,8 @@ import {
   CheckCircle2,
   Clock,
   Bell,
-  Paintbrush
+  Paintbrush,
+  RefreshCw
 } from 'lucide-react';
 import { Volontario } from './DatabaseVolontariModal';
 import { CroceOroLogo } from './CroceOroLogo';
@@ -43,6 +44,9 @@ import { MezzoFlotta } from '../types/adminTypes';
 import { TurnoSedeOperativa, TimbraturaVolontario } from '../types/adminTypes';
 import { verificaVolontarioInTurnoAdesso, hasTimbraturaApertaPerVolontario, EsitoVerificaTurno } from '../utils/turnoVerifica';
 import { formatDateItaly, formatDateTimeItaly, formatTimeItaly, getItalianDateParts } from '../utils/italianTime';
+import { buildPinResetHash } from '../utils/hashReset';
+import { completaResetPinProfiloFirestore } from '../services/firebase';
+import { realtime } from '../services/realtime';
 
 export interface SessioneTurno {
   attivo: boolean;
@@ -156,6 +160,29 @@ export const SchermataTurnoVolontario: React.FC<SchermataTurnoVolontarioProps> =
 
   // Modale Reset PIN / Password
   const [modaleResetAperta, setModaleResetAperta] = useState(false);
+
+  // Aggiornamento manuale elenco nominativi dal Cloud
+  const [aggiornamentoElencoInCorso, setAggiornamentoElencoInCorso] = useState(false);
+  const [feedbackElenco, setFeedbackElenco] = useState<string>('');
+
+  const handleAggiornaElencoCloud = async () => {
+    if (aggiornamentoElencoInCorso) return;
+    setAggiornamentoElencoInCorso(true);
+    setFeedbackElenco('');
+    try {
+      const res = await realtime.refreshPublicVolunteerRoster();
+      if (res.ok && res.count > 0) {
+        setFeedbackElenco(`✓ ${res.count} profili`);
+      } else {
+        setFeedbackElenco('Elenco non ancora pubblicato dal Cloud');
+      }
+    } catch {
+      setFeedbackElenco('Errore di rete');
+    } finally {
+      setAggiornamentoElencoInCorso(false);
+      setTimeout(() => setFeedbackElenco(''), 4000);
+    }
+  };
 
   // L'Amministratore non può entrare come volontario di bordo mezzo
   const volontariOperativi = React.useMemo(() => {
@@ -309,9 +336,16 @@ export const SchermataTurnoVolontario: React.FC<SchermataTurnoVolontarioProps> =
       utenteCentraleAutenticato?.id &&
       utenteCentraleAutenticato.id !== 'admin-centrale-root' &&
       utenteCentraleAutenticato.id === vol.id &&
-      (!utenteCentraleAutenticato.pin || utenteCentraleAutenticato.pin === vol.pin)
+      (
+        !utenteCentraleAutenticato.pin ||
+        (Boolean(vol.pin) && utenteCentraleAutenticato.pin === vol.pin) ||
+        (Boolean(vol.pinHash) && buildPinResetHash(vol.id, utenteCentraleAutenticato.pin) === vol.pinHash)
+      )
     );
-    const isPinCorretto = isPinPreverificato || pinInput === vol.pin;
+    const isPinCorretto =
+      isPinPreverificato ||
+      (Boolean(vol.pin) && pinInput === vol.pin) ||
+      (Boolean(vol.pinHash) && buildPinResetHash(vol.id, pinInput) === vol.pinHash);
 
     if (!isPinCorretto) {
       const nuoviSbagli = (vol.tentativiErrati || 0) + 1;
@@ -493,16 +527,28 @@ export const SchermataTurnoVolontario: React.FC<SchermataTurnoVolontarioProps> =
       loggato: true,
       loggatoUpdatedAt: nowTs,
       ultimoAccesso: orarioAdesso,
-      ...(risultato.firmaBase64 ? { firmaBase64: risultato.firmaBase64 } : {}),
+      ...(risultato.firmaBase64 ? { firmaBase64: risultato.firmaBase64, hasFirma: true } : {}),
       ...(risultato.nuovoPin
         ? {
             pin: risultato.nuovoPin,
+            pinHash: buildPinResetHash(volontarioDaFirmare.id, risultato.nuovoPin),
+            pinIsEmergency: false,
             pinProvvisorio: false,
             richiedeResetPassword: false,
             tentativiErrati: 0
           }
         : {})
     };
+
+    // Se il volontario proviene dal roster pubblico (non loggato Google), propaga subito
+    // il cambio del PIN di emergenza (0000) verso Centrale tramite il canale protetto pin_reset_profiles
+    if (volontarioDaFirmare.isPublicRosterOnly && risultato.nuovoPin) {
+      completaResetPinProfiloFirestore(
+        volontarioDaFirmare.id,
+        buildPinResetHash(volontarioDaFirmare.id, '0000'),
+        risultato.nuovoPin
+      ).catch(() => {});
+    }
 
     if (onAggiornaVolontari) {
       const aggiornati = volontari.map(v => (v.id === aggiornato.id ? aggiornato : v));
@@ -727,9 +773,28 @@ export const SchermataTurnoVolontario: React.FC<SchermataTurnoVolontarioProps> =
 
       {/* Selezione Volontario */}
       <div className="space-y-1">
-        <label className="block text-[11px] font-bold text-slate-700 uppercase">
-          1. Seleziona il tuo Nominativo
-        </label>
+        <div className="flex items-center justify-between gap-2">
+          <label className="block text-[11px] font-bold text-slate-700 uppercase">
+            1. Seleziona il tuo Nominativo
+          </label>
+          <div className="flex items-center gap-1.5">
+            {feedbackElenco && (
+              <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded-md">
+                {feedbackElenco}
+              </span>
+            )}
+            <button
+              type="button"
+              onClick={handleAggiornaElencoCloud}
+              disabled={aggiornamentoElencoInCorso}
+              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-slate-100 hover:bg-slate-200 border border-slate-300 text-slate-700 text-[10px] font-bold transition-colors disabled:opacity-50 cursor-pointer"
+              title="Scarica l'elenco aggiornato dei volontari dal Cloud"
+            >
+              <RefreshCw className={`w-3 h-3 text-[#1d1a60] ${aggiornamentoElencoInCorso ? 'animate-spin' : ''}`} />
+              <span>{aggiornamentoElencoInCorso ? 'Aggiorno...' : 'Aggiorna elenco'}</span>
+            </button>
+          </div>
+        </div>
         <select
           value={volontarioSelezionatoId}
           onChange={(e) => {

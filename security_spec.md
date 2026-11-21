@@ -10,6 +10,7 @@
 7. **Token-Gated Zero-PII PIN Reset Tickets**: `/pin_resets/{tokenId}` contains zero PII (no email, phone, tax ID, or address), strictly forbids collection listing (`allow list: if false;`), enforces `^rst-[a-zA-Z0-9_\-]{8,92}$`, allows unauthenticated single-document update ONLY when `existing().status == 'pending'`, `incoming().status == 'completed'`, `incoming().pinProvvisorioVerifica == existing().pinProvvisorio`, and `nuovoPin` is a valid non-reserved 4-digit PIN different from the provisional PIN.
 8. **Zero-PII Write-Only Profile Reset Index**: `/pin_reset_profiles/{volunteerId}` stores only domain-prefixed SHA-256 digests (`emailHash`, `pinHash`) and denies both `get` and `list` to unauthenticated callers (blocking hash scraping and offline dictionary attacks). Unauthenticated `update` is permitted ONLY when `existing().status in ['ready', 'pending', 'applied']`, `incoming().status == 'completed'`, `incoming().verifyingProofHash` equals `existing().emailHash` or `existing().pinHash`, and `nuovoPin` is a valid non-reserved 4-digit PIN.
 9. **Zero-PII Volunteer Shift Sign-Up Queue**: `/shift_signups/{signupId}` accepts unauthenticated `create` strictly when `signupId` matches `^cand-[a-zA-Z0-9_\-]{3,91}$`, `status == 'pending'`, `ruoloRichiesto` is in the fixed role allowlist, `createdAt == request.time`, and zero PII fields are accepted; collection `list` and status transition to `'applied'` are strictly restricted to verified `isOperator()` terminals.
+10. **Zero-PII Public Volunteer Login Roster**: `/public_roster/{rosterId}` exposes ONLY the single fixed whitelisted document `volunteers_v1` for `get` (`allow list: if false;`), containing exclusively non-PII login directory cards (name, qualification, SHA-256 PIN digest, boolean flags; never email, phone, tax ID, address, documents, signatures, or plaintext PIN). Writes are strictly restricted to verified `isOperator()` accounts with strict key allowlists, bounded array sizes (`entries <= 400`, `deletedIds <= 300`), and server-enforced timestamps.
 
 ## 2. The "Dirty Dozen" Payloads (Expected Result: PERMISSION_DENIED)
 1. **Unauthenticated Shard Read**: Anonymous caller tries `GET /sync_shards/volontari` -> Denied (`isVerifiedUser()` false).
@@ -21,7 +22,7 @@
 7. **Timestamp Backdating**: Operator sends custom client timestamp `updatedAt: "2020-01-01T00:00:00Z"` -> Denied (`data.updatedAt == request.time` false).
 8. **Self-Assigned Admin**: Non-admin user tries `CREATE /admins/{ownUid}` -> Denied (`isAdmin()` false).
 9. **Self-Approved Operator Request**: Pending user tries `UPDATE /operator_requests/{ownUid}` changing `status: "approved"` -> Denied (Terminal/Admin gate).
-10. **Collection Scraping List Query**: Caller tries `LIST /sync_shards`, `LIST /admins`, `LIST /pin_resets`, or unauthenticated `LIST /pin_reset_profiles` -> Denied.
+10. **Collection Scraping List Query**: Caller tries `LIST /sync_shards`, `LIST /admins`, `LIST /pin_resets`, `LIST /public_roster`, or unauthenticated `LIST /pin_reset_profiles` -> Denied.
 11. **Oversized DisplayName Resource Exhaustion**: User sends 5KB `displayName` in `/operator_requests/{uid}` -> Denied (`displayName.size() <= 120`).
 12. **Stale/Downgraded Version Write by Operator**: Operator tries `UPDATE /sync_shards/mission` with `version <= existing().version` -> Denied (`incoming().version > existing().version`).
 13. **PIN Reset Wrong Provisional Verification**: Unauthenticated caller tries `UPDATE /pin_resets/rst-valid12345` with wrong `pinProvvisorioVerifica` -> Denied (`incoming().pinProvvisorioVerifica == existing().pinProvvisorio` false).
@@ -30,3 +31,6 @@
 16. **PIN Reset Profile Wrong Proof Hash / Hash Tampering**: Unauthenticated caller tries `UPDATE /pin_reset_profiles/vol-ricci` with mismatched `verifyingProofHash` or modified `emailHash` -> Denied.
 17. **Shift Sign-Up Collection List Scraping**: Unauthenticated caller tries `LIST /shift_signups` -> Denied (`isOperator()` false).
 18. **Shift Sign-Up Pre-Approved Status Spoof**: Unauthenticated caller tries `CREATE /shift_signups/cand-abc123` with `status: "applied"` -> Denied (`incoming().status == 'pending'` false).
+19. **Public Roster Unauthenticated Write / Tampering**: Anonymous caller tries `UPDATE /public_roster/volunteers_v1` -> Denied (`isOperator()` false).
+20. **Public Roster Collection List / Arbitrary Doc Read**: Caller tries `LIST /public_roster` or `GET /public_roster/other_doc` -> Denied (`allow list: if false`, `rosterId == 'volunteers_v1'`).
+21. **Public Roster Shadow Field or Oversized Entries Array**: Operator tries `CREATE /public_roster/volunteers_v1` with `extraField: true` or `entries.size() > 400` -> Denied (`hasOnly` / `.size() <= 400`).

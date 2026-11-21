@@ -29,13 +29,59 @@ export function normalizeDeletedIds(ids?: any[]): string[] {
   return arr.length > 300 ? arr.slice(-300) : arr;
 }
 
+const PUBLIC_ROSTER_PROTECTED_PRIVATE_KEYS = new Set<string>([
+  'pin',
+  'email',
+  'telefono',
+  'codiceFiscale',
+  'indirizzoResidenza',
+  'dettaglioResidenza',
+  'dataNascita',
+  'sesso',
+  'comuneNascita',
+  'provinciaNascita',
+  'firmaBase64',
+  'fotoBase64',
+  'documentoIdentita',
+  'patente',
+  'vestiario',
+  'tesseramento',
+  'domandaIscrizioneFirmata',
+  'domandaIscrizioneDati',
+  'dataRegistrazione',
+  'ultimoAccesso',
+  'inTurno',
+  'mezzoAttivo',
+  'ruoloTurno',
+  'resetToken',
+  'dataInvioInvitoReset',
+  'dataRichiestaApprovazione',
+  'dataRichiestaResetPassword',
+  'dataBlocco',
+  'esenteQuotaAssociativa',
+  'motivoEsenzioneQuota',
+  'sezioneAppartenenzaId',
+  'sezioneAppartenenzaNome',
+]);
+
 function mergeSingleVolontario<T extends Record<string, any>>(base: T, incoming: T): T {
   const merged: Record<string, any> = { ...base };
+  const incomingIsRosterOnly = Boolean(incoming.isPublicRosterOnly);
+  const baseIsFull = !base.isPublicRosterOnly && Boolean(base.pin || base.email || base.telefono || base.firmaBase64);
+
   for (const [key, val] of Object.entries(incoming)) {
+    if (incomingIsRosterOnly && baseIsFull && PUBLIC_ROSTER_PROTECTED_PRIVATE_KEYS.has(key)) {
+      // Non degradare mai un profilo completo privato con i campi vuoti del roster pubblico zero-PII
+      continue;
+    }
+    if (key === 'isPublicRosterOnly') {
+      merged.isPublicRosterOnly = incomingIsRosterOnly && !baseIsFull;
+      continue;
+    }
     if (key === 'sottosezioniAbilitate') {
       if (val && typeof val === 'object' && !Array.isArray(val)) {
         merged.sottosezioniAbilitate = { ...val };
-      } else {
+      } else if (!incomingIsRosterOnly) {
         // Permette di rimuovere restrizioni parziali (es. riattivazione di tutte le sottosezioni di un DB)
         merged.sottosezioniAbilitate = {};
       }
@@ -127,6 +173,17 @@ function mergeSingleVolontario<T extends Record<string, any>>(base: T, incoming:
     }
     merged[key] = val;
   }
+
+  if (!incomingIsRosterOnly) {
+    merged.isPublicRosterOnly = false;
+    if (typeof incoming.pin === 'string' && /^\d{4}$/.test(incoming.pin.trim())) {
+      merged.pinIsEmergency = incoming.pin.trim() === '0000';
+    }
+    if (typeof incoming.firmaBase64 === 'string' && incoming.firmaBase64.trim().length >= 20) {
+      merged.hasFirma = true;
+    }
+  }
+
   return merged as T;
 }
 

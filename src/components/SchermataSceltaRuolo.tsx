@@ -9,6 +9,7 @@ import { ModalResetPassword } from './ModalResetPassword';
 import { isAccessoDaWeb, setPreferenzaAccessoWeb } from '../utils/accessoWeb';
 import { PWAInstallButton } from './PWAInstallButton';
 import { formatDateTimeItaly } from '../utils/italianTime';
+import { buildPinResetHash } from '../utils/hashReset';
 
 interface SchermataSceltaRuoloProps {
   onSelectVolontario: () => void;
@@ -160,15 +161,23 @@ export const SchermataSceltaRuolo: React.FC<SchermataSceltaRuoloProps> = ({
       return;
     }
 
+    const matchesVolunteerPin = (target: Volontario | undefined | null, candidate: string): boolean =>
+      Boolean(
+        target &&
+        candidate &&
+        ((Boolean(target.pin) && target.pin === candidate) ||
+          (Boolean(target.pinHash) && buildPinResetHash(target.id, candidate) === target.pinHash))
+      );
+
     // 1. Riconoscimento Amministratore / Presidente: PIN master 4451 o profilo Amministrazione
     const presidenteVolontario = volontari.find(
       v => (v.caricaConsiglioDirettivo && v.caricaConsiglioDirettivo.toLowerCase().includes('presidente')) ||
            (v.qualifica && v.qualifica.toLowerCase().includes('presidente'))
     );
-    const isPinPresidente = Boolean(presidenteVolontario && presidenteVolontario.pin === pin);
+    const isPinPresidente = matchesVolunteerPin(presidenteVolontario, pin);
     const isAdminTarget = op.id === 'admin-centrale-root' || isPinPresidente || (op.caricaConsiglioDirettivo && op.caricaConsiglioDirettivo.toLowerCase().includes('presidente'));
 
-    if (pin === '4451' || (isAdminTarget && (pin === '4451' || isPinPresidente || pin === op.pin))) {
+    if (pin === '4451' || (isAdminTarget && (pin === '4451' || isPinPresidente || matchesVolunteerPin(op, pin)))) {
       onSelectAdmin(pin);
       return;
     }
@@ -179,7 +188,7 @@ export const SchermataSceltaRuolo: React.FC<SchermataSceltaRuoloProps> = ({
       return;
     }
 
-    if (pin !== op.pin) {
+    if (!matchesVolunteerPin(op, pin)) {
       const nuoviSbagli = (op.tentativiErrati || 0) + 1;
       const rimasti = Math.max(0, 3 - nuoviSbagli);
       setPinInput('');

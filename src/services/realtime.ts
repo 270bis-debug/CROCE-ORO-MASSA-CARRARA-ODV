@@ -36,6 +36,11 @@ import {
   readRadioSlotDoc,
   writeRadioSlotDoc,
   fetchPushSubscriptionsFirestore,
+  syncPublicVolunteerRosterFirestore,
+  listenPublicVolunteerRosterFirestore,
+  readPublicVolunteerRosterFromServer,
+  convertPublicRosterEntriesToVolontari,
+  PublicVolunteerRosterDoc,
 } from './firebase';
 import { formatDateTimeItaly, formatTimeItaly } from '../utils/italianTime';
 import { mergeLoggedSessionsSafe, mergeVolontariListsSafe, normalizeDeletedIds } from '../utils/volontariMerge';
@@ -257,6 +262,7 @@ class RealtimeService {
   private shiftSignupsUnsub: (() => void) | null = null;
   private shiftSignupsReconciling: Set<string> = new Set();
   private pendingShiftSignupsQueue: ShiftSignupRecord[] = [];
+  private publicRosterUnsub: (() => void) | null = null;
   private lastGpsSentAt: number = 0;
   private lastGpsSentCoords: { lat: number; lng: number } | null = null;
 
@@ -399,6 +405,9 @@ class RealtimeService {
         this.lastVolontariRefreshAt = now;
         this.refreshShardFromServer('volontari').catch(() => {});
         this.reconcileCompletedPinResets().catch(() => {});
+      } else if (!this.firebaseSession.isAuthorized && now - this.lastVolontariRefreshAt > 15000) {
+        this.lastVolontariRefreshAt = now;
+        this.refreshPublicVolunteerRoster().catch(() => {});
       }
     };
 
@@ -520,6 +529,10 @@ class RealtimeService {
   private initFirebaseRealtime() {
     if (typeof window === 'undefined') return;
     try {
+      // Listener pubblico zero-PII attivo subito all'avvio: consente anche ai nuovi smartphone/iPhone
+      // non autenticati su Google Cloud Sync di ricevere istantaneamente l'elenco completo dei volontari.
+      this.attachPublicRosterListener();
+
       subscribeToFirebaseAuth((session) => {
         this.firebaseSession = session;
         this.emit('firebase_auth_change', session);
@@ -533,6 +546,83 @@ class RealtimeService {
       });
     } catch (err) {
       console.error('[Realtime] Errore inizializzazione Firebase:', err);
+    }
+  }
+
+  private applyPublicRosterSnapshot(docData: PublicVolunteerRosterDoc | null): number {
+    // Se il dispositivo è già autenticato ed ha caricato lo shard completo privato, non applicare mai il roster ridotto
+    if (this.firebaseSession.isAuthorized && this.shardLoadedFromCloud['volontari']) {
+      return Array.isArray(this.cloudState.volontari) ? this.cloudState.volontari.length : 0;
+    }
+    if (!docData || !Array.isArray(docData.entries) || docData.entries.length === 0) {
+      return 0;
+    }
+    const rosterVols = convertPublicRosterEntriesToVolontari(docData.entries);
+    if (rosterVols.length === 0) return 0;
+
+    const deletedIds = normalizeDeletedIds([
+      ...(Array.isArray(this.cloudState.volontariEliminatiIds) ? this.cloudState.volontariEliminatiIds : []),
+      ...(Array.isArray(docData.deletedIds) ? docData.deletedIds : []),
+    ]);
+    const currentVols = Array.isArray(this.cloudState.volontari) ? this.cloudState.volontari : [];
+    const mergedVols = mergeVolontariListsSafe(currentVols, rosterVols, deletedIds);
+    this.cloudState.volontariEliminatiIds = deletedIds;
+    this.cloudState.volontari = mergedVols;
+    this.lastVolontariRefreshAt = Date.now();
+    this.emit('VOLONTARI_UPDATED', {
+      volontari: mergedVols,
+      volontariEliminatiIds: deletedIds,
+    });
+    return rosterVols.length;
+  }
+
+  private attachPublicRosterListener() {
+    if (this.publicRosterUnsub) {
+      try {
+        this.publicRosterUnsub();
+      } catch {}
+      this.publicRosterUnsub = null;
+    }
+    try {
+      this.publicRosterUnsub = listenPublicVolunteerRosterFirestore(
+        (exists, docData) => {
+          if (exists && docData) {
+            this.applyPublicRosterSnapshot(docData);
+          }
+        },
+        () => {
+          // Ignora eventuali errori transitori di rete sul roster pubblico
+        }
+      );
+    } catch {}
+  }
+
+  public async refreshPublicVolunteerRoster(): Promise<{
+    ok: boolean;
+    count: number;
+    fromFullCloud?: boolean;
+  }> {
+    try {
+      if (this.firebaseSession.isAuthorized) {
+        await this.refreshShardFromServer('volontari');
+        const list = Array.isArray(this.cloudState.volontari) ? this.cloudState.volontari : [];
+        const deleted = Array.isArray(this.cloudState.volontariEliminatiIds)
+          ? this.cloudState.volontariEliminatiIds
+          : [];
+        if (list.length > 0) {
+          syncPublicVolunteerRosterFirestore(list, deleted).catch(() => {});
+        }
+        return { ok: true, count: list.length, fromFullCloud: true };
+      }
+
+      const res = await readPublicVolunteerRosterFromServer();
+      if (!res.exists || !res.data) {
+        return { ok: false, count: 0, fromFullCloud: false };
+      }
+      const count = this.applyPublicRosterSnapshot(res.data);
+      return { ok: count > 0, count, fromFullCloud: false };
+    } catch {
+      return { ok: false, count: 0, fromFullCloud: false };
     }
   }
 
@@ -1142,6 +1232,7 @@ class RealtimeService {
         this.reconcileCompletedPinResets()
           .then(() => syncPinResetProfilesFirestore(mergedVols, this.pinResetProfilesReconciling))
           .catch(() => {});
+        syncPublicVolunteerRosterFirestore(mergedVols, deletedIds).catch(() => {});
       }
     } else {
       Object.assign(this.cloudState, payload);
@@ -1885,6 +1976,7 @@ class RealtimeService {
     this.shardVersions[shardId] = newVer;
     if (shardId === 'volontari' && Array.isArray(payload?.volontari)) {
       syncPinResetProfilesFirestore(payload.volontari, this.pinResetProfilesReconciling).catch(() => {});
+      syncPublicVolunteerRosterFirestore(payload.volontari, payload.volontariEliminatiIds).catch(() => {});
     }
   }
 
@@ -1901,7 +1993,7 @@ class RealtimeService {
     const cloudList = Array.isArray(this.cloudState.volontari) ? this.cloudState.volontari : [];
     const cloudIds = new Set(cloudList.map((v: any) => v?.id).filter(Boolean));
     const missingInCloud = localVolontari.filter(
-      (v: any) => v && v.id && !deletedIds.includes(v.id) && !cloudIds.has(v.id)
+      (v: any) => v && v.id && !v.isPublicRosterOnly && !deletedIds.includes(v.id) && !cloudIds.has(v.id)
     );
 
     if (missingInCloud.length === 0) return false;
@@ -2807,6 +2899,29 @@ class RealtimeService {
       this.handlers.set(event, new Set());
     }
     this.handlers.get(event)!.add(handler);
+
+    // Replay immediato se l'elenco volontari (shard privato o roster pubblico zero-PII)
+    // è già arrivato dal Cloud prima del mount del componente React
+    if (
+      event === 'VOLONTARI_UPDATED' &&
+      Array.isArray(this.cloudState.volontari) &&
+      this.cloudState.volontari.length > 0
+    ) {
+      const snapshotVols = this.cloudState.volontari;
+      const snapshotDeleted = Array.isArray(this.cloudState.volontariEliminatiIds)
+        ? this.cloudState.volontariEliminatiIds
+        : [];
+      Promise.resolve().then(() => {
+        if (this.handlers.get(event)?.has(handler)) {
+          try {
+            handler({
+              volontari: snapshotVols,
+              volontariEliminatiIds: snapshotDeleted,
+            });
+          } catch {}
+        }
+      });
+    }
 
     return () => {
       const set = this.handlers.get(event);
@@ -4154,24 +4269,36 @@ class RealtimeService {
     if (Array.isArray(this.cloudState.volontari) && this.cloudState.volontari.length > 0) {
       return this.cloudState.volontari;
     }
-    try {
-      const baseUrl = this.getApiBaseUrl();
-      const res = await fetch(`${baseUrl}/api/volontari`, { cache: 'no-store' });
-      if (res.ok) {
-        const json = await res.json();
-        if (Array.isArray(json.volontariEliminatiIds)) {
-          this.cloudState.volontariEliminatiIds = normalizeDeletedIds([
-            ...(Array.isArray(this.cloudState.volontariEliminatiIds) ? this.cloudState.volontariEliminatiIds : []),
-            ...json.volontariEliminatiIds,
-          ]);
+    if (!this.isServerlessStaticHost()) {
+      try {
+        const baseUrl = this.getApiBaseUrl();
+        const res = await fetch(`${baseUrl}/api/volontari`, { cache: 'no-store' });
+        if (res.ok) {
+          const json = await res.json();
+          if (Array.isArray(json.volontariEliminatiIds)) {
+            this.cloudState.volontariEliminatiIds = normalizeDeletedIds([
+              ...(Array.isArray(this.cloudState.volontariEliminatiIds) ? this.cloudState.volontariEliminatiIds : []),
+              ...json.volontariEliminatiIds,
+            ]);
+          }
+          if (json.volontari && Array.isArray(json.volontari) && json.volontari.length > 0) {
+            return json.volontari;
+          }
         }
-        if (json.volontari && Array.isArray(json.volontari)) {
-          return json.volontari;
+      } catch (err) {
+        console.error('[Realtime] Errore fetchVolontari:', err);
+      }
+    }
+    // Fallback immediato sul roster pubblico zero-PII di Firestore (fondamentale su Vercel / iPhone appena scaricati)
+    try {
+      const rosterRes = await readPublicVolunteerRosterFromServer();
+      if (rosterRes.exists && rosterRes.data) {
+        this.applyPublicRosterSnapshot(rosterRes.data);
+        if (Array.isArray(this.cloudState.volontari) && this.cloudState.volontari.length > 0) {
+          return this.cloudState.volontari;
         }
       }
-    } catch (err) {
-      console.error('[Realtime] Errore fetchVolontari:', err);
-    }
+    } catch {}
     return [];
   }
 

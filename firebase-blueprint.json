@@ -529,6 +529,47 @@
         }
       },
       "required": ["subId", "scope", "role", "volontarioId", "endpoint", "p256dh", "auth", "ownerUid", "createdAt", "updatedAt"]
+    },
+    "PublicRoster": {
+      "title": "PublicRoster",
+      "description": "Zero-PII volunteer login directory (single whitelisted document volunteers_v1) enabling newly installed volunteer smartphones to display all active volunteer names and verify 4-digit PINs via SHA-256 digests without exposing any PII (no email, phone, tax ID, address, documents, signatures, or plaintext PIN).",
+      "type": "object",
+      "properties": {
+        "rosterId": {
+          "type": "string",
+          "enum": ["volunteers_v1"],
+          "minLength": 13,
+          "maxLength": 13,
+          "pattern": "^volunteers_v1$"
+        },
+        "version": {
+          "type": "number",
+          "description": "Monotonic revision counter incremented on every roster publication"
+        },
+        "entries": {
+          "type": "array",
+          "description": "Bounded list (max 400) of zero-PII volunteer login cards (id, nome, cognome, qualifica, SHA-256 pinHash, boolean hasFirma/pinIsEmergency/approvato/profiloCentrale)"
+        },
+        "deletedIds": {
+          "type": "array",
+          "description": "Bounded list (max 300) of explicitly deleted volunteer IDs"
+        },
+        "updatedByUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["rosterId", "version", "entries", "deletedIds", "updatedByUid", "createdAt", "updatedAt"]
     }
   },
   "firestore": {
@@ -567,6 +608,10 @@
     "/push_subscriptions/{subId}": {
       "schema": { "$ref": "#/entities/PushSubscriptionEntry" },
       "description": "Zero-PII Web Push subscriptions for background wake alerts across Vercel and Cloud Run."
+    },
+    "/public_roster/{rosterId}": {
+      "schema": { "$ref": "#/entities/PublicRoster" },
+      "description": "Zero-PII volunteer login roster (single document volunteers_v1) allowing newly installed devices to load all volunteer names without exposing PII."
     }
   }
 }
