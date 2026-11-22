@@ -54,7 +54,7 @@ import { SignaturePad } from './SignaturePad';
 import { isAccessoDaWeb } from '../utils/accessoWeb';
 import { UploadFirmaTrasparente } from './UploadFirmaTrasparente';
 import { ModalAccessoWeb } from './ModalAccessoWeb';
-import { MacroCategoriaId } from '../constants/macroCategorie';
+import { MacroCategoriaId, PulsanteStrumentiId } from '../constants/macroCategorie';
 import { inviaNotificaModificaAdmin } from '../utils/notificaModificaAdmin';
 import { formatDateItaly, formatDateTimeItaly, formatISODateItaly, getCurrentYearItaly } from '../utils/italianTime';
 import { mergeVolontariListsSafe } from '../utils/volontariMerge';
@@ -206,6 +206,7 @@ export interface Volontario {
   motivoEsenzioneQuota?: 'Benemerito' | 'Giovane' | 'LPU / MAP' | 'Onorario' | string;
   macroCategorieAbilitate?: MacroCategoriaId[]; // Macro categorie a cui l'utente ha accesso delegato (visualizzazione, inserimento e modifica)
   sottosezioniAbilitate?: Record<string, string[]>; // Sottosezioni specifiche abilitate per ciascun database (se assente: tutte)
+  pulsantiStrumentiAbilitati?: PulsanteStrumentiId[]; // Pulsanti barra strumenti riservati ad Admin/Presidente delegati a questo account (Database, Web PC, 10 GB, Rinomina DB, Rinomina SUB)
   sediTurniAbilitate?: string[]; // Sedi/sezioni autorizzate per visualizzare il tabellone turni (modificabile da centrale)
   sezioneAppartenenzaId?: string; // Sezione territoriale di appartenenza dell'associazione
   sezioneAppartenenzaNome?: string; // Nome della sezione territoriale di appartenenza

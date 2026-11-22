@@ -75,7 +75,10 @@ import {
   Server,
   PlusCircle,
   Paintbrush,
-  Layers
+  Layers,
+  Monitor,
+  UserCheck,
+  ExternalLink
 } from 'lucide-react';
 import { ModalAccessoWeb } from './components/ModalAccessoWeb';
 import { ModalSyncServerCroceOro } from './components/admin/ModalSyncServerCroceOro';
@@ -186,6 +189,7 @@ import {
   getAllowedSubtabsForDatabase,
   getTitoloSottosezione,
   isQualificaOperatoreCentrale,
+  isPulsanteStrumentiAbilitato,
 } from './constants/macroCategorie';
 import { useNomiSottosezioniCustom } from './hooks/useNomiDatabase';
 import {
@@ -908,6 +912,8 @@ const VistaDedicataTabelloneSenzaLogin: React.FC<{
 
   const ricaricaDati = () => {
     try {
+      // Sincronizzazione immediata dal feed pubblico Zero-PII (Modalità Monitor senza login)
+      realtime.refreshPublicBoard().catch(() => {});
       if (!realtime.isServerlessStatic()) {
         fetch('/api/turni')
           .then((res) => res.json())
@@ -1045,6 +1051,7 @@ const VistaDedicataTabelloneSenzaLogin: React.FC<{
           mezzi={initialMezzi}
           isAdmin={false}
           isStandalone={true}
+          isMonitorMode={true}
           onAggiornaTurni={handleAggiornaTurniDiretto}
           onRefreshAutomatico={ricaricaDati}
         />
@@ -1093,13 +1100,17 @@ export default function App() {
     return <VistaCittadinoLiveTracking />;
   }
 
-  // Se l'utente o l'amministratore accede al link riservato del tabellone turni settimanale (senza login obbligatorio)
+  // Link dedicato Modalità Monitor (senza login obbligatorio), distinto dal Tabellone Turni aperto da account loggato
   const isDedicatedTabellonePage = useMemo(() => {
     if (typeof window === 'undefined') return false;
     const path = window.location.pathname.toLowerCase();
     const search = window.location.search.toLowerCase();
     const hash = window.location.hash.toLowerCase();
     return (
+      path.includes('/monitor-turni') ||
+      search.includes('view=monitor-turni') ||
+      search.includes('monitor-turni') ||
+      hash.includes('monitor-turni') ||
       path.includes('/tabellone') ||
       search.includes('view=tabellone') ||
       search.includes('tabellone=') ||
@@ -1154,6 +1165,7 @@ export default function App() {
     firmaBase64?: string;
     macroCategorieAbilitate?: string[];
     sottosezioniAbilitate?: Record<string, string[]>;
+    pulsantiStrumentiAbilitati?: string[];
     profiloCentrale?: boolean;
     qualifica?: string;
   } | null>(() => {
@@ -1202,12 +1214,18 @@ export default function App() {
     return null;
   });
 
-  // L'Amministratore ed il Presidente godono degli stessi identici privilegi ed autorizzazioni in app
-  const isCentraleAdmin = Boolean(
+  // Privilegi reali dell'account loggato (Amministratore o Presidente) — mai mascherati dalla simulazione account
+  const isVeroAdminOPresidente = Boolean(
     utenteCentrale?.isAdmin ||
     utenteCentrale?.pin === '4451' ||
-    (utenteCentrale?.caricaConsiglioDirettivo && utenteCentrale.caricaConsiglioDirettivo.toLowerCase().includes('presidente'))
+    (utenteCentrale?.caricaConsiglioDirettivo && utenteCentrale.caricaConsiglioDirettivo.toLowerCase().includes('presidente')) ||
+    (utenteCentrale?.qualifica && utenteCentrale.qualifica.toLowerCase().includes('presidente'))
   );
+
+  // Controlli esclusivi Amministratore / Presidente: Anteprima Modalità Monitor e Simulazione Account
+  const [modalAnteprimaMonitorAperta, setModalAnteprimaMonitorAperta] = useState<boolean>(false);
+  const [accountSimulatoId, setAccountSimulatoId] = useState<string | null>(null);
+  const prevRuoloPrimaSimulazioneRef = useRef<'volontario' | 'admin' | null>(null);
 
   const ruoloRef = useRef<'volontario' | 'admin'>(ruolo);
   useEffect(() => {
@@ -4844,8 +4862,42 @@ export default function App() {
     realtime.deleteVolontario(id, remaining, nextDeleted);
   }, []);
 
+  // Account attualmente simulato da Amministratore / Presidente (se attivo)
+  const accountSimulato = useMemo<Volontario | null>(() => {
+    if (!isVeroAdminOPresidente || !accountSimulatoId) return null;
+    return volontari.find((v) => v.id === accountSimulatoId) || null;
+  }, [isVeroAdminOPresidente, accountSimulatoId, volontari]);
+
+  // L'Amministratore ed il Presidente godono degli stessi identici privilegi ed autorizzazioni in app
+  // (se la simulazione account è attiva, riflette esattamente i privilegi dell'account simulato)
+  const isCentraleAdmin = useMemo(() => {
+    if (accountSimulato) {
+      return Boolean(
+        accountSimulato.pin === '4451' ||
+        (accountSimulato.caricaConsiglioDirettivo && accountSimulato.caricaConsiglioDirettivo.toLowerCase().includes('presidente')) ||
+        (accountSimulato.qualifica && accountSimulato.qualifica.toLowerCase().includes('presidente'))
+      );
+    }
+    return isVeroAdminOPresidente;
+  }, [accountSimulato, isVeroAdminOPresidente]);
+
+  // Sessione di bordo effettiva (usa la sessione simulata quando Admin/Presidente simula la vista Volontario)
+  const sessioneTurnoEffettiva = useMemo<SessioneTurno>(() => {
+    if (accountSimulato && ruolo === 'volontario') {
+      return {
+        attivo: true,
+        volontarioId: accountSimulato.id,
+        volontarioNome: `${accountSimulato.nome} ${accountSimulato.cognome}`.trim(),
+        qualificaTurno: accountSimulato.qualifica || 'Soccorritore',
+        orarioInizio: 'Simulazione'
+      };
+    }
+    return sessioneTurno;
+  }, [accountSimulato, ruolo, sessioneTurno]);
+
   // Volontario attualmente loggato su questo terminale (fallback anche per nome/cognome in caso di riallineamento ID)
   const volontarioLoggatoCorrente = useMemo(() => {
+    if (accountSimulato && ruolo === 'volontario') return accountSimulato;
     if (!sessioneTurno.attivo) return null;
     if (sessioneTurno.volontarioId) {
       const byId = volontari.find(v => v.id === sessioneTurno.volontarioId);
@@ -4859,7 +4911,7 @@ export default function App() {
       if (byName) return byName;
     }
     return null;
-  }, [sessioneTurno.attivo, sessioneTurno.volontarioId, sessioneTurno.volontarioNome, volontari]);
+  }, [accountSimulato, ruolo, sessioneTurno.attivo, sessioneTurno.volontarioId, sessioneTurno.volontarioNome, volontari]);
 
   // Nome di battesimo dell'account loggato (solo `nome` da anagrafica, mai il cognome) per saluto "Ciao, <Nome>" in header
   const nomeSalutoAccount = useMemo(() => {
@@ -4872,6 +4924,10 @@ export default function App() {
       }
       return n;
     };
+
+    if (accountSimulato) {
+      return estraiSoloNome(accountSimulato.nome, accountSimulato.cognome);
+    }
 
     if (ruolo === 'admin') {
       const matchAnag =
@@ -4911,6 +4967,7 @@ export default function App() {
 
     return '';
   }, [
+    accountSimulato,
     ruolo,
     utenteCentrale?.id,
     utenteCentrale?.pin,
@@ -5616,8 +5673,25 @@ export default function App() {
 
   const nomiSubCustom = useNomiSottosezioniCustom();
 
-  // Utente centrale live (con permessi DB & sottosezioni sempre aggiornati dal registro volontari)
+  // Utente centrale live (con permessi DB, sottosezioni & pulsanti strumenti sempre aggiornati; rispetta eventuale simulazione account)
   const utenteCentraleLive = useMemo(() => {
+    if (accountSimulato) {
+      return {
+        id: accountSimulato.id,
+        nome: accountSimulato.nome,
+        cognome: accountSimulato.cognome,
+        matricola: accountSimulato.matricola,
+        pin: accountSimulato.pin,
+        isAdmin: isCentraleAdmin,
+        caricaConsiglioDirettivo: accountSimulato.caricaConsiglioDirettivo,
+        firmaBase64: accountSimulato.firmaBase64,
+        macroCategorieAbilitate: accountSimulato.macroCategorieAbilitate || [],
+        sottosezioniAbilitate: accountSimulato.sottosezioniAbilitate,
+        pulsantiStrumentiAbilitati: accountSimulato.pulsantiStrumentiAbilitati || [],
+        profiloCentrale: accountSimulato.profiloCentrale,
+        qualifica: accountSimulato.qualifica,
+      };
+    }
     if (!utenteCentrale) return null;
     const currentVol = volontari.find(
       (v) =>
@@ -5630,10 +5704,11 @@ export default function App() {
       isAdmin: isCentraleAdmin || utenteCentrale.isAdmin,
       macroCategorieAbilitate: currentVol.macroCategorieAbilitate ?? utenteCentrale.macroCategorieAbilitate,
       sottosezioniAbilitate: currentVol.sottosezioniAbilitate ?? utenteCentrale.sottosezioniAbilitate,
+      pulsantiStrumentiAbilitati: currentVol.pulsantiStrumentiAbilitati ?? utenteCentrale.pulsantiStrumentiAbilitati,
       profiloCentrale: currentVol.profiloCentrale,
       qualifica: currentVol.qualifica,
     };
-  }, [utenteCentrale, volontari, isCentraleAdmin]);
+  }, [accountSimulato, utenteCentrale, volontari, isCentraleAdmin]);
 
   // Consegna notifica in-app agli account loggati che non hanno ancora caricato la propria firma sull'app
   useEffect(() => {
@@ -9787,6 +9862,9 @@ export default function App() {
   };
 
   const handleLogoutCentrale = () => {
+    setAccountSimulatoId(null);
+    setModalAnteprimaMonitorAperta(false);
+    prevRuoloPrimaSimulazioneRef.current = null;
     const nomeOp = utenteCentrale ? `${utenteCentrale.nome} ${utenteCentrale.cognome}`.trim() : 'Centrale Operativa';
     notificaDatoAllaCentrale(`🔴 LOGOUT CENTRALE: ${nomeOp} ha terminato la sessione in Centrale Operativa.`, 'generico');
     aggiungiNotifica(`🔴 LOGOUT: Sessione operatore Centrale terminata.`, 'centrale');
@@ -9817,7 +9895,7 @@ export default function App() {
     );
   };
 
-  // Verifica se un volontario dispone di accesso autorizzato a uno o più Database o anche a una singola sottosezione
+  // Verifica se un volontario dispone di accesso autorizzato a uno o più Database, sottosezioni o pulsanti strumenti
   const haAccessoCentraleODatabase = (v?: Volontario | null): boolean => {
     if (!v) return false;
     if (v.bloccatoPerTentativi || (v.tentativiErrati && v.tentativiErrati >= 3)) return false;
@@ -9830,8 +9908,40 @@ export default function App() {
       v.sottosezioniAbilitate &&
       Object.values(v.sottosezioniAbilitate).some((arr) => Array.isArray(arr) && arr.length > 0)
     );
+    const haPulsanti = Boolean(v.pulsantiStrumentiAbilitati && v.pulsantiStrumentiAbilitati.length > 0);
     const isOpCentrale = Boolean(v.profiloCentrale || isQualificaOperatoreCentrale(v.qualifica));
-    return isPres || haMacro || haSottosezioni || (isOpCentrale && v.approvato !== false);
+    return isPres || haMacro || haSottosezioni || haPulsanti || (isOpCentrale && v.approvato !== false);
+  };
+
+  // Simulazione account (esclusiva Amministratore & Presidente)
+  const handleTerminaSimulazioneAccount = () => {
+    setAccountSimulatoId(null);
+    const prevRuolo = prevRuoloPrimaSimulazioneRef.current || 'admin';
+    prevRuoloPrimaSimulazioneRef.current = null;
+    setRuolo(prevRuolo);
+    if (prevRuolo === 'admin') {
+      setAdminSection('dashboard');
+    }
+  };
+
+  const handleAvviaSimulazioneAccount = (volId: string) => {
+    if (!isVeroAdminOPresidente) return;
+    if (!volId) {
+      handleTerminaSimulazioneAccount();
+      return;
+    }
+    const target = volontari.find((v) => v.id === volId);
+    if (!target) return;
+    if (prevRuoloPrimaSimulazioneRef.current === null) {
+      prevRuoloPrimaSimulazioneRef.current = ruolo;
+    }
+    setAccountSimulatoId(target.id);
+    if (haAccessoCentraleODatabase(target)) {
+      setRuolo('admin');
+      setAdminSection('dashboard');
+    } else {
+      setRuolo('volontario');
+    }
   };
 
   // Switch ruolo intelligente: chi ha accesso ad almeno un database o sottosezione entra in Accesso Avanzato senza rieffettuare il login
@@ -9854,6 +9964,7 @@ export default function App() {
             firmaBase64: volontarioLoggatoCorrente.firmaBase64,
             macroCategorieAbilitate: volontarioLoggatoCorrente.macroCategorieAbilitate || [],
             sottosezioniAbilitate: volontarioLoggatoCorrente.sottosezioniAbilitate,
+            pulsantiStrumentiAbilitati: volontarioLoggatoCorrente.pulsantiStrumentiAbilitati || [],
             profiloCentrale: volontarioLoggatoCorrente.profiloCentrale,
             qualifica: volontarioLoggatoCorrente.qualifica
           };
@@ -14690,11 +14801,102 @@ KM TOTALI: ${kmTot} KM`;
         </div>
       )}
 
+      {/* BANNER SIMULAZIONE ACCOUNT ATTIVA — SEMPRE VISIBILE AD AMMINISTRATORE / PRESIDENTE */}
+      {isVeroAdminOPresidente && accountSimulato && (
+        <div className="sticky top-0 z-[70] bg-gradient-to-r from-violet-900 via-indigo-900 to-fuchsia-900 border-b-2 border-fuchsia-400 px-3 py-2 text-white shadow-xl">
+          <div className="max-w-[1440px] mx-auto flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-fuchsia-500/30 border border-fuchsia-300/60 text-[10px] font-black uppercase tracking-wider text-fuchsia-100 shrink-0">
+                <Eye className="w-3.5 h-3.5 text-fuchsia-200 animate-pulse" />
+                Simulazione Attiva
+              </span>
+              <span className="text-xs sm:text-sm font-black text-white truncate">
+                {accountSimulato.nome} {accountSimulato.cognome}
+              </span>
+              <span className="hidden md:inline text-[11px] font-semibold text-indigo-200 truncate">
+                ({accountSimulato.caricaConsiglioDirettivo && !['nessuna', 'nessuna carica direttivo', '-'].includes(accountSimulato.caricaConsiglioDirettivo.toLowerCase()) ? accountSimulato.caricaConsiglioDirettivo : (accountSimulato.qualifica || 'Volontario')})
+              </span>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-1.5">
+              {/* Cambio rapido account simulato */}
+              <select
+                value={accountSimulato.id}
+                onChange={(e) => handleAvviaSimulazioneAccount(e.target.value)}
+                className="bg-slate-950/90 border border-indigo-400/60 rounded-lg px-2 py-1 text-[11px] font-bold text-white focus:outline-none focus:border-fuchsia-300 cursor-pointer max-w-[200px]"
+                title="Cambia account simulato"
+              >
+                <option value="">-- Disattiva Simulazione --</option>
+                {[...volontari]
+                  .filter((v) => v.id !== 'vol-admin' && v.pin !== '4451')
+                  .sort((a, b) => `${a.cognome} ${a.nome}`.localeCompare(`${b.cognome} ${b.nome}`, 'it'))
+                  .map((v) => (
+                    <option key={v.id} value={v.id}>
+                      {v.cognome} {v.nome} ({v.qualifica || 'Volontario'})
+                    </option>
+                  ))}
+              </select>
+
+              {/* Switch rapido tra Vista Centrale/DB e Vista Volontario (Bordo) dell'account simulato */}
+              <div className="flex items-center bg-slate-950/60 rounded-lg p-0.5 border border-indigo-400/40">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setRuolo('admin');
+                    setAdminSection('dashboard');
+                  }}
+                  className={`px-2 py-0.5 rounded-md text-[10.5px] font-black transition-all cursor-pointer ${
+                    ruolo === 'admin'
+                      ? 'bg-indigo-500 text-white shadow'
+                      : 'text-indigo-200 hover:text-white'
+                  }`}
+                  title="Visualizza i Database e la Barra Strumenti come questo account"
+                >
+                  Vista Centrale / DB
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setRuolo('volontario')}
+                  className={`px-2 py-0.5 rounded-md text-[10.5px] font-black transition-all cursor-pointer ${
+                    ruolo === 'volontario'
+                      ? 'bg-amber-500 text-slate-950 shadow'
+                      : 'text-indigo-200 hover:text-white'
+                  }`}
+                  title="Visualizza il Terminale di Bordo e il Tabellone Turni come questo account"
+                >
+                  Vista Volontario
+                </button>
+              </div>
+
+              <button
+                type="button"
+                onClick={handleTerminaSimulazioneAccount}
+                className="px-2.5 py-1 rounded-lg bg-white hover:bg-rose-50 text-rose-900 font-black text-[11px] flex items-center gap-1 shadow-md border border-rose-300 cursor-pointer active:scale-95 transition-all"
+              >
+                <X className="w-3.5 h-3.5" />
+                <span>Esci da Simulazione</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Intestazione Principale Compatta & Adattiva (Mobile, Tablet, Desktop) */}
       {ruolo && (() => {
         const isAdminAttivoInHeader = ruolo === 'admin' && isCentraleAdmin;
-        const puoVedereDatabaseAccount =
-          ruolo === 'admin' && (isCentraleAdmin || sezioniAbilitateUtente.includes('volontari'));
+        // I 5 pulsanti riservati (Database, Web PC, 10 GB, Rinomina DB, Rinomina SUB) sono visibili
+        // di default SOLO ad Amministratore e Presidente, oppure agli account abilitati in 8. Accesso Database
+        const puoVedereBtnDatabase = ruolo === 'admin' && isPulsanteStrumentiAbilitato(utenteCentraleLive, 'database');
+        const puoVedereBtnWebPc = ruolo === 'admin' && isPulsanteStrumentiAbilitato(utenteCentraleLive, 'web_pc');
+        const puoVedereBtnBackup10Gb = ruolo === 'admin' && isPulsanteStrumentiAbilitato(utenteCentraleLive, 'backup_10gb');
+        const puoVedereBtnRinominaDb = ruolo === 'admin' && isPulsanteStrumentiAbilitato(utenteCentraleLive, 'rinomina_db');
+        const puoVedereBtnRinominaSub = ruolo === 'admin' && isPulsanteStrumentiAbilitato(utenteCentraleLive, 'rinomina_sub');
+
+        const listaAccountSimulabili = isVeroAdminOPresidente
+          ? [...volontari]
+              .filter((v) => v.id !== 'vol-admin' && v.pin !== '4451')
+              .sort((a, b) => `${a.cognome} ${a.nome}`.localeCompare(`${b.cognome} ${b.nome}`, 'it'))
+          : [];
 
         const scadenzaPatentiCount = isAdminAttivoInHeader
           ? volontari.filter(v => {
@@ -14704,9 +14906,9 @@ KM TOTALI: ${kmTot} KM`;
             }).length
           : 0;
 
-        const centraleOpIdBtn = utenteCentrale?.id || 'admin-centrale-root';
-        const centraleOpNomeBtn = utenteCentrale?.nome
-          ? `${utenteCentrale.nome} ${utenteCentrale.cognome || ''}`.trim().toLowerCase()
+        const centraleOpIdBtn = utenteCentraleLive?.id || 'admin-centrale-root';
+        const centraleOpNomeBtn = utenteCentraleLive?.nome
+          ? `${utenteCentraleLive.nome} ${utenteCentraleLive.cognome || ''}`.trim().toLowerCase()
           : 'amministratore centrale';
         const timbCentraleAttivaBtn = ruolo === 'admin' && timbratureVolontari.some(
           t =>
@@ -14721,9 +14923,9 @@ KM TOTALI: ${kmTot} KM`;
             if (volontarioLoggatoCorrente) {
               return haAccessoCentraleODatabase(volontarioLoggatoCorrente);
             }
-            if (utenteCentrale) {
-              if (utenteCentrale.isAdmin || utenteCentrale.pin === '4451') return true;
-              const volMatch = utenteCentrale.id ? volontari.find(v => v.id === utenteCentrale.id) : null;
+            if (utenteCentraleLive) {
+              if (utenteCentraleLive.isAdmin || utenteCentraleLive.pin === '4451') return true;
+              const volMatch = utenteCentraleLive.id ? volontari.find(v => v.id === utenteCentraleLive.id) : null;
               return haAccessoCentraleODatabase(volMatch);
             }
             return false;
@@ -14978,11 +15180,11 @@ KM TOTALI: ${kmTot} KM`;
                       }`}
                     >
                       {ruolo === 'admin'
-                        ? utenteCentrale?.caricaConsiglioDirettivo?.toLowerCase().includes('presidente')
+                        ? utenteCentraleLive?.caricaConsiglioDirettivo?.toLowerCase().includes('presidente')
                           ? 'Centrale (Presidente)'
-                          : utenteCentrale?.isAdmin
+                          : utenteCentraleLive?.isAdmin
                           ? 'Centrale (Admin)'
-                          : `Centrale (${utenteCentrale?.nome || 'Op.'})`
+                          : `Centrale (${utenteCentraleLive?.nome || 'Op.'})`
                         : 'Volontario'}
                     </span>
                   </div>
@@ -15043,7 +15245,7 @@ KM TOTALI: ${kmTot} KM`;
                     </button>
 
                     {menuHeaderAzioniAperto && (
-                      <div className="absolute right-0 mt-1.5 w-64 max-w-[calc(100vw-1rem)] bg-slate-950 border border-slate-700 rounded-xl shadow-2xl p-2 z-50 max-h-[70dvh] overflow-y-auto space-y-1.5">
+                      <div className="absolute right-0 mt-1.5 w-72 max-w-[calc(100vw-1rem)] bg-slate-950 border border-slate-700 rounded-xl shadow-2xl p-2 z-50 max-h-[75dvh] overflow-y-auto space-y-1.5">
                         {/* Allarmi acustici */}
                         <div className="grid grid-cols-2 gap-1.5">
                           <button
@@ -15074,7 +15276,50 @@ KM TOTALI: ${kmTot} KM`;
 
                         <div className="border-t border-slate-800 my-1" />
 
-                        {puoVedereDatabaseAccount && (
+                        {/* Controlli Esclusivi Amministratore & Presidente: Anteprima Monitor & Simula Account */}
+                        {isVeroAdminOPresidente && (
+                          <div className="space-y-1.5 p-2 rounded-lg bg-indigo-950/60 border border-indigo-500/40">
+                            <div className="text-[9.5px] font-black uppercase tracking-wider text-indigo-300">
+                              Strumenti Direttivo (Admin / Presidente)
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setMenuHeaderAzioniAperto(false);
+                                realtime.refreshPublicBoard().catch(() => {});
+                                setModalAnteprimaMonitorAperta(true);
+                              }}
+                              className="w-full px-2.5 py-2 rounded-lg bg-cyan-600/20 hover:bg-cyan-600/35 text-cyan-200 border border-cyan-500/40 font-bold text-xs flex items-center gap-2 cursor-pointer"
+                            >
+                              <Monitor className="w-4 h-4 text-cyan-300 shrink-0" />
+                              <span>Anteprima Modalità Monitor</span>
+                            </button>
+
+                            <div className="space-y-1">
+                              <label className="text-[10px] font-bold text-fuchsia-300 flex items-center gap-1.5">
+                                <UserCheck className="w-3.5 h-3.5 text-fuchsia-400 shrink-0" />
+                                <span>Simula Vista Account:</span>
+                              </label>
+                              <select
+                                value={accountSimulatoId || ''}
+                                onChange={(e) => {
+                                  setMenuHeaderAzioniAperto(false);
+                                  handleAvviaSimulazioneAccount(e.target.value);
+                                }}
+                                className="w-full bg-slate-900 border border-fuchsia-500/50 rounded-lg px-2 py-1.5 text-[11px] font-bold text-white focus:outline-none focus:border-fuchsia-400 cursor-pointer"
+                              >
+                                <option value="">-- Il mio Account (Nessuna simulazione) --</option>
+                                {listaAccountSimulabili.map((v) => (
+                                  <option key={v.id} value={v.id}>
+                                    {v.cognome} {v.nome} ({v.qualifica || 'Volontario'})
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                          </div>
+                        )}
+
+                        {puoVedereBtnDatabase && (
                           <button
                             type="button"
                             onClick={() => {
@@ -15115,56 +15360,60 @@ KM TOTALI: ${kmTot} KM`;
                           <span>Autorizzazioni Dispositivo</span>
                         </button>
 
-                        {isAdminAttivoInHeader && (
-                          <>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setMenuHeaderAzioniAperto(false);
-                                setModalAccessoWebAperta(true);
-                              }}
-                              className="w-full px-2.5 py-2 rounded-lg bg-slate-900 hover:bg-slate-800 text-sky-300 border border-sky-500/30 font-bold text-xs flex items-center gap-2 cursor-pointer"
-                            >
-                              <Globe className="w-4 h-4 text-sky-400 shrink-0" />
-                              <span>Accesso Web PC</span>
-                            </button>
+                        {puoVedereBtnWebPc && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setMenuHeaderAzioniAperto(false);
+                              setModalAccessoWebAperta(true);
+                            }}
+                            className="w-full px-2.5 py-2 rounded-lg bg-slate-900 hover:bg-slate-800 text-sky-300 border border-sky-500/30 font-bold text-xs flex items-center gap-2 cursor-pointer"
+                          >
+                            <Globe className="w-4 h-4 text-sky-400 shrink-0" />
+                            <span>Accesso Web PC</span>
+                          </button>
+                        )}
 
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setMenuHeaderAzioniAperto(false);
-                                setModalSyncServerAperta(true);
-                              }}
-                              className="w-full px-2.5 py-2 rounded-lg bg-slate-900 hover:bg-slate-800 text-amber-300 border border-amber-500/30 font-bold text-xs flex items-center gap-2 cursor-pointer"
-                            >
-                              <Server className="w-4 h-4 text-amber-400 shrink-0" />
-                              <span>Server Backup (10 GB)</span>
-                            </button>
+                        {puoVedereBtnBackup10Gb && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setMenuHeaderAzioniAperto(false);
+                              setModalSyncServerAperta(true);
+                            }}
+                            className="w-full px-2.5 py-2 rounded-lg bg-slate-900 hover:bg-slate-800 text-amber-300 border border-amber-500/30 font-bold text-xs flex items-center gap-2 cursor-pointer"
+                          >
+                            <Server className="w-4 h-4 text-amber-400 shrink-0" />
+                            <span>Server Backup (10 GB)</span>
+                          </button>
+                        )}
 
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setMenuHeaderAzioniAperto(false);
-                                setModalRinominaMode('db');
-                              }}
-                              className="w-full px-2.5 py-2 rounded-lg bg-slate-900 hover:bg-slate-800 text-indigo-300 border border-indigo-500/30 font-bold text-xs flex items-center gap-2 cursor-pointer"
-                            >
-                              <Edit3 className="w-4 h-4 text-indigo-400 shrink-0" />
-                              <span>Rinomina DB</span>
-                            </button>
+                        {puoVedereBtnRinominaDb && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setMenuHeaderAzioniAperto(false);
+                              setModalRinominaMode('db');
+                            }}
+                            className="w-full px-2.5 py-2 rounded-lg bg-slate-900 hover:bg-slate-800 text-indigo-300 border border-indigo-500/30 font-bold text-xs flex items-center gap-2 cursor-pointer"
+                          >
+                            <Edit3 className="w-4 h-4 text-indigo-400 shrink-0" />
+                            <span>Rinomina DB</span>
+                          </button>
+                        )}
 
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setMenuHeaderAzioniAperto(false);
-                                setModalRinominaMode('sub');
-                              }}
-                              className="w-full px-2.5 py-2 rounded-lg bg-slate-900 hover:bg-slate-800 text-purple-300 border border-purple-500/30 font-bold text-xs flex items-center gap-2 cursor-pointer"
-                            >
-                              <Layers className="w-4 h-4 text-purple-400 shrink-0" />
-                              <span>Rinomina SUB</span>
-                            </button>
-                          </>
+                        {puoVedereBtnRinominaSub && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setMenuHeaderAzioniAperto(false);
+                              setModalRinominaMode('sub');
+                            }}
+                            className="w-full px-2.5 py-2 rounded-lg bg-slate-900 hover:bg-slate-800 text-purple-300 border border-purple-500/30 font-bold text-xs flex items-center gap-2 cursor-pointer"
+                          >
+                            <Layers className="w-4 h-4 text-purple-400 shrink-0" />
+                            <span>Rinomina SUB</span>
+                          </button>
                         )}
 
                         {permessiDaRiabilitare && (
@@ -15246,6 +15495,58 @@ KM TOTALI: ${kmTot} KM`;
                       </button>
                     </div>
 
+                    {/* Pulsanti Esclusivi Amministratore & Presidente: Anteprima Monitor + Simula Account */}
+                    {isVeroAdminOPresidente && (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            realtime.refreshPublicBoard().catch(() => {});
+                            setModalAnteprimaMonitorAperta(true);
+                          }}
+                          className={`px-2 py-1 rounded-lg font-bold text-[11px] flex items-center gap-1 cursor-pointer border whitespace-nowrap transition-all ${
+                            isWeb
+                              ? 'bg-cyan-100 hover:bg-cyan-200 text-cyan-950 border-cyan-400'
+                              : 'bg-cyan-950/70 hover:bg-cyan-900/80 text-cyan-200 border-cyan-500/50'
+                          }`}
+                          style={isWeb ? { backgroundColor: '#cffafe', color: '#164e63', borderColor: '#22d3ee' } : undefined}
+                          title="Visualizza l'anteprima esatta della Modalità Monitor (schermo senza login)"
+                        >
+                          <Monitor className="w-3.5 h-3.5 shrink-0" />
+                          <span>Anteprima Monitor</span>
+                        </button>
+
+                        <div
+                          className={`flex items-center gap-1 px-1.5 py-0.5 rounded-lg border ${
+                            accountSimulato
+                              ? 'bg-fuchsia-950/90 border-fuchsia-400 text-fuchsia-100'
+                              : isWeb
+                              ? 'bg-fuchsia-50 border-fuchsia-300 text-fuchsia-950'
+                              : 'bg-slate-800/90 border-fuchsia-500/40 text-fuchsia-200'
+                          }`}
+                          title="Simula la visualizzazione esatta di un altro account (Database, Pulsanti e Terminale Volontario)"
+                        >
+                          <UserCheck className="w-3.5 h-3.5 text-fuchsia-400 shrink-0" />
+                          <select
+                            value={accountSimulatoId || ''}
+                            onChange={(e) => handleAvviaSimulazioneAccount(e.target.value)}
+                            className={`bg-transparent text-[11px] font-bold focus:outline-none cursor-pointer max-w-[155px] ${
+                              isWeb && !accountSimulato ? 'text-fuchsia-950' : 'text-white'
+                            }`}
+                          >
+                            <option value="" className="bg-slate-900 text-slate-200">
+                              Simula Account...
+                            </option>
+                            {listaAccountSimulabili.map((v) => (
+                              <option key={v.id} value={v.id} className="bg-slate-900 text-white">
+                                {v.cognome} {v.nome}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      </>
+                    )}
+
                     {permessiDaRiabilitare && (
                       <button
                         type="button"
@@ -15258,7 +15559,7 @@ KM TOTALI: ${kmTot} KM`;
                       </button>
                     )}
 
-                    {puoVedereDatabaseAccount && (
+                    {puoVedereBtnDatabase && (
                       <button
                         type="button"
                         onClick={() => setModalDatabaseVolontariAperta(true)}
@@ -15272,7 +15573,7 @@ KM TOTALI: ${kmTot} KM`;
                       </button>
                     )}
 
-                    {isAdminAttivoInHeader && (
+                    {puoVedereBtnWebPc && (
                       <button
                         type="button"
                         onClick={() => setModalAccessoWebAperta(true)}
@@ -15286,7 +15587,7 @@ KM TOTALI: ${kmTot} KM`;
                       </button>
                     )}
 
-                    {isAdminAttivoInHeader && (
+                    {puoVedereBtnBackup10Gb && (
                       <button
                         type="button"
                         onClick={() => setModalSyncServerAperta(true)}
@@ -15300,7 +15601,7 @@ KM TOTALI: ${kmTot} KM`;
                       </button>
                     )}
 
-                    {isAdminAttivoInHeader && (
+                    {puoVedereBtnRinominaDb && (
                       <button
                         type="button"
                         onClick={() => setModalRinominaMode('db')}
@@ -15315,7 +15616,7 @@ KM TOTALI: ${kmTot} KM`;
                       </button>
                     )}
 
-                    {isAdminAttivoInHeader && (
+                    {puoVedereBtnRinominaSub && (
                       <button
                         type="button"
                         onClick={() => setModalRinominaMode('sub')}
@@ -15478,13 +15779,13 @@ KM TOTALI: ${kmTot} KM`;
 
         {/* VISTA 3: DATABASE MEZZI, STATO, MANUTENZIONE & MAGAZZINO DOTAZIONI MEZZI */}
         {ruolo === 'admin' && adminSection === 'mezzi' && (() => {
-          const volCentraleCorr = utenteCentrale?.id ? volontari.find((v) => v.id === utenteCentrale.id) : undefined;
-          const caricaDirettivoCorr = (utenteCentrale?.caricaConsiglioDirettivo || volCentraleCorr?.caricaConsiglioDirettivo || '').trim();
+          const volCentraleCorr = utenteCentraleLive?.id ? volontari.find((v) => v.id === utenteCentraleLive.id) : undefined;
+          const caricaDirettivoCorr = (utenteCentraleLive?.caricaConsiglioDirettivo || volCentraleCorr?.caricaConsiglioDirettivo || '').trim();
           const hasCaricaDirettivo = Boolean(
             caricaDirettivoCorr &&
             !['nessuna', 'nessuna carica direttivo', 'nessun incarico', '-'].includes(caricaDirettivoCorr.toLowerCase())
           );
-          const isAdminEffettivo = Boolean(utenteCentrale?.isAdmin || utenteCentrale?.pin === '4451' || isCentraleAdmin);
+          const isAdminEffettivo = isCentraleAdmin;
           const puoModificareRegolaScadenze = isAdminEffettivo || hasCaricaDirettivo;
           return (
             <SezioneMezzi
@@ -15903,16 +16204,16 @@ KM TOTALI: ${kmTot} KM`;
                     </div>
                   )}
 
-                  {!sessioneTurno.attivo ? (
+                  {!sessioneTurnoEffettiva.attivo ? (
                     <SchermataTurnoVolontario
-                      sessione={sessioneTurno}
+                      sessione={sessioneTurnoEffettiva}
                       volontari={volontari}
                       flottaMezzi={flottaSigleDinamiche}
                       mezziFlotta={mezziFlotta}
                       mezziFuoriServizio={mezziFuoriServizio}
                       missioneAttiva={missioneBase}
                       onLogin={handleLoginVolontario}
-                      onLogout={handleLogoutVolontario}
+                      onLogout={accountSimulato ? handleTerminaSimulazioneAccount : handleLogoutVolontario}
                       onRegistraNuovoVolontario={(nuovo) => {
                         const aggiornati = [nuovo, ...volontari.filter(v => v.id !== nuovo.id)];
                         aggiornaVolontari(aggiornati);
@@ -15920,7 +16221,10 @@ KM TOTALI: ${kmTot} KM`;
                       }}
                       onAggiornaVolontari={aggiornaVolontari}
                       onNotificaRadio={aggiungiNotifica}
-                      onApriTabelloneTurni={() => setModalTabelloneTurniVolontario(true)}
+                      onApriTabelloneTurni={() => {
+                        realtime.refreshPublicBoard().catch(() => {});
+                        setModalTabelloneTurniVolontario(true);
+                      }}
                       onApriBacheca={() => setModalBachecaVolontarioAperta(true)}
                       conteggioBacheca={totaleElementiBachecaAttivi}
                       onApriCentroNotifiche={() => setModalCentroNotificheAperta(true)}
@@ -15930,21 +16234,21 @@ KM TOTALI: ${kmTot} KM`;
                       onSalvaChecklistCompilata={handleSalvaChecklistCompilata}
                       turni={turniSedi}
                       timbrature={timbratureVolontari}
-                      utenteCentraleAutenticato={utenteCentrale}
+                      utenteCentraleAutenticato={utenteCentraleLive}
                       onAvviaFlussoTimbraturaPoiChecklist={handleAvviaFlussoTimbraturaPoiChecklist}
                     />
                   ) : (
                     <>
                       {/* Banner Badge Turno Attivo (logout spostato in barra superiore + bottone Pennello Timbratura) */}
                       <SchermataTurnoVolontario
-                        sessione={sessioneTurno}
+                        sessione={sessioneTurnoEffettiva}
                         volontari={volontari}
                         flottaMezzi={flottaSigleDinamiche}
                         mezziFlotta={mezziFlotta}
                         mezziFuoriServizio={mezziFuoriServizio}
                         missioneAttiva={missioneBase}
                         onLogin={handleLoginVolontario}
-                        onLogout={handleLogoutVolontario}
+                        onLogout={accountSimulato ? handleTerminaSimulazioneAccount : handleLogoutVolontario}
                         onRegistraNuovoVolontario={(nuovo) => {
                           const aggiornati = [nuovo, ...volontari.filter(v => v.id !== nuovo.id)];
                           aggiornaVolontari(aggiornati);
@@ -15952,16 +16256,19 @@ KM TOTALI: ${kmTot} KM`;
                         }}
                         onAggiornaVolontari={aggiornaVolontari}
                         onNotificaRadio={aggiungiNotifica}
-                        onApriTabelloneTurni={() => setModalTabelloneTurniVolontario(true)}
+                        onApriTabelloneTurni={() => {
+                          realtime.refreshPublicBoard().catch(() => {});
+                          setModalTabelloneTurniVolontario(true);
+                        }}
                         onApriBacheca={() => setModalBachecaVolontarioAperta(true)}
                         conteggioBacheca={totaleElementiBachecaAttivi}
                         onApriCentroNotifiche={() => setModalCentroNotificheAperta(true)}
                         conteggioNotificheNonLette={conteggioNotificheNonLette}
                         onApriTimbratura={() => {
-                          if (!haTimbraturaApertaVolontario && !checklistCompilataOggiVolontario && !inAttesaChecklistDopoTimbratura && sessioneTurno.mezzoScelto) {
+                          if (!haTimbraturaApertaVolontario && !checklistCompilataOggiVolontario && !inAttesaChecklistDopoTimbratura && sessioneTurnoEffettiva.mezzoScelto) {
                             setInAttesaChecklistDopoTimbratura({
-                              mezzo: sessioneTurno.mezzoScelto,
-                              ruolo: sessioneTurno.qualificaTurno || 'Soccorritore'
+                              mezzo: sessioneTurnoEffettiva.mezzoScelto,
+                              ruolo: sessioneTurnoEffettiva.qualificaTurno || 'Soccorritore'
                             });
                           }
                           setModalTimbraturaVolontarioAperta(true);
@@ -15972,7 +16279,7 @@ KM TOTALI: ${kmTot} KM`;
                         onSalvaChecklistCompilata={handleSalvaChecklistCompilata}
                         turni={turniSedi}
                         timbrature={timbratureVolontari}
-                        utenteCentraleAutenticato={utenteCentrale}
+                        utenteCentraleAutenticato={utenteCentraleLive}
                         onAvviaFlussoTimbraturaPoiChecklist={handleAvviaFlussoTimbraturaPoiChecklist}
                         checklistCompilataOggi={checklistCompilataOggiVolontario}
                         invitoAvvioDismissed={
@@ -22762,10 +23069,15 @@ KM TOTALI: ${kmTot} KM`;
 
       {/* MODALE RINOMINA DB & RINOMINA SUB (DAL MENÙ STRUMENTI) */}
       <ModalRinominaDbSub
-        mode={isCentraleAdmin ? modalRinominaMode : null}
+        mode={
+          (modalRinominaMode === 'db' && isPulsanteStrumentiAbilitato(utenteCentraleLive, 'rinomina_db')) ||
+          (modalRinominaMode === 'sub' && isPulsanteStrumentiAbilitato(utenteCentraleLive, 'rinomina_sub'))
+            ? modalRinominaMode
+            : null
+        }
         onChangeMode={(next) => setModalRinominaMode(next)}
         onClose={() => setModalRinominaMode(null)}
-        operatoreCorrente={utenteCentrale?.nome ? `${utenteCentrale.nome} ${utenteCentrale.cognome || ''}`.trim() : 'Amministratore'}
+        operatoreCorrente={utenteCentraleLive?.nome ? `${utenteCentraleLive.nome} ${utenteCentraleLive.cognome || ''}`.trim() : 'Amministratore'}
         onNotificaRadio={aggiungiNotifica}
       />
 
@@ -24771,11 +25083,67 @@ KM TOTALI: ${kmTot} KM`;
               sedi={sediAssociative}
               volontari={volontari}
               mezzi={mezziFlotta}
-              volontarioLoggatoNome={sessioneTurno.volontarioNome}
-              volontarioLoggatoId={sessioneTurno.volontarioId}
+              volontarioLoggatoNome={sessioneTurnoEffettiva.volontarioNome}
+              volontarioLoggatoId={sessioneTurnoEffettiva.volontarioId}
               isAdmin={false}
+              isMonitorMode={false}
               onAggiornaTurni={handleAggiornaTurni}
+              onRefreshAutomatico={() => {
+                realtime.refreshPublicBoard().catch(() => {});
+              }}
               onChiudi={() => setModalTabelloneTurniVolontario(false)}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* ------------------------------------------------------------- */}
+      {/* ANTEPRIMA MODALITÀ MONITOR (ESCLUSIVA AMMINISTRATORE / PRESIDENTE) */}
+      {/* ------------------------------------------------------------- */}
+      {modalAnteprimaMonitorAperta && isVeroAdminOPresidente && (
+        <div className="fixed inset-0 bg-slate-950 z-[140] flex flex-col animate-in fade-in">
+          <div className="shrink-0 bg-gradient-to-r from-cyan-950 via-slate-900 to-indigo-950 border-b border-cyan-500/40 px-3 sm:px-5 py-2 flex flex-wrap items-center justify-between gap-2 shadow-lg">
+            <div className="flex items-center gap-2">
+              <Monitor className="w-4 h-4 text-cyan-400 shrink-0" />
+              <span className="text-xs sm:text-sm font-black uppercase tracking-wider text-cyan-200">
+                Anteprima Modalità Monitor
+              </span>
+              <span className="hidden md:inline text-[11px] text-slate-400">
+                (Visualizzazione esatta del link pubblico senza login — /?view=monitor-turni)
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <a
+                href={`${getConfiguredPublicUrl()}/?view=monitor-turni`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="px-2.5 py-1 rounded-lg bg-cyan-600/20 hover:bg-cyan-600/35 text-cyan-200 border border-cyan-500/40 text-[11px] font-bold flex items-center gap-1.5 transition-all"
+              >
+                <ExternalLink className="w-3.5 h-3.5" />
+                <span>Apri Link Monitor</span>
+              </a>
+              <button
+                type="button"
+                onClick={() => setModalAnteprimaMonitorAperta(false)}
+                className="px-3 py-1 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-[11px] font-black flex items-center gap-1 cursor-pointer shadow transition-all"
+              >
+                <X className="w-3.5 h-3.5" />
+                <span>Chiudi Anteprima</span>
+              </button>
+            </div>
+          </div>
+          <div className="flex-1 min-h-0 p-1.5 sm:p-3 overflow-hidden">
+            <TabelloneTurniSettimanale
+              turni={turniSedi}
+              sedi={sediAssociative}
+              volontari={volontari}
+              mezzi={mezziFlotta}
+              isAdmin={false}
+              isStandalone={true}
+              isMonitorMode={true}
+              onRefreshAutomatico={() => {
+                realtime.refreshPublicBoard().catch(() => {});
+              }}
             />
           </div>
         </div>
@@ -24794,10 +25162,10 @@ KM TOTALI: ${kmTot} KM`;
           setModalBachecaVolontarioAperta(false);
           setCorsoSelezionatoVolontario(corso);
         }}
-        volontarioNome={sessioneTurno.volontarioNome || (utenteCentrale?.nome ? `${utenteCentrale.nome} ${utenteCentrale.cognome || ''}`.trim() : 'Volontario')}
-        volontarioId={sessioneTurno.volontarioId || utenteCentrale?.id}
+        volontarioNome={sessioneTurnoEffettiva.volontarioNome || (utenteCentraleLive?.nome ? `${utenteCentraleLive.nome} ${utenteCentraleLive.cognome || ''}`.trim() : 'Volontario')}
+        volontarioId={sessioneTurnoEffettiva.volontarioId || utenteCentraleLive?.id}
         isAdmin={isCentraleAdmin}
-        isPresidente={Boolean(volontarioLoggatoCorrente?.caricaConsiglioDirettivo?.toLowerCase().includes('presidente') || utenteCentrale?.caricaConsiglioDirettivo?.toLowerCase().includes('presidente'))}
+        isPresidente={Boolean(volontarioLoggatoCorrente?.caricaConsiglioDirettivo?.toLowerCase().includes('presidente') || utenteCentraleLive?.caricaConsiglioDirettivo?.toLowerCase().includes('presidente'))}
         sezioneVolontarioNome={volontarioLoggatoCorrente?.sezioneAppartenenzaNome || sediAssociative[0]?.nome}
         sezioneVolontarioId={volontarioLoggatoCorrente?.sezioneAppartenenzaId || sediAssociative[0]?.id}
         sedi={sediAssociative}

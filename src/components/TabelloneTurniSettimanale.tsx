@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import {
   Calendar,
@@ -28,7 +28,8 @@ import {
   PhoneCall,
   Check,
   Send,
-  AlertCircle
+  AlertCircle,
+  Monitor
 } from 'lucide-react';
 import { TurnoSedeOperativa, SedeAssociativaCompleta, MezzoFlotta, RuoloTurno, CandidaturaTurno } from '../types/adminTypes';
 import { Volontario } from './DatabaseVolontariModal';
@@ -54,6 +55,7 @@ interface TabelloneTurniSettimanaleProps {
   volontarioLoggatoId?: string;
   isAdmin?: boolean;
   isStandalone?: boolean;
+  isMonitorMode?: boolean;
   onChiudi?: () => void;
   onModificaTurno?: (turno: TurnoSedeOperativa) => void;
   onNuovoTurno?: (sedeId?: string, data?: string) => void;
@@ -89,6 +91,7 @@ export const TabelloneTurniSettimanale: React.FC<TabelloneTurniSettimanaleProps>
   volontarioLoggatoId,
   isAdmin = false,
   isStandalone = false,
+  isMonitorMode = false,
   onChiudi,
   onModificaTurno,
   onNuovoTurno,
@@ -147,9 +150,9 @@ export const TabelloneTurniSettimanale: React.FC<TabelloneTurniSettimanaleProps>
   }, [volontari]);
 
   // Sedi autorizzate per la visualizzazione dei tabelloni turni:
-  // Ogni volontario visualizza SOLO ed ESCLUSIVAMENTE i tabelloni consentiti da qualsiasi operatore di centrale
+  // In Modalità Monitor mostra SEMPRE tutte le sezioni e tutti i turni pubblicati senza esclusioni.
   const sediAutorizzate = useMemo(() => {
-    if (isOperatoreCentraleOAdmin) return sedi;
+    if (isMonitorMode || isOperatoreCentraleOAdmin) return sedi;
     if (!volontarioAttivo) return sedi;
 
     if (volontarioAttivo.sediTurniAbilitate && volontarioAttivo.sediTurniAbilitate.length > 0) {
@@ -157,7 +160,7 @@ export const TabelloneTurniSettimanale: React.FC<TabelloneTurniSettimanaleProps>
       if (permesse.length > 0) return permesse;
     }
     return sedi;
-  }, [sedi, volontarioAttivo, isOperatoreCentraleOAdmin]);
+  }, [sedi, volontarioAttivo, isOperatoreCentraleOAdmin, isMonitorMode]);
 
   // Se la sede selezionata non è più tra quelle autorizzate, seleziona la prima autorizzata
   useEffect(() => {
@@ -462,17 +465,37 @@ export const TabelloneTurniSettimanale: React.FC<TabelloneTurniSettimanaleProps>
   };
 
   // ---------------------------------------------------------------------------
-  // AGGIORNAMENTO AUTOMATICO OGNI MINUTO (SENZA INTERFERENZE UMANE)
+  // AGGIORNAMENTO AUTOMATICO OGNI 60 SECONDI + PULIZIA CACHE AUTOMATICA
+  // Mantiene il PC/Monitor sempre leggero e sincronizzato in tempo reale.
   // ---------------------------------------------------------------------------
   const [secondiAlProssimoRefresh, setSecondiAlProssimoRefresh] = useState<number>(60);
   const [ultimoAggiornamento, setUltimoAggiornamento] = useState<string>(() => formatTimeItaly());
+  const boardScrollRef = useRef<HTMLDivElement | null>(null);
+  const userInteractUntilRef = useRef<number>(0);
+
+  const pulisciCacheESincronizza = () => {
+    setUltimoAggiornamento(formatTimeItaly());
+    // Pulizia automatica cache browser/SW senza perdere la sincronizzazione né ricaricare la pagina
+    if (typeof window !== 'undefined' && 'caches' in window) {
+      caches
+        .keys()
+        .then((keys) => Promise.all(keys.map((k) => caches.delete(k))))
+        .catch(() => {});
+    }
+    realtime.refreshPublicBoard().catch(() => {});
+    onRefreshAutomatico?.();
+  };
+
+  useEffect(() => {
+    // Sincronizzazione immediata all'apertura del tabellone su entrambi i link (Monitor e Volontario)
+    realtime.refreshPublicBoard().catch(() => {});
+  }, []);
 
   useEffect(() => {
     const timer = setInterval(() => {
       setSecondiAlProssimoRefresh((prev) => {
         if (prev <= 1) {
-          setUltimoAggiornamento(formatTimeItaly());
-          onRefreshAutomatico?.();
+          pulisciCacheESincronizza();
           return 60;
         }
         return prev - 1;
@@ -482,9 +505,9 @@ export const TabelloneTurniSettimanale: React.FC<TabelloneTurniSettimanaleProps>
     return () => clearInterval(timer);
   }, [onRefreshAutomatico]);
 
-  // Se una sezione è selezionata oppure se la visualizzazione è standalone (tramite link diretto),
+  // Se una sezione è selezionata oppure se la visualizzazione è standalone/monitor (tramite link diretto),
   // mostra la giornata in corso (oggi) più i 6 giorni successivi (totale 7 giorni continui).
-  const isVistaOggiPiu6 = (filtroSedeId !== 'tutte') || isStandalone;
+  const isVistaOggiPiu6 = (filtroSedeId !== 'tutte') || isStandalone || isMonitorMode;
 
   // Calcola i 7 giorni visualizzati in ora ufficiale italiana (Europe/Rome)
   const giorniSettimana = useMemo(() => {
@@ -530,8 +553,8 @@ export const TabelloneTurniSettimanale: React.FC<TabelloneTurniSettimanaleProps>
       // Filtro data compresa nei 7 giorni visualizzati
       if (t.data < primoGiornoStr || t.data > ultimoGiornoStr) return false;
 
-      // Filtro autorizzazioni sede: ogni volontario visualizza SOLO ed ESCLUSIVAMENTE i tabelloni abilitati dalla centrale
-      if (!isOperatoreCentraleOAdmin && volontarioAttivo && sediAutorizzate.length > 0) {
+      // Filtro autorizzazioni sede: in Modalità Monitor mostra TUTTI i turni pubblicati senza alcuna esclusione
+      if (!isMonitorMode && !isOperatoreCentraleOAdmin && volontarioAttivo && sediAutorizzate.length > 0) {
         const sedeConsentita = sediAutorizzate.some((s) => s.id === t.sedeId);
         if (!sedeConsentita) return false;
       }
@@ -544,8 +567,8 @@ export const TabelloneTurniSettimanale: React.FC<TabelloneTurniSettimanaleProps>
         return false;
       }
 
-      // Filtro solo miei turni
-      if (filtroSoloMieiTurni && volontarioLoggatoNome) {
+      // Filtro solo miei turni (non attivo in Modalità Monitor)
+      if (!isMonitorMode && filtroSoloMieiTurni && volontarioLoggatoNome) {
         const nomeNorm = volontarioLoggatoNome.toLowerCase().trim();
         const autista = t.autista?.nome.toLowerCase() || '';
         const capo = t.caposervizio?.nome.toLowerCase() || '';
@@ -572,7 +595,7 @@ export const TabelloneTurniSettimanale: React.FC<TabelloneTurniSettimanaleProps>
 
       return true;
     });
-  }, [turni, primoGiornoStr, ultimoGiornoStr, filtroSedeId, filtroFascia, filtroSoloMieiTurni, volontarioLoggatoNome, ricercaVolontario, isOperatoreCentraleOAdmin, volontarioAttivo, sediAutorizzate]);
+  }, [turni, primoGiornoStr, ultimoGiornoStr, filtroSedeId, filtroFascia, filtroSoloMieiTurni, volontarioLoggatoNome, ricercaVolontario, isOperatoreCentraleOAdmin, isMonitorMode, volontarioAttivo, sediAutorizzate]);
 
   // Raggruppa i turni per giorno
   const turniPerGiorno = useMemo(() => {
@@ -632,6 +655,95 @@ export const TabelloneTurniSettimanale: React.FC<TabelloneTurniSettimanaleProps>
 
   const sedeAttiva = sedi.find((s) => s.id === filtroSedeId);
 
+  // ---------------------------------------------------------------------------
+  // AUTO-SCROLL INFINITO VERTICALE CON PAUSE DI 10 SECONDI (IN ALTO E IN BASSO)
+  // Se i turni non rientrano tutti nello schermo PC, scorre dolcemente verso il
+  // basso fino al fondo -> ferma 10s -> torna in alto -> ferma 10s -> all'infinito.
+  // ---------------------------------------------------------------------------
+  useEffect(() => {
+    const el = boardScrollRef.current;
+    if (!el) return;
+
+    el.scrollTop = 0;
+    const PAUSE_MS = 10000;
+    const DOWN_SPEED_PX_PER_SEC = 42;
+    const UP_SPEED_PX_PER_SEC = 380;
+
+    type ScrollPhase = 'pause_top' | 'scroll_down' | 'pause_bottom' | 'scroll_up';
+    let phase: ScrollPhase = 'pause_top';
+    let phaseStartedAt = performance.now();
+    let lastTs = performance.now();
+    let rafId = 0;
+
+    const markManualInteraction = () => {
+      userInteractUntilRef.current = performance.now() + 12000;
+    };
+
+    el.addEventListener('wheel', markManualInteraction, { passive: true });
+    el.addEventListener('touchstart', markManualInteraction, { passive: true });
+    el.addEventListener('pointerdown', markManualInteraction, { passive: true });
+
+    const tick = (now: number) => {
+      const dtSec = Math.min(0.1, Math.max(0, (now - lastTs) / 1000));
+      lastTs = now;
+
+      const maxScroll = el.scrollHeight - el.clientHeight;
+      if (maxScroll <= 12) {
+        phase = 'pause_top';
+        phaseStartedAt = now;
+        rafId = requestAnimationFrame(tick);
+        return;
+      }
+
+      // Se l'utente sta interagendo manualmente con rotellina/tocco, attende 12s prima di riprendere
+      if (now < userInteractUntilRef.current) {
+        phaseStartedAt = now;
+        rafId = requestAnimationFrame(tick);
+        return;
+      }
+
+      if (phase === 'pause_top') {
+        if (now - phaseStartedAt >= PAUSE_MS) {
+          phase = 'scroll_down';
+          phaseStartedAt = now;
+        }
+      } else if (phase === 'scroll_down') {
+        const nextTop = el.scrollTop + DOWN_SPEED_PX_PER_SEC * dtSec;
+        if (nextTop >= maxScroll - 1) {
+          el.scrollTop = maxScroll;
+          phase = 'pause_bottom';
+          phaseStartedAt = now;
+        } else {
+          el.scrollTop = nextTop;
+        }
+      } else if (phase === 'pause_bottom') {
+        if (now - phaseStartedAt >= PAUSE_MS) {
+          phase = 'scroll_up';
+          phaseStartedAt = now;
+        }
+      } else if (phase === 'scroll_up') {
+        const nextTop = el.scrollTop - UP_SPEED_PX_PER_SEC * dtSec;
+        if (nextTop <= 1) {
+          el.scrollTop = 0;
+          phase = 'pause_top';
+          phaseStartedAt = now;
+        } else {
+          el.scrollTop = nextTop;
+        }
+      }
+
+      rafId = requestAnimationFrame(tick);
+    };
+
+    rafId = requestAnimationFrame(tick);
+    return () => {
+      cancelAnimationFrame(rafId);
+      el.removeEventListener('wheel', markManualInteraction);
+      el.removeEventListener('touchstart', markManualInteraction);
+      el.removeEventListener('pointerdown', markManualInteraction);
+    };
+  }, [filtroSedeId, dataRiferimentoStr, filtroFascia, isMonitorMode, isStandalone]);
+
   return (
     <div className={`w-full ${isStandalone ? 'min-h-screen bg-slate-950 text-slate-100 p-1 sm:p-2.5 space-y-2.5' : 'bg-slate-950 text-slate-100 p-2 sm:p-4 rounded-3xl border-2 border-indigo-500/40 shadow-2xl space-y-3'}`}>
       
@@ -671,44 +783,55 @@ export const TabelloneTurniSettimanale: React.FC<TabelloneTurniSettimanaleProps>
         </div>
 
         <div className="flex items-center gap-2 flex-wrap self-end md:self-auto">
-          {/* Selettore profilo per visualizzare le sedi autorizzate dalla Centrale */}
-          {volontari && volontari.length > 0 && (
-            <div className="flex items-center gap-1.5 bg-slate-950 px-2.5 py-1.5 rounded-xl border border-slate-800">
-              <Users className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
-              <label htmlFor="select-volontario-tabellone" className="text-[10px] font-bold text-slate-400 uppercase hidden sm:inline">
-                Profilo:
-              </label>
-              <select
-                id="select-volontario-tabellone"
-                value={volontarioFiltroId}
-                onChange={(e) => setVolontarioFiltroId(e.target.value)}
-                className="bg-transparent text-xs text-amber-300 font-bold focus:outline-none cursor-pointer max-w-[170px] sm:max-w-[220px] truncate"
-                title="Seleziona il volontario per visualizzare solo ed esclusivamente i tabelloni autorizzati dalla centrale"
-              >
-                <option value="" className="bg-slate-900 text-slate-300">
-                  Tutti / Centrale (Tutte le Sedi)
-                </option>
-                {volontari.map((v) => {
-                  const haRestrizioni = v.sediTurniAbilitate && v.sediTurniAbilitate.length > 0;
-                  return (
-                    <option key={v.id} value={v.id} className="bg-slate-900 text-white">
-                      {v.nome} {v.cognome} ({v.qualifica}){haRestrizioni ? ` • ${v.sediTurniAbilitate!.length} sedi` : ''}
-                    </option>
-                  );
-                })}
-              </select>
+          {isMonitorMode ? (
+            <div className="flex items-center gap-2 bg-indigo-950/90 px-3.5 py-2 rounded-xl border-2 border-indigo-400/70 shadow-lg shadow-indigo-950/50">
+              <Monitor className="w-4 h-4 text-indigo-300 shrink-0" />
+              <span className="text-xs sm:text-sm font-black uppercase tracking-wider text-indigo-100">
+                MODALITÀ MONITOR
+              </span>
             </div>
-          )}
+          ) : (
+            <>
+              {/* Selettore profilo per visualizzare le sedi autorizzate dalla Centrale */}
+              {volontari && volontari.length > 0 && (
+                <div className="flex items-center gap-1.5 bg-slate-950 px-2.5 py-1.5 rounded-xl border border-slate-800">
+                  <Users className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+                  <label htmlFor="select-volontario-tabellone" className="text-[10px] font-bold text-slate-400 uppercase hidden sm:inline">
+                    Profilo:
+                  </label>
+                  <select
+                    id="select-volontario-tabellone"
+                    value={volontarioFiltroId}
+                    onChange={(e) => setVolontarioFiltroId(e.target.value)}
+                    className="bg-transparent text-xs text-amber-300 font-bold focus:outline-none cursor-pointer max-w-[170px] sm:max-w-[220px] truncate"
+                    title="Seleziona il volontario per visualizzare solo ed esclusivamente i tabelloni autorizzati dalla centrale"
+                  >
+                    <option value="" className="bg-slate-900 text-slate-300">
+                      Tutti / Centrale (Tutte le Sedi)
+                    </option>
+                    {volontari.map((v) => {
+                      const haRestrizioni = v.sediTurniAbilitate && v.sediTurniAbilitate.length > 0;
+                      return (
+                        <option key={v.id} value={v.id} className="bg-slate-900 text-white">
+                          {v.nome} {v.cognome} ({v.qualifica}){haRestrizioni ? ` • ${v.sediTurniAbilitate!.length} sedi` : ''}
+                        </option>
+                      );
+                    })}
+                  </select>
+                </div>
+              )}
 
-          <button
-            type="button"
-            onClick={stampaTabellone}
-            className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer"
-            title="Stampa il tabellone turni settimanale"
-          >
-            <Printer className="w-3.5 h-3.5 text-indigo-400" />
-            <span className="hidden sm:inline">Stampa Tabellone</span>
-          </button>
+              <button
+                type="button"
+                onClick={stampaTabellone}
+                className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer"
+                title="Stampa il tabellone turni settimanale"
+              >
+                <Printer className="w-3.5 h-3.5 text-indigo-400" />
+                <span className="hidden sm:inline">Stampa Tabellone</span>
+              </button>
+            </>
+          )}
 
           {isAdmin && onApriTurniRipetuti && (
             <button
@@ -747,91 +870,90 @@ export const TabelloneTurniSettimanale: React.FC<TabelloneTurniSettimanaleProps>
       </div>
 
       {/* ------------------------------------------------------------- */}
-      {/* BARRA CONTROLLI: SEZIONE, SETTIMANA, FILTRI                   */}
+      {/* BARRA CONTROLLI: SEZIONE (TUTTE VISIBILI), SETTIMANA, FILTRI  */}
       {/* ------------------------------------------------------------- */}
-      <div className="bg-slate-900/70 p-3 sm:p-4 rounded-2xl border border-slate-800 space-y-3">
+      <div className="bg-slate-900/70 p-2.5 sm:p-3.5 rounded-2xl border border-slate-800 space-y-2.5">
         
-        {/* RIGA 1: SELETTORE SEZIONE TERRITORIALE & NAVIGAZIONE SETTIMANA */}
-        <div className="flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-3">
-          
-          {/* Selettore Sezione Territoriale */}
-          <div className="flex items-center gap-2 flex-wrap">
+        {/* RIGA 1: SELETTORE SEZIONI TERRITORIALI (A CAPO AUTOMATICO, NESSUNA SEZIONE FUORI SCHERMO) */}
+        <div className="flex flex-col gap-2">
+          <div className="flex flex-wrap items-center justify-between gap-2">
             <label className="text-xs font-bold text-slate-400 uppercase flex items-center gap-1.5 shrink-0">
               <Building2 className="w-4 h-4 text-rose-400" />
               <span>Sezione:</span>
             </label>
-            <div className="flex items-center gap-1.5 overflow-x-auto pb-1 max-w-full scrollbar-none">
-              {sediAutorizzate.length > 1 && (
-                <button
-                  type="button"
-                  onClick={() => setFiltroSedeId('tutte')}
-                  className={`px-3 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition-all cursor-pointer ${
-                    filtroSedeId === 'tutte'
-                      ? 'bg-rose-600 text-white shadow-md shadow-rose-900/40'
-                      : 'bg-slate-800 text-slate-300 hover:bg-slate-700 border border-slate-700'
-                  }`}
-                >
-                  Tutte le Sedi Autorizzate ({sediAutorizzate.length})
-                </button>
-              )}
-              {sediAutorizzate.map((s) => (
-                <button
-                  key={s.id}
-                  type="button"
-                  onClick={() => setFiltroSedeId(s.id)}
-                  className={`px-3 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition-all cursor-pointer flex items-center gap-1.5 ${
-                    filtroSedeId === s.id
-                      ? 'bg-rose-600 text-white shadow-md shadow-rose-900/40'
-                      : 'bg-slate-800 text-slate-300 hover:bg-slate-700 border border-slate-700'
-                  }`}
-                >
-                  <span>{s.nome}</span>
-                  {s.mezziAssegnati.length > 0 && (
-                    <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-slate-950/60 font-mono text-amber-300">
-                      🚑 {s.mezziAssegnati.length}
-                    </span>
-                  )}
-                </button>
-              ))}
+
+            {/* Navigatore Settimana compatto */}
+            <div className="flex items-center justify-between sm:justify-end gap-1.5 bg-slate-950 px-2.5 py-1 rounded-xl border border-slate-800 shrink-0">
+              <button
+                type="button"
+                onClick={() => navigaSettimana(-1)}
+                className="p-1 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-300 transition-colors cursor-pointer"
+                title="Settimana precedente"
+              >
+                <ChevronLeft className="w-4 h-4" />
+              </button>
+
+              <div className="text-center px-1.5">
+                <span className="text-[11px] font-black text-indigo-300 block leading-tight">
+                  {giorniSettimana[0].dataObj.toLocaleDateString('it-IT', { day: '2-digit', month: 'short', timeZone: 'Europe/Rome' })} — {giorniSettimana[6].dataObj.toLocaleDateString('it-IT', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'Europe/Rome' })}
+                </span>
+                <span className="text-[9.5px] text-slate-400 font-mono">
+                  {primoGiornoStr} al {ultimoGiornoStr}
+                </span>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => navigaSettimana(1)}
+                className="p-1 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-300 transition-colors cursor-pointer"
+                title="Settimana successiva"
+              >
+                <ChevronRight className="w-4 h-4" />
+              </button>
+
+              <button
+                type="button"
+                onClick={vaiAOggi}
+                className="px-2 py-0.5 rounded-lg bg-indigo-900/70 hover:bg-indigo-800 text-indigo-200 text-[10.5px] font-bold border border-indigo-700/50 cursor-pointer ml-0.5"
+              >
+                Oggi
+              </button>
             </div>
           </div>
 
-          {/* Navigatore Settimana */}
-          <div className="flex items-center justify-between sm:justify-end gap-2 bg-slate-950 px-3 py-1.5 rounded-xl border border-slate-800 shrink-0">
-            <button
-              type="button"
-              onClick={() => navigaSettimana(-1)}
-              className="p-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-300 transition-colors cursor-pointer"
-              title="Settimana precedente"
-            >
-              <ChevronLeft className="w-4 h-4" />
-            </button>
-
-            <div className="text-center px-2">
-              <span className="text-xs font-black text-indigo-300 block">
-                {giorniSettimana[0].dataObj.toLocaleDateString('it-IT', { day: '2-digit', month: 'short', timeZone: 'Europe/Rome' })} — {giorniSettimana[6].dataObj.toLocaleDateString('it-IT', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'Europe/Rome' })}
-              </span>
-              <span className="text-[10px] text-slate-400 font-mono">
-                {primoGiornoStr} al {ultimoGiornoStr}
-              </span>
-            </div>
-
-            <button
-              type="button"
-              onClick={() => navigaSettimana(1)}
-              className="p-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-300 transition-colors cursor-pointer"
-              title="Settimana successiva"
-            >
-              <ChevronRight className="w-4 h-4" />
-            </button>
-
-            <button
-              type="button"
-              onClick={vaiAOggi}
-              className="px-2.5 py-1 rounded-lg bg-indigo-900/70 hover:bg-indigo-800 text-indigo-200 text-[11px] font-bold border border-indigo-700/50 cursor-pointer ml-1"
-            >
-              Oggi
-            </button>
+          <div className="flex flex-wrap items-center gap-1.5 w-full">
+            {sediAutorizzate.length > 1 && (
+              <button
+                type="button"
+                onClick={() => setFiltroSedeId('tutte')}
+                className={`px-2.5 py-1 rounded-xl text-[11px] font-bold transition-all cursor-pointer ${
+                  filtroSedeId === 'tutte'
+                    ? 'bg-rose-600 text-white shadow-md shadow-rose-900/40'
+                    : 'bg-slate-800 text-slate-300 hover:bg-slate-700 border border-slate-700'
+                }`}
+              >
+                {isMonitorMode ? `Tutte le Sezioni (${sediAutorizzate.length})` : `Tutte le Sedi Autorizzate (${sediAutorizzate.length})`}
+              </button>
+            )}
+            {sediAutorizzate.map((s) => (
+              <button
+                key={s.id}
+                type="button"
+                onClick={() => setFiltroSedeId(s.id)}
+                className={`px-2.5 py-1 rounded-xl text-[11px] font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                  filtroSedeId === s.id
+                    ? 'bg-rose-600 text-white shadow-md shadow-rose-900/40'
+                    : 'bg-slate-800 text-slate-300 hover:bg-slate-700 border border-slate-700'
+                }`}
+              >
+                <span>{s.nome}</span>
+                {s.mezziAssegnati.length > 0 && (
+                  <span className="text-[9.5px] px-1.5 py-0.2 rounded-full bg-slate-950/60 font-mono text-amber-300 shrink-0">
+                    🚑 {s.mezziAssegnati.length}
+                  </span>
+                )}
+              </button>
+            ))}
           </div>
         </div>
 
@@ -873,8 +995,8 @@ export const TabelloneTurniSettimanale: React.FC<TabelloneTurniSettimanaleProps>
               <option value="reperibilit">Reperibilità H24</option>
             </select>
 
-            {/* Toggle "I Miei Turni" se volontario loggato */}
-            {volontarioLoggatoNome && (
+            {/* Toggle "I Miei Turni" se volontario loggato (nascosto in Modalità Monitor) */}
+            {!isMonitorMode && volontarioLoggatoNome && (
               <button
                 type="button"
                 onClick={() => setFiltroSoloMieiTurni(!filtroSoloMieiTurni)}
@@ -919,7 +1041,7 @@ export const TabelloneTurniSettimanale: React.FC<TabelloneTurniSettimanaleProps>
           </span>
           <div className="flex items-center gap-2">
             <span className="text-white font-bold">
-              Aggiornamento automatico ogni 60 secondi
+              Aggiornamento e pulizia cache automatici ogni 60s
             </span>
             <span className="hidden sm:inline px-2 py-0.5 rounded-full bg-emerald-950 text-emerald-300 border border-emerald-700/50 text-[10px] font-black uppercase">
               Attivo H24
@@ -936,12 +1058,11 @@ export const TabelloneTurniSettimanale: React.FC<TabelloneTurniSettimanaleProps>
           <button
             type="button"
             onClick={() => {
-              setUltimoAggiornamento(formatTimeItaly());
               setSecondiAlProssimoRefresh(60);
-              onRefreshAutomatico?.();
+              pulisciCacheESincronizza();
             }}
             className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-indigo-300 hover:text-white border border-slate-700 font-bold flex items-center gap-1 transition-all active:scale-95 cursor-pointer"
-            title="Forza aggiornamento immediato dati"
+            title="Forza aggiornamento immediato dati e pulizia cache"
           >
             <RefreshCw className="w-3 h-3 text-indigo-400" />
             <span>Sincronizza ora</span>
@@ -950,33 +1071,39 @@ export const TabelloneTurniSettimanale: React.FC<TabelloneTurniSettimanaleProps>
       </div>
 
       {/* ------------------------------------------------------------- */}
-      {/* GRIGLIA DEI 7 GIORNI (OGGI + 6 GIORNI SUCCESSIVI) A TUTTO SCHERMO */}
-      {/* Si adatta al 100% dello schermo visualizzando tutti i 7 giorni  */}
+      {/* GRIGLIA DEI 7 GIORNI CON AUTO-SCROLL VERTICALE INFINITO (10s) */}
       {/* ------------------------------------------------------------- */}
-      <div className="w-full overflow-x-auto pb-4 scrollbar-thin scrollbar-thumb-slate-700 scrollbar-track-slate-900">
-        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-7 gap-2 xl:gap-2.5 w-full">
+      <div
+        ref={boardScrollRef}
+        className={`w-full overflow-x-auto overflow-y-auto pb-4 pr-0.5 scrollbar-thin scrollbar-thumb-slate-700 scrollbar-track-slate-900 ${
+          isStandalone || isMonitorMode
+            ? 'max-h-[calc(100vh-250px)] min-h-[360px]'
+            : 'max-h-[68vh] min-h-[320px]'
+        }`}
+      >
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-7 gap-2 w-full items-start">
           {giorniSettimana.map((giorno) => {
             const turniDelGiorno = turniPerGiorno[giorno.dataStr] || [];
 
           return (
             <div
               key={giorno.dataStr}
-              className={`rounded-2xl border flex flex-col transition-all overflow-hidden ${
+              className={`rounded-2xl border flex flex-col transition-all overflow-hidden min-w-0 ${
                 giorno.isOggi
                   ? 'bg-slate-900 border-indigo-400 shadow-lg shadow-indigo-950/40 ring-1 ring-indigo-500/50'
                   : 'bg-slate-900/60 border-slate-800 hover:border-slate-700'
               }`}
             >
-              {/* Intestazione Colonna Giorno */}
+              {/* Intestazione Colonna Giorno (sticky in cima durante lo scroll automatico) */}
               <div
-                className={`p-2.5 text-center border-b ${
+                className={`p-2 text-center border-b sticky top-0 z-10 ${
                   giorno.isOggi
-                    ? 'bg-gradient-to-r from-indigo-900/80 to-blue-900/80 border-indigo-500/40'
-                    : 'bg-slate-950/80 border-slate-800'
+                    ? 'bg-gradient-to-r from-indigo-950 to-blue-950 border-indigo-500/40'
+                    : 'bg-slate-950 border-slate-800'
                 }`}
               >
                 <div className="flex items-center justify-between">
-                  <span className={`text-[11px] font-black uppercase tracking-wider ${giorno.isOggi ? 'text-amber-300' : 'text-slate-400'}`}>
+                  <span className={`text-[10.5px] font-black uppercase tracking-wider ${giorno.isOggi ? 'text-amber-300' : 'text-slate-400'}`}>
                     {giorno.giornoNome}
                   </span>
                   {giorno.isOggi && (
@@ -993,8 +1120,8 @@ export const TabelloneTurniSettimanale: React.FC<TabelloneTurniSettimanaleProps>
                 </span>
               </div>
 
-              {/* Elenco Turni del Giorno */}
-              <div className="p-2 flex-1 space-y-2 overflow-y-auto max-h-[600px]">
+              {/* Elenco Turni del Giorno (espansi per intero, scrollati fluidamente dal contenitore principale) */}
+              <div className="p-1.5 flex-1 space-y-2">
                 {turniDelGiorno.length === 0 ? (
                   <div className="p-4 text-center text-slate-600 text-xs italic space-y-1">
                     <span>Nessun turno programmato</span>
@@ -1033,25 +1160,30 @@ export const TabelloneTurniSettimanale: React.FC<TabelloneTurniSettimanaleProps>
                         } ${isAdmin ? 'cursor-pointer hover:scale-[1.01]' : ''}`}
                       >
                         {/* Sezione e Orario */}
-                        <div className="flex items-start justify-between gap-1 border-b border-slate-800 pb-1.5">
-                          <div>
-                            <span className="font-black text-white text-[11px] block truncate" title={turno.sedeNome}>
+                        <div className="flex items-start justify-between gap-1 border-b border-slate-800 pb-1.5 min-w-0">
+                          <div className="min-w-0 flex-1">
+                            <span className="font-black text-white text-[10.5px] block truncate" title={turno.sedeNome}>
                               🏢 {turno.sedeNome.replace('Sede Operativa ', '').replace('Sezione Territoriale ', '')}
                             </span>
                             {turno.nomeTurno && (
-                              <div className="inline-block mt-0.5 px-1.5 py-0.5 rounded bg-indigo-900/60 border border-indigo-500/40 text-[9.5px] font-bold text-indigo-200 truncate max-w-[140px]" title={turno.nomeTurno}>
+                              <div className="inline-block mt-0.5 px-1.5 py-0.5 rounded bg-indigo-900/60 border border-indigo-500/40 text-[9px] font-bold text-indigo-200 truncate max-w-full" title={turno.nomeTurno}>
                                 🏷️ {turno.nomeTurno}
                               </div>
                             )}
+                            {turno.tipoTurnoNome && (
+                              <div className="text-[9px] text-sky-300/90 font-semibold truncate mt-0.5" title={turno.tipoTurnoNome}>
+                                {turno.tipoTurnoNome}
+                              </div>
+                            )}
                             <div className="flex items-center gap-1 text-[10px] text-indigo-300 font-mono mt-0.5">
-                              <Clock className="w-3 h-3 text-indigo-400" />
-                              <span>{turno.orarioInizio} - {turno.orarioFine}</span>
+                              <Clock className="w-3 h-3 text-indigo-400 shrink-0" />
+                              <span className="truncate">{turno.orarioInizio} - {turno.orarioFine}</span>
                             </div>
                           </div>
 
-                          <div className="flex flex-col items-end gap-1">
+                          <div className="flex flex-col items-end gap-1 shrink-0">
                             <span
-                              className={`px-1.5 py-0.5 rounded-md text-[9px] font-black uppercase border shrink-0 ${
+                              className={`px-1.5 py-0.5 rounded-md text-[8.5px] font-black uppercase border shrink-0 ${
                                 isCoperto
                                   ? 'bg-emerald-950 text-emerald-300 border-emerald-700/50'
                                   : isParziale
@@ -1061,7 +1193,7 @@ export const TabelloneTurniSettimanale: React.FC<TabelloneTurniSettimanaleProps>
                             >
                               {turno.statoCopertura}
                             </span>
-                            {isMioTurno && (
+                            {!isMonitorMode && isMioTurno && (
                               <span className="px-1.5 py-0.2 rounded-full bg-amber-400 text-slate-950 text-[8.5px] font-black uppercase shrink-0">
                                 Tuo Turno
                               </span>
@@ -1117,24 +1249,28 @@ export const TabelloneTurniSettimanale: React.FC<TabelloneTurniSettimanaleProps>
                               )}
 
                               {/* Autista */}
-                              <div className="flex items-center justify-between gap-1">
-                                <span className="text-slate-400 text-[10px] shrink-0">{getLabelRuoloEquipaggioLive('autista', catalogoMansioni).nome}:</span>
+                              <div className="flex items-center justify-between gap-1 min-w-0">
+                                <span className="text-slate-400 text-[9.5px] truncate min-w-0" title={getLabelRuoloEquipaggioLive('autista', catalogoMansioni).nome}>
+                                  {getLabelRuoloEquipaggioLive('autista', catalogoMansioni).nome}:
+                                </span>
                                 {turno.autista ? (
-                                  <span className={`font-bold truncate max-w-[175px] text-right inline-flex items-center justify-end gap-1 ${turno.autista.nome.toLowerCase().includes(volontarioLoggatoNome?.toLowerCase() || '---') ? 'text-amber-400 font-black' : 'text-slate-100'}`} title={turno.autista.nome}>
+                                  <span className={`font-bold truncate text-right inline-flex items-center justify-end gap-1 shrink-0 max-w-[58%] ${turno.autista.nome.toLowerCase().includes(volontarioLoggatoNome?.toLowerCase() || '---') ? 'text-amber-400 font-black' : 'text-slate-100'}`} title={turno.autista.nome}>
                                     <IconaEmoji icona={getLabelRuoloEquipaggioLive('autista', catalogoMansioni).emoji} fallback="🚑" size="xs" />
                                     <span className="truncate">{turno.autista.nome}</span>
                                     {renderCsTag(turno.autista)}
                                   </span>
                                 ) : (
-                                  <span className="text-red-400 font-bold italic text-[10px]">Da Assegnare</span>
+                                  <span className="text-red-400 font-bold italic text-[9.5px] shrink-0 whitespace-nowrap">Da Assegnare</span>
                                 )}
                               </div>
 
                               {/* 2° Soccorritore */}
                               {turno.soccorritore2 && (
-                                <div className="flex items-center justify-between gap-1">
-                                  <span className="text-slate-400 text-[10px] shrink-0">{getLabelRuoloEquipaggioLive('soccorritore2', catalogoMansioni).nome}:</span>
-                                  <span className={`truncate max-w-[175px] text-right inline-flex items-center justify-end gap-1 ${turno.soccorritore2.nome.toLowerCase().includes(volontarioLoggatoNome?.toLowerCase() || '---') ? 'text-amber-400 font-black' : 'text-slate-200'}`} title={turno.soccorritore2.nome}>
+                                <div className="flex items-center justify-between gap-1 min-w-0">
+                                  <span className="text-slate-400 text-[9.5px] truncate min-w-0" title={getLabelRuoloEquipaggioLive('soccorritore2', catalogoMansioni).nome}>
+                                    {getLabelRuoloEquipaggioLive('soccorritore2', catalogoMansioni).nome}:
+                                  </span>
+                                  <span className={`truncate text-right inline-flex items-center justify-end gap-1 shrink-0 max-w-[58%] ${turno.soccorritore2.nome.toLowerCase().includes(volontarioLoggatoNome?.toLowerCase() || '---') ? 'text-amber-400 font-black' : 'text-slate-200'}`} title={turno.soccorritore2.nome}>
                                     <IconaEmoji icona={getLabelRuoloEquipaggioLive('soccorritore2', catalogoMansioni).emoji} fallback="🧑‍⚕️" size="xs" />
                                     <span className="truncate">{turno.soccorritore2.nome}</span>
                                     {renderCsTag(turno.soccorritore2)}
@@ -1144,9 +1280,11 @@ export const TabelloneTurniSettimanale: React.FC<TabelloneTurniSettimanaleProps>
 
                               {/* 3° Soccorritore */}
                               {turno.terzoSoccorritore && (
-                                <div className="flex items-center justify-between gap-1">
-                                  <span className="text-slate-400 text-[10px] shrink-0">{getLabelRuoloEquipaggioLive('terzoSoccorritore', catalogoMansioni).nome}:</span>
-                                  <span className={`truncate max-w-[175px] text-right inline-flex items-center justify-end gap-1 ${turno.terzoSoccorritore.nome.toLowerCase().includes(volontarioLoggatoNome?.toLowerCase() || '---') ? 'text-amber-400 font-black' : 'text-slate-200'}`} title={turno.terzoSoccorritore.nome}>
+                                <div className="flex items-center justify-between gap-1 min-w-0">
+                                  <span className="text-slate-400 text-[9.5px] truncate min-w-0" title={getLabelRuoloEquipaggioLive('terzoSoccorritore', catalogoMansioni).nome}>
+                                    {getLabelRuoloEquipaggioLive('terzoSoccorritore', catalogoMansioni).nome}:
+                                  </span>
+                                  <span className={`truncate text-right inline-flex items-center justify-end gap-1 shrink-0 max-w-[58%] ${turno.terzoSoccorritore.nome.toLowerCase().includes(volontarioLoggatoNome?.toLowerCase() || '---') ? 'text-amber-400 font-black' : 'text-slate-200'}`} title={turno.terzoSoccorritore.nome}>
                                     <IconaEmoji icona={getLabelRuoloEquipaggioLive('terzoSoccorritore', catalogoMansioni).emoji} fallback="🧑‍⚕️" size="xs" />
                                     <span className="truncate">{turno.terzoSoccorritore.nome}</span>
                                     {renderCsTag(turno.terzoSoccorritore)}
@@ -1156,9 +1294,11 @@ export const TabelloneTurniSettimanale: React.FC<TabelloneTurniSettimanaleProps>
 
                               {/* Operatore Centrale */}
                               {turno.operatoreCentrale && (
-                                <div className="flex items-center justify-between gap-1 pt-0.5 border-t border-slate-800/80">
-                                  <span className="text-slate-400 text-[10px] shrink-0">{getLabelRuoloEquipaggioLive('operatoreCentrale', catalogoMansioni).nome}:</span>
-                                  <span className="text-slate-300 text-[10px] truncate max-w-[175px] text-right inline-flex items-center justify-end gap-1" title={turno.operatoreCentrale.nome}>
+                                <div className="flex items-center justify-between gap-1 pt-0.5 border-t border-slate-800/80 min-w-0">
+                                  <span className="text-slate-400 text-[9.5px] truncate min-w-0" title={getLabelRuoloEquipaggioLive('operatoreCentrale', catalogoMansioni).nome}>
+                                    {getLabelRuoloEquipaggioLive('operatoreCentrale', catalogoMansioni).nome}:
+                                  </span>
+                                  <span className="text-slate-300 text-[9.5px] truncate text-right inline-flex items-center justify-end gap-1 shrink-0 max-w-[58%]" title={turno.operatoreCentrale.nome}>
                                     <IconaEmoji icona={getLabelRuoloEquipaggioLive('operatoreCentrale', catalogoMansioni).emoji} fallback="🎧" size="xs" />
                                     <span className="truncate">{turno.operatoreCentrale.nome}</span>
                                     {renderCsTag(turno.operatoreCentrale)}
@@ -1168,35 +1308,43 @@ export const TabelloneTurniSettimanale: React.FC<TabelloneTurniSettimanaleProps>
 
                               {/* Centralinista */}
                               {turno.centralinista ? (
-                                <div className="flex items-center justify-between gap-1 pt-0.5 border-t border-slate-800/80">
-                                  <span className="text-slate-400 text-[10px] shrink-0">{getLabelRuoloEquipaggioLive('centralinista', catalogoMansioni).nome}:</span>
-                                  <span className={`font-bold truncate max-w-[175px] text-right inline-flex items-center justify-end gap-1 ${turno.centralinista.nome.toLowerCase().includes(volontarioLoggatoNome?.toLowerCase() || '---') ? 'text-amber-400 font-black' : 'text-slate-200'}`} title={turno.centralinista.nome}>
+                                <div className="flex items-center justify-between gap-1 pt-0.5 border-t border-slate-800/80 min-w-0">
+                                  <span className="text-slate-400 text-[9.5px] truncate min-w-0" title={getLabelRuoloEquipaggioLive('centralinista', catalogoMansioni).nome}>
+                                    {getLabelRuoloEquipaggioLive('centralinista', catalogoMansioni).nome}:
+                                  </span>
+                                  <span className={`font-bold truncate text-right inline-flex items-center justify-end gap-1 shrink-0 max-w-[58%] ${turno.centralinista.nome.toLowerCase().includes(volontarioLoggatoNome?.toLowerCase() || '---') ? 'text-amber-400 font-black' : 'text-slate-200'}`} title={turno.centralinista.nome}>
                                     <IconaEmoji icona={getLabelRuoloEquipaggioLive('centralinista', catalogoMansioni).emoji} fallback="📞" size="xs" />
                                     <span className="truncate">{turno.centralinista.nome}</span>
                                     {renderCsTag(turno.centralinista)}
                                   </span>
                                 </div>
                               ) : (
-                                <div className="flex items-center justify-between gap-1 text-[10px] text-slate-500 pt-0.5 border-t border-slate-800/40">
-                                  <span className="text-slate-400 text-[10px] shrink-0">{getLabelRuoloEquipaggioLive('centralinista', catalogoMansioni).nome}:</span>
-                                  <span className="italic text-slate-500 text-[9.5px]">Disponibile</span>
+                                <div className="flex items-center justify-between gap-1 text-[9.5px] text-slate-500 pt-0.5 border-t border-slate-800/40 min-w-0">
+                                  <span className="text-slate-400 truncate min-w-0" title={getLabelRuoloEquipaggioLive('centralinista', catalogoMansioni).nome}>
+                                    {getLabelRuoloEquipaggioLive('centralinista', catalogoMansioni).nome}:
+                                  </span>
+                                  <span className="italic text-slate-500 text-[9px] shrink-0 whitespace-nowrap">Disponibile</span>
                                 </div>
                               )}
 
                               {/* Osservatore */}
                               {turno.osservatore ? (
-                                <div className="flex items-center justify-between gap-1">
-                                  <span className="text-slate-400 text-[10px] shrink-0">{getLabelRuoloEquipaggioLive('osservatore', catalogoMansioni).nome}:</span>
-                                  <span className={`font-bold truncate max-w-[175px] text-right inline-flex items-center justify-end gap-1 ${turno.osservatore.nome.toLowerCase().includes(volontarioLoggatoNome?.toLowerCase() || '---') ? 'text-amber-400 font-black' : 'text-slate-200'}`} title={turno.osservatore.nome}>
+                                <div className="flex items-center justify-between gap-1 min-w-0">
+                                  <span className="text-slate-400 text-[9.5px] truncate min-w-0" title={getLabelRuoloEquipaggioLive('osservatore', catalogoMansioni).nome}>
+                                    {getLabelRuoloEquipaggioLive('osservatore', catalogoMansioni).nome}:
+                                  </span>
+                                  <span className={`font-bold truncate text-right inline-flex items-center justify-end gap-1 shrink-0 max-w-[58%] ${turno.osservatore.nome.toLowerCase().includes(volontarioLoggatoNome?.toLowerCase() || '---') ? 'text-amber-400 font-black' : 'text-slate-200'}`} title={turno.osservatore.nome}>
                                     <IconaEmoji icona={getLabelRuoloEquipaggioLive('osservatore', catalogoMansioni).emoji} fallback="👁️" size="xs" />
                                     <span className="truncate">{turno.osservatore.nome}</span>
                                     {renderCsTag(turno.osservatore)}
                                   </span>
                                 </div>
                               ) : (
-                                <div className="flex items-center justify-between gap-1 text-[10px] text-slate-500">
-                                  <span className="text-slate-400 text-[10px] shrink-0">{getLabelRuoloEquipaggioLive('osservatore', catalogoMansioni).nome}:</span>
-                                  <span className="italic text-slate-500 text-[9.5px]">Disponibile</span>
+                                <div className="flex items-center justify-between gap-1 text-[9.5px] text-slate-500 min-w-0">
+                                  <span className="text-slate-400 truncate min-w-0" title={getLabelRuoloEquipaggioLive('osservatore', catalogoMansioni).nome}>
+                                    {getLabelRuoloEquipaggioLive('osservatore', catalogoMansioni).nome}:
+                                  </span>
+                                  <span className="italic text-slate-500 text-[9px] shrink-0 whitespace-nowrap">Disponibile</span>
                                 </div>
                               )}
                             </div>
@@ -1209,8 +1357,8 @@ export const TabelloneTurniSettimanale: React.FC<TabelloneTurniSettimanaleProps>
                           </div>
                         )}
 
-                        {/* SEZIONE CANDIDATURE & STATO APPROVAZIONE */}
-                        {(() => {
+                        {/* SEZIONE CANDIDATURE & PULSANTE COMPATTATO (COMPLETAMENTE RIMOSSA IN MODALITÀ MONITOR) */}
+                        {!isMonitorMode && (() => {
                           const richiesteInAttesa = (turno.richiesteIscrizione || []).filter((r) => r.stato === 'In Attesa');
                           const miaCandidatura = (turno.richiesteIscrizione || []).find(
                             (r) =>
@@ -1318,17 +1466,18 @@ export const TabelloneTurniSettimanale: React.FC<TabelloneTurniSettimanaleProps>
                                 </div>
                               )}
 
-                              {/* Pulsante per il volontario di candidarsi al turno */}
+                              {/* Pulsante compatto e proporzionato per candidarsi al turno */}
                               <button
                                 type="button"
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   apriModaleCandidatura(turno);
                                 }}
-                                className="w-full py-1.5 px-2 rounded-xl bg-gradient-to-r from-teal-700 to-indigo-700 hover:from-teal-600 hover:to-indigo-600 text-white font-black text-[10px] uppercase flex items-center justify-center gap-1.5 shadow-md shadow-teal-950/40 active:scale-95 transition-all cursor-pointer border border-teal-400/40"
+                                className="w-full py-1 px-2 rounded-lg bg-gradient-to-r from-teal-700 to-indigo-700 hover:from-teal-600 hover:to-indigo-600 text-white font-bold text-[9.5px] leading-tight flex items-center justify-center gap-1 shadow-sm active:scale-95 transition-all cursor-pointer border border-teal-400/35 whitespace-nowrap truncate"
+                                title="Segnati a questo turno"
                               >
-                                <UserPlus className="w-3.5 h-3.5 text-teal-200" />
-                                <span>Segnati a questo Turno</span>
+                                <UserPlus className="w-3 h-3 text-teal-200 shrink-0" />
+                                <span className="truncate">Segnati al turno</span>
                               </button>
                             </div>
                           );

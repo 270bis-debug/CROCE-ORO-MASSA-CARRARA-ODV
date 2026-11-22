@@ -42,6 +42,10 @@ import {
   readPublicVolunteerRosterFromServer,
   convertPublicRosterEntriesToVolontari,
   PublicVolunteerRosterDoc,
+  syncPublicBoardFirestore,
+  listenPublicBoardFirestore,
+  readPublicBoardFromServer,
+  PublicBoardDoc,
 } from './firebase';
 import { formatDateTimeItaly, formatTimeItaly } from '../utils/italianTime';
 import { mergeLoggedSessionsSafe, mergeVolontariListsSafe, normalizeDeletedIds } from '../utils/volontariMerge';
@@ -264,6 +268,7 @@ class RealtimeService {
   private shiftSignupsReconciling: Set<string> = new Set();
   private pendingShiftSignupsQueue: ShiftSignupRecord[] = [];
   private publicRosterUnsub: (() => void) | null = null;
+  private publicBoardUnsub: (() => void) | null = null;
   private lastGpsSentAt: number = 0;
   private lastGpsSentCoords: { lat: number; lng: number } | null = null;
 
@@ -530,9 +535,10 @@ class RealtimeService {
   private initFirebaseRealtime() {
     if (typeof window === 'undefined') return;
     try {
-      // Listener pubblico zero-PII attivo subito all'avvio: consente anche ai nuovi smartphone/iPhone
-      // non autenticati su Google Cloud Sync di ricevere istantaneamente l'elenco completo dei volontari.
+      // Listener pubblici zero-PII attivi subito all'avvio: consentono sia ai nuovi smartphone/iPhone
+      // sia alla Modalità Monitor (senza login) di ricevere istantaneamente volontari e tabellone turni.
       this.attachPublicRosterListener();
+      this.attachPublicBoardListener();
 
       subscribeToFirebaseAuth((session) => {
         this.firebaseSession = session;
@@ -616,6 +622,109 @@ class RealtimeService {
         }
       );
     } catch {}
+  }
+
+  private applyPublicBoardSnapshot(docData: PublicBoardDoc | null): { turniCount: number; sediCount: number } {
+    if (!docData) return { turniCount: 0, sediCount: 0 };
+    let turniCount = 0;
+    let sediCount = 0;
+
+    // Se il dispositivo non è già sincronizzato sullo shard completo privato `turni`, applica i turni pubblici live
+    if (
+      Array.isArray(docData.turni) &&
+      !(this.firebaseSession.isAuthorized && this.shardLoadedFromCloud['turni'])
+    ) {
+      const turniNorm = normalizzaTurniSedi(docData.turni);
+      this.cloudState.turni = turniNorm;
+      turniCount = turniNorm.length;
+      try {
+        localStorage.setItem('CROCE_ORO_TURNI_SEDI', JSON.stringify(turniNorm));
+      } catch {}
+      this.emit('TURNI_UPDATED', { turni: turniNorm });
+    }
+
+    if (
+      Array.isArray(docData.sedi) &&
+      docData.sedi.length > 0 &&
+      !(this.firebaseSession.isAuthorized && this.shardLoadedFromCloud['config'])
+    ) {
+      const sediNorm = normalizzaListaSediAssociative(docData.sedi);
+      this.cloudState.sedi = sediNorm;
+      sediCount = sediNorm.length;
+      try {
+        localStorage.setItem('CROCE_ORO_SEDI_COMPLETE', JSON.stringify(sediNorm));
+      } catch {}
+      this.emit('SEDI_UPDATED', { sedi: sediNorm });
+    }
+
+    return { turniCount, sediCount };
+  }
+
+  private attachPublicBoardListener() {
+    if (this.publicBoardUnsub) {
+      try {
+        this.publicBoardUnsub();
+      } catch {}
+      this.publicBoardUnsub = null;
+    }
+
+    // Fast-path immediato via HTTPS REST (funziona su ogni PC Monitor / TV / iPhone senza login)
+    readPublicBoardFromServer()
+      .then((res) => {
+        if (res.exists && res.data) {
+          this.applyPublicBoardSnapshot(res.data);
+        } else if (res.status === 'error') {
+          setTimeout(() => {
+            readPublicBoardFromServer()
+              .then((r2) => {
+                if (r2.exists && r2.data) {
+                  this.applyPublicBoardSnapshot(r2.data);
+                }
+              })
+              .catch(() => {});
+          }, 2500);
+        }
+      })
+      .catch(() => {});
+
+    try {
+      this.publicBoardUnsub = listenPublicBoardFirestore(
+        (exists, docData) => {
+          if (exists && docData) {
+            this.applyPublicBoardSnapshot(docData);
+          }
+        },
+        () => {
+          // Ignora eventuali errori transitori di rete sul tabellone pubblico
+        }
+      );
+    } catch {}
+  }
+
+  public async refreshPublicBoard(): Promise<{ ok: boolean; turniCount: number; sediCount: number }> {
+    try {
+      if (this.firebaseSession.isAuthorized) {
+        await Promise.all([
+          this.refreshShardFromServer('turni').catch(() => {}),
+          this.refreshShardFromServer('config').catch(() => {}),
+        ]);
+        const t = Array.isArray(this.cloudState.turni) ? this.cloudState.turni : [];
+        const s = Array.isArray(this.cloudState.sedi) ? this.cloudState.sedi : [];
+        if (t.length > 0 || s.length > 0) {
+          syncPublicBoardFirestore(t, s).catch(() => {});
+        }
+        return { ok: true, turniCount: t.length, sediCount: s.length };
+      }
+
+      const res = await readPublicBoardFromServer();
+      if (!res.exists || !res.data) {
+        return { ok: false, turniCount: 0, sediCount: 0 };
+      }
+      const counts = this.applyPublicBoardSnapshot(res.data);
+      return { ok: true, ...counts };
+    } catch {
+      return { ok: false, turniCount: 0, sediCount: 0 };
+    }
   }
 
   public async refreshPublicVolunteerRoster(): Promise<{
@@ -1206,6 +1315,16 @@ class RealtimeService {
                 this.cloudState.volontariEliminatiIds
               ).catch(() => {});
             }
+            if (
+              this.firebaseSession.isAuthorized &&
+              ((Array.isArray(this.cloudState.turni) && this.cloudState.turni.length > 0) ||
+                (Array.isArray(this.cloudState.sedi) && this.cloudState.sedi.length > 0))
+            ) {
+              syncPublicBoardFirestore(
+                Array.isArray(this.cloudState.turni) ? this.cloudState.turni : [],
+                Array.isArray(this.cloudState.sedi) ? this.cloudState.sedi : []
+              ).catch(() => {});
+            }
             this.emit('cloud_shards_ready', { shardExists: { ...this.shardExists } });
           }
         },
@@ -1257,7 +1376,10 @@ class RealtimeService {
               .join(';')
           : '';
         const firmaLen = typeof v?.firmaBase64 === 'string' ? v.firmaBase64.length : 0;
-        return `${v?.id || ''}:${v?.pin || ''}:${v?.approvato ? 1 : 0}:${v?.profiloCentrale ? 1 : 0}:${v?.loggato ? 1 : 0}:${v?.loggatoUpdatedAt || 0}:${firmaLen}:${v?.inTurno ? 1 : 0}:${(v?.macroCategorieAbilitate || []).join(',')}:${subs}`;
+        const btns = Array.isArray(v?.pulsantiStrumentiAbilitati)
+          ? [...v.pulsantiStrumentiAbilitati].sort().join(',')
+          : '';
+        return `${v?.id || ''}:${v?.pin || ''}:${v?.approvato ? 1 : 0}:${v?.profiloCentrale ? 1 : 0}:${v?.loggato ? 1 : 0}:${v?.loggatoUpdatedAt || 0}:${firmaLen}:${v?.inTurno ? 1 : 0}:${(v?.macroCategorieAbilitate || []).join(',')}:${subs}:${btns}`;
       })
       .sort()
       .join('|');
@@ -1348,6 +1470,12 @@ class RealtimeService {
       const turniNorm = normalizzaTurniSedi(payload.turni);
       this.cloudState.turni = turniNorm;
       this.emit('TURNI_UPDATED', { turni: turniNorm });
+      if (this.firebaseSession.isAuthorized) {
+        syncPublicBoardFirestore(
+          turniNorm,
+          Array.isArray(this.cloudState.sedi) ? this.cloudState.sedi : []
+        ).catch(() => {});
+      }
       if (this.firebaseSession.isAuthorized && this.pendingShiftSignupsQueue.length > 0) {
         const queued = [...this.pendingShiftSignupsQueue];
         this.pendingShiftSignupsQueue = [];
@@ -1449,6 +1577,12 @@ class RealtimeService {
           const luoghiNorm = normalizzaListaLuoghiTimbratura(this.cloudState.luoghiTimbratura, sediNorm);
           this.cloudState.luoghiTimbratura = luoghiNorm;
           this.emit('LUOGHI_TIMBRATURA_UPDATED', { luoghi: luoghiNorm });
+        }
+        if (this.firebaseSession.isAuthorized) {
+          syncPublicBoardFirestore(
+            Array.isArray(this.cloudState.turni) ? this.cloudState.turni : [],
+            sediNorm
+          ).catch(() => {});
         }
       }
       if (Array.isArray(payload.radioGroups)) {
@@ -2084,6 +2218,21 @@ class RealtimeService {
     if (shardId === 'volontari' && Array.isArray(payload?.volontari)) {
       syncPinResetProfilesFirestore(payload.volontari, this.pinResetProfilesReconciling).catch(() => {});
       syncPublicVolunteerRosterFirestore(payload.volontari, payload.volontariEliminatiIds).catch(() => {});
+    }
+    if (shardId === 'turni' || shardId === 'config') {
+      const currTurni = shardId === 'turni' && Array.isArray(payload?.turni)
+        ? payload.turni
+        : Array.isArray(this.cloudState.turni)
+          ? this.cloudState.turni
+          : [];
+      const currSedi = shardId === 'config' && Array.isArray(payload?.sedi)
+        ? payload.sedi
+        : Array.isArray(this.cloudState.sedi)
+          ? this.cloudState.sedi
+          : [];
+      if (currTurni.length > 0 || currSedi.length > 0) {
+        syncPublicBoardFirestore(currTurni, currSedi).catch(() => {});
+      }
     }
   }
 
@@ -4431,18 +4580,27 @@ class RealtimeService {
     if (Array.isArray(this.cloudState.turni) && this.cloudState.turni.length > 0) {
       return this.cloudState.turni;
     }
-    try {
-      const baseUrl = this.getApiBaseUrl();
-      const res = await fetch(`${baseUrl}/api/turni`, { cache: 'no-store' });
-      if (res.ok) {
-        const json = await res.json();
-        if (json.turni && Array.isArray(json.turni)) {
-          return json.turni;
+    if (!this.isServerlessStaticHost()) {
+      try {
+        const baseUrl = this.getApiBaseUrl();
+        const res = await fetch(`${baseUrl}/api/turni`, { cache: 'no-store' });
+        if (res.ok) {
+          const json = await res.json();
+          if (json.turni && Array.isArray(json.turni)) {
+            return json.turni;
+          }
         }
+      } catch (err) {
+        console.error('[Realtime] Errore fetchTurni:', err);
       }
-    } catch (err) {
-      console.error('[Realtime] Errore fetchTurni:', err);
     }
+    try {
+      const boardRes = await readPublicBoardFromServer();
+      if (boardRes.exists && boardRes.data && Array.isArray(boardRes.data.turni)) {
+        this.applyPublicBoardSnapshot(boardRes.data);
+        return this.cloudState.turni || [];
+      }
+    } catch {}
     return [];
   }
 

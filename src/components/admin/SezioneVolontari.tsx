@@ -60,6 +60,8 @@ import {
   MacroCategoriaId,
   LISTA_MACRO_CATEGORIE,
   TUTTE_LE_MACRO_CATEGORIE,
+  PulsanteStrumentiId,
+  LISTA_PULSANTI_STRUMENTI_RISERVATI,
   getSottosezioniDelegabili,
   getNomiDatabaseCustom,
   getTitoloDatabase,
@@ -4968,6 +4970,32 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
           onAggiornaVolontari(aggiornati);
         };
 
+        const togglePulsanteStrumentiAccount = (
+          vol: Volontario,
+          pulsanteId: PulsanteStrumentiId
+        ) => {
+          const attuali: PulsanteStrumentiId[] = Array.isArray(vol.pulsantiStrumentiAbilitati)
+            ? [...vol.pulsantiStrumentiAbilitati]
+            : [];
+          const has = attuali.includes(pulsanteId);
+          const nuovi = has
+            ? attuali.filter((id) => id !== pulsanteId)
+            : [...attuali, pulsanteId];
+          const aggiornati = volontari.map((v) =>
+            v.id === vol.id
+              ? {
+                  ...v,
+                  pulsantiStrumentiAbilitati: nuovi,
+                }
+              : v
+          );
+          onAggiornaVolontari(aggiornati);
+          const infoBtn = LISTA_PULSANTI_STRUMENTI_RISERVATI.find((b) => b.id === pulsanteId);
+          mostraAvviso(
+            `${nuovi.includes(pulsanteId) ? 'Abilitato' : 'Revocato'} pulsante "${infoBtn?.titolo || pulsanteId}" per ${vol.nome} ${vol.cognome}.`
+          );
+        };
+
         const accountInDettaglio = accountDettaglioPermessiId
           ? volontari.find((v) => v.id === accountDettaglioPermessiId) || null
           : null;
@@ -5459,11 +5487,60 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
                                         ) : (
                                           <span className="text-[9px] text-slate-600">✕</span>
                                         )}
-                                      </button>
+                                        </button>
+                                      );
+                                    })}
+                                  </div>
+
+                                  {/* Pulsanti barra strumenti riservati (Database, Web PC, 10 GB, Rinomina DB, Rinomina SUB) */}
+                                  {(() => {
+                                    const isPresOAdminVol = Boolean(
+                                      (v.caricaConsiglioDirettivo && v.caricaConsiglioDirettivo.toLowerCase().includes('presidente')) ||
+                                      (v.qualifica && v.qualifica.toLowerCase().includes('presidente')) ||
+                                      v.pin === '4451'
                                     );
-                                  })}
-                                </div>
-                              </td>
+                                    const pulsantiAttivi: PulsanteStrumentiId[] = Array.isArray(v.pulsantiStrumentiAbilitati)
+                                      ? v.pulsantiStrumentiAbilitati
+                                      : [];
+                                    return (
+                                      <div className="mt-2 pt-2 border-t border-slate-800/80 flex flex-wrap items-center gap-1.5">
+                                        <span className="text-[9.5px] font-black uppercase tracking-wider text-amber-400/90 mr-0.5">
+                                          Pulsanti Strumenti:
+                                        </span>
+                                        {isPresOAdminVol ? (
+                                          <span className="px-2 py-0.5 rounded-md bg-amber-500/15 border border-amber-500/40 text-amber-300 text-[10px] font-bold">
+                                            Tutti abilitati di default (Presidente / Admin)
+                                          </span>
+                                        ) : (
+                                          LISTA_PULSANTI_STRUMENTI_RISERVATI.map((btn) => {
+                                            const btnOn = pulsantiAttivi.includes(btn.id);
+                                            return (
+                                              <button
+                                                key={`${v.id}-btn-${btn.id}`}
+                                                type="button"
+                                                onClick={() => togglePulsanteStrumentiAccount(v, btn.id)}
+                                                className={`px-2 py-0.5 rounded-md text-[10px] font-bold flex items-center gap-1 border transition-all cursor-pointer ${
+                                                  btnOn
+                                                    ? 'bg-amber-500/20 text-amber-200 border-amber-400/60 hover:bg-amber-500/30'
+                                                    : 'bg-slate-900/70 text-slate-500 border-slate-800 hover:text-slate-300 hover:border-slate-700'
+                                                }`}
+                                                title={`${btnOn ? 'Nascondi' : 'Mostra'} pulsante "${btn.titolo}" a ${v.nome} ${v.cognome}`}
+                                              >
+                                                <span>{btn.icona}</span>
+                                                <span>{btn.titolo}</span>
+                                                {btnOn ? (
+                                                  <Check className="w-2.5 h-2.5 text-amber-300" />
+                                                ) : (
+                                                  <span className="text-[8.5px] text-slate-600">✕</span>
+                                                )}
+                                              </button>
+                                            );
+                                          })
+                                        )}
+                                      </div>
+                                    );
+                                  })()}
+                                </td>
                               <td className="py-3 px-3 align-middle text-center whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
                                 <div className="flex flex-col items-center gap-1">
                                   {abilitati.length > 0 ? (
@@ -5527,6 +5604,76 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
                   </div>
 
                   <div className="p-4 sm:p-5 overflow-y-auto grid grid-cols-1 md:grid-cols-2 gap-3 flex-1">
+                    {/* Sezione Pulsanti Barra Strumenti Riservati (Admin / Presidente -> delegabili a questo account) */}
+                    {(() => {
+                      const isPresOAdminDet = Boolean(
+                        (accountInDettaglio.caricaConsiglioDirettivo &&
+                          accountInDettaglio.caricaConsiglioDirettivo.toLowerCase().includes('presidente')) ||
+                        (accountInDettaglio.qualifica &&
+                          accountInDettaglio.qualifica.toLowerCase().includes('presidente')) ||
+                        accountInDettaglio.pin === '4451'
+                      );
+                      const pulsantiAttiviDet: PulsanteStrumentiId[] = Array.isArray(
+                        accountInDettaglio.pulsantiStrumentiAbilitati
+                      )
+                        ? accountInDettaglio.pulsantiStrumentiAbilitati
+                        : [];
+                      return (
+                        <div className="md:col-span-2 p-3.5 rounded-2xl border bg-amber-950/20 border-amber-500/40 space-y-2.5">
+                          <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-amber-500/25">
+                            <div>
+                              <div className="text-xs font-black text-amber-300 uppercase tracking-wide">
+                                🔐 Pulsanti Barra Strumenti Riservati (Database • Web PC • 10 GB • Rinomina DB • Rinomina SUB)
+                              </div>
+                              <div className="text-[10.5px] text-slate-300">
+                                Visibili di default solo ad Amministratore e Presidente. Abilita qui quali pulsanti rendere visibili a questo account.
+                              </div>
+                            </div>
+                            {isPresOAdminDet && (
+                              <span className="px-2.5 py-1 rounded-xl bg-amber-500/20 border border-amber-400/50 text-amber-200 text-[10px] font-black uppercase">
+                                Inclusi di default (Presidente / Admin)
+                              </span>
+                            )}
+                          </div>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2">
+                            {LISTA_PULSANTI_STRUMENTI_RISERVATI.map((btn) => {
+                              const btnOn = isPresOAdminDet || pulsantiAttiviDet.includes(btn.id);
+                              return (
+                                <button
+                                  key={`det-btn-${btn.id}`}
+                                  type="button"
+                                  disabled={isPresOAdminDet}
+                                  onClick={() => togglePulsanteStrumentiAccount(accountInDettaglio, btn.id)}
+                                  className={`px-2.5 py-2 rounded-xl border text-left text-[11px] font-bold flex items-center justify-between gap-1.5 transition-all ${
+                                    isPresOAdminDet
+                                      ? 'bg-amber-500/15 border-amber-500/40 text-amber-200 cursor-default opacity-90'
+                                      : btnOn
+                                        ? 'bg-amber-500/25 border-amber-400 text-amber-100 cursor-pointer'
+                                        : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-200 hover:border-slate-700 cursor-pointer'
+                                  }`}
+                                  title={btn.descrizione}
+                                >
+                                  <span className="flex items-center gap-1.5 min-w-0">
+                                    <span>{btn.icona}</span>
+                                    <span className="truncate">{btn.titolo}</span>
+                                  </span>
+                                  <span
+                                    className={`w-4 h-4 rounded flex items-center justify-center shrink-0 border ${
+                                      btnOn
+                                        ? 'bg-amber-400 border-amber-300 text-slate-950'
+                                        : 'bg-slate-950 border-slate-600 text-transparent'
+                                    }`}
+                                  >
+                                    <Check className="w-2.5 h-2.5 stroke-[3]" />
+                                  </span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      );
+                    })()}
+
                     {LISTA_MACRO_CATEGORIE.map((cat) => {
                       const abilitatiDb = Array.isArray(accountInDettaglio.macroCategorieAbilitate)
                         ? (accountInDettaglio.macroCategorieAbilitate as MacroCategoriaId[])

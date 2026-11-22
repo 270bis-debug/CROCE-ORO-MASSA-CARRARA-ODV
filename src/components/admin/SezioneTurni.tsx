@@ -69,6 +69,7 @@ import {
 import { IconaEmoji } from '../IconaEmoji';
 import { formatIconaPerTesto } from '../../utils/emojiIconsArchive';
 import { PannelloTipiTurno } from './PannelloTipiTurno';
+import { SelectVolontarioAffinita, StelleAffinita } from './SelectVolontarioAffinita';
 import { addDaysISODate, formatDateItaly, formatISODateItaly, formatTimeItaly } from '../../utils/italianTime';
 
 const addMonthsISODate = (iso: string, months: number): string => {
@@ -87,6 +88,15 @@ const getEndOfMonthISO = (iso: string): string => {
   const [y, m] = iso.split('-').map(Number);
   if (!y || !m) return formatISODateItaly();
   return new Date(Date.UTC(y, m, 0, 12, 0, 0)).toISOString().slice(0, 10);
+};
+
+const diffDaysISODate = (fromIso: string, toIso: string): number => {
+  const [y1, m1, d1] = fromIso.split('-').map(Number);
+  const [y2, m2, d2] = toIso.split('-').map(Number);
+  if (!y1 || !m1 || !d1 || !y2 || !m2 || !d2) return 0;
+  const t1 = Date.UTC(y1, m1 - 1, d1, 12, 0, 0);
+  const t2 = Date.UTC(y2, m2 - 1, d2, 12, 0, 0);
+  return Math.round((t2 - t1) / 86400000);
 };
 
 interface SezioneTurniProps {
@@ -158,6 +168,7 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
   const [mostraPannelloCandidature, setMostraPannelloCandidature] = useState(true);
   const [modificaModalitaSerie, setModificaModalitaSerie] = useState<'singolo' | 'serie_futura'>('singolo');
   const [turnoAzioneModal, setTurnoAzioneModal] = useState<TurnoSedeOperativa | null>(null);
+  const [modalAzioneTipo, setModalAzioneTipo] = useState<'elimina' | 'modifica'>('elimina');
   const [azioneMezzoScope, setAzioneMezzoScope] = useState<'singolo' | 'serie_futura' | null>(null);
   const [mezzoNuovoScelto, setMezzoNuovoScelto] = useState<string>('');
 
@@ -351,8 +362,8 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
   };
 
   const urlTabelloneSenzaLogin = typeof window !== 'undefined'
-    ? `${window.location.origin}/?view=tabellone-turni`
-    : 'https://ais-pre-hbtv34atqqzbpmvu75qbfi-778684122016.europe-west2.run.app/?view=tabellone-turni';
+    ? `${window.location.origin}/?view=monitor-turni`
+    : 'https://croce-oro-massa-carrarra.vercel.app/?view=monitor-turni';
 
   // Helper opzioni giorni della settimana
   const GIORNI_SETTIMANA = [
@@ -382,13 +393,18 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
   const [duplicaDataFine, setDuplicaDataFine] = useState('');
   // Giorni della settimana selezionati (1=Lun, 2=Mar, 3=Mer, 4=Gio, 5=Ven, 6=Sab, 0=Dom)
   const [duplicaGiorniSettimana, setDuplicaGiorniSettimana] = useState<number[]>([1, 2, 3, 4, 5]);
+  // Cadenza "ogni quanti giorni" (1 = ogni giorno valido, 2 = ogni 2 giorni, 3 = ogni 3 giorni, 7 = settimanale, 14 = bisettimanale...)
+  const [duplicaOgniGiorni, setDuplicaOgniGiorni] = useState<number>(1);
 
   // Gestione Giorni Festivi e Prefestivi
   const [regolaFestivi, setRegolaFestivi] = useState<'includi' | 'escludi' | 'solo'>('includi');
   const [regolaPrefestivi, setRegolaPrefestivi] = useState<'includi' | 'escludi' | 'solo'>('includi');
 
-  // Protezione sovrascrittura / salta turni identici già presenti
-  const [saltaGiaEsistenti, setSaltaGiaEsistenti] = useState(true);
+  // Comportamento rispetto ai turni ripetuti / già esistenti sulle date di destinazione
+  const [gestioneTurniEsistentiDuplicazione, setGestioneTurniEsistentiDuplicazione] = useState<
+    'aggiorna_solo_esistenti' | 'aggiorna_o_crea' | 'salta_esistenti'
+  >('aggiorna_o_crea');
+  const [sovrascriviRuoliOccupati, setSovrascriviRuoliOccupati] = useState<boolean>(false);
 
   // SELEZIONE VOLONTARI DA DUPLICARE ("uno o più volontari del turno esistente")
   const [ruoliSelezionatiDuplicazione, setRuoliSelezionatiDuplicazione] = useState<{
@@ -450,23 +466,87 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
     }
   };
 
+  const impostaCadenzaGiorni = (valoreRaw: number) => {
+    const val = Math.max(1, Math.min(90, Math.floor(Number(valoreRaw) || 1)));
+    setDuplicaOgniGiorni(val);
+    // Se l'utente sceglie una cadenza non multipla di 7 (es. ogni 2, 3, 4 giorni) e aveva un solo giorno della settimana attivo,
+    // abilita automaticamente tutti i giorni della settimana così la cadenza produce subito risultati visibili (può comunque escludere giorni dopo).
+    if (val > 1 && val % 7 !== 0 && duplicaGiorniSettimana.length === 1) {
+      setDuplicaGiorniSettimana([1, 2, 3, 4, 5, 6, 0]);
+    }
+  };
+
+  const trovaTurnoCorrispondenteData = (
+    origine: TurnoSedeOperativa,
+    dataTarget: string,
+    listaTurni: TurnoSedeOperativa[]
+  ): TurnoSedeOperativa | undefined => {
+    const turniDelGiorno = listaTurni.filter((x) => x.data === dataTarget && x.id !== origine.id);
+    if (turniDelGiorno.length === 0) return undefined;
+
+    if (origine.serieId) {
+      const stessoSerieId = turniDelGiorno.find((x) => x.serieId === origine.serieId);
+      if (stessoSerieId) return stessoSerieId;
+    }
+
+    const nomeOrigNorm = (origine.nomeTurno || '').trim().toLowerCase();
+    const matchEsatto = turniDelGiorno.find(
+      (x) =>
+        x.sedeId === origine.sedeId &&
+        x.fasciaOraria === origine.fasciaOraria &&
+        x.orarioInizio === origine.orarioInizio &&
+        x.orarioFine === origine.orarioFine &&
+        (x.nomeTurno || '').trim().toLowerCase() === nomeOrigNorm
+    );
+    if (matchEsatto) return matchEsatto;
+
+    return turniDelGiorno.find(
+      (x) =>
+        x.sedeId === origine.sedeId &&
+        x.fasciaOraria === origine.fasciaOraria &&
+        x.orarioInizio === origine.orarioInizio &&
+        x.orarioFine === origine.orarioFine
+    ) || turniDelGiorno.find(
+      (x) => x.sedeId === origine.sedeId && x.fasciaOraria === origine.fasciaOraria
+    );
+  };
+
   const avviaDuplicazioneTurno = (t: TurnoSedeOperativa) => {
     setTurnoDaDuplicare(t);
     setModalitaDuplicazione('serie');
 
+    // Rileva se il turno fa parte di una serie ripetuta con turni futuri già in calendario
+    const serieTurni = trovaTurniSerie(t, turni);
+    const futuriSerie = serieTurni.filter((x) => x.data > t.data);
+    const isTurnoRipetutoConFuturi = futuriSerie.length > 0;
+    const haVolontariNelTurno = Boolean(
+      t.autista ||
+        t.soccorritore2 ||
+        t.terzoSoccorritore ||
+        t.operatoreCentrale ||
+        t.centralinista ||
+        t.osservatore
+    );
+
     // Default per data singola
     try {
-      setDataDestinazioneDuplicazione(addDaysISODate(t.data, 1));
+      setDataDestinazioneDuplicazione(
+        isTurnoRipetutoConFuturi ? futuriSerie[0].data : addDaysISODate(t.data, 1)
+      );
     } catch {
       setDataDestinazioneDuplicazione(t.data);
     }
 
-    // Default per serie programmata
+    // Default per serie programmata (ancorato alla data del turno così "ogni N giorni" conta da questo turno)
     try {
-      const inizioIso = addDaysISODate(t.data, 1);
-      setDuplicaDataInizio(inizioIso);
-      setDuplicaDataFine(addDaysISODate(inizioIso, 30));
-      setDuplicaGiorniSettimana([getDayOfWeekISO(t.data)]);
+      setDuplicaDataInizio(t.data);
+      if (isTurnoRipetutoConFuturi) {
+        setDuplicaDataFine(futuriSerie[futuriSerie.length - 1].data);
+        setDuplicaGiorniSettimana([1, 2, 3, 4, 5, 6, 0]);
+      } else {
+        setDuplicaDataFine(addDaysISODate(t.data, 30));
+        setDuplicaGiorniSettimana([getDayOfWeekISO(t.data)]);
+      }
     } catch {
       const oggiIso = formatISODateItaly();
       setDuplicaDataInizio(oggiIso);
@@ -474,9 +554,15 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
       setDuplicaGiorniSettimana([1, 2, 3, 4, 5]);
     }
 
+    setDuplicaOgniGiorni(1);
     setRegolaFestivi('includi');
     setRegolaPrefestivi('includi');
-    setSaltaGiaEsistenti(true);
+    setGestioneTurniEsistentiDuplicazione(
+      isTurnoRipetutoConFuturi && haVolontariNelTurno
+        ? 'aggiorna_solo_esistenti'
+        : 'aggiorna_o_crea'
+    );
+    setSovrascriviRuoliOccupati(false);
 
     // Inizializza i ruoli da duplicare selezionando quelli effettivamente presenti nel turno modello
     setRuoliSelezionatiDuplicazione({
@@ -492,80 +578,119 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
     setModaleDuplicaTurnoAperta(true);
   };
 
-  // Calcolo dinamico date generate per la duplicazione
+  // Calcolo dinamico date generate / turni ripetuti da aggiornare per la duplicazione
   const dateDuplicazionePreview = useMemo(() => {
     if (!turnoDaDuplicare) return [];
 
-    if (modalitaDuplicazione === 'singola') {
-      if (!dataDestinazioneDuplicazione) return [];
-      const fest = isGiornoFestivo(dataDestinazioneDuplicazione);
-      const prefest = isGiornoPrefestivo(dataDestinazioneDuplicazione);
-      const esisteGia = saltaGiaEsistenti && turni.some(
-        (t) => t.data === dataDestinazioneDuplicazione && t.sedeId === turnoDaDuplicare.sedeId && t.fasciaOraria === turnoDaDuplicare.fasciaOraria
-      );
-      return [{
-        data: dataDestinazioneDuplicazione,
-        isFestivo: fest.isFestivo,
-        motivoFestivo: fest.motivo,
-        isPrefestivo: prefest.isPrefestivo,
-        motivoPrefestivo: prefest.motivo,
-        esisteGia: Boolean(esisteGia)
-      }];
-    }
-
-    if (!duplicaDataInizio || !duplicaDataFine || duplicaDataFine < duplicaDataInizio) return [];
-
-    const risultato: Array<{
+    type PreviewItem = {
       data: string;
       isFestivo: boolean;
       motivoFestivo?: string;
       isPrefestivo: boolean;
       motivoPrefestivo?: string;
       esisteGia: boolean;
-    }> = [];
+      turnoEsistenteId?: string;
+      azione: 'aggiorna' | 'crea' | 'salta';
+    };
+
+    if (modalitaDuplicazione === 'singola') {
+      if (!dataDestinazioneDuplicazione || dataDestinazioneDuplicazione === turnoDaDuplicare.data) return [];
+      const fest = isGiornoFestivo(dataDestinazioneDuplicazione);
+      const prefest = isGiornoPrefestivo(dataDestinazioneDuplicazione);
+      const esistente = trovaTurnoCorrispondenteData(turnoDaDuplicare, dataDestinazioneDuplicazione, turni);
+      const azione: PreviewItem['azione'] = esistente
+        ? gestioneTurniEsistentiDuplicazione === 'salta_esistenti'
+          ? 'salta'
+          : 'aggiorna'
+        : gestioneTurniEsistentiDuplicazione === 'aggiorna_solo_esistenti'
+        ? 'salta'
+        : 'crea';
+      return [{
+        data: dataDestinazioneDuplicazione,
+        isFestivo: fest.isFestivo,
+        motivoFestivo: fest.motivo,
+        isPrefestivo: prefest.isPrefestivo,
+        motivoPrefestivo: prefest.motivo,
+        esisteGia: Boolean(esistente),
+        turnoEsistenteId: esistente?.id,
+        azione
+      }];
+    }
+
+    if (!duplicaDataInizio || !duplicaDataFine || duplicaDataFine < duplicaDataInizio) return [];
+
+    const risultato: PreviewItem[] = [];
+    const passoGiorni = Math.max(1, Math.min(90, Math.floor(duplicaOgniGiorni || 1)));
 
     let curStr = duplicaDataInizio;
     let count = 0;
     while (curStr <= duplicaDataFine && count < 366) {
-      const dayOfWeek = getDayOfWeekISO(curStr);
+      // Non ri-applicare sulla data stessa del turno sorgente
+      if (curStr !== turnoDaDuplicare.data) {
+        const diffFromStart = diffDaysISODate(duplicaDataInizio, curStr);
+        const rispettaCadenza = passoGiorni <= 1 || (diffFromStart >= 0 && diffFromStart % passoGiorni === 0);
 
-      const fest = isGiornoFestivo(curStr);
-      const prefest = isGiornoPrefestivo(curStr);
+        if (rispettaCadenza) {
+          const dayOfWeek = getDayOfWeekISO(curStr);
+          const fest = isGiornoFestivo(curStr);
+          const prefest = isGiornoPrefestivo(curStr);
 
-      let includeGiorno = true;
+          let includeGiorno = true;
 
-      // 1. Controllo Festivi
-      if (regolaFestivi === 'escludi' && fest.isFestivo) {
-        includeGiorno = false;
-      } else if (regolaFestivi === 'solo' && !fest.isFestivo) {
-        includeGiorno = false;
-      }
+          // 1. Controllo Festivi
+          if (regolaFestivi === 'escludi' && fest.isFestivo) {
+            includeGiorno = false;
+          } else if (regolaFestivi === 'solo' && !fest.isFestivo) {
+            includeGiorno = false;
+          }
 
-      // 2. Controllo Prefestivi
-      if (regolaPrefestivi === 'escludi' && prefest.isPrefestivo) {
-        includeGiorno = false;
-      } else if (regolaPrefestivi === 'solo' && !prefest.isPrefestivo) {
-        includeGiorno = false;
-      }
+          // 2. Controllo Prefestivi
+          if (regolaPrefestivi === 'escludi' && prefest.isPrefestivo) {
+            includeGiorno = false;
+          } else if (regolaPrefestivi === 'solo' && !prefest.isPrefestivo) {
+            includeGiorno = false;
+          }
 
-      // 3. Controllo Giorni Settimana
-      if (includeGiorno && !duplicaGiorniSettimana.includes(dayOfWeek)) {
-        includeGiorno = false;
-      }
+          // 3. Controllo Giorni Settimana
+          if (includeGiorno && !duplicaGiorniSettimana.includes(dayOfWeek)) {
+            includeGiorno = false;
+          }
 
-      if (includeGiorno) {
-        const esisteGia = saltaGiaEsistenti && turni.some(
-          (t) => t.data === curStr && t.sedeId === turnoDaDuplicare.sedeId && t.fasciaOraria === turnoDaDuplicare.fasciaOraria
-        );
+          if (includeGiorno) {
+            const esistente = trovaTurnoCorrispondenteData(turnoDaDuplicare, curStr, turni);
 
-        risultato.push({
-          data: curStr,
-          isFestivo: fest.isFestivo,
-          motivoFestivo: fest.motivo,
-          isPrefestivo: prefest.isPrefestivo,
-          motivoPrefestivo: prefest.motivo,
-          esisteGia: Boolean(esisteGia)
-        });
+            if (gestioneTurniEsistentiDuplicazione === 'aggiorna_solo_esistenti') {
+              if (esistente) {
+                risultato.push({
+                  data: curStr,
+                  isFestivo: fest.isFestivo,
+                  motivoFestivo: fest.motivo,
+                  isPrefestivo: prefest.isPrefestivo,
+                  motivoPrefestivo: prefest.motivo,
+                  esisteGia: true,
+                  turnoEsistenteId: esistente.id,
+                  azione: 'aggiorna'
+                });
+              }
+            } else {
+              const azione: PreviewItem['azione'] = esistente
+                ? gestioneTurniEsistentiDuplicazione === 'salta_esistenti'
+                  ? 'salta'
+                  : 'aggiorna'
+                : 'crea';
+              risultato.push({
+                data: curStr,
+                isFestivo: fest.isFestivo,
+                motivoFestivo: fest.motivo,
+                isPrefestivo: prefest.isPrefestivo,
+                motivoPrefestivo: prefest.motivo,
+                esisteGia: Boolean(esistente),
+                turnoEsistenteId: esistente?.id,
+                azione
+              });
+            }
+          }
+        }
       }
 
       curStr = addDaysISODate(curStr, 1);
@@ -579,9 +704,10 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
     duplicaDataInizio,
     duplicaDataFine,
     duplicaGiorniSettimana,
+    duplicaOgniGiorni,
     regolaFestivi,
     regolaPrefestivi,
-    saltaGiaEsistenti,
+    gestioneTurniEsistentiDuplicazione,
     turnoDaDuplicare,
     turni
   ]);
@@ -590,12 +716,11 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
     e.preventDefault();
     if (!turnoDaDuplicare) return;
 
-    const dateValideDaCreare = dateDuplicazionePreview
-      .filter((d) => !saltaGiaEsistenti || !d.esisteGia)
-      .map((d) => d.data);
+    const itemDaAggiornare = dateDuplicazionePreview.filter((d) => d.azione === 'aggiorna' && d.turnoEsistenteId);
+    const itemDaCreare = dateDuplicazionePreview.filter((d) => d.azione === 'crea');
 
-    if (dateValideDaCreare.length === 0) {
-      mostraAvviso('Nessuna data valida disponibile per creare i turni duplicati con i filtri selezionati.');
+    if (itemDaAggiornare.length === 0 && itemDaCreare.length === 0) {
+      mostraAvviso('Nessuna data o turno ripetuto valido corrisponde ai filtri selezionati.');
       return;
     }
 
@@ -617,9 +742,71 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
     );
     const capoServizioBadgeEffettivo =
       capoOriginale && volontariDuplicatiIds.has(capoOriginale.id) ? capoOriginale : undefined;
-    const capoEffettivo = capoServizioBadgeEffettivo;
 
-    const statoCopertura = calcolaCoperturaTurno({
+    const ruoliSelezionatiCoppie: Array<{
+      chiave: 'autista' | 'soccorritore2' | 'terzoSoccorritore' | 'operatoreCentrale' | 'centralinista' | 'osservatore';
+      vol?: { id: string; nome: string };
+    }> = [
+      { chiave: 'autista', vol: autistaEffettivo },
+      { chiave: 'soccorritore2', vol: socc2Effettivo },
+      { chiave: 'terzoSoccorritore', vol: terzoEffettivo },
+      { chiave: 'operatoreCentrale', vol: centraleEffettivo },
+      { chiave: 'centralinista', vol: centralinistaEffettivo },
+      { chiave: 'osservatore', vol: osservatoreEffettivo },
+    ];
+
+    const haAlmenoUnVolontarioSelezionato = ruoliSelezionatiCoppie.some((r) => Boolean(r.vol));
+    if (itemDaCreare.length === 0 && !haAlmenoUnVolontarioSelezionato) {
+      mostraAvviso('⚠️ Seleziona almeno un volontario da duplicare nei turni ripetuti esistenti.');
+      return;
+    }
+
+    // 1. Aggiorna i turni ripetuti / esistenti inserendo solo i volontari selezionati (preservando gli altri volontari già presenti)
+    const idsDaAggiornare = new Set(itemDaAggiornare.map((d) => d.turnoEsistenteId!));
+    let turniEffettivamenteAggiornati = 0;
+
+    const turniBaseAggiornati = turni.map((ex) => {
+      if (!idsDaAggiornare.has(ex.id)) return ex;
+      const next: TurnoSedeOperativa = { ...ex };
+      let cambiato = false;
+
+      const presentiSuTarget = new Set(
+        [next.autista, next.soccorritore2, next.terzoSoccorritore, next.operatoreCentrale, next.centralinista, next.osservatore]
+          .filter(Boolean)
+          .map((v) => v!.id)
+      );
+
+      for (const { chiave, vol } of ruoliSelezionatiCoppie) {
+        if (!vol) continue;
+        const corrente = next[chiave];
+        if (corrente?.id === vol.id) continue;
+        // Evita di duplicare lo stesso volontario su due ruoli diversi nello stesso turno
+        if (presentiSuTarget.has(vol.id) && (!corrente || corrente.id !== vol.id)) continue;
+        if (!corrente || sovrascriviRuoliOccupati) {
+          if (corrente) presentiSuTarget.delete(corrente.id);
+          next[chiave] = { ...vol };
+          presentiSuTarget.add(vol.id);
+          cambiato = true;
+        }
+      }
+
+      if (capoServizioBadgeEffettivo && presentiSuTarget.has(capoServizioBadgeEffettivo.id)) {
+        const capoCorrente = getCapoServizioTurno(next);
+        if (!capoCorrente || sovrascriviRuoliOccupati) {
+          next.capoServizioBadge = { ...capoServizioBadgeEffettivo };
+          cambiato = true;
+        }
+      }
+
+      if (cambiato) {
+        next.statoCopertura = calcolaCoperturaTurno(next);
+        turniEffettivamenteAggiornati++;
+      }
+      return next;
+    });
+
+    // 2. Crea eventuali nuovi turni per le date senza turno (se modalità aggiorna_o_crea / salta_esistenti)
+    const statoCoperturaNuovi = calcolaCoperturaTurno({
       mansioniRichieste: t.mansioniRichieste,
       autista: autistaEffettivo,
       soccorritore2: socc2Effettivo,
@@ -629,10 +816,9 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
       osservatore: osservatoreEffettivo
     });
 
-    // Creazione nuovi turni duplicati
-    // NOTA VINCOLANTE: Il mezzo assegnato (mezzoAssegnato), il nome del turno (nomeTurno) e il tipo di turno rimangono identici all'originale
-    const nuoviTurniGenerati: TurnoSedeOperativa[] = dateValideDaCreare.map((dataStr, idx) => ({
+    const nuoviTurniGenerati: TurnoSedeOperativa[] = itemDaCreare.map((item, idx) => ({
       id: `turno-dupl-${Date.now()}-${idx}-${Math.random().toString(36).substr(2, 5)}`,
+      serieId: t.serieId,
       sedeId: t.sedeId,
       sedeNome: t.sedeNome,
       nomeTurno: t.nomeTurno, // Mezzo e nome rimangono esattamente lo stesso
@@ -640,11 +826,11 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
       tipoTurnoNome: t.tipoTurnoNome,
       mansioniRichieste: t.mansioniRichieste ? t.mansioniRichieste.map((m) => ({ ...m })) : undefined,
       mezzoAssegnato: t.mezzoAssegnato, // Mezzo assegnato preservato
-      data: dataStr,
+      data: item.data,
       fasciaOraria: t.fasciaOraria,
       orarioInizio: t.orarioInizio,
       orarioFine: t.orarioFine,
-      statoCopertura,
+      statoCopertura: statoCoperturaNuovi,
       capoServizioBadge: capoServizioBadgeEffettivo,
       autista: autistaEffettivo,
       caposervizio: undefined,
@@ -657,30 +843,63 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
       note: t.note
     }));
 
-    onAggiornaTurni([...turni, ...nuoviTurniGenerati]);
+    onAggiornaTurni([...turniBaseAggiornati, ...nuoviTurniGenerati]);
 
-    const volontariDuplicatiNomi = [
-      autistaEffettivo?.nome,
-      capoEffettivo?.nome,
-      socc2Effettivo?.nome,
-      terzoEffettivo?.nome,
-      centraleEffettivo?.nome,
-      centralinistaEffettivo?.nome,
-      osservatoreEffettivo?.nome
-    ].filter(Boolean);
+    const volontariDuplicatiNomi = Array.from(
+      new Set(
+        [
+          autistaEffettivo?.nome,
+          socc2Effettivo?.nome,
+          terzoEffettivo?.nome,
+          centraleEffettivo?.nome,
+          centralinistaEffettivo?.nome,
+          osservatoreEffettivo?.nome
+        ].filter(Boolean) as string[]
+      )
+    );
 
     const descVol = volontariDuplicatiNomi.length > 0
-      ? `con ${volontariDuplicatiNomi.length} disponibilità duplicate (${volontariDuplicatiNomi.slice(0, 2).join(', ')}${volontariDuplicatiNomi.length > 2 ? '...' : ''})`
+      ? `con ${volontariDuplicatiNomi.length} disponibilità (${volontariDuplicatiNomi.slice(0, 3).join(', ')}${volontariDuplicatiNomi.length > 3 ? '...' : ''})`
       : 'con equipaggio azzerato per nuove candidature';
 
-    onNotificaRadio?.(
-      `📋 DUPLICAZIONE TURNI: Generati ${nuoviTurniGenerati.length} turni (${t.nomeTurno || t.fasciaOraria}) Mezzo ${t.mezzoAssegnato || 'N/D'} per ${t.sedeNome} ${descVol}`,
-      'sistema'
-    );
+    const descCadenza = duplicaOgniGiorni > 1 ? ` (ogni ${duplicaOgniGiorni} giorni)` : '';
 
-    mostraAvviso(
-      `✓ Generati con successo ${nuoviTurniGenerati.length} turni duplicati per ${t.sedeNome} con Mezzo ${t.mezzoAssegnato || 'N/D'} e Nome Turno preservati.`
-    );
+    if (itemDaAggiornare.length > 0 && nuoviTurniGenerati.length > 0) {
+      onNotificaRadio?.(
+        `📋 DUPLICAZIONE DISPONIBILITÀ: Aggiornati ${turniEffettivamenteAggiornati} turni esistenti e creati ${nuoviTurniGenerati.length} nuovi turni${descCadenza} per ${t.sedeNome} ${descVol}`,
+        'sistema'
+      );
+      mostraAvviso(
+        `✓ Disponibilità duplicate${descCadenza}: aggiornati ${turniEffettivamenteAggiornati} turni ripetuti esistenti e creati ${nuoviTurniGenerati.length} nuovi turni.`
+      );
+    } else if (itemDaAggiornare.length > 0) {
+      onNotificaRadio?.(
+        `📋 DISPONIBILITÀ SU TURNI RIPETUTI: Inserite su ${turniEffettivamenteAggiornati} turni esistenti${descCadenza} (${t.nomeTurno || t.fasciaOraria}) per ${t.sedeNome} ${descVol}`,
+        'sistema'
+      );
+      mostraAvviso(
+        turniEffettivamenteAggiornati > 0
+          ? `✓ Disponibilità di ${volontariDuplicatiNomi.join(', ')} duplicate su ${turniEffettivamenteAggiornati} turni ripetuti esistenti${descCadenza}.`
+          : `ℹ️ Nessun turno modificato: i ruoli nei ${itemDaAggiornare.length} turni selezionati erano già occupati (attiva "Sostituisci ruoli già occupati" se desideri sovrascriverli).`
+      );
+    } else {
+      onNotificaRadio?.(
+        `📋 DUPLICAZIONE TURNI: Generati ${nuoviTurniGenerati.length} turni${descCadenza} (${t.nomeTurno || t.fasciaOraria}) Mezzo ${t.mezzoAssegnato || 'N/D'} per ${t.sedeNome} ${descVol}`,
+        'sistema'
+      );
+      mostraAvviso(
+        `✓ Generati con successo ${nuoviTurniGenerati.length} turni duplicati${descCadenza} per ${t.sedeNome} con Mezzo ${t.mezzoAssegnato || 'N/D'} e Nome Turno preservati.`
+      );
+    }
+
+    if (!isAdmin) {
+      inviaNotificaModificaAdmin(
+        'turni',
+        'Duplicazione disponibilità volontari',
+        `Duplicati ${volontariDuplicatiNomi.join(', ') || 'turni vuoti'} su ${turniEffettivamenteAggiornati} turni esistenti e ${nuoviTurniGenerati.length} nuovi turni (${t.sedeNome})${descCadenza}`,
+        operatoreCorrente
+      );
+    }
 
     setModaleDuplicaTurnoAperta(false);
     setTurnoDaDuplicare(null);
@@ -1090,7 +1309,7 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
     setMostraModificaEquipaggioEsistente(false);
   };
 
-  // Elimina / Gestisci Turno (apre modale dedicata con 6 opzioni se il turno fa parte di una serie)
+  // Elimina Turno (apre modale dedicata di sola cancellazione, singola o serie futura)
   const handleEliminaTurno = (id: string) => {
     if (!isAdmin) {
       mostraAvviso("⛔ Operazione non autorizzata: solo l'Amministratore può eliminare turni dal calendario.");
@@ -1098,9 +1317,23 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
     }
     const target = turni.find((t) => t.id === id);
     if (!target) return;
+    setModalAzioneTipo('elimina');
     setTurnoAzioneModal(target);
     setAzioneMezzoScope(null);
     setMezzoNuovoScelto(target.mezzoAssegnato || getDefaultMezzoOperativo());
+  };
+
+  // Modifica Turno (se fa parte di una serie apre le 4 opzioni di modifica/cambio mezzo; altrimenti apre direttamente la scheda modifica)
+  const handleModificaTurno = (turno: TurnoSedeOperativa) => {
+    const serieCompleta = trovaTurniSerie(turno, turni);
+    if (serieCompleta.length > 1) {
+      setModalAzioneTipo('modifica');
+      setTurnoAzioneModal(turno);
+      setAzioneMezzoScope(null);
+      setMezzoNuovoScelto(turno.mezzoAssegnato || getDefaultMezzoOperativo());
+      return;
+    }
+    avviaModificaDaModalSerie(turno, 'singolo');
   };
 
   const eseguiEliminaSingoloTurno = (turno: TurnoSedeOperativa) => {
@@ -1139,7 +1372,7 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
     setFormFine(turno.orarioFine);
     setFormMezzo(turno.mezzoAssegnato || '');
     setFormAutistaId(turno.autista?.id || '');
-    setFormCapoId(turno.caposervizio?.id || '');
+    setFormCapoId(getCapoServizioTurno(turno)?.id || '');
     setFormSoccorritore2Id(turno.soccorritore2?.id || '');
     setFormTerzoSoccorritoreId(turno.terzoSoccorritore?.id || '');
     setFormCentraleId(turno.operatoreCentrale?.id || '');
@@ -1402,11 +1635,11 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
                   Riservato Amministratore
                 </span>
                 <span className="text-sm font-bold text-white">
-                  Link Diretto al Tabellone Turni (Senza Login Obbligatorio)
+                  Link Diretto Modalità Monitor (Senza Login Obbligatorio)
                 </span>
               </div>
               <p className="text-xs text-slate-300 mt-0.5">
-                Questo link permette di visualizzare direttamente il tabellone settimanale di tutte le sezioni territoriali senza richiedere credenziali di accesso.
+                Link dedicato per monitor di postazione e schermi TV: visualizza tutti i turni pubblicati di ogni sezione in Modalità Monitor (senza login, con scroll automatico e pulizia cache ogni 60s).
               </p>
             </div>
           </div>
@@ -1432,10 +1665,10 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
               target="_blank"
               rel="noopener noreferrer"
               className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-xs flex items-center gap-1.5 border border-slate-700 transition-all"
-              title="Apri il tabellone in una nuova scheda"
+              title="Apri la Modalità Monitor in una nuova scheda"
             >
               <ExternalLink className="w-3.5 h-3.5 text-indigo-400" />
-              <span>Apri Tabellone</span>
+              <span>Apri Monitor</span>
             </a>
           </div>
         </div>
@@ -1942,7 +2175,7 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
                 </div>
 
                 {/* Azioni Turno */}
-                <div className="flex items-center justify-end gap-1.5 pt-2 border-t border-slate-800">
+                <div className="flex flex-wrap items-center justify-end gap-1.5 pt-2 border-t border-slate-800">
                   <button
                     type="button"
                     onClick={() => avviaDuplicazioneTurno(t)}
@@ -1965,39 +2198,18 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
 
                   <button
                     type="button"
-                    onClick={() => {
-                      setModificaModalitaSerie('singolo');
-                      setTurnoInModifica(t);
-                      setFormSedeId(t.sedeId);
-                      setFormData(t.data);
-                      setFormTipoTurnoId(t.tipoTurnoId || '');
-                      setFormNomeTurno(t.nomeTurno || '');
-                      setFormFascia(t.fasciaOraria);
-                      setFormInizio(t.orarioInizio);
-                      setFormFine(t.orarioFine);
-                      setFormMezzo(t.mezzoAssegnato || '');
-                      setFormAutistaId(t.autista?.id || '');
-                      setFormCapoId(getCapoServizioTurno(t)?.id || '');
-                      setFormSoccorritore2Id(t.soccorritore2?.id || '');
-                      setFormTerzoSoccorritoreId(t.terzoSoccorritore?.id || '');
-                      setFormCentraleId(t.operatoreCentrale?.id || '');
-                      setFormCentralinistaId(t.centralinista?.id || '');
-                      setFormOsservatoreId(t.osservatore?.id || '');
-                      setMostraModificaEquipaggioEsistente(false);
-                      setFormChecklistObbligatoria(t.checklistObbligatoria !== false);
-                      setFormNote(t.note || '');
-                      setModaleTurnoAperta(true);
-                    }}
-                    className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 cursor-pointer"
-                    title="Modifica Orari / Assegnazioni Turno"
+                    onClick={() => handleModificaTurno(t)}
+                    className="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-[11px] flex items-center gap-1 border border-slate-600 cursor-pointer transition-all active:scale-95"
+                    title="Modifica Orari, Mezzo, Assegnazioni o Serie Turni"
                   >
-                    <Edit2 className="w-3.5 h-3.5" />
+                    <Edit2 className="w-3.5 h-3.5 text-sky-400" />
+                    <span>Modifica</span>
                   </button>
                   {isAdmin && (
                     <button
                       type="button"
                       onClick={() => handleEliminaTurno(t.id)}
-                      className="p-1.5 rounded-lg bg-red-950 hover:bg-red-900 text-red-300 border border-red-800 cursor-pointer"
+                      className="p-1.5 rounded-lg bg-red-950 hover:bg-red-900 text-red-300 border border-red-800 cursor-pointer transition-all active:scale-95"
                       title="Elimina Turno"
                     >
                       <Trash2 className="w-3.5 h-3.5" />
@@ -2232,128 +2444,133 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
                     <span>Modifica Volontari Assegnati al Turno</span>
                     <span className="text-teal-400">{mostraModificaEquipaggioEsistente ? 'Nascondi ▲' : 'Mostra ▼'}</span>
                   </button>
-                  {mostraModificaEquipaggioEsistente && (
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
-                      <div>
-                        <label className="block text-slate-300 font-semibold mb-1">🚑 Autista Soccorritore</label>
-                        <select
-                          value={formAutistaId}
-                          onChange={(e) => setFormAutistaId(e.target.value)}
-                          className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white"
-                        >
-                          <option value="">-- Nessuno --</option>
-                          {volontari.map((v) => (
-                            <option key={v.id} value={v.id}>
-                              {v.nome} {v.cognome} ({v.qualifica || 'Volontario'})
-                            </option>
-                          ))}
-                        </select>
+                  {mostraModificaEquipaggioEsistente && (() => {
+                    const tipoSelAffinita = tipiTurno.find((tp) => tp.id === formTipoTurnoId);
+                    const contestoAffinita = {
+                      data: formData,
+                      fasciaOraria: formFascia,
+                      orarioInizio: formInizio,
+                      tipoTurnoId: formTipoTurnoId || undefined,
+                      tipoTurnoNome: tipoSelAffinita?.nome || turnoInModifica.tipoTurnoNome,
+                      nomeTurno: formNomeTurno,
+                      tipoTurnoObj: tipoSelAffinita,
+                      excludeTurnoId: turnoInModifica.id,
+                    };
+                    return (
+                      <div className="space-y-3 pt-1">
+                        {/* Legenda sintetica affinità 5 stelline Blu -> Oro */}
+                        <div className="px-3 py-2 rounded-xl bg-slate-950/90 border border-slate-800 flex flex-wrap items-center justify-between gap-2 text-[10.5px]">
+                          <div className="text-slate-300 font-semibold">
+                            Affinità per <span className="text-white font-bold">Tipo turno, Mansione, Fascia e Giorno</span>:
+                          </div>
+                          <div className="flex items-center gap-2.5 flex-wrap">
+                            <span className="inline-flex items-center gap-1 text-blue-300 font-mono">
+                              <StelleAffinita percentuale={20} size="xs" mostraPercentuale={false} />
+                              <span>20%/★</span>
+                            </span>
+                            <span className="text-slate-600">•</span>
+                            <span className="inline-flex items-center gap-1 text-amber-300 font-mono">
+                              <StelleAffinita percentuale={70} size="xs" mostraPercentuale={false} />
+                              <span>Blu → Oro</span>
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                          <SelectVolontarioAffinita
+                            label="🚑 Autista Soccorritore"
+                            value={formAutistaId}
+                            onChange={setFormAutistaId}
+                            volontari={volontari}
+                            ruoloTarget="autista"
+                            contestoTurno={contestoAffinita}
+                            tuttiTurni={turni}
+                          />
+
+                          <div>
+                            <label className="block text-amber-300 font-bold mb-1">⭐ Badge Capo Servizio (da equipaggio assegnato)</label>
+                            <select
+                              value={formCapoId}
+                              onChange={(e) => setFormCapoId(e.target.value)}
+                              className="w-full p-2 rounded-xl bg-slate-950 border border-amber-500/60 text-amber-200 font-bold text-xs"
+                            >
+                              <option value="">-- Nessun Capo Servizio --</option>
+                              {Array.from(
+                                new Set([
+                                  formAutistaId,
+                                  formSoccorritore2Id,
+                                  formTerzoSoccorritoreId,
+                                  formCentraleId,
+                                  formCentralinistaId,
+                                  formOsservatoreId
+                                ].filter(Boolean))
+                              ).map((vId) => {
+                                const volObj = volontari.find((v) => v.id === vId);
+                                if (!volObj) return null;
+                                return (
+                                  <option key={volObj.id} value={volObj.id}>
+                                    ⭐ {volObj.nome} {volObj.cognome}
+                                  </option>
+                                );
+                              })}
+                            </select>
+                          </div>
+
+                          <SelectVolontarioAffinita
+                            label="🧑‍⚕️ Secondo Soccorritore"
+                            value={formSoccorritore2Id}
+                            onChange={setFormSoccorritore2Id}
+                            volontari={volontari}
+                            ruoloTarget="soccorritore2"
+                            contestoTurno={contestoAffinita}
+                            tuttiTurni={turni}
+                          />
+
+                          <SelectVolontarioAffinita
+                            label="🧑‍⚕️ Terzo Soccorritore"
+                            value={formTerzoSoccorritoreId}
+                            onChange={setFormTerzoSoccorritoreId}
+                            volontari={volontari}
+                            ruoloTarget="terzoSoccorritore"
+                            contestoTurno={contestoAffinita}
+                            tuttiTurni={turni}
+                          />
+
+                          <SelectVolontarioAffinita
+                            label="🎧 Operatore Centrale"
+                            value={formCentraleId}
+                            onChange={setFormCentraleId}
+                            volontari={volontari}
+                            ruoloTarget="operatoreCentrale"
+                            contestoTurno={contestoAffinita}
+                            tuttiTurni={turni}
+                          />
+
+                          <SelectVolontarioAffinita
+                            label="📞 Centralinista"
+                            value={formCentralinistaId}
+                            onChange={setFormCentralinistaId}
+                            volontari={volontari}
+                            ruoloTarget="centralinista"
+                            contestoTurno={contestoAffinita}
+                            tuttiTurni={turni}
+                          />
+
+                          <div className="sm:col-span-2">
+                            <SelectVolontarioAffinita
+                              label="👁️ Osservatore"
+                              value={formOsservatoreId}
+                              onChange={setFormOsservatoreId}
+                              volontari={volontari}
+                              ruoloTarget="osservatore"
+                              contestoTurno={contestoAffinita}
+                              tuttiTurni={turni}
+                            />
+                          </div>
+                        </div>
                       </div>
-                      <div>
-                        <label className="block text-amber-300 font-bold mb-1">⭐ Badge Capo Servizio (da equipaggio assegnato)</label>
-                        <select
-                          value={formCapoId}
-                          onChange={(e) => setFormCapoId(e.target.value)}
-                          className="w-full p-2.5 rounded-xl bg-slate-950 border border-amber-500/60 text-amber-200 font-bold"
-                        >
-                          <option value="">-- Nessun Capo Servizio --</option>
-                          {Array.from(
-                            new Set([
-                              formAutistaId,
-                              formSoccorritore2Id,
-                              formTerzoSoccorritoreId,
-                              formCentraleId,
-                              formCentralinistaId,
-                              formOsservatoreId
-                            ].filter(Boolean))
-                          ).map((vId) => {
-                            const volObj = volontari.find((v) => v.id === vId);
-                            if (!volObj) return null;
-                            return (
-                              <option key={volObj.id} value={volObj.id}>
-                                ⭐ {volObj.nome} {volObj.cognome}
-                              </option>
-                            );
-                          })}
-                        </select>
-                      </div>
-                      <div>
-                        <label className="block text-slate-300 font-semibold mb-1">🧑‍⚕️ Secondo Soccorritore</label>
-                        <select
-                          value={formSoccorritore2Id}
-                          onChange={(e) => setFormSoccorritore2Id(e.target.value)}
-                          className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white"
-                        >
-                          <option value="">-- Nessuno --</option>
-                          {volontari.map((v) => (
-                            <option key={v.id} value={v.id}>
-                              {v.nome} {v.cognome} ({v.qualifica || 'Volontario'})
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                      <div>
-                        <label className="block text-slate-300 font-semibold mb-1">🧑‍⚕️ Terzo Soccorritore</label>
-                        <select
-                          value={formTerzoSoccorritoreId}
-                          onChange={(e) => setFormTerzoSoccorritoreId(e.target.value)}
-                          className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white"
-                        >
-                          <option value="">-- Nessuno --</option>
-                          {volontari.map((v) => (
-                            <option key={v.id} value={v.id}>
-                              {v.nome} {v.cognome} ({v.qualifica || 'Volontario'})
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                      <div>
-                        <label className="block text-slate-300 font-semibold mb-1">🎧 Operatore Centrale</label>
-                        <select
-                          value={formCentraleId}
-                          onChange={(e) => setFormCentraleId(e.target.value)}
-                          className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white"
-                        >
-                          <option value="">-- Nessuno --</option>
-                          {volontari.map((v) => (
-                            <option key={v.id} value={v.id}>
-                              {v.nome} {v.cognome} ({v.qualifica || 'Volontario'})
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                      <div>
-                        <label className="block text-slate-300 font-semibold mb-1">📞 Centralinista</label>
-                        <select
-                          value={formCentralinistaId}
-                          onChange={(e) => setFormCentralinistaId(e.target.value)}
-                          className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white"
-                        >
-                          <option value="">-- Nessuno --</option>
-                          {volontari.map((v) => (
-                            <option key={v.id} value={v.id}>
-                              {v.nome} {v.cognome} ({v.qualifica || 'Volontario'})
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                      <div className="sm:col-span-2">
-                        <label className="block text-slate-300 font-semibold mb-1">👁️ Osservatore</label>
-                        <select
-                          value={formOsservatoreId}
-                          onChange={(e) => setFormOsservatoreId(e.target.value)}
-                          className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white"
-                        >
-                          <option value="">-- Nessuno --</option>
-                          {volontari.map((v) => (
-                            <option key={v.id} value={v.id}>
-                              {v.nome} {v.cognome} ({v.qualifica || 'Volontario'})
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                    </div>
-                  )}
+                    );
+                  })()}
                 </div>
               )}
 
@@ -2455,22 +2672,27 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
         </div>
       )}
 
-      {/* MODALE CANCELLAZIONE / GESTIONE SERIE TURNI (6 OPZIONI) */}
+      {/* MODALE SEPARATA: GESTIONE MODIFICA SERIE TURNI (4 OPZIONI) / CANCELLAZIONE TURNI (2 OPZIONI) */}
       {turnoAzioneModal && (() => {
         const serieCompleta = trovaTurniSerie(turnoAzioneModal, turni);
         const turniFuturiSerie = serieCompleta.filter((t) => t.data >= turnoAzioneModal.data);
         const isSerie = serieCompleta.length > 1;
+        const isModificaMode = modalAzioneTipo === 'modifica';
         return (
           <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in">
-            <div className="bg-slate-900 border-2 border-red-500/50 rounded-3xl max-w-lg w-full p-5 shadow-2xl text-slate-200 space-y-4 max-h-[90vh] overflow-y-auto">
+            <div className={`bg-slate-900 border-2 ${isModificaMode ? 'border-sky-500/50' : 'border-red-500/50'} rounded-3xl max-w-lg w-full p-5 shadow-2xl text-slate-200 space-y-4 max-h-[90vh] overflow-y-auto`}>
               <div className="flex items-start justify-between gap-3 border-b border-slate-800 pb-3">
                 <div className="flex items-center gap-2.5">
-                  <div className="p-2 rounded-xl bg-red-500/20 border border-red-500/40 text-red-400">
-                    <Trash2 className="w-5 h-5" />
+                  <div className={`p-2 rounded-xl border ${isModificaMode ? 'bg-sky-500/20 border-sky-500/40 text-sky-400' : 'bg-red-500/20 border-red-500/40 text-red-400'}`}>
+                    {isModificaMode ? <Edit2 className="w-5 h-5" /> : <Trash2 className="w-5 h-5" />}
                   </div>
                   <div>
                     <h3 className="text-base font-black text-white uppercase">
-                      {isSerie ? 'Gestione Cancellazione Serie Turni' : 'Conferma Eliminazione Turno'}
+                      {isModificaMode
+                        ? 'Opzioni Modifica Serie Turni'
+                        : isSerie
+                          ? 'Gestione Cancellazione Serie Turni'
+                          : 'Conferma Eliminazione Turno'}
                     </h3>
                     <p className="text-[11px] text-slate-400">
                       {turnoAzioneModal.sedeNome} • {formatDateItaly(turnoAzioneModal.data)} ({turnoAzioneModal.orarioInizio}-{turnoAzioneModal.orarioFine})
@@ -2490,12 +2712,12 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
                 </button>
               </div>
 
-              {isSerie ? (
+              {isModificaMode ? (
                 <>
-                  <div className="p-3 rounded-xl bg-amber-950/40 border border-amber-500/40 text-xs text-amber-200 flex items-start gap-2">
-                    <Repeat className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                  <div className="p-3 rounded-xl bg-sky-950/40 border border-sky-500/40 text-xs text-sky-200 flex items-start gap-2">
+                    <Repeat className="w-4 h-4 text-sky-400 shrink-0 mt-0.5" />
                     <div>
-                      Questo turno fa parte di una <strong>serie di {serieCompleta.length} turni</strong> ({turniFuturiSerie.length} turni a partire dal {formatDateItaly(turnoAzioneModal.data)}). Scegli quale operazione eseguire:
+                      Questo turno fa parte di una <strong>serie di {serieCompleta.length} turni</strong> ({turniFuturiSerie.length} turni a partire dal {formatDateItaly(turnoAzioneModal.data)}). Scegli cosa modificare:
                     </div>
                   </div>
 
@@ -2543,34 +2765,12 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
                     <div className="space-y-2 text-xs">
                       <button
                         type="button"
-                        onClick={() => eseguiEliminaSingoloTurno(turnoAzioneModal)}
-                        className="w-full text-left p-3 rounded-xl bg-red-950/60 hover:bg-red-900/70 border border-red-500/40 text-red-100 font-bold flex items-center justify-between gap-2 transition-colors cursor-pointer"
-                      >
-                        <span className="flex items-center gap-2">
-                          <Trash2 className="w-4 h-4 text-red-400 shrink-0" />
-                          <span>1. Elimina il singolo turno ({formatDateItaly(turnoAzioneModal.data)})</span>
-                        </span>
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => eseguiEliminaSerieFutura(turnoAzioneModal)}
-                        className="w-full text-left p-3 rounded-xl bg-red-900/50 hover:bg-red-800/70 border border-red-500/60 text-red-100 font-black flex items-center justify-between gap-2 transition-colors cursor-pointer"
-                      >
-                        <span className="flex items-center gap-2">
-                          <Layers className="w-4 h-4 text-red-300 shrink-0" />
-                          <span>2. Elimina tutta la serie di turni futuri ({turniFuturiSerie.length} turni)</span>
-                        </span>
-                      </button>
-
-                      <button
-                        type="button"
                         onClick={() => avviaModificaDaModalSerie(turnoAzioneModal, 'singolo')}
                         className="w-full text-left p-3 rounded-xl bg-slate-800/80 hover:bg-slate-700 border border-slate-600 text-white font-bold flex items-center justify-between gap-2 transition-colors cursor-pointer"
                       >
                         <span className="flex items-center gap-2">
                           <Edit2 className="w-4 h-4 text-teal-400 shrink-0" />
-                          <span>3. Modifica il singolo turno</span>
+                          <span>1. Modifica il singolo turno ({formatDateItaly(turnoAzioneModal.data)})</span>
                         </span>
                       </button>
 
@@ -2581,7 +2781,7 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
                       >
                         <span className="flex items-center gap-2">
                           <Repeat className="w-4 h-4 text-teal-300 shrink-0" />
-                          <span>4. Modifica tutta la serie di turni futuri ({turniFuturiSerie.length} turni)</span>
+                          <span>2. Modifica tutta la serie di turni futuri ({turniFuturiSerie.length} turni)</span>
                         </span>
                       </button>
 
@@ -2595,7 +2795,7 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
                       >
                         <span className="flex items-center gap-2">
                           <Car className="w-4 h-4 text-cyan-400 shrink-0" />
-                          <span>5. Modifica il mezzo assegnato per il singolo turno</span>
+                          <span>3. Modifica il mezzo assegnato per il singolo turno</span>
                         </span>
                       </button>
 
@@ -2609,11 +2809,44 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
                       >
                         <span className="flex items-center gap-2">
                           <Car className="w-4 h-4 text-cyan-300 shrink-0" />
-                          <span>6. Modifica il mezzo assegnato per tutta la serie di turni futuri ({turniFuturiSerie.length} turni)</span>
+                          <span>4. Modifica il mezzo assegnato per tutta la serie di turni futuri ({turniFuturiSerie.length} turni)</span>
                         </span>
                       </button>
                     </div>
                   )}
+                </>
+              ) : isSerie ? (
+                <>
+                  <div className="p-3 rounded-xl bg-amber-950/40 border border-amber-500/40 text-xs text-amber-200 flex items-start gap-2">
+                    <Repeat className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                    <div>
+                      Questo turno fa parte di una <strong>serie di {serieCompleta.length} turni</strong> ({turniFuturiSerie.length} turni a partire dal {formatDateItaly(turnoAzioneModal.data)}). Scegli quale cancellazione eseguire:
+                    </div>
+                  </div>
+
+                  <div className="space-y-2 text-xs">
+                    <button
+                      type="button"
+                      onClick={() => eseguiEliminaSingoloTurno(turnoAzioneModal)}
+                      className="w-full text-left p-3 rounded-xl bg-red-950/60 hover:bg-red-900/70 border border-red-500/40 text-red-100 font-bold flex items-center justify-between gap-2 transition-colors cursor-pointer"
+                    >
+                      <span className="flex items-center gap-2">
+                        <Trash2 className="w-4 h-4 text-red-400 shrink-0" />
+                        <span>1. Elimina il singolo turno ({formatDateItaly(turnoAzioneModal.data)})</span>
+                      </span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => eseguiEliminaSerieFutura(turnoAzioneModal)}
+                      className="w-full text-left p-3 rounded-xl bg-red-900/50 hover:bg-red-800/70 border border-red-500/60 text-red-100 font-black flex items-center justify-between gap-2 transition-colors cursor-pointer"
+                    >
+                      <span className="flex items-center gap-2">
+                        <Layers className="w-4 h-4 text-red-300 shrink-0" />
+                        <span>2. Elimina tutta la serie di turni futuri ({turniFuturiSerie.length} turni)</span>
+                      </span>
+                    </button>
+                  </div>
                 </>
               ) : (
                 <div className="space-y-4">
@@ -2630,13 +2863,6 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
                     </button>
                     <button
                       type="button"
-                      onClick={() => avviaModificaDaModalSerie(turnoAzioneModal, 'singolo')}
-                      className="px-4 py-2 rounded-xl bg-teal-700 hover:bg-teal-600 text-white text-xs font-bold cursor-pointer"
-                    >
-                      Modifica Turno
-                    </button>
-                    <button
-                      type="button"
                       onClick={() => eseguiEliminaSingoloTurno(turnoAzioneModal)}
                       className="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-500 text-white text-xs font-black uppercase cursor-pointer"
                     >
@@ -2646,7 +2872,7 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
                 </div>
               )}
 
-              {isSerie && !azioneMezzoScope && (
+              {(isModificaMode || isSerie) && !azioneMezzoScope && (
                 <div className="flex justify-end pt-2 border-t border-slate-800">
                   <button
                     type="button"
@@ -2678,24 +2904,7 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
               onChiudi={() => setMostraTabelloneSettimanaleModal(false)}
               onModificaTurno={(turno) => {
                 setMostraTabelloneSettimanaleModal(false);
-                setTurnoInModifica(turno);
-                setFormSedeId(turno.sedeId);
-                setFormData(turno.data);
-                setFormNomeTurno(turno.nomeTurno || '');
-                setFormFascia(turno.fasciaOraria);
-                setFormInizio(turno.orarioInizio);
-                setFormFine(turno.orarioFine);
-                setFormMezzo(turno.mezzoAssegnato || '');
-                setFormAutistaId(turno.autista?.id || '');
-                setFormCapoId(turno.caposervizio?.id || '');
-                setFormSoccorritore2Id(turno.soccorritore2?.id || '');
-                setFormTerzoSoccorritoreId(turno.terzoSoccorritore?.id || '');
-                setFormCentraleId(turno.operatoreCentrale?.id || '');
-                setFormCentralinistaId(turno.centralinista?.id || '');
-                setFormOsservatoreId(turno.osservatore?.id || '');
-                setFormChecklistObbligatoria(turno.checklistObbligatoria !== false);
-                setFormNote(turno.note || '');
-                setModaleTurnoAperta(true);
+                handleModificaTurno(turno);
               }}
               onDuplicaTurno={(turno) => {
                 setMostraTabelloneSettimanaleModal(false);
@@ -3011,7 +3220,47 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
                       className="w-4 h-4 rounded text-amber-500 bg-slate-950 border-slate-700 focus:ring-amber-400 cursor-pointer"
                     />
                   </label>
+
+                  {/* Osservatore */}
+                  <label
+                    className={`p-3 rounded-xl border flex items-center justify-between gap-2.5 transition-all cursor-pointer select-none ${
+                      !turnoDaDuplicare.osservatore
+                        ? 'bg-slate-900/40 border-slate-850 opacity-60 cursor-not-allowed'
+                        : ruoliSelezionatiDuplicazione.osservatore
+                        ? 'bg-amber-950/30 border-amber-500/70 shadow-sm'
+                        : 'bg-slate-900 border-slate-800 hover:border-slate-700'
+                    }`}
+                  >
+                    <div className="min-w-0 flex-1">
+                      <span className="text-[10px] text-slate-400 uppercase font-black block">👁️ Osservatore</span>
+                      <strong className="text-white text-xs truncate block">
+                        {turnoDaDuplicare.osservatore ? turnoDaDuplicare.osservatore.nome : '— Non Assegnato —'}
+                      </strong>
+                    </div>
+                    <input
+                      type="checkbox"
+                      disabled={!turnoDaDuplicare.osservatore}
+                      checked={Boolean(turnoDaDuplicare.osservatore && ruoliSelezionatiDuplicazione.osservatore)}
+                      onChange={() => toggleRuoloDuplicazione('osservatore')}
+                      className="w-4 h-4 rounded text-amber-500 bg-slate-950 border-slate-700 focus:ring-amber-400 cursor-pointer"
+                    />
+                  </label>
                 </div>
+
+                {/* Banner informativo se il turno fa parte di una serie ripetuta */}
+                {(() => {
+                  const serieInfo = trovaTurniSerie(turnoDaDuplicare, turni);
+                  const futuriCount = serieInfo.filter((x) => x.data > turnoDaDuplicare.data).length;
+                  if (futuriCount === 0) return null;
+                  return (
+                    <div className="p-2.5 rounded-xl bg-teal-950/40 border border-teal-500/40 text-[11px] text-teal-200 flex items-start gap-2">
+                      <Repeat className="w-4 h-4 text-teal-400 shrink-0 mt-0.5" />
+                      <span>
+                        <strong>Turno ripetuto rilevato ({futuriCount} turni futuri in calendario):</strong> puoi inserire la disponibilità dei volontari selezionati direttamente nei turni ripetuti già programmati scegliendo la data limite, i giorni della settimana e ogni quanti giorni.
+                      </span>
+                    </div>
+                  );
+                })()}
               </div>
 
               {/* SEZIONE 2: PIANIFICAZIONE CALENDARIO */}
@@ -3235,6 +3484,60 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
                     </div>
                   </div>
 
+                  {/* CADENZA: OGNI QUANTI GIORNI */}
+                  <div className="p-3.5 rounded-2xl bg-slate-900/70 border border-teal-500/40 space-y-2.5">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                      <div>
+                        <label className="block text-teal-300 font-black uppercase text-[11px]">
+                          Ogni quanti giorni ripetere la disponibilità (Cadenza):
+                        </label>
+                        <p className="text-[10px] text-slate-400">
+                          Imposta <strong>1</strong> per ogni giorno valido, <strong>2</strong> a giorni alterni, <strong>3</strong> ogni 3 giorni, <strong>7</strong> ogni settimana, <strong>14</strong> ogni 2 settimane, ecc.
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <span className="text-[11px] font-bold text-slate-300">Ogni</span>
+                        <input
+                          type="number"
+                          min={1}
+                          max={90}
+                          value={duplicaOgniGiorni}
+                          onChange={(e) => impostaCadenzaGiorni(parseInt(e.target.value, 10))}
+                          className="w-20 p-2 rounded-xl bg-slate-950 border-2 border-teal-500/70 text-white font-mono font-black text-center text-sm focus:border-teal-400 focus:outline-none"
+                        />
+                        <span className="text-[11px] font-bold text-slate-300">
+                          {duplicaOgniGiorni === 1 ? 'giorno' : 'giorni'}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      {[
+                        { n: 1, label: 'Ogni giorno (1)' },
+                        { n: 2, label: 'Ogni 2 gg' },
+                        { n: 3, label: 'Ogni 3 gg' },
+                        { n: 4, label: 'Ogni 4 gg' },
+                        { n: 5, label: 'Ogni 5 gg' },
+                        { n: 7, label: 'Ogni 7 gg (1 sett.)' },
+                        { n: 14, label: 'Ogni 14 gg (2 sett.)' },
+                        { n: 28, label: 'Ogni 28 gg' }
+                      ].map((p) => (
+                        <button
+                          key={p.n}
+                          type="button"
+                          onClick={() => impostaCadenzaGiorni(p.n)}
+                          className={`px-2.5 py-1 rounded-lg text-[10.5px] font-bold border transition-all cursor-pointer ${
+                            duplicaOgniGiorni === p.n
+                              ? 'bg-teal-500 text-slate-950 border-teal-400 shadow-sm'
+                              : 'bg-slate-950 hover:bg-slate-800 text-slate-300 border-slate-800'
+                          }`}
+                        >
+                          {p.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
                   {/* SEZIONE SPECIALE: GESTIONE GIORNI FESTIVI E PREFESTIVI */}
                   <div className="p-3.5 rounded-2xl bg-gradient-to-br from-slate-900 to-slate-950 border border-amber-500/40 space-y-3">
                     <div className="flex items-center gap-2">
@@ -3291,95 +3594,180 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
                         </select>
                       </div>
                     </div>
-
-                    {/* Checkbox Salta Esistenti */}
-                    <label className="flex items-center gap-2 pt-1 text-[11px] text-slate-300 font-semibold cursor-pointer select-none">
-                      <input
-                        type="checkbox"
-                        checked={saltaGiaEsistenti}
-                        onChange={(e) => setSaltaGiaEsistenti(e.target.checked)}
-                        className="w-4 h-4 rounded text-amber-500 bg-slate-900 border-slate-700 focus:ring-amber-400"
-                      />
-                      <span>Salta automaticamente le date in cui esiste già un turno nella stessa sede e fascia oraria</span>
-                    </label>
                   </div>
                 </div>
               )}
 
-              {/* SEZIONE 3: ANTEPRIMA DATE & TURNI CHE VERRANNO CREATI */}
-              <div className="p-4 rounded-2xl bg-slate-950 border border-slate-800 space-y-2.5">
-                <div className="flex items-center justify-between flex-wrap gap-2">
-                  <div className="flex items-center gap-2">
-                    <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-                    <span className="text-xs font-black uppercase text-white">
-                      Anteprima: {dateDuplicazionePreview.filter((d) => !saltaGiaEsistenti || !d.esisteGia).length} Turni Verranno Creati
-                    </span>
-                  </div>
-                  <div className="text-[11px] font-mono text-slate-400">
-                    Mezzo: <strong className="text-amber-300">{turnoDaDuplicare.mezzoAssegnato || 'N/D'}</strong> • Nome: <strong className="text-blue-300">{turnoDaDuplicare.nomeTurno || 'Turno Ordinario'}</strong>
-                  </div>
+              {/* MODALITÀ DI APPLICAZIONE SU TURNI RIPETUTI / ESISTENTI */}
+              <div className="p-4 rounded-2xl bg-slate-950 border border-slate-800 space-y-3">
+                <div className="text-[11px] font-black uppercase text-slate-200 tracking-wide">
+                  Come applicare sui turni già presenti in calendario:
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setGestioneTurniEsistentiDuplicazione('aggiorna_solo_esistenti')}
+                    className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer ${
+                      gestioneTurniEsistentiDuplicazione === 'aggiorna_solo_esistenti'
+                        ? 'bg-teal-950/60 border-teal-400 text-teal-100 shadow-sm'
+                        : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    <div className="font-black text-[11px] text-teal-300">Solo Turni Ripetuti Esistenti</div>
+                    <div className="text-[10px] mt-0.5 leading-snug">
+                      Inserisce i volontari nei turni già creati, senza aggiungere nuovi turni.
+                    </div>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setGestioneTurniEsistentiDuplicazione('aggiorna_o_crea')}
+                    className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer ${
+                      gestioneTurniEsistentiDuplicazione === 'aggiorna_o_crea'
+                        ? 'bg-amber-950/60 border-amber-400 text-amber-100 shadow-sm'
+                        : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    <div className="font-black text-[11px] text-amber-300">Aggiorna Esistenti + Crea Mancanti</div>
+                    <div className="text-[10px] mt-0.5 leading-snug">
+                      Inserisce nei turni già esistenti e crea il turno se la data è vuota.
+                    </div>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setGestioneTurniEsistentiDuplicazione('salta_esistenti')}
+                    className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer ${
+                      gestioneTurniEsistentiDuplicazione === 'salta_esistenti'
+                        ? 'bg-slate-800 border-slate-500 text-white shadow-sm'
+                        : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    <div className="font-black text-[11px] text-slate-200">Crea Solo Nuovi Turni</div>
+                    <div className="text-[10px] mt-0.5 leading-snug">
+                      Salta le date dove esiste già un turno nella stessa sede e fascia.
+                    </div>
+                  </button>
                 </div>
 
-                {dateDuplicazionePreview.length === 0 ? (
-                  <div className="p-4 rounded-xl bg-slate-900 text-center text-slate-400 text-xs">
-                    Nessuna data soddisfa i criteri selezionati. Modifica il periodo, i giorni della settimana o i filtri festivi/prefestivi.
-                  </div>
-                ) : (
-                  <div className="space-y-2">
-                    <div className="flex items-center gap-1.5 flex-wrap max-h-28 overflow-y-auto p-1.5 bg-slate-900 rounded-xl border border-slate-800">
-                      {dateDuplicazionePreview.slice(0, 24).map((d) => (
-                        <span
-                          key={d.data}
-                          className={`px-2 py-1 rounded-lg text-[10.5px] font-mono font-bold flex items-center gap-1 border ${
-                            d.esisteGia && saltaGiaEsistenti
-                              ? 'bg-slate-800 text-slate-500 border-slate-700 line-through opacity-60'
-                              : d.isFestivo
-                              ? 'bg-red-950/80 text-red-300 border-red-500/50'
-                              : d.isPrefestivo
-                              ? 'bg-amber-950/80 text-amber-300 border-amber-500/50'
-                              : 'bg-slate-950 text-slate-200 border-slate-800'
-                          }`}
-                          title={d.motivoFestivo || d.motivoPrefestivo || d.data}
-                        >
-                          <span>{d.data}</span>
-                          {d.isFestivo && <span className="text-[9px] px-1 bg-red-900/60 rounded">Festivo</span>}
-                          {d.isPrefestivo && !d.isFestivo && <span className="text-[9px] px-1 bg-amber-900/60 rounded">Prefestivo</span>}
-                          {d.esisteGia && saltaGiaEsistenti && <span className="text-[8.5px] text-amber-400">Gia Presente</span>}
-                        </span>
-                      ))}
-                      {dateDuplicazionePreview.length > 24 && (
-                        <span className="px-2 py-1 rounded-lg text-[10px] bg-slate-800 text-slate-400 font-bold">
-                          +{dateDuplicazionePreview.length - 24} altri giorni...
-                        </span>
-                      )}
-                    </div>
-                  </div>
+                {gestioneTurniEsistentiDuplicazione !== 'salta_esistenti' && (
+                  <label className="flex items-center gap-2 pt-1 text-[11px] text-slate-300 font-semibold cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={sovrascriviRuoliOccupati}
+                      onChange={(e) => setSovrascriviRuoliOccupati(e.target.checked)}
+                      className="w-4 h-4 rounded text-amber-500 bg-slate-900 border-slate-700 focus:ring-amber-400"
+                    />
+                    <span>
+                      Sostituisci anche se il ruolo nel turno esistente è già occupato da un altro volontario (se disattivo, riempie solo i ruoli liberi)
+                    </span>
+                  </label>
                 )}
               </div>
 
-              {/* BOTTONI FOOTER */}
-              <div className="flex items-center justify-end gap-2.5 pt-3 border-t border-slate-800">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setModaleDuplicaTurnoAperta(false);
-                    setTurnoDaDuplicare(null);
-                  }}
-                  className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold cursor-pointer transition-colors"
-                >
-                  Annulla
-                </button>
-                <button
-                  type="submit"
-                  disabled={dateDuplicazionePreview.filter((d) => !saltaGiaEsistenti || !d.esisteGia).length === 0}
-                  className="px-5 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 disabled:bg-slate-800 disabled:text-slate-600 disabled:cursor-not-allowed text-slate-950 font-black uppercase flex items-center gap-2 shadow-lg active:scale-95 transition-all cursor-pointer"
-                >
-                  <Copy className="w-4 h-4" />
-                  <span>
-                    Conferma e Salva Duplicati ({dateDuplicazionePreview.filter((d) => !saltaGiaEsistenti || !d.esisteGia).length} Turni)
-                  </span>
-                </button>
-              </div>
+              {/* SEZIONE 3: ANTEPRIMA DATE & TURNI CHE VERRANNO AGGIORNATI / CREATI */}
+              {(() => {
+                const countAggiorna = dateDuplicazionePreview.filter((d) => d.azione === 'aggiorna').length;
+                const countCrea = dateDuplicazionePreview.filter((d) => d.azione === 'crea').length;
+                const totaleOperazioni = countAggiorna + countCrea;
+                return (
+                  <>
+                    <div className="p-4 rounded-2xl bg-slate-950 border border-slate-800 space-y-2.5">
+                      <div className="flex items-center justify-between flex-wrap gap-2">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                          <span className="text-xs font-black uppercase text-white">
+                            Anteprima:{' '}
+                            {countAggiorna > 0 && countCrea > 0
+                              ? `${countAggiorna} Turni Esistenti da Aggiornare + ${countCrea} Nuovi Turni`
+                              : countAggiorna > 0
+                              ? `${countAggiorna} Turni Ripetuti Esistenti da Aggiornare`
+                              : `${countCrea} Nuovi Turni da Creare`}
+                          </span>
+                          {duplicaOgniGiorni > 1 && modalitaDuplicazione === 'serie' && (
+                            <span className="px-2 py-0.5 rounded-lg bg-teal-950 border border-teal-500/50 text-teal-300 text-[10px] font-black">
+                              Ogni {duplicaOgniGiorni} giorni
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-[11px] font-mono text-slate-400">
+                          Mezzo: <strong className="text-amber-300">{turnoDaDuplicare.mezzoAssegnato || 'N/D'}</strong> • Nome: <strong className="text-blue-300">{turnoDaDuplicare.nomeTurno || 'Turno Ordinario'}</strong>
+                        </div>
+                      </div>
+
+                      {dateDuplicazionePreview.length === 0 ? (
+                        <div className="p-4 rounded-xl bg-slate-900 text-center text-slate-400 text-xs">
+                          Nessuna data o turno ripetuto soddisfa i criteri selezionati. Modifica il periodo, i giorni della settimana, la cadenza "ogni quanti giorni" o la modalità sui turni esistenti.
+                        </div>
+                      ) : (
+                        <div className="space-y-2">
+                          <div className="flex items-center gap-1.5 flex-wrap max-h-28 overflow-y-auto p-1.5 bg-slate-900 rounded-xl border border-slate-800">
+                            {dateDuplicazionePreview.slice(0, 30).map((d) => (
+                              <span
+                                key={d.data}
+                                className={`px-2 py-1 rounded-lg text-[10.5px] font-mono font-bold flex items-center gap-1 border ${
+                                  d.azione === 'salta'
+                                    ? 'bg-slate-800 text-slate-500 border-slate-700 line-through opacity-60'
+                                    : d.azione === 'aggiorna'
+                                    ? 'bg-teal-950/80 text-teal-200 border-teal-500/60'
+                                    : d.isFestivo
+                                    ? 'bg-red-950/80 text-red-300 border-red-500/50'
+                                    : d.isPrefestivo
+                                    ? 'bg-amber-950/80 text-amber-300 border-amber-500/50'
+                                    : 'bg-slate-950 text-slate-200 border-slate-800'
+                                }`}
+                                title={d.motivoFestivo || d.motivoPrefestivo || d.data}
+                              >
+                                <span>{formatDateItaly(d.data)}</span>
+                                {d.azione === 'aggiorna' && (
+                                  <span className="text-[8.5px] px-1 bg-teal-800/80 text-teal-100 rounded">Aggiorna</span>
+                                )}
+                                {d.azione === 'crea' && (
+                                  <span className="text-[8.5px] px-1 bg-amber-900/70 text-amber-200 rounded">Nuovo</span>
+                                )}
+                                {d.isFestivo && <span className="text-[9px] px-1 bg-red-900/60 rounded">Festivo</span>}
+                                {d.isPrefestivo && !d.isFestivo && <span className="text-[9px] px-1 bg-amber-900/60 rounded">Prefestivo</span>}
+                                {d.azione === 'salta' && <span className="text-[8.5px] text-amber-400">Saltato</span>}
+                              </span>
+                            ))}
+                            {dateDuplicazionePreview.length > 30 && (
+                              <span className="px-2 py-1 rounded-lg text-[10px] bg-slate-800 text-slate-400 font-bold">
+                                +{dateDuplicazionePreview.length - 30} altri giorni...
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* BOTTONI FOOTER */}
+                    <div className="flex items-center justify-end gap-2.5 pt-3 border-t border-slate-800">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setModaleDuplicaTurnoAperta(false);
+                          setTurnoDaDuplicare(null);
+                        }}
+                        className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold cursor-pointer transition-colors"
+                      >
+                        Annulla
+                      </button>
+                      <button
+                        type="submit"
+                        disabled={totaleOperazioni === 0}
+                        className="px-5 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 disabled:bg-slate-800 disabled:text-slate-600 disabled:cursor-not-allowed text-slate-950 font-black uppercase flex items-center gap-2 shadow-lg active:scale-95 transition-all cursor-pointer"
+                      >
+                        <Copy className="w-4 h-4" />
+                        <span>
+                          {countAggiorna > 0 && countCrea > 0
+                            ? `Conferma (${countAggiorna} Aggiornati + ${countCrea} Nuovi)`
+                            : countAggiorna > 0
+                            ? `Duplica Disponibilità su ${countAggiorna} Turni`
+                            : `Conferma e Salva Duplicati (${countCrea} Turni)`}
+                        </span>
+                      </button>
+                    </div>
+                  </>
+                );
+              })()}
             </form>
           </div>
         </div>

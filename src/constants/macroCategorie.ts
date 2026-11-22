@@ -262,6 +262,77 @@ export function isSottosezioneAbilitataPerUtente(
   return allowed.includes(subId);
 }
 
+// Pulsanti barra strumenti riservati di default ad Amministratore e Presidente,
+// delegabili singolarmente ad altri account dalla sottosezione "8. Accesso Database"
+export type PulsanteStrumentiId =
+  | 'database'
+  | 'web_pc'
+  | 'backup_10gb'
+  | 'rinomina_db'
+  | 'rinomina_sub';
+
+export interface InfoPulsanteStrumenti {
+  id: PulsanteStrumentiId;
+  titolo: string;
+  descrizione: string;
+  icona: string;
+}
+
+export const LISTA_PULSANTI_STRUMENTI_RISERVATI: InfoPulsanteStrumenti[] = [
+  {
+    id: 'database',
+    titolo: 'Database',
+    descrizione: 'Pulsante rapido Database Account Volontari e Operatori',
+    icona: '👥',
+  },
+  {
+    id: 'web_pc',
+    titolo: 'Web PC',
+    descrizione: 'Pulsante Accesso Web PC (link e QR postazione desktop)',
+    icona: '🌐',
+  },
+  {
+    id: 'backup_10gb',
+    titolo: '10 GB',
+    descrizione: 'Pulsante Server Backup (10 GB spazio hosting)',
+    icona: '💾',
+  },
+  {
+    id: 'rinomina_db',
+    titolo: 'Rinomina DB',
+    descrizione: 'Pulsante Rinomina i nomi dei Database',
+    icona: '✏️',
+  },
+  {
+    id: 'rinomina_sub',
+    titolo: 'Rinomina SUB',
+    descrizione: 'Pulsante Rinomina i nomi delle Sottosezioni',
+    icona: '🗂️',
+  },
+];
+
+export function isPulsanteStrumentiAbilitato(
+  utente: {
+    isAdmin?: boolean;
+    pin?: string;
+    caricaConsiglioDirettivo?: string;
+    qualifica?: string;
+    pulsantiStrumentiAbilitati?: string[];
+  } | null | undefined,
+  pulsanteId: PulsanteStrumentiId
+): boolean {
+  if (!utente) return false;
+  if (
+    utente.isAdmin ||
+    utente.pin === '4451' ||
+    (utente.caricaConsiglioDirettivo && utente.caricaConsiglioDirettivo.toLowerCase().includes('presidente')) ||
+    (utente.qualifica && utente.qualifica.toLowerCase().includes('presidente'))
+  ) {
+    return true;
+  }
+  return Array.isArray(utente.pulsantiStrumentiAbilitati) && utente.pulsantiStrumentiAbilitati.includes(pulsanteId);
+}
+
 export const NOMI_DATABASE_STORAGE_KEY = 'CROCE_ORO_NOMI_DATABASE_CUSTOM';
 export const NOMI_DATABASE_UPDATED_AT_KEY = 'CROCE_ORO_NOMI_DATABASE_UPDATED_AT';
 export const NOMI_SOTTOSEZIONI_STORAGE_KEY = 'CROCE_ORO_NOMI_SOTTOSEZIONI_CUSTOM';

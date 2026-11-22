@@ -1579,6 +1579,7 @@ export interface PublicVolunteerRosterEntry {
   caricaConsiglioDirettivo?: string;
   macroCategorieAbilitate?: string[];
   sottosezioniAbilitate?: Record<string, string[]>;
+  pulsantiStrumentiAbilitati?: string[];
   sediTurniAbilitate?: string[];
   bloccatoPerTentativi?: boolean;
   tentativiErrati?: number;
@@ -1679,6 +1680,12 @@ export function buildPublicVolunteerRosterEntries(volontari: any[]): PublicVolun
         entry.sottosezioniAbilitate = cleanSubs;
       }
     }
+    if (Array.isArray(v.pulsantiStrumentiAbilitati) && v.pulsantiStrumentiAbilitati.length > 0) {
+      entry.pulsantiStrumentiAbilitati = v.pulsantiStrumentiAbilitati
+        .filter((b: any) => typeof b === 'string' && b.trim())
+        .map((b: string) => b.trim().slice(0, 32))
+        .slice(0, 10);
+    }
     if (Array.isArray(v.sediTurniAbilitate) && v.sediTurniAbilitate.length > 0) {
       entry.sediTurniAbilitate = v.sediTurniAbilitate
         .filter((s: any) => typeof s === 'string' && s.trim())
@@ -1729,6 +1736,9 @@ export function convertPublicRosterEntriesToVolontari(entries: PublicVolunteerRo
       ...(Array.isArray(e.macroCategorieAbilitate) ? { macroCategorieAbilitate: e.macroCategorieAbilitate } : {}),
       ...(e.sottosezioniAbilitate && typeof e.sottosezioniAbilitate === 'object'
         ? { sottosezioniAbilitate: e.sottosezioniAbilitate }
+        : {}),
+      ...(Array.isArray(e.pulsantiStrumentiAbilitati)
+        ? { pulsantiStrumentiAbilitati: e.pulsantiStrumentiAbilitati }
         : {}),
       ...(Array.isArray(e.sediTurniAbilitate) ? { sediTurniAbilitate: e.sediTurniAbilitate } : {}),
       ...(e.bloccatoPerTentativi ? { bloccatoPerTentativi: true } : {}),
@@ -2024,6 +2034,336 @@ export async function readPublicVolunteerRosterFromServer(): Promise<{
     }
   }
 }
+
+// =============================================================================
+// ZERO-PII PUBLIC SHIFT BOARD (public_board/shifts_v1)
+// Consente alla Modalità Monitor (senza login) e ai dispositivi volontari
+// non autenticati su Google Cloud Sync di visualizzare in tempo reale OGNI turno
+// pubblicato (di qualsiasi tipologia) su entrambi i link di destinazione.
+// =============================================================================
+const PUBLIC_BOARD_DOC_ID = 'shifts_v1';
+
+export interface PublicBoardDoc {
+  boardId: 'shifts_v1';
+  version: number;
+  turni: any[];
+  sedi: any[];
+  updatedByUid: string;
+  createdAt?: any;
+  updatedAt?: any;
+}
+
+function sanitizeCrewMemberPublic(member: any): { id: string; nome: string; ruoloSpecifico?: string } | undefined {
+  if (!member || typeof member !== 'object') return undefined;
+  const id = typeof member.id === 'string' ? member.id.trim().slice(0, 128) : '';
+  const nome = typeof member.nome === 'string' ? member.nome.trim().slice(0, 120) : '';
+  if (!id && !nome) return undefined;
+  return {
+    id: id || nome,
+    nome: nome || 'Volontario',
+    ...(typeof member.ruoloSpecifico === 'string' && member.ruoloSpecifico.trim()
+      ? { ruoloSpecifico: member.ruoloSpecifico.trim().slice(0, 80) }
+      : {}),
+  };
+}
+
+export function buildPublicBoardTurni(turni: any[]): any[] {
+  if (!Array.isArray(turni)) return [];
+  const out: any[] = [];
+  for (const t of turni) {
+    if (!t || typeof t !== 'object') continue;
+    const id = typeof t.id === 'string' ? t.id.trim().slice(0, 128) : '';
+    if (!id) continue;
+    const clean: Record<string, any> = {
+      id,
+      sedeId: typeof t.sedeId === 'string' ? t.sedeId.trim().slice(0, 128) : '',
+      sedeNome: typeof t.sedeNome === 'string' ? t.sedeNome.trim().slice(0, 140) : '',
+      data: typeof t.data === 'string' ? t.data.trim().slice(0, 16) : '',
+      fasciaOraria: typeof t.fasciaOraria === 'string' ? t.fasciaOraria.trim().slice(0, 80) : '',
+      orarioInizio: typeof t.orarioInizio === 'string' ? t.orarioInizio.trim().slice(0, 16) : '',
+      orarioFine: typeof t.orarioFine === 'string' ? t.orarioFine.trim().slice(0, 16) : '',
+      statoCopertura: typeof t.statoCopertura === 'string' ? t.statoCopertura.trim().slice(0, 32) : 'Scoperto',
+    };
+    if (typeof t.serieId === 'string' && t.serieId.trim()) clean.serieId = t.serieId.trim().slice(0, 128);
+    if (typeof t.nomeTurno === 'string' && t.nomeTurno.trim()) clean.nomeTurno = t.nomeTurno.trim().slice(0, 120);
+    if (typeof t.tipoTurnoId === 'string' && t.tipoTurnoId.trim()) clean.tipoTurnoId = t.tipoTurnoId.trim().slice(0, 128);
+    if (typeof t.tipoTurnoNome === 'string' && t.tipoTurnoNome.trim()) clean.tipoTurnoNome = t.tipoTurnoNome.trim().slice(0, 120);
+    if (typeof t.mezzoAssegnato === 'string' && t.mezzoAssegnato.trim()) clean.mezzoAssegnato = t.mezzoAssegnato.trim().slice(0, 64);
+    if (typeof t.checklistObbligatoria === 'boolean') clean.checklistObbligatoria = t.checklistObbligatoria;
+    if (typeof t.note === 'string' && t.note.trim()) clean.note = t.note.trim().slice(0, 300);
+
+    if (Array.isArray(t.mansioniRichieste) && t.mansioniRichieste.length > 0) {
+      clean.mansioniRichieste = t.mansioniRichieste.slice(0, 16).map((m: any) => ({
+        id: typeof m?.id === 'string' ? m.id.slice(0, 80) : '',
+        mansioneCatalogoId: typeof m?.mansioneCatalogoId === 'string' ? m.mansioneCatalogoId.slice(0, 80) : '',
+        nome: typeof m?.nome === 'string' ? m.nome.slice(0, 80) : '',
+        ruoloTurno: typeof m?.ruoloTurno === 'string' ? m.ruoloTurno.slice(0, 40) : '',
+        obbligatoria: Boolean(m?.obbligatoria),
+        minimo: typeof m?.minimo === 'number' ? m.minimo : 0,
+        massimo: typeof m?.massimo === 'number' ? m.massimo : 1,
+        ...(typeof m?.ordine === 'number' ? { ordine: m.ordine } : {}),
+      }));
+    }
+
+    const cs = sanitizeCrewMemberPublic(t.capoServizioBadge);
+    if (cs) clean.capoServizioBadge = cs;
+    const aut = sanitizeCrewMemberPublic(t.autista);
+    if (aut) clean.autista = aut;
+    const s2 = sanitizeCrewMemberPublic(t.soccorritore2);
+    if (s2) clean.soccorritore2 = s2;
+    const s3 = sanitizeCrewMemberPublic(t.terzoSoccorritore);
+    if (s3) clean.terzoSoccorritore = s3;
+    const oc = sanitizeCrewMemberPublic(t.operatoreCentrale);
+    if (oc) clean.operatoreCentrale = oc;
+    const cent = sanitizeCrewMemberPublic(t.centralinista);
+    if (cent) clean.centralinista = cent;
+    const oss = sanitizeCrewMemberPublic(t.osservatore);
+    if (oss) clean.osservatore = oss;
+
+    if (Array.isArray(t.richiesteIscrizione) && t.richiesteIscrizione.length > 0) {
+      clean.richiesteIscrizione = t.richiesteIscrizione.slice(0, 16).map((r: any) => ({
+        id: typeof r?.id === 'string' ? r.id.slice(0, 96) : '',
+        volontarioId: typeof r?.volontarioId === 'string' ? r.volontarioId.slice(0, 128) : '',
+        volontarioNome: typeof r?.volontarioNome === 'string' ? r.volontarioNome.slice(0, 120) : '',
+        qualificaVolontario: typeof r?.qualificaVolontario === 'string' ? r.qualificaVolontario.slice(0, 80) : '',
+        ruoloRichiesto: typeof r?.ruoloRichiesto === 'string' ? r.ruoloRichiesto.slice(0, 40) : '',
+        stato: typeof r?.stato === 'string' ? r.stato.slice(0, 32) : 'In Attesa',
+        dataRichiesta: typeof r?.dataRichiesta === 'string' ? r.dataRichiesta.slice(0, 40) : '',
+      }));
+    }
+
+    out.push(clean);
+    if (out.length >= 1450) break;
+  }
+
+  // Protezione limite 1 MiB di Firestore: se i turni storici sono moltissimi,
+  // mantiene i turni più recenti/futuri senza mai sforare il limite documento.
+  let capped = out;
+  if (getUtf8JsonByteLength(capped) > 720000) {
+    const sortedDesc = [...capped].sort((a, b) => String(b.data || '').localeCompare(String(a.data || '')));
+    const trimmed: any[] = [];
+    for (const item of sortedDesc) {
+      trimmed.push(item);
+      if (trimmed.length >= 900 || (trimmed.length % 50 === 0 && getUtf8JsonByteLength(trimmed) > 680000)) {
+        break;
+      }
+    }
+    capped = trimmed;
+  }
+  return capped;
+}
+
+export function buildPublicBoardSedi(sedi: any[]): any[] {
+  if (!Array.isArray(sedi)) return [];
+  const out: any[] = [];
+  for (const s of sedi) {
+    if (!s || typeof s !== 'object') continue;
+    const id = typeof s.id === 'string' ? s.id.trim().slice(0, 128) : '';
+    const nome = typeof s.nome === 'string' ? s.nome.trim().slice(0, 160) : '';
+    if (!id || !nome) continue;
+    out.push({
+      id,
+      nome,
+      ...(typeof s.codiceSede === 'string' && s.codiceSede.trim() ? { codiceSede: s.codiceSede.trim().slice(0, 32) } : {}),
+      ...(typeof s.tipologia === 'string' && s.tipologia.trim() ? { tipologia: s.tipologia.trim().slice(0, 64) } : {}),
+      ...(typeof s.comune === 'string' && s.comune.trim() ? { comune: s.comune.trim().slice(0, 80) } : {}),
+      ...(typeof s.provincia === 'string' && s.provincia.trim() ? { provincia: s.provincia.trim().slice(0, 16) } : {}),
+      ...(Array.isArray(s.mezziAssegnati)
+        ? {
+            mezziAssegnati: s.mezziAssegnati
+              .filter((m: any) => typeof m === 'string' && m.trim().length > 0)
+              .map((m: string) => m.trim().slice(0, 48))
+              .slice(0, 40),
+          }
+        : {}),
+    });
+    if (out.length >= 60) break;
+  }
+  return out;
+}
+
+let lastPublishedPublicBoardSig = '';
+let publicBoardSyncChain: Promise<void> = Promise.resolve();
+
+export function resetPublicBoardSyncCache(): void {
+  lastPublishedPublicBoardSig = '';
+}
+
+export function syncPublicBoardFirestore(turni: any[], sedi: any[]): Promise<void> {
+  const user = auth.currentUser;
+  if (!user || !user.emailVerified) {
+    return Promise.resolve();
+  }
+  const cleanTurni = buildPublicBoardTurni(Array.isArray(turni) ? turni : []);
+  const cleanSedi = buildPublicBoardSedi(Array.isArray(sedi) ? sedi : []);
+  if (cleanTurni.length === 0 && cleanSedi.length === 0) {
+    return Promise.resolve();
+  }
+
+  const sig = JSON.stringify({ cleanTurni, cleanSedi });
+  if (sig === lastPublishedPublicBoardSig) {
+    return Promise.resolve();
+  }
+
+  publicBoardSyncChain = publicBoardSyncChain
+    .then(async () => {
+      const currentUser = auth.currentUser;
+      if (!currentUser || !currentUser.emailVerified) return;
+      if (sig === lastPublishedPublicBoardSig) return;
+
+      const docRef = doc(db, 'public_board', PUBLIC_BOARD_DOC_ID);
+      const sanitizedTurni = sanitizeForFirestore(cleanTurni);
+      const sanitizedSedi = sanitizeForFirestore(cleanSedi);
+      try {
+        const snap = await getDoc(docRef);
+        if (!snap.exists()) {
+          await setDoc(docRef, {
+            boardId: PUBLIC_BOARD_DOC_ID,
+            version: 1,
+            turni: sanitizedTurni,
+            sedi: sanitizedSedi,
+            updatedByUid: currentUser.uid,
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          });
+        } else {
+          const snapData = snap.data() as Partial<PublicBoardDoc> | undefined;
+          const prevVer = typeof snapData?.version === 'number' && snapData.version >= 1 ? snapData.version : 1;
+          await updateDoc(docRef, {
+            version: prevVer + 1,
+            turni: sanitizedTurni,
+            sedi: sanitizedSedi,
+            updatedByUid: currentUser.uid,
+            updatedAt: serverTimestamp(),
+          });
+        }
+        lastPublishedPublicBoardSig = sig;
+      } catch (err) {
+        try {
+          handleFirestoreError(err, OperationType.WRITE, `public_board/${PUBLIC_BOARD_DOC_ID}`);
+        } catch {
+          // Non bloccare il sync principale se la pubblicazione del tabellone pubblico fallisce temporaneamente
+        }
+      }
+    })
+    .catch(() => {});
+
+  return publicBoardSyncChain;
+}
+
+async function readPublicBoardViaRest(): Promise<{
+  exists: boolean;
+  data: PublicBoardDoc | null;
+  status: 'ok' | 'not_found' | 'error';
+}> {
+  const url = `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(
+    firebaseConfig.projectId
+  )}/databases/${encodeURIComponent(
+    firebaseConfig.firestoreDatabaseId
+  )}/documents/public_board/${PUBLIC_BOARD_DOC_ID}?key=${encodeURIComponent(
+    firebaseConfig.apiKey
+  )}`;
+
+  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const timeoutId = controller ? setTimeout(() => controller.abort(), 8000) : null;
+
+  try {
+    const res = await fetch(url, {
+      method: 'GET',
+      cache: 'no-store',
+      signal: controller ? controller.signal : undefined,
+    });
+    if (timeoutId) clearTimeout(timeoutId);
+
+    if (res.status === 404) {
+      return { exists: false, data: null, status: 'not_found' };
+    }
+    if (!res.ok) {
+      return { exists: false, data: null, status: 'error' };
+    }
+    const json = await res.json();
+    const decoded = decodeFirestoreRestValue({ mapValue: { fields: json?.fields || {} } });
+    if (!decoded || (!Array.isArray(decoded.turni) && !Array.isArray(decoded.sedi))) {
+      return { exists: false, data: null, status: 'not_found' };
+    }
+    return {
+      exists: true,
+      data: {
+        boardId: 'shifts_v1',
+        version: typeof decoded.version === 'number' ? decoded.version : 1,
+        turni: Array.isArray(decoded.turni) ? decoded.turni : [],
+        sedi: Array.isArray(decoded.sedi) ? decoded.sedi : [],
+        updatedByUid: String(decoded.updatedByUid || ''),
+        createdAt: decoded.createdAt,
+        updatedAt: decoded.updatedAt,
+      },
+      status: 'ok',
+    };
+  } catch {
+    if (timeoutId) clearTimeout(timeoutId);
+    return { exists: false, data: null, status: 'error' };
+  }
+}
+
+export function listenPublicBoardFirestore(
+  onData: (exists: boolean, docData: PublicBoardDoc | null) => void,
+  onError?: (err: Error) => void
+): Unsubscribe {
+  const path = `public_board/${PUBLIC_BOARD_DOC_ID}`;
+  return onSnapshot(
+    doc(db, 'public_board', PUBLIC_BOARD_DOC_ID),
+    (snapshot) => {
+      if (!snapshot.exists()) {
+        onData(false, null);
+      } else {
+        onData(true, snapshot.data() as PublicBoardDoc);
+      }
+    },
+    (error) => {
+      try {
+        handleFirestoreError(error, OperationType.GET, path);
+      } catch (wrapped: any) {
+        onError?.(wrapped);
+      }
+    }
+  );
+}
+
+export async function readPublicBoardFromServer(): Promise<{
+  exists: boolean;
+  data: PublicBoardDoc | null;
+  status?: 'ok' | 'not_found' | 'error';
+}> {
+  const restRes = await readPublicBoardViaRest();
+  if (restRes.status === 'ok' || restRes.status === 'not_found') {
+    return restRes;
+  }
+  const path = `public_board/${PUBLIC_BOARD_DOC_ID}`;
+  try {
+    const snap = await getDocFromServer(doc(db, 'public_board', PUBLIC_BOARD_DOC_ID));
+    return {
+      exists: snap.exists(),
+      data: snap.exists() ? (snap.data() as PublicBoardDoc) : null,
+      status: snap.exists() ? 'ok' : 'not_found',
+    };
+  } catch {
+    try {
+      const snap = await getDoc(doc(db, 'public_board', PUBLIC_BOARD_DOC_ID));
+      return {
+        exists: snap.exists(),
+        data: snap.exists() ? (snap.data() as PublicBoardDoc) : null,
+        status: snap.exists() ? 'ok' : 'not_found',
+      };
+    } catch (innerErr) {
+      try {
+        handleFirestoreError(innerErr, OperationType.GET, path);
+      } catch {
+        return { exists: false, data: null, status: 'error' };
+      }
+    }
+  }
+}
+
 
 
 

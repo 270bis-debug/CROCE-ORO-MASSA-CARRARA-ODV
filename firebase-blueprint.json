@@ -570,6 +570,47 @@
         }
       },
       "required": ["rosterId", "version", "entries", "deletedIds", "updatedByUid", "createdAt", "updatedAt"]
+    },
+    "PublicBoard": {
+      "title": "PublicBoard",
+      "description": "Zero-PII published weekly shift schedule board (single whitelisted document shifts_v1) enabling Monitor Mode PCs (no login) and volunteer devices without Google Auth to display every published shift across all territorial sections in real time.",
+      "type": "object",
+      "properties": {
+        "boardId": {
+          "type": "string",
+          "enum": ["shifts_v1"],
+          "minLength": 9,
+          "maxLength": 9,
+          "pattern": "^shifts_v1$"
+        },
+        "version": {
+          "type": "number",
+          "description": "Monotonic revision counter incremented on every board publication"
+        },
+        "turni": {
+          "type": "array",
+          "description": "Bounded list (max 1500) of zero-PII published shift cards (schedule, section, shift type, vehicle, crew display names only)"
+        },
+        "sedi": {
+          "type": "array",
+          "description": "Bounded list (max 60) of zero-PII territorial section definitions (id, nome, mezziAssegnati)"
+        },
+        "updatedByUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["boardId", "version", "turni", "sedi", "updatedByUid", "createdAt", "updatedAt"]
     }
   },
   "firestore": {
@@ -612,6 +653,10 @@
     "/public_roster/{rosterId}": {
       "schema": { "$ref": "#/entities/PublicRoster" },
       "description": "Zero-PII volunteer login roster (single document volunteers_v1) allowing newly installed devices to load all volunteer names without exposing PII."
+    },
+    "/public_board/{boardId}": {
+      "schema": { "$ref": "#/entities/PublicBoard" },
+      "description": "Zero-PII published shift schedule board (single document shifts_v1) for Monitor Mode and volunteer shift boards."
     }
   }
 }
