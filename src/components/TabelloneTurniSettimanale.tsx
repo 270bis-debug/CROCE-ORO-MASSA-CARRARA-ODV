@@ -479,7 +479,13 @@ export const TabelloneTurniSettimanale: React.FC<TabelloneTurniSettimanaleProps>
     if (typeof window !== 'undefined' && 'caches' in window) {
       caches
         .keys()
-        .then((keys) => Promise.all(keys.map((k) => caches.delete(k))))
+        .then((keys) =>
+          Promise.all(
+            keys
+              .filter((k) => k.startsWith('croce-oro-cache-'))
+              .map((k) => caches.delete(k))
+          )
+        )
         .catch(() => {});
     }
     realtime.refreshPublicBoard().catch(() => {});

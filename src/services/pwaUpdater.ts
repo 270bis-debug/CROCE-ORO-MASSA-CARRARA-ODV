@@ -20,6 +20,23 @@ let pendingUpdateInfo: VersionInfo | null = null;
 
 const STORAGE_LAST_RELOAD_TIME = 'CROCE_ORO_PWA_LAST_RELOAD_TIME';
 const STORAGE_LAST_RELOAD_VERSION = 'CROCE_ORO_PWA_LAST_RELOAD_VERSION';
+const STORAGE_LAST_APPLIED_BUILD = 'CROCE_ORO_PWA_LAST_APPLIED_BUILD';
+
+/**
+ * Confronta due versioni semantiche X.Y.Z in modo rigorosamente numerico.
+ * Ritorna: > 0 se `a > b`, < 0 se `a < b`, 0 se uguali.
+ */
+export function compareSemver(a: string, b: string): number {
+  const pa = String(a || '').trim().split('.').map((n) => parseInt(n, 10) || 0);
+  const pb = String(b || '').trim().split('.').map((n) => parseInt(n, 10) || 0);
+  const maxLen = Math.max(pa.length, pb.length, 3);
+  for (let i = 0; i < maxLen; i++) {
+    const va = pa[i] || 0;
+    const vb = pb[i] || 0;
+    if (va !== vb) return va - vb;
+  }
+  return 0;
+}
 
 /**
  * Verifica se la Centrale Operativa o il Terminale di Bordo sono impegnati
@@ -65,10 +82,13 @@ export function isOperazioneCriticaAttiva(): boolean {
  * come falsi positivi di aggiornamento.
  */
 export async function fetchPublishedVersion(): Promise<VersionInfo | null> {
+  const nonce = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
   const endpoints = [
-    `/api/version?t=${Date.now()}`,
-    `/version.json?t=${Date.now()}`
+    `/api/version?t=${nonce}`,
+    `/version.json?t=${nonce}`
   ];
+
+  let bestInfo: VersionInfo | null = null;
 
   for (const url of endpoints) {
     try {
@@ -93,19 +113,31 @@ export async function fetchPublishedVersion(): Promise<VersionInfo | null> {
 
       const data = await response.json();
       if (data && typeof data.version === 'string' && /^\d+\.\d+\.\d+/.test(data.version)) {
-        return {
+        const candidate: VersionInfo = {
           version: data.version,
           buildId: data.buildId,
           buildTimestamp: data.buildTimestamp,
           builtAt: data.builtAt
         };
+        if (!bestInfo) {
+          bestInfo = candidate;
+        } else {
+          const cmp = compareSemver(candidate.version, bestInfo.version);
+          if (cmp > 0 || (cmp === 0 && Number(candidate.buildTimestamp || 0) > Number(bestInfo.buildTimestamp || 0))) {
+            bestInfo = candidate;
+          }
+        }
+        // Se questo endpoint restituisce già una versione >= APP_VERSION, non serve interrogare oltre
+        if (compareSemver(candidate.version, APP_VERSION) >= 0) {
+          return bestInfo;
+        }
       }
     } catch {
       // Prosegui al fallback successivo
     }
   }
 
-  return null;
+  return bestInfo;
 }
 
 /**
@@ -139,6 +171,13 @@ export async function pulisciCacheObsolete(targetVersion: string, purgeAllAppCac
 export async function applicaAggiornamento(targetVersion: string, forzato: boolean = false): Promise<boolean> {
   if (isUpdating) return false;
 
+  // Blocco tassativo anti-downgrade: non applicare MAI una versione precedente a quella già installata
+  const isBuildIdKey = targetVersion.startsWith('croce-oro-');
+  if (!isBuildIdKey && /^\d+\.\d+\.\d+/.test(targetVersion) && compareSemver(targetVersion, APP_VERSION) < 0) {
+    console.log(`[PWA Updater] Bloccato tentativo di downgrade v${targetVersion} < locale v${APP_VERSION}.`);
+    return false;
+  }
+
   // Protezione anti-loop di reload (minimo 45 secondi tra due ricaricamenti automatici)
   try {
     const lastTime = Number(sessionStorage.getItem(STORAGE_LAST_RELOAD_TIME) || 0);
@@ -163,10 +202,12 @@ export async function applicaAggiornamento(targetVersion: string, forzato: boole
   try {
     sessionStorage.setItem(STORAGE_LAST_RELOAD_TIME, String(Date.now()));
     sessionStorage.setItem(STORAGE_LAST_RELOAD_VERSION, targetVersion);
+    if (isBuildIdKey) {
+      sessionStorage.setItem(STORAGE_LAST_APPLIED_BUILD, targetVersion);
+    }
   } catch {}
 
   // Pulizia selettiva delle cache dell'applicazione (svuota tutte le cache app se cambio build a parità di versione)
-  const isBuildIdKey = targetVersion.startsWith('croce-oro-');
   await pulisciCacheObsolete(isBuildIdKey ? APP_VERSION : targetVersion, isBuildIdKey);
 
   // Forza skipWaiting sul Service Worker se presente
@@ -218,14 +259,32 @@ export async function checkForAppUpdate(): Promise<boolean> {
       return false;
     }
 
-    const hasNewVersion = Boolean(info.version && info.version !== APP_VERSION);
+    const versionCmp = compareSemver(info.version, APP_VERSION);
+
+    // Se l'endpoint/CDN ha restituito una versione PRECEDENTE (stale cache o build non sincronizzato),
+    // ignorala tassativamente: non invitare mai il dispositivo a tornare indietro di versione!
+    if (versionCmp < 0) {
+      console.log(
+        `[PWA Updater] Ignorata risposta con versione precedente v${info.version} rispetto alla locale v${APP_VERSION}.`
+      );
+      isCheckInProgress = false;
+      return false;
+    }
+
+    let lastAppliedBuild = '';
+    try {
+      lastAppliedBuild = sessionStorage.getItem(STORAGE_LAST_APPLIED_BUILD) || '';
+    } catch {}
+
+    const hasNewVersion = versionCmp > 0;
     const hasNewSameVersionBuild = Boolean(
       !import.meta.env.DEV &&
-      info.version === APP_VERSION &&
+      versionCmp === 0 &&
       info.buildId &&
       BUILD_INFO.buildId &&
       info.buildId !== BUILD_INFO.buildId &&
-      Number(info.buildTimestamp || 0) > Number(BUILD_INFO.buildTimestamp || 0) + 5000
+      info.buildId !== lastAppliedBuild &&
+      Number(info.buildTimestamp || 0) > Number(BUILD_INFO.buildTimestamp || 0) + 15000
     );
 
     if (hasNewVersion || hasNewSameVersionBuild) {

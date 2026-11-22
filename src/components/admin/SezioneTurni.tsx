@@ -381,6 +381,8 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
   // ---------------------------------------------------------------------------
   const [modaleDuplicaTurnoAperta, setModaleDuplicaTurnoAperta] = useState(false);
   const [turnoDaDuplicare, setTurnoDaDuplicare] = useState<TurnoSedeOperativa | null>(null);
+  // Distinzione esplicita tra Duplica Turno (struttura turno) e Duplica Disponibilità (disponibilità volontari)
+  const [tipoDuplicazione, setTipoDuplicazione] = useState<'turno' | 'disponibilita'>('turno');
 
   // Modalità di duplicazione: 'serie' (multi-giorno su calendario) oppure 'singola' (data specifica)
   const [modalitaDuplicazione, setModalitaDuplicazione] = useState<'serie' | 'singola'>('serie');
@@ -511,22 +513,18 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
     );
   };
 
-  const avviaDuplicazioneTurno = (t: TurnoSedeOperativa) => {
+  const avviaDuplicazioneTurno = (
+    t: TurnoSedeOperativa,
+    tipo: 'turno' | 'disponibilita' = 'turno'
+  ) => {
     setTurnoDaDuplicare(t);
+    setTipoDuplicazione(tipo);
     setModalitaDuplicazione('serie');
 
     // Rileva se il turno fa parte di una serie ripetuta con turni futuri già in calendario
     const serieTurni = trovaTurniSerie(t, turni);
     const futuriSerie = serieTurni.filter((x) => x.data > t.data);
     const isTurnoRipetutoConFuturi = futuriSerie.length > 0;
-    const haVolontariNelTurno = Boolean(
-      t.autista ||
-        t.soccorritore2 ||
-        t.terzoSoccorritore ||
-        t.operatoreCentrale ||
-        t.centralinista ||
-        t.osservatore
-    );
 
     // Default per data singola
     try {
@@ -558,8 +556,12 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
     setRegolaFestivi('includi');
     setRegolaPrefestivi('includi');
     setGestioneTurniEsistentiDuplicazione(
-      isTurnoRipetutoConFuturi && haVolontariNelTurno
-        ? 'aggiorna_solo_esistenti'
+      tipo === 'disponibilita'
+        ? isTurnoRipetutoConFuturi
+          ? 'aggiorna_solo_esistenti'
+          : 'aggiorna_o_crea'
+        : isTurnoRipetutoConFuturi
+        ? 'salta_esistenti'
         : 'aggiorna_o_crea'
     );
     setSovrascriviRuoliOccupati(false);
@@ -756,6 +758,12 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
     ];
 
     const haAlmenoUnVolontarioSelezionato = ruoliSelezionatiCoppie.some((r) => Boolean(r.vol));
+    if (tipoDuplicazione === 'disponibilita' && !haAlmenoUnVolontarioSelezionato) {
+      mostraAvviso(
+        '⚠️ Seleziona almeno un volontario di cui duplicare la disponibilità (se il turno non ha volontari assegnati, aggiungili prima da Modifica).'
+      );
+      return;
+    }
     if (itemDaCreare.length === 0 && !haAlmenoUnVolontarioSelezionato) {
       mostraAvviso('⚠️ Seleziona almeno un volontario da duplicare nei turni ripetuti esistenti.');
       return;
@@ -2178,13 +2186,40 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
                 <div className="flex flex-wrap items-center justify-end gap-1.5 pt-2 border-t border-slate-800">
                   <button
                     type="button"
-                    onClick={() => avviaDuplicazioneTurno(t)}
+                    onClick={() => avviaDuplicazioneTurno(t, 'turno')}
                     className="px-2 py-1 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 font-bold text-[11px] flex items-center gap-1 border border-amber-500/40 cursor-pointer transition-all active:scale-95"
-                    title="Duplica questo turno in un'altra data (con o senza disponibilità volontari)"
+                    title="Duplica questo turno (sede, orario, mezzo e struttura) su altre date"
                   >
-                    <Copy className="w-3.5 h-3.5 text-amber-400" />
-                    <span>Duplica</span>
+                    <Copy className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                    <span>Duplica Turno</span>
                   </button>
+
+                  {(() => {
+                    const numVolontariAssegnati = [
+                      t.autista,
+                      t.soccorritore2,
+                      t.terzoSoccorritore,
+                      t.operatoreCentrale,
+                      t.centralinista,
+                      t.osservatore
+                    ].filter(Boolean).length;
+                    return (
+                      <button
+                        type="button"
+                        onClick={() => avviaDuplicazioneTurno(t, 'disponibilita')}
+                        className="px-2 py-1 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 font-bold text-[11px] flex items-center gap-1 border border-emerald-500/45 cursor-pointer transition-all active:scale-95"
+                        title="Duplica la disponibilità di uno o più volontari di questo turno su altre date o turni ripetuti"
+                      >
+                        <Users className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                        <span>Duplica Disponibilità</span>
+                        {numVolontariAssegnati > 0 && (
+                          <span className="px-1 py-0.2 rounded bg-emerald-500/25 text-emerald-200 font-mono text-[9.5px] font-black">
+                            {numVolontariAssegnati}
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })()}
 
                   <button
                     type="button"
@@ -2192,7 +2227,7 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
                     className="px-2 py-1 rounded-lg bg-teal-500/20 hover:bg-teal-500/30 text-teal-300 font-bold text-[11px] flex items-center gap-1 border border-teal-500/40 cursor-pointer transition-all active:scale-95"
                     title="Crea serie di turni ripetuti sui giorni della settimana da questo modello"
                   >
-                    <Repeat className="w-3.5 h-3.5 text-teal-400" />
+                    <Repeat className="w-3.5 h-3.5 text-teal-400 shrink-0" />
                     <span>Ripeti</span>
                   </button>
 
@@ -2202,7 +2237,7 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
                     className="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-[11px] flex items-center gap-1 border border-slate-600 cursor-pointer transition-all active:scale-95"
                     title="Modifica Orari, Mezzo, Assegnazioni o Serie Turni"
                   >
-                    <Edit2 className="w-3.5 h-3.5 text-sky-400" />
+                    <Edit2 className="w-3.5 h-3.5 text-sky-400 shrink-0" />
                     <span>Modifica</span>
                   </button>
                   {isAdmin && (
@@ -2945,23 +2980,51 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
       {/* ------------------------------------------------------------- */}
       {modaleDuplicaTurnoAperta && turnoDaDuplicare && (
         <div className="fixed inset-0 z-50 bg-black/85 flex items-center justify-center p-3 sm:p-4 backdrop-blur-sm animate-in fade-in">
-          <div className="bg-slate-900 border-2 border-amber-500/70 rounded-3xl max-w-3xl w-full p-5 sm:p-6 shadow-2xl text-slate-200 space-y-4 max-h-[92vh] overflow-y-auto">
+          <div
+            className={`bg-slate-900 border-2 rounded-3xl max-w-3xl w-full p-5 sm:p-6 shadow-2xl text-slate-200 space-y-4 max-h-[92vh] overflow-y-auto ${
+              tipoDuplicazione === 'disponibilita' ? 'border-emerald-500/70' : 'border-amber-500/70'
+            }`}
+          >
             
             {/* Header Modale */}
             <div className="flex items-start justify-between border-b border-slate-800 pb-3 gap-3">
               <div className="flex items-center gap-3">
-                <div className="w-11 h-11 rounded-2xl bg-amber-500/20 text-amber-400 border border-amber-500/40 flex items-center justify-center shrink-0 shadow-md">
-                  <Copy className="w-6 h-6" />
+                <div
+                  className={`w-11 h-11 rounded-2xl border flex items-center justify-center shrink-0 shadow-md ${
+                    tipoDuplicazione === 'disponibilita'
+                      ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40'
+                      : 'bg-amber-500/20 text-amber-400 border-amber-500/40'
+                  }`}
+                >
+                  {tipoDuplicazione === 'disponibilita' ? (
+                    <Users className="w-6 h-6" />
+                  ) : (
+                    <Copy className="w-6 h-6" />
+                  )}
                 </div>
                 <div>
-                  <h3 className="text-base sm:text-lg font-black text-white uppercase tracking-wide flex items-center gap-2">
-                    <span>Duplica Turno & Disponibilità Volontari</span>
-                    <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-black bg-amber-500/20 text-amber-300 border border-amber-500/40">
-                      Database Turni
+                  <h3 className="text-base sm:text-lg font-black text-white uppercase tracking-wide flex items-center flex-wrap gap-2">
+                    <span>
+                      {tipoDuplicazione === 'disponibilita'
+                        ? 'Duplica Disponibilità Volontari'
+                        : 'Duplica Turno'}
+                    </span>
+                    <span
+                      className={`px-2 py-0.5 rounded-full text-[10px] font-mono font-black border ${
+                        tipoDuplicazione === 'disponibilita'
+                          ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                          : 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                      }`}
+                    >
+                      {tipoDuplicazione === 'disponibilita'
+                        ? 'Equipaggio & Volontari'
+                        : 'Struttura Turno'}
                     </span>
                   </h3>
                   <p className="text-xs text-slate-400">
-                    Duplica le disponibilità dei volontari selezionati, mantenendo inalterati mezzo assegnato e nome turno.
+                    {tipoDuplicazione === 'disponibilita'
+                      ? 'Replica la disponibilità dei volontari selezionati su altre date o turni ripetuti (stesse scelte di Duplica Turno: fino a quale data, giorni della settimana, cadenza, festivi e prefestivi).'
+                      : 'Crea copie di questo turno su altre date o serie programmata, mantenendo mezzo assegnato e nome turno.'}
                   </p>
                 </div>
               </div>
@@ -3066,14 +3129,24 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
               </div>
 
               {/* SEZIONE 1: SELEZIONE SELETTIVA VOLONTARI ("uno o più volontari") */}
-              <div className="p-4 rounded-2xl bg-slate-950 border border-slate-800 space-y-3">
+              <div
+                className={`p-4 rounded-2xl bg-slate-950 border space-y-3 ${
+                  tipoDuplicazione === 'disponibilita' ? 'border-emerald-500/60' : 'border-slate-800'
+                }`}
+              >
                 <div className="flex items-center justify-between flex-wrap gap-2">
                   <div>
-                    <span className="text-[11px] font-black uppercase text-white tracking-wide block">
+                    <span
+                      className={`text-[11px] font-black uppercase tracking-wide block ${
+                        tipoDuplicazione === 'disponibilita' ? 'text-emerald-300' : 'text-white'
+                      }`}
+                    >
                       1. Scegli le Disponibilità da Duplicare (Uno o Più Volontari):
                     </span>
                     <p className="text-[10.5px] text-slate-400">
-                      Spunta i singoli volontari da confermare nei turni duplicati oppure azzera per creare turni aperti.
+                      {tipoDuplicazione === 'disponibilita'
+                        ? 'Spunta i singoli volontari di cui replicare la disponibilità sui giorni scelti sotto.'
+                        : 'Spunta i singoli volontari da confermare nei turni duplicati oppure azzera per creare turni aperti.'}
                     </p>
                   </div>
                   <div className="flex items-center gap-1.5">
@@ -3093,6 +3166,21 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
                     </button>
                   </div>
                 </div>
+
+                {tipoDuplicazione === 'disponibilita' &&
+                  !turnoDaDuplicare.autista &&
+                  !turnoDaDuplicare.soccorritore2 &&
+                  !turnoDaDuplicare.terzoSoccorritore &&
+                  !turnoDaDuplicare.operatoreCentrale &&
+                  !turnoDaDuplicare.centralinista &&
+                  !turnoDaDuplicare.osservatore && (
+                    <div className="p-3 rounded-xl bg-amber-950/50 border border-amber-500/50 text-amber-200 text-[11px] flex items-start gap-2">
+                      <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                      <span>
+                        In questo turno non risulta ancora alcun volontario assegnato. Assegna prima almeno un volontario tramite <strong>Modifica</strong>, oppure usa <strong>Duplica Turno</strong> per replicare solo la struttura del turno.
+                      </span>
+                    </div>
+                  )}
 
                 {/* Griglia Volontari Ruolo per Ruolo */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5 pt-1">
@@ -3753,15 +3841,29 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
                       <button
                         type="submit"
                         disabled={totaleOperazioni === 0}
-                        className="px-5 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 disabled:bg-slate-800 disabled:text-slate-600 disabled:cursor-not-allowed text-slate-950 font-black uppercase flex items-center gap-2 shadow-lg active:scale-95 transition-all cursor-pointer"
+                        className={`px-5 py-2.5 rounded-xl disabled:bg-slate-800 disabled:text-slate-600 disabled:cursor-not-allowed text-slate-950 font-black uppercase flex items-center gap-2 shadow-lg active:scale-95 transition-all cursor-pointer ${
+                          tipoDuplicazione === 'disponibilita'
+                            ? 'bg-emerald-500 hover:bg-emerald-400'
+                            : 'bg-amber-500 hover:bg-amber-400'
+                        }`}
                       >
-                        <Copy className="w-4 h-4" />
+                        {tipoDuplicazione === 'disponibilita' ? (
+                          <Users className="w-4 h-4" />
+                        ) : (
+                          <Copy className="w-4 h-4" />
+                        )}
                         <span>
-                          {countAggiorna > 0 && countCrea > 0
-                            ? `Conferma (${countAggiorna} Aggiornati + ${countCrea} Nuovi)`
+                          {tipoDuplicazione === 'disponibilita'
+                            ? countAggiorna > 0 && countCrea > 0
+                              ? `Duplica Disponibilità (${countAggiorna} Aggiornati + ${countCrea} Nuovi)`
+                              : countAggiorna > 0
+                              ? `Duplica Disponibilità su ${countAggiorna} Turni`
+                              : `Duplica Disponibilità (${countCrea} Turni)`
+                            : countAggiorna > 0 && countCrea > 0
+                            ? `Duplica Turno (${countAggiorna} Aggiornati + ${countCrea} Nuovi)`
                             : countAggiorna > 0
-                            ? `Duplica Disponibilità su ${countAggiorna} Turni`
-                            : `Conferma e Salva Duplicati (${countCrea} Turni)`}
+                            ? `Aggiorna ${countAggiorna} Turni`
+                            : `Duplica Turno (${countCrea} Nuovi)`}
                         </span>
                       </button>
                     </div>

@@ -78,11 +78,15 @@ export function markRadioBgConsentAccepted(): void {
   } catch {}
 }
 
+// Flag di controllo: resta false per evitare di richiedere nuovamente le autorizzazioni
+// ad ogni aggiornamento dell'app. Va attivato SOLO quando richiesto espressamente per un nuovo permesso obbligatorio.
+const MANDATORY_PERMS_REASK_ENABLED = false;
+
 /**
- * Restituisce true per i dispositivi che avevano GIA' accettato le vecchie autorizzazioni iniziali
- * prima dell'integrazione obbligatoria della Ricezione Radio in Background (Audio + Push).
+ * Restituisce true solo quando è espressamente attivo un aggiornamento obbligatorio dei permessi.
  */
 export function needsMandatoryRadioBgUpdate(): boolean {
+  if (!MANDATORY_PERMS_REASK_ENABLED) return false;
   try {
     if (typeof window === 'undefined') return false;
     const giaConfigurato =

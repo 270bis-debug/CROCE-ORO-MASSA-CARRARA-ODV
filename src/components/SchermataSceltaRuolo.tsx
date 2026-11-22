@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Radio, Car, Lock, ChevronRight, KeyRound, UserPlus, Clock, ShieldCheck, CheckCircle2, AlertTriangle, Users, Globe } from 'lucide-react';
+import { Radio, Car, Lock, ChevronRight, KeyRound, UserPlus, Clock, ShieldCheck, CheckCircle2, AlertTriangle, Users, Globe, Fingerprint } from 'lucide-react';
 import { CroceOroLogo } from './CroceOroLogo';
 import { realtime, ConnectionInfo } from '../services/realtime';
 import { APP_VERSION_LABEL } from '../version';
@@ -10,10 +10,18 @@ import { isAccessoDaWeb, setPreferenzaAccessoWeb } from '../utils/accessoWeb';
 import { PWAInstallButton } from './PWAInstallButton';
 import { formatDateTimeItaly } from '../utils/italianTime';
 import { buildPinResetHash } from '../utils/hashReset';
+import {
+  authenticateWithPasskey,
+  getAllKnownPasskeys,
+  getPasskeysForAccount,
+  isWebAuthnSupported,
+  saveCredentialsToPasswordManager,
+} from '../utils/passkeyAuth';
 
 interface SchermataSceltaRuoloProps {
   onSelectVolontario: () => void;
   onSelectAdmin: (pin: string) => boolean | { status: 'approved' | 'pending' | 'invalid'; operatore?: Volontario };
+  onLoginWithPasskey?: (accountId: string) => { ok: boolean; error?: string };
   volontari?: Volontario[];
   onRegistraOperatoreCentrale?: (nuovo: Volontario) => void;
   onMostraAccountInAttivazione?: (op: Volontario) => void;
@@ -27,6 +35,7 @@ interface SchermataSceltaRuoloProps {
 export const SchermataSceltaRuolo: React.FC<SchermataSceltaRuoloProps> = ({
   onSelectVolontario,
   onSelectAdmin,
+  onLoginWithPasskey,
   volontari = [],
   onRegistraOperatoreCentrale,
   onMostraAccountInAttivazione,
@@ -40,10 +49,13 @@ export const SchermataSceltaRuolo: React.FC<SchermataSceltaRuoloProps> = ({
   const [adminTentativiErrati, setAdminTentativiErrati] = useState<number>(0);
   const [pinInput, setPinInput] = useState('');
   const [errorePin, setErrorePin] = useState<string | null>(null);
+  const [passkeyLoading, setPasskeyLoading] = useState(false);
+  const [passkeyMsg, setPasskeyMsg] = useState<string | null>(null);
   const [connInfo, setConnInfo] = useState<ConnectionInfo>(() => infoConnessione || realtime.getConnectionInfo());
   const [modaleRegistraCentraleAperta, setModaleRegistraCentraleAperta] = useState(false);
   const [modaleResetAperta, setModaleResetAperta] = useState(false);
   const [isWeb, setIsWeb] = useState<boolean>(() => isAccessoDaWeb());
+  const webAuthnDisponibile = isWebAuthnSupported();
 
   // Profilo Amministratore / Presidente predefinito con pieni privilegi
   const profiloAmministratoreCentrale: Volontario = {
@@ -122,6 +134,11 @@ export const SchermataSceltaRuolo: React.FC<SchermataSceltaRuoloProps> = ({
 
     if (pin === '4451' || isPinPresidente) {
       setAdminTentativiErrati(0);
+      const userLabel =
+        pin === '4451'
+          ? 'Amministratore Centrale'
+          : `${presidenteVolontario?.nome || ''} ${presidenteVolontario?.cognome || ''}`.trim() || 'Presidente';
+      saveCredentialsToPasswordManager(userLabel, pin, userLabel).catch(() => {});
       const res = onSelectAdmin(pin);
       if (!res) {
         setErrorePin('Errore durante l\'accesso.');
@@ -229,6 +246,8 @@ export const SchermataSceltaRuolo: React.FC<SchermataSceltaRuoloProps> = ({
 
     const haMacroAbilitate = Boolean(op.macroCategorieAbilitate && op.macroCategorieAbilitate.length > 0);
     if (op.approvato || haMacroAbilitate) {
+      const userLabel = `${op.nome || ''} ${op.cognome || ''}`.trim() || op.id;
+      saveCredentialsToPasswordManager(userLabel, pin, userLabel).catch(() => {});
       onSelectAdmin(pin);
     } else {
       if (onMostraAccountInAttivazione) {
@@ -236,6 +255,44 @@ export const SchermataSceltaRuolo: React.FC<SchermataSceltaRuoloProps> = ({
       } else {
         setErrorePin('Questo profilo è in attesa di approvazione dall\'Amministratore (Account in Attivazione).');
       }
+    }
+  };
+
+  // 3. Accesso diretto tramite Passkey (Impronta Digitale / Face ID / Windows Hello)
+  const handleAccediConPasskey = async (expectedAccountId?: string) => {
+    if (!onLoginWithPasskey || passkeyLoading) return;
+    setPasskeyLoading(true);
+    setPasskeyMsg(null);
+    setErrorePin(null);
+    try {
+      const allKnown = getAllKnownPasskeys(volontari);
+      const matchedTarget = expectedAccountId
+        ? getPasskeysForAccount(
+            expectedAccountId,
+            volontari.find((v) => v.id === expectedAccountId)?.passkeys
+          )
+        : allKnown;
+      const recordsToUse = matchedTarget.length > 0 ? matchedTarget : allKnown;
+
+      const authRes = await authenticateWithPasskey({
+        allowedRecords: recordsToUse,
+        expectedAccountId: matchedTarget.length > 0 ? expectedAccountId : undefined,
+      });
+
+      if (!authRes.ok) {
+        setPasskeyMsg(authRes.error);
+        setErrorePin(authRes.error);
+        return;
+      }
+
+      const loginRes = onLoginWithPasskey(authRes.record.accountId);
+      if (!loginRes.ok) {
+        const errText = loginRes.error || 'Account associato alla Passkey non trovato o non autorizzato.';
+        setPasskeyMsg(errText);
+        setErrorePin(errText);
+      }
+    } finally {
+      setPasskeyLoading(false);
     }
   };
 
@@ -443,6 +500,7 @@ export const SchermataSceltaRuolo: React.FC<SchermataSceltaRuoloProps> = ({
                   onClick={() => {
                     setModalitaCentrale('operatore');
                     setErrorePin(null);
+                    setPasskeyMsg(null);
                     setPinInput('');
                   }}
                   className="w-full py-3.5 px-4 rounded-2xl bg-amber-500 hover:bg-amber-600 text-slate-950 font-black text-sm uppercase flex items-center justify-center gap-2 shadow-lg border-2 border-amber-700 active:scale-95 transition-all cursor-pointer"
@@ -452,6 +510,33 @@ export const SchermataSceltaRuolo: React.FC<SchermataSceltaRuoloProps> = ({
                   <span>Entra come Operatore di Centrale</span>
                   <ChevronRight className="w-4 h-4 text-slate-950" />
                 </button>
+
+                {/* Accesso Rapido Biometrico con Passkey (Impronta / Face ID) */}
+                {webAuthnDisponibile && onLoginWithPasskey && (
+                  <button
+                    type="button"
+                    disabled={passkeyLoading}
+                    onClick={() => handleAccediConPasskey()}
+                    className={`w-full py-2.5 px-4 rounded-2xl font-black text-xs uppercase flex items-center justify-center gap-2 border-2 active:scale-95 transition-all cursor-pointer disabled:opacity-60 ${
+                      isWeb
+                        ? 'bg-emerald-50 hover:bg-emerald-100 text-emerald-950 border-emerald-600'
+                        : 'bg-emerald-950/70 hover:bg-emerald-900/80 text-emerald-200 border-emerald-500/60'
+                    }`}
+                  >
+                    <Fingerprint className="w-4 h-4 text-emerald-400 shrink-0" />
+                    <span>
+                      {passkeyLoading
+                        ? 'Verifica Impronta / Face ID...'
+                        : 'Accedi con Impronta / Face ID (Passkey)'}
+                    </span>
+                  </button>
+                )}
+
+                {passkeyMsg && (
+                  <p className="text-xs font-bold text-red-700 bg-red-100 p-2.5 rounded-xl border border-red-400">
+                    {passkeyMsg}
+                  </p>
+                )}
               </div>
             )}
 
@@ -459,7 +544,6 @@ export const SchermataSceltaRuolo: React.FC<SchermataSceltaRuoloProps> = ({
             {modalitaCentrale === 'admin' && (
               <form
                 onSubmit={handleCentraleAdminSubmit}
-                autoComplete="off"
                 className={isWeb ? "space-y-3 bg-slate-50 p-4 rounded-2xl border-2 border-amber-600 shadow-xl" : "space-y-3 bg-slate-950 p-4 rounded-2xl border-2 border-amber-500/60 shadow-xl"}
                 style={isWeb ? { backgroundColor: '#f8fafc', color: '#0f172a', borderColor: '#d97706' } : undefined}
               >
@@ -507,17 +591,23 @@ export const SchermataSceltaRuolo: React.FC<SchermataSceltaRuoloProps> = ({
                   <div className="flex gap-2">
                     <input
                       type="text"
+                      name="username"
+                      autoComplete="username"
+                      value="Amministratore Centrale"
+                      readOnly
+                      tabIndex={-1}
+                      aria-hidden="true"
+                      className="sr-only"
+                    />
+                    <input
+                      type="password"
                       inputMode="numeric"
                       pattern="[0-9]*"
                       maxLength={8}
                       autoFocus
-                      autoComplete="one-time-code"
-                      name="codice_sicurezza_centrale_entry"
-                      id="codice_sicurezza_centrale_entry"
-                      data-lpignore="true"
-                      data-1p-ignore="true"
-                      data-bwignore="true"
-                      data-form-type="other"
+                      autoComplete="current-password"
+                      name="password"
+                      id="centrale_admin_password"
                       value={pinInput}
                       onChange={(e) => {
                         setPinInput(e.target.value);
@@ -525,12 +615,10 @@ export const SchermataSceltaRuolo: React.FC<SchermataSceltaRuoloProps> = ({
                       }}
                       placeholder="••••"
                       style={{
-                        WebkitTextSecurity: 'disc',
-                        MozTextSecurity: 'disc',
                         backgroundColor: isWeb ? '#ffffff' : undefined,
                         color: isWeb ? '#0f172a' : undefined,
                         borderColor: isWeb ? '#94a3b8' : undefined
-                      } as React.CSSProperties}
+                      }}
                       className={`flex-1 p-2.5 rounded-xl text-base text-center tracking-widest font-mono focus:ring-2 focus:ring-amber-500 focus:outline-none ${
                         isWeb ? 'bg-white border-2 border-slate-400 text-slate-900' : 'bg-slate-900 border border-slate-700 text-white'
                       }`}
@@ -543,6 +631,18 @@ export const SchermataSceltaRuolo: React.FC<SchermataSceltaRuoloProps> = ({
                       Sblocca
                     </button>
                   </div>
+
+                  {webAuthnDisponibile && onLoginWithPasskey && (
+                    <button
+                      type="button"
+                      disabled={passkeyLoading}
+                      onClick={() => handleAccediConPasskey('admin-centrale-root')}
+                      className="w-full py-2 px-3 rounded-xl bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/50 text-emerald-300 font-black text-xs flex items-center justify-center gap-1.5 cursor-pointer transition-all disabled:opacity-50"
+                    >
+                      <Fingerprint className="w-4 h-4 shrink-0" />
+                      <span>{passkeyLoading ? 'Verifica in corso...' : 'Accedi con Passkey (Impronta / Face ID)'}</span>
+                    </button>
+                  )}
                 </div>
 
                 {errorePin && (
@@ -689,17 +789,27 @@ export const SchermataSceltaRuolo: React.FC<SchermataSceltaRuoloProps> = ({
                       <div className="flex gap-2">
                         <input
                           type="text"
+                          name="username"
+                          autoComplete="username"
+                          value={
+                            op.id === 'admin-centrale-root'
+                              ? 'Amministratore Centrale'
+                              : `${op.nome || ''} ${op.cognome || ''}`.trim()
+                          }
+                          readOnly
+                          tabIndex={-1}
+                          aria-hidden="true"
+                          className="sr-only"
+                        />
+                        <input
+                          type="password"
                           inputMode="numeric"
                           pattern="[0-9]*"
                           maxLength={8}
                           autoFocus
-                          autoComplete="one-time-code"
-                          name="codice_operatore_centrale_token"
-                          id="codice_operatore_centrale_token"
-                          data-lpignore="true"
-                          data-1p-ignore="true"
-                          data-bwignore="true"
-                          data-form-type="other"
+                          autoComplete="current-password"
+                          name="password"
+                          id="centrale_operatore_password"
                           value={pinInput}
                           onChange={(e) => {
                             setPinInput(e.target.value);
@@ -707,12 +817,10 @@ export const SchermataSceltaRuolo: React.FC<SchermataSceltaRuoloProps> = ({
                           }}
                           placeholder={`••••`}
                           style={{
-                            WebkitTextSecurity: 'disc',
-                            MozTextSecurity: 'disc',
                             backgroundColor: isWeb ? '#ffffff' : undefined,
                             color: isWeb ? '#0f172a' : undefined,
                             borderColor: isWeb ? '#94a3b8' : undefined
-                          } as React.CSSProperties}
+                          }}
                           className={`flex-1 p-2.5 rounded-xl text-base text-center tracking-widest font-mono focus:ring-2 focus:ring-purple-500 focus:outline-none ${
                             isWeb ? 'bg-white border-2 border-slate-400 text-slate-900' : 'bg-slate-900 border border-slate-700 text-white'
                           }`}
@@ -725,6 +833,26 @@ export const SchermataSceltaRuolo: React.FC<SchermataSceltaRuoloProps> = ({
                           Sblocca
                         </button>
                       </div>
+
+                      {webAuthnDisponibile && onLoginWithPasskey && (
+                        <button
+                          type="button"
+                          disabled={passkeyLoading}
+                          onClick={() => handleAccediConPasskey(op.id)}
+                          className={`w-full py-2 px-3 rounded-xl font-black text-xs flex items-center justify-center gap-1.5 border transition-all cursor-pointer disabled:opacity-50 ${
+                            isWeb
+                              ? 'bg-emerald-50 hover:bg-emerald-100 text-emerald-900 border-emerald-500'
+                              : 'bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border-emerald-500/50'
+                          }`}
+                        >
+                          <Fingerprint className="w-4 h-4 shrink-0" />
+                          <span>
+                            {passkeyLoading
+                              ? 'Verifica Impronta / Face ID...'
+                              : 'Accedi con Impronta / Face ID (Passkey)'}
+                          </span>
+                        </button>
+                      )}
                     </div>
                   );
                 })()}

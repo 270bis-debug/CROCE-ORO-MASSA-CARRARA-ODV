@@ -55,6 +55,7 @@ import { isAccessoDaWeb } from '../utils/accessoWeb';
 import { UploadFirmaTrasparente } from './UploadFirmaTrasparente';
 import { ModalAccessoWeb } from './ModalAccessoWeb';
 import { MacroCategoriaId, PulsanteStrumentiId } from '../constants/macroCategorie';
+import { PasskeyRecord, getNotificationEmailForVolontario } from '../utils/passkeyAuth';
 import { inviaNotificaModificaAdmin } from '../utils/notificaModificaAdmin';
 import { formatDateItaly, formatDateTimeItaly, formatISODateItaly, getCurrentYearItaly } from '../utils/italianTime';
 import { mergeVolontariListsSafe } from '../utils/volontariMerge';
@@ -171,7 +172,9 @@ export interface Volontario {
   caricaConsiglioDirettivo?: CaricaConsiglioDirettivo; // Carica nel Consiglio Direttivo
   tesseramento?: DatiTesseramento; // Tesseramento, rinnovo, ricevuta sequenziale e timbro cartaceo
   telefono: string;
-  email: string; // Indirizzo email obbligatorio
+  email: string; // Indirizzo email obbligatorio (anagrafica Gestione Volontari)
+  emailNotifiche?: string; // Indirizzo email alternativo per ricevere le notifiche (non altera l'email anagrafica)
+  passkeys?: PasskeyRecord[]; // Elenco Passkey (Impronta Digitale / Face ID) registrate dall'account
   pin: string; // 4 cifre
   pinHash?: string; // Hash SHA-256 del PIN per verifica sicura su terminali non autenticati Google
   pinIsEmergency?: boolean; // True se il PIN attuale è il codice di emergenza 0000 (roster pubblico zero-PII)
@@ -1247,8 +1250,9 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
       'centrale'
     );
 
-    // 3. Prepara e invia email se presente
-    if (v.email && v.email.includes('@')) {
+    // 3. Prepara e invia email se presente (usa emailNotifiche se impostata dal profilo, altrimenti email anagrafica)
+    const destinatarioEmail = getNotificationEmailForVolontario(v);
+    if (destinatarioEmail && destinatarioEmail.includes('@')) {
       const oggetto = encodeURIComponent(`Croce Oro Massa Carrara - Sblocco Account e Invito al Reset della Password / PIN (${v.nome} ${v.cognome})`);
       const corpo = encodeURIComponent(
         `Gentile ${v.nome} ${v.cognome},\n\n` +
@@ -1266,7 +1270,7 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
       );
       try {
         const a = document.createElement('a');
-        a.href = `mailto:${v.email}?subject=${oggetto}&body=${corpo}`;
+        a.href = `mailto:${destinatarioEmail}?subject=${oggetto}&body=${corpo}`;
         a.target = '_blank';
         a.rel = 'noopener noreferrer';
         document.body.appendChild(a);
@@ -1277,7 +1281,7 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
 
     setNotificaResetInviata({
       nome: `${v.nome} ${v.cognome}`,
-      email: v.email || 'Email non registrata'
+      email: destinatarioEmail || 'Email non registrata'
     });
     setTimeout(() => setNotificaResetInviata(null), 6000);
   };
@@ -1358,7 +1362,8 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
   };
 
   const invitaAResettarePassword = async (v: Volontario) => {
-    if (!v.email || !v.email.includes('@')) {
+    const destinatarioEmail = getNotificationEmailForVolontario(v);
+    if (!destinatarioEmail || !destinatarioEmail.includes('@')) {
       setAvvisoTemporaneo(`Impossibile inviare l'invito: l'account ${v.nome} ${v.cognome} non ha un indirizzo email valido registrato.`);
       setTimeout(() => setAvvisoTemporaneo(null), 5000);
       return;
@@ -1418,7 +1423,7 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
           nome: v.nome,
           cognome: v.cognome,
           qualifica: v.qualifica,
-          email: v.email,
+          email: destinatarioEmail,
           pinProvvisorio: pinProvv,
           token: token,
           origin: window.location.origin,
@@ -1436,10 +1441,10 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
       }
       if (data.success) {
         onNotificaRadio(
-          `📧 INVITO RESET: Inviata email con PIN provvisorio e attivazione senza account Google a ${v.nome} ${v.cognome} (${v.email}) da sistemiautomatizzati@croceoro.org.`,
+          `📧 INVITO RESET: Inviata email con PIN provvisorio e attivazione senza account Google a ${v.nome} ${v.cognome} (${destinatarioEmail}) da sistemiautomatizzati@croceoro.org.`,
           'centrale'
         );
-        setAvvisoTemporaneo(`✅ Email con PIN provvisorio e istruzioni senza Google inviata con successo a ${v.email}!`);
+        setAvvisoTemporaneo(`✅ Email con PIN provvisorio e istruzioni senza Google inviata con successo a ${destinatarioEmail}!`);
       } else {
         setAvvisoTemporaneo(`⚠️ Invito generato per ${v.nome} ${v.cognome}.`);
       }
@@ -1449,7 +1454,7 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
 
     setNotificaResetInviata({
       nome: `${v.nome} ${v.cognome}`,
-      email: v.email,
+      email: destinatarioEmail,
       resetUrl: resetUrlFinale,
       pinProvvisorio: pinProvv,
       isProtectedHost: resolvedProtectedHost

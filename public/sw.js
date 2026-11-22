@@ -4,7 +4,7 @@
 // 2. Strategia Network-First su navigazione per caricare SEMPRE l'ultima release pubblicata
 // 3. Notifiche Push in Background ad Alta Priorità e Risveglio Schermo Bloccato
 
-const CACHE_NAME = 'croce-oro-cache-v5.0.8';
+const CACHE_NAME = 'croce-oro-cache-v5.0.9';
 const MANDATORY_PERMS_REVISION = 'radio-bg-audio-push-v1';
 const MANDATORY_PERMS_META_CACHE = 'croce-oro-perm-revisions-v1';
 
@@ -33,7 +33,7 @@ self.addEventListener('install', (event) => {
 });
 
 // Attivazione: elimina le vecchie cache obsolete e qualsiasi file sorgente/dev eventualmente memorizzato
-// PRESERVA tassativamente: localStorage, indexedDB, dati missioni, impostazioni e credenziali
+// PRESERVA tassativamente: localStorage, indexedDB, dati missioni, impostazioni, permessi e credenziali
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys().then((keys) => {
@@ -75,45 +75,9 @@ self.addEventListener('activate', (event) => {
         client.postMessage({
           type: 'SW_VERSION_ACTIVATED',
           version: CACHE_NAME,
-          mandatoryPermsRevision: MANDATORY_PERMS_REVISION,
           timestamp: Date.now()
         });
       });
-    }).then(async () => {
-      // Notifica una tantum sugli smartphone che avevano già concesso le autorizzazioni iniziali
-      // per invitarli ad accettare obbligatoriamente la Ricezione Radio in Background (Audio + Push)
-      // anche senza incremento della versione app (v5.0.6).
-      try {
-        if (typeof self.Notification === 'undefined' || self.Notification.permission !== 'granted') return;
-        const metaCache = await caches.open(MANDATORY_PERMS_META_CACHE);
-        const sentinelKey = `/__notified_${MANDATORY_PERMS_REVISION}`;
-        const acceptedKey = `/__accepted_${MANDATORY_PERMS_REVISION}`;
-        const [alreadyNotified, alreadyAccepted] = await Promise.all([
-          metaCache.match(sentinelKey),
-          metaCache.match(acceptedKey)
-        ]);
-        if (alreadyNotified || alreadyAccepted) return;
-
-        await metaCache.put(sentinelKey, new Response(String(Date.now())));
-        await self.registration.showNotification('📻 AGGIORNAMENTO OBBLIGATORIO AUTORIZZAZIONI', {
-          body: 'Nuova Ricezione Radio in Background (Audio + Push) disponibile: apri l’app per confermare obbligatoriamente le autorizzazioni.',
-          icon: '/icon-192-v2.png',
-          badge: '/icon-192-v2.png',
-          tag: `croce-oro-mandatory-perms-${MANDATORY_PERMS_REVISION}`,
-          renotify: true,
-          requireInteraction: true,
-          silent: false,
-          vibrate: [400, 150, 400, 150, 600],
-          data: {
-            tipo: 'mandatory_permissions_update',
-            revision: MANDATORY_PERMS_REVISION,
-            url: '/?permessiObbligatori=radio_bg'
-          },
-          actions: [
-            { action: 'open_mandatory_perms', title: '✅ ACCETTA AUTORIZZAZIONI' }
-          ]
-        });
-      } catch {}
     })
   );
 });

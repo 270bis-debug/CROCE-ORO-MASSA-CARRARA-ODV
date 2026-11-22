@@ -34,6 +34,7 @@ import {
   normalizzaListaSediAssociative,
   detectCanonicalSedeKey
 } from '../utils/sediNormalize';
+import { ottieniPosizioneGpsAffidabile, isAppleMobileDevice } from '../utils/smartGps';
 
 // Formula geodesica di Haversine per calcolare la distanza in metri tra due coordinate GPS
 export function calcolaDistanzaMetri(lat1: number, lon1: number, lat2: number, lon2: number): number {
@@ -130,6 +131,70 @@ export function trovaLuogoAutorizzatoPerPosizione(
   return { luogoValido, luogoPiuVicino };
 }
 
+function calcolaAnalisiDistanzaPerPosizione(
+  pos: PosizioneGPS,
+  elencoPuntiValidi: LuogoTimbratura[]
+) {
+  if (!elencoPuntiValidi || elencoPuntiValidi.length === 0) {
+    return {
+      luogoValido: null as LuogoTimbratura | null,
+      luogoPiuVicino: null as LuogoTimbratura | null,
+      distanzaMetri: 9999,
+      raggioConsentitoMetri: 20,
+      tolleranzaGpsApplicata: 0,
+      nelRaggioConsentito: false,
+      elencoConDistanze: [] as Array<LuogoTimbratura & { distanza: number; isInRange: boolean }>
+    };
+  }
+
+  // Compensazione sicura e limitata dell'errore GPS indoor (tipico su iPhone/Android al chiuso: 15-35m).
+  // NON si applica se il GPS è approssimativo (>100m, es. iPhone senza "Posizione esatta").
+  const acc = typeof pos.accuratezza === 'number' && Number.isFinite(pos.accuratezza) ? Math.round(pos.accuratezza) : 0;
+  const tolleranzaGps = acc > 0 && acc <= 100 ? Math.min(acc, 35) : 0;
+
+  let minDistanza = Infinity;
+  let puntoPiuVicino: LuogoTimbratura | null = null;
+
+  const conDistanze = elencoPuntiValidi
+    .map(punto => {
+      const d = calcolaDistanzaMetri(
+        pos.lat,
+        pos.lng,
+        punto.coordinate.lat,
+        punto.coordinate.lng
+      );
+      const raggio = punto.raggioMetri || 20;
+      const isInRange = d <= raggio + tolleranzaGps;
+
+      if (d < minDistanza) {
+        minDistanza = d;
+        puntoPiuVicino = punto;
+      }
+
+      return {
+        ...punto,
+        distanza: d,
+        isInRange
+      };
+    })
+    .sort((a, b) => a.distanza - b.distanza);
+
+  const puntoInRaggio = conDistanze.find(p => p.isInRange) || null;
+  const luogoTarget = puntoInRaggio || puntoPiuVicino || elencoPuntiValidi[0];
+  const distTarget = puntoInRaggio ? puntoInRaggio.distanza : (minDistanza === Infinity ? 9999 : minDistanza);
+  const raggioTarget = luogoTarget?.raggioMetri || 20;
+
+  return {
+    luogoValido: puntoInRaggio,
+    luogoPiuVicino: luogoTarget,
+    distanzaMetri: distTarget,
+    raggioConsentitoMetri: raggioTarget,
+    tolleranzaGpsApplicata: tolleranzaGps,
+    nelRaggioConsentito: !!puntoInRaggio,
+    elencoConDistanze: conDistanze
+  };
+}
+
 interface PannelloTimbraturaVolontarioProps {
   volontarioId: string;
   volontarioNome: string;
@@ -175,6 +240,8 @@ export const PannelloTimbraturaVolontario: React.FC<PannelloTimbraturaVolontario
   const [erroreGps, setErroreGps] = useState<string | null>(null);
   const [avvisoSuccesso, setAvvisoSuccesso] = useState<string | null>(null);
   const [inRilevamentoGps, setInRilevamentoGps] = useState(false);
+  const [timbraturaInVerificaGps, setTimbraturaInVerificaGps] = useState(false);
+  const [avvisoIosPosizioneEsatta, setAvvisoIosPosizioneEsatta] = useState(false);
   const [attivitaManuale, setAttivitaManuale] = useState('');
   const [oraLiveConSecondi, setOraLiveConSecondi] = useState(() => formatOrarioConSecondi());
 
@@ -251,63 +318,11 @@ export const PannelloTimbraturaVolontario: React.FC<PannelloTimbraturaVolontario
 
   const [mostraElencoLuoghi, setMostraElencoLuoghi] = useState(false);
 
-  // Calcolo verifica raggio di validità a discrezione dell'operatore (Effetto Immediato)
-  const analisiDistanza = useMemo(() => {
-    if (!elencoPuntiValidi || elencoPuntiValidi.length === 0) {
-      return {
-        luogoValido: null,
-        luogoPiuVicino: null,
-        distanzaMetri: 9999,
-        raggioConsentitoMetri: 20,
-        nelRaggioConsentito: false,
-        elencoConDistanze: []
-      };
-    }
-
-    let minDistanza = Infinity;
-    let puntoPiuVicino: LuogoTimbratura | null = null;
-    let puntoValidoTrovato: LuogoTimbratura | null = null;
-
-    const conDistanze = elencoPuntiValidi.map(punto => {
-      const d = calcolaDistanzaMetri(
-        posizioneGps.lat,
-        posizioneGps.lng,
-        punto.coordinate.lat,
-        punto.coordinate.lng
-      );
-      const raggio = punto.raggioMetri || 20;
-      const isInRange = d <= raggio;
-
-      if (d < minDistanza) {
-        minDistanza = d;
-        puntoPiuVicino = punto;
-      }
-      if (isInRange && !puntoValidoTrovato) {
-        puntoValidoTrovato = punto;
-      }
-
-      return {
-        ...punto,
-        distanza: d,
-        isInRange
-      };
-    }).sort((a, b) => a.distanza - b.distanza);
-
-    // Se uno o più luoghi sono nel raggio consentito, seleziona il più vicino tra quelli validati
-    const puntoInRaggio = conDistanze.find(p => p.isInRange) || null;
-    const luogoTarget = puntoInRaggio || puntoPiuVicino || elencoPuntiValidi[0];
-    const distTarget = puntoInRaggio ? puntoInRaggio.distanza : (minDistanza === Infinity ? 9999 : minDistanza);
-    const raggioTarget = luogoTarget?.raggioMetri || 20;
-
-    return {
-      luogoValido: puntoInRaggio,
-      luogoPiuVicino: luogoTarget,
-      distanzaMetri: distTarget,
-      raggioConsentitoMetri: raggioTarget,
-      nelRaggioConsentito: !!puntoInRaggio,
-      elencoConDistanze: conDistanze
-    };
-  }, [elencoPuntiValidi, posizioneGps.lat, posizioneGps.lng]);
+  // Calcolo verifica raggio di validità a discrezione dell'operatore (Effetto Immediato + compensazione GPS indoor)
+  const analisiDistanza = useMemo(
+    () => calcolaAnalisiDistanzaPerPosizione(posizioneGps, elencoPuntiValidi),
+    [elencoPuntiValidi, posizioneGps]
+  );
 
   // Helper per verificare se un record di timbratura appartiene al volontario corrente
   const isMioRecord = (t: TimbraturaVolontario) => {
@@ -398,72 +413,121 @@ export const PannelloTimbraturaVolontario: React.FC<PannelloTimbraturaVolontario
     return Math.round(sum * 10) / 10;
   }, [timbratureFiltrate]);
 
-  // Funzione per forzare la lettura GPS reale dal dispositivo
-  const rilevaGpsDispositivo = () => {
+  // Funzione per acquisire la posizione GPS reale dal dispositivo (ottimizzata per Apple iOS CoreLocation + Android)
+  const rilevaGpsDispositivo = async (silenzioso: boolean = false) => {
     setInRilevamentoGps(true);
-    setErroreGps(null);
-    if ('geolocation' in navigator) {
-      navigator.geolocation.getCurrentPosition(
-        (pos) => {
-          const nuova: PosizioneGPS = {
-            lat: pos.coords.latitude,
-            lng: pos.coords.longitude,
-            accuratezza: Math.round(pos.coords.accuracy),
-            velocita: pos.coords.speed ? Math.round(pos.coords.speed * 3.6) : null,
-            orario: formatTimeItaly(undefined, true)
-          };
-          onAggiornaPosizioneGps(nuova);
-          setInRilevamentoGps(false);
-          setAvvisoSuccesso(`GPS aggiornato: coordinate [${nuova.lat.toFixed(5)}, ${nuova.lng.toFixed(5)}] rilevate con accuratezza ±${nuova.accuratezza}m`);
-          setTimeout(() => setAvvisoSuccesso(null), 5000);
-        },
-        (err) => {
-          setInRilevamentoGps(false);
-          setErroreGps(`Impossibile acquisire GPS: ${err.message}. Verifica le autorizzazioni di geolocalizzazione sul dispositivo.`);
-          if (err.code === 1) {
-            invitaAutorizzazioneNecessaria('gps', 'Timbratura Presenza GPS', () => rilevaGpsDispositivo());
-          }
-        },
-        { enableHighAccuracy: true, timeout: 8000, maximumAge: 0 }
-      );
-    } else {
-      setInRilevamentoGps(false);
-      setErroreGps('Geolocalizzazione non supportata su questo browser.');
+    if (!silenzioso) setErroreGps(null);
+
+    const esito = await ottieniPosizioneGpsAffidabile({
+      timeoutMs: isAppleMobileDevice() ? 15000 : 12000,
+      refineMs: isAppleMobileDevice() ? 3200 : 2200,
+      desiredAccuracyMeters: 30,
+      onIntermediate: (posIntermedia) => {
+        onAggiornaPosizioneGps(posIntermedia);
+      }
+    });
+
+    setInRilevamentoGps(false);
+
+    if (esito.ok) {
+      const nuova = esito.posizione;
+      onAggiornaPosizioneGps(nuova);
+      setAvvisoIosPosizioneEsatta(esito.isCoarseIos);
+      if (!silenzioso) {
+        const extraFallback = esito.usedFallback ? ' (via Wi-Fi/rete)' : '';
+        setAvvisoSuccesso(
+          `GPS aggiornato${extraFallback}: [${nuova.lat.toFixed(5)}, ${nuova.lng.toFixed(5)}] con accuratezza ±${nuova.accuratezza}m`
+        );
+        setTimeout(() => setAvvisoSuccesso(null), 5000);
+      }
+      return nuova;
     }
+
+    if (!silenzioso) {
+      setErroreGps(esito.error);
+      if (esito.isPermissionDenied) {
+        invitaAutorizzazioneNecessaria('gps', 'Timbratura Presenza GPS', () => {
+          rilevaGpsDispositivo(false);
+        });
+      }
+    }
+    return null;
   };
 
-  // Azione Timbratura Ingresso / Uscita (Singolo pulsante unificato con orario HH:MM:SS e controllo stretto sulle posizioni autorizzate)
-  const handleEseguiTimbratura = () => {
+  // All'apertura del pannello Timbratura, acquisisce subito un fix GPS reale (fondamentale su iPhone/Safari)
+  useEffect(() => {
+    rilevaGpsDispositivo(true).catch(() => {});
+  }, []);
+
+  // Azione Timbratura Ingresso / Uscita (Singolo pulsante unificato con orario HH:MM:SS e verifica GPS affidabile anche su iPhone)
+  const handleEseguiTimbratura = async () => {
+    if (timbraturaInVerificaGps) return;
     setErroreGps(null);
-    const now = new Date();
-    const orarioCorrente = formatOrarioConSecondi(now);
-    const dataCorrente = formatLocalISODate(now);
 
     if (!elencoPuntiValidi || elencoPuntiValidi.length === 0) {
       setErroreGps('⛔ Nessuna posizione autorizzata attiva per la timbratura. Contatta la Centrale Operativa.');
       return;
     }
 
+    let posizioneEffettiva = posizioneGps;
+    let analisiEffettiva = analisiDistanza;
+
+    // Se il volontario risulta fuori raggio (es. iPhone con fix ancora in corso o coordinate non ancora aggiornate),
+    // esegui automaticamente una rilevazione GPS fresca prima di respingere la timbratura!
+    if (!analisiEffettiva.nelRaggioConsentito || !analisiEffettiva.luogoValido) {
+      setTimbraturaInVerificaGps(true);
+      setInRilevamentoGps(true);
+      const esitoFresh = await ottieniPosizioneGpsAffidabile({
+        timeoutMs: isAppleMobileDevice() ? 14000 : 10000,
+        refineMs: 2500,
+        desiredAccuracyMeters: 30,
+        onIntermediate: (posInt) => onAggiornaPosizioneGps(posInt)
+      });
+      setTimbraturaInVerificaGps(false);
+      setInRilevamentoGps(false);
+
+      if (esitoFresh.ok) {
+        posizioneEffettiva = esitoFresh.posizione;
+        onAggiornaPosizioneGps(posizioneEffettiva);
+        setAvvisoIosPosizioneEsatta(esitoFresh.isCoarseIos);
+        analisiEffettiva = calcolaAnalisiDistanzaPerPosizione(posizioneEffettiva, elencoPuntiValidi);
+      } else if (esitoFresh.isPermissionDenied) {
+        setErroreGps(esitoFresh.error);
+        invitaAutorizzazioneNecessaria('gps', 'Timbratura Presenza GPS', () => {
+          rilevaGpsDispositivo(false);
+        });
+        return;
+      }
+    }
+
+    const now = new Date();
+    const orarioCorrente = formatOrarioConSecondi(now);
+    const dataCorrente = formatLocalISODate(now);
+
     // Controllo rigoroso del perimetro autorizzato sia in ENTRATA che in USCITA
-    if (!analisiDistanza.nelRaggioConsentito || !analisiDistanza.luogoValido) {
-      const nomeTarget = analisiDistanza.luogoPiuVicino?.nome || 'Luogo autorizzato';
-      const raggioTarget = analisiDistanza.raggioConsentitoMetri;
+    if (!analisiEffettiva.nelRaggioConsentito || !analisiEffettiva.luogoValido) {
+      const nomeTarget = analisiEffettiva.luogoPiuVicino?.nome || 'Luogo autorizzato';
+      const raggioTarget = analisiEffettiva.raggioConsentitoMetri;
       const tipoAzione = timbraturaAttiva ? 'USCITA' : 'INGRESSO';
+      const hintIos =
+        isAppleMobileDevice() && (posizioneEffettiva.accuratezza || 0) > 200
+          ? ' Suggerimento iPhone: verifica in Impostazioni → Privacy e sicurezza → Localizzazione → Safari che "Posizione esatta" sia ATTIVA.'
+          : '';
       setErroreGps(
-        `⛔ Timbratura di ${tipoAzione} non consentita: ti trovi a ${analisiDistanza.distanzaMetri} metri da "${nomeTarget}". Sia l'entrata che l'uscita possono essere effettuate esclusivamente all'interno di una posizione autorizzata (raggio ${raggioTarget} metri), anche in una sede diversa rispetto all'entrata.`
+        `⛔ Timbratura di ${tipoAzione} non consentita: ti trovi a ${analisiEffettiva.distanzaMetri} metri da "${nomeTarget}" (accuratezza GPS ±${Math.round(posizioneEffettiva.accuratezza || 0)}m). Sia l'entrata che l'uscita possono essere effettuate esclusivamente all'interno di una posizione autorizzata (raggio ${raggioTarget} metri), anche in una sede diversa rispetto all'entrata.${hintIos}`
       );
       if (onNotifica) {
         onNotifica(
-          `⚠️ Tentativo di timbratura ${tipoAzione} respinto per ${volontarioNome}: distanza ${analisiDistanza.distanzaMetri}m (raggio consentito ${raggioTarget}m) da ${nomeTarget}`,
+          `⚠️ Tentativo di timbratura ${tipoAzione} respinto per ${volontarioNome}: distanza ${analisiEffettiva.distanzaMetri}m (raggio consentito ${raggioTarget}m) da ${nomeTarget}`,
           'allarme'
         );
       }
       return;
     }
 
-    const targetPunto = analisiDistanza.luogoValido;
+    const targetPunto = analisiEffettiva.luogoValido;
     const nomeLuogo = targetPunto.nome || 'Sede Operativa Croce Oro';
-    const raggioApplicato = targetPunto.raggioMetri || analisiDistanza.raggioConsentitoMetri;
+    const raggioApplicato = targetPunto.raggioMetri || analisiEffettiva.raggioConsentitoMetri;
 
     // Riconoscimento automatico se il luogo validato corrisponde a una lezione di un corso a cui il volontario è iscritto
     const isPuntoCorso = Boolean(targetPunto.id?.startsWith('corso-'));
@@ -522,7 +586,7 @@ export const PannelloTimbraturaVolontario: React.FC<PannelloTimbraturaVolontario
         oreTotali: undefined,
         mezzoAssegnato: attivitaRilevata.mezzoAssegnato,
         sede: nomeLuogo,
-        coordinateIngresso: { lat: posizioneGps.lat, lng: posizioneGps.lng },
+        coordinateIngresso: { lat: posizioneEffettiva.lat, lng: posizioneEffettiva.lng },
         modificataDaAdmin: false,
         corsoId: effectiveCorsoId,
         lezioneId: effectiveLezioneId,
@@ -530,10 +594,10 @@ export const PannelloTimbraturaVolontario: React.FC<PannelloTimbraturaVolontario
         attivitaSvolta: attivitaEffettiva,
         tipoAttivita: tipoTimb,
         note: isSimultaneous
-          ? `Timbratura SIMULTANEA INGRESSO TURNO + CORSO FORMATIVO validata via GPS alle ${orarioCorrente} a ${analisiDistanza.distanzaMetri}m da ${nomeLuogo} (Raggio: ${raggioApplicato}m)`
+          ? `Timbratura SIMULTANEA INGRESSO TURNO + CORSO FORMATIVO validata via GPS alle ${orarioCorrente} a ${analisiEffettiva.distanzaMetri}m da ${nomeLuogo} (Raggio: ${raggioApplicato}m)`
           : hasCorso && !hasTurno
-          ? `Timbratura INGRESSO LEZIONE CORSO FORMATIVO validata via GPS alle ${orarioCorrente} a ${analisiDistanza.distanzaMetri}m da ${nomeLuogo} (Raggio autorizzato: ${raggioApplicato}m - GPS: ${posizioneGps.lat.toFixed(5)}, ${posizioneGps.lng.toFixed(5)})`
-          : `Timbratura INGRESSO validata via GPS alle ${orarioCorrente} a ${analisiDistanza.distanzaMetri}m da ${nomeLuogo} (Raggio autorizzato: ${raggioApplicato}m - GPS: ${posizioneGps.lat.toFixed(5)}, ${posizioneGps.lng.toFixed(5)})`
+          ? `Timbratura INGRESSO LEZIONE CORSO FORMATIVO validata via GPS alle ${orarioCorrente} a ${analisiEffettiva.distanzaMetri}m da ${nomeLuogo} (Raggio autorizzato: ${raggioApplicato}m - GPS: ${posizioneEffettiva.lat.toFixed(5)}, ${posizioneEffettiva.lng.toFixed(5)})`
+          : `Timbratura INGRESSO validata via GPS alle ${orarioCorrente} a ${analisiEffettiva.distanzaMetri}m da ${nomeLuogo} (Raggio autorizzato: ${raggioApplicato}m - GPS: ${posizioneEffettiva.lat.toFixed(5)}, ${posizioneEffettiva.lng.toFixed(5)})`
       };
 
       const aggiornate = [nuovaTimb, ...timbrature];
@@ -548,8 +612,8 @@ export const PannelloTimbraturaVolontario: React.FC<PannelloTimbraturaVolontario
           effectiveCorsoId,
           { id: volontarioId, nome: volontarioNome, qualifica },
           'entrata',
-          posizioneGps,
-          analisiDistanza.distanzaMetri,
+          posizioneEffettiva,
+          analisiEffettiva.distanzaMetri,
           effectiveLezioneId
         );
       }
@@ -612,14 +676,14 @@ export const PannelloTimbraturaVolontario: React.FC<PannelloTimbraturaVolontario
         ...timbraturaAttiva,
         orarioUscita: orarioCorrente,
         sedeUscita: nomeLuogo,
-        coordinateUscita: { lat: posizioneGps.lat, lng: posizioneGps.lng },
+        coordinateUscita: { lat: posizioneEffettiva.lat, lng: posizioneEffettiva.lng },
         oreTotali: oreCalc,
         oreEMinuti: durataStr,
         note: isCorsoAttivo && isTurnoAttivo
-          ? `${timbraturaAttiva.note || ''} • USCITA SIMULTANEA TURNO + CORSO via GPS alle ${orarioCorrente} a ${analisiDistanza.distanzaMetri}m da ${nomeLuogo} [Durata: ${durataStr}]`
+          ? `${timbraturaAttiva.note || ''} • USCITA SIMULTANEA TURNO + CORSO via GPS alle ${orarioCorrente} a ${analisiEffettiva.distanzaMetri}m da ${nomeLuogo} [Durata: ${durataStr}]`
           : isCorsoAttivo
-          ? `${timbraturaAttiva.note || ''} • USCITA LEZIONE timbrata via GPS alle ${orarioCorrente} a ${analisiDistanza.distanzaMetri}m da ${nomeLuogo} [Presenza convalidata: ${durataStr}]`
-          : `${timbraturaAttiva.note || ''} • USCITA timbrata via GPS alle ${orarioCorrente} a ${analisiDistanza.distanzaMetri}m da ${nomeLuogo}${sedeDifferente ? ` (Sede uscita diversa da entrata: ${sedeEntrata})` : ''} (Raggio ammesso: ${raggioApplicato}m) [Durata: ${durataStr}]`
+          ? `${timbraturaAttiva.note || ''} • USCITA LEZIONE timbrata via GPS alle ${orarioCorrente} a ${analisiEffettiva.distanzaMetri}m da ${nomeLuogo} [Presenza convalidata: ${durataStr}]`
+          : `${timbraturaAttiva.note || ''} • USCITA timbrata via GPS alle ${orarioCorrente} a ${analisiEffettiva.distanzaMetri}m da ${nomeLuogo}${sedeDifferente ? ` (Sede uscita diversa da entrata: ${sedeEntrata})` : ''} (Raggio ammesso: ${raggioApplicato}m) [Durata: ${durataStr}]`
       };
 
       const aggiornate = timbrature.map((t) => (t.id === timbraturaAttiva.id ? timbChiusa : t));
@@ -631,8 +695,8 @@ export const PannelloTimbraturaVolontario: React.FC<PannelloTimbraturaVolontario
           timbCorsoId,
           { id: volontarioId, nome: volontarioNome, qualifica },
           'uscita',
-          posizioneGps,
-          analisiDistanza.distanzaMetri,
+          posizioneEffettiva,
+          analisiEffettiva.distanzaMetri,
           timbLezioneId
         );
       }
@@ -799,7 +863,7 @@ export const PannelloTimbraturaVolontario: React.FC<PannelloTimbraturaVolontario
                   <span className="text-[10px] text-slate-400 ml-1">({analisiDistanza.luogoPiuVicino?.indirizzo || 'Massa Carrara'})</span>
                 </p>
                 <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 mt-1 text-[10px] text-slate-400 font-mono">
-                  <span>GPS: {posizioneGps.lat.toFixed(5)}, {posizioneGps.lng.toFixed(5)}</span>
+                  <span>GPS: {posizioneGps.lat.toFixed(5)}, {posizioneGps.lng.toFixed(5)} (±{Math.round(posizioneGps.accuratezza || 0)}m)</span>
                   <span>•</span>
                   <span>Raggio operatore: <strong>{analisiDistanza.raggioConsentitoMetri}m</strong></span>
                   <span>•</span>
@@ -812,16 +876,26 @@ export const PannelloTimbraturaVolontario: React.FC<PannelloTimbraturaVolontario
             <div className="flex flex-row sm:flex-col flex-wrap gap-1.5 shrink-0">
               <button
                 type="button"
-                onClick={rilevaGpsDispositivo}
+                onClick={() => { rilevaGpsDispositivo(false); }}
                 disabled={inRilevamentoGps}
                 className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-[10px] font-bold flex items-center gap-1 border border-slate-700 cursor-pointer active:scale-95 disabled:opacity-50"
                 title="Rileva posizione GPS reale dal sensore del dispositivo"
               >
                 <RefreshCw className={`w-3 h-3 text-amber-400 ${inRilevamentoGps ? 'animate-spin' : ''}`} />
-                <span>Rileva GPS</span>
+                <span>{inRilevamentoGps ? 'Rilevo...' : 'Rileva GPS'}</span>
               </button>
             </div>
           </div>
+
+          {avvisoIosPosizioneEsatta && (
+            <div className="mt-2 p-2 rounded-lg bg-amber-950/70 border border-amber-400/50 text-[11px] text-amber-200 flex items-start gap-2">
+              <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+              <div>
+                <strong>iPhone — Posizione approssimativa rilevata (±{Math.round(posizioneGps.accuratezza || 0)}m):</strong>{' '}
+                apri <em>Impostazioni → Privacy e sicurezza → Localizzazione → Safari / Siti web di Safari</em> e attiva <strong>Posizione esatta</strong>, poi premi <strong>Rileva GPS</strong>.
+              </div>
+            </div>
+          )}
 
           {/* Toggle cassetto Elenco Luoghi Autorizzati con raggio custom */}
           <div className="mt-2 pt-2 border-t border-slate-800/80 flex flex-wrap items-center justify-between gap-1 text-[10.5px]">
@@ -979,8 +1053,9 @@ export const PannelloTimbraturaVolontario: React.FC<PannelloTimbraturaVolontario
         <div className="pt-1">
           <button
             type="button"
-            onClick={handleEseguiTimbratura}
-            className={`w-full py-3.5 px-4 rounded-2xl font-black text-xs sm:text-sm uppercase flex items-center justify-center gap-2.5 shadow-xl transition-all cursor-pointer active:scale-[0.98] border-2 ${
+            disabled={timbraturaInVerificaGps}
+            onClick={() => { handleEseguiTimbratura(); }}
+            className={`w-full py-3.5 px-4 rounded-2xl font-black text-xs sm:text-sm uppercase flex items-center justify-center gap-2.5 shadow-xl transition-all cursor-pointer active:scale-[0.98] border-2 disabled:opacity-75 ${
               !analisiDistanza.nelRaggioConsentito
                 ? 'bg-slate-800 text-slate-400 border-slate-700 hover:border-amber-500 hover:text-amber-300'
                 : timbraturaAttiva
@@ -988,15 +1063,23 @@ export const PannelloTimbraturaVolontario: React.FC<PannelloTimbraturaVolontario
                 : 'bg-gradient-to-r from-emerald-600 via-teal-600 to-emerald-700 hover:from-emerald-500 hover:to-teal-500 text-white border-emerald-300 shadow-emerald-950/50'
             }`}
           >
-            <Clock className="w-5 h-5 shrink-0" />
+            {timbraturaInVerificaGps ? (
+              <RefreshCw className="w-5 h-5 shrink-0 animate-spin text-amber-400" />
+            ) : (
+              <Clock className="w-5 h-5 shrink-0" />
+            )}
             <div className="text-center leading-tight">
               <div>
-                {timbraturaAttiva
+                {timbraturaInVerificaGps
+                  ? '📡 VERIFICA GPS IN CORSO...'
+                  : timbraturaAttiva
                   ? `🏁 TIMBRATURA USCITA (${oraLiveConSecondi})`
                   : `🟢 TIMBRATURA INGRESSO (${oraLiveConSecondi})`}
               </div>
               <div className="text-[10px] font-normal opacity-90 tracking-normal normal-case mt-0.5">
-                {analisiDistanza.nelRaggioConsentito
+                {timbraturaInVerificaGps
+                  ? 'Acquisizione coordinate precise dal dispositivo...'
+                  : analisiDistanza.nelRaggioConsentito
                   ? `Posizione autorizzata (${analisiDistanza.distanzaMetri}m da ${analisiDistanza.luogoValido?.nome || 'postazione'} - Raggio: ${analisiDistanza.raggioConsentitoMetri}m)`
                   : `Richiede posizione autorizzata entro ${analisiDistanza.raggioConsentitoMetri}m da "${analisiDistanza.luogoPiuVicino?.nome || 'postazione'}" (attuale: ${analisiDistanza.distanzaMetri}m)`}
               </div>

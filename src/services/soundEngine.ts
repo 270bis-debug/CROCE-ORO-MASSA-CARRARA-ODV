@@ -53,63 +53,69 @@ class SoundEngine {
     });
   }
 
+  public clearMediaSession() {
+    if (typeof window === 'undefined' || !('mediaSession' in navigator)) return;
+    try {
+      navigator.mediaSession.playbackState = 'none';
+      navigator.mediaSession.metadata = null;
+    } catch {}
+  }
+
   private setupMediaSession() {
     if (typeof window === 'undefined' || !('mediaSession' in navigator)) return;
 
     try {
-      navigator.mediaSession.metadata = new MediaMetadata({
-        title: 'Croce Oro Massa Carrara',
-        artist: 'Centrale Operativa & Terminale Bordo Mezzo',
-        album: 'Sistema Emergenza Sanitaria 118',
-        artwork: [
-          { src: '/icon-192-v2.png', sizes: '192x192', type: 'image/png' },
-          { src: '/icon-512-v2.png', sizes: '512x512', type: 'image/png' },
-          { src: '/logo_croce_oro_v2.png', sizes: '1024x1024', type: 'image/png' }
-        ]
-      });
-
-      // Tasti sui comandi di blocco schermo del telefono
+      // NON impostare metadata all'avvio: la scheda multimediale di sistema deve apparire
+      // solo durante una suoneria/allarme reale e scomparire subito al termine.
       navigator.mediaSession.setActionHandler('pause', () => {
         if (this.isCurrentlyRinging) {
           this.stopEmergencyRing();
         } else if (this.isBeeperActive) {
           this.stopCicalinoRetromarcia();
         } else {
-          this.startStandbyAudio();
+          this.clearMediaSession();
         }
       });
 
       navigator.mediaSession.setActionHandler('stop', () => {
         this.stopEmergencyRing();
         this.stopCicalinoRetromarcia();
+        this.clearMediaSession();
       });
 
-      navigator.mediaSession.setActionHandler('play', () => {
-        this.startStandbyAudio();
-      });
+      navigator.mediaSession.setActionHandler('play', null);
     } catch (e) {
       console.warn('[SoundEngine] MediaSession non completamente configurabile:', e);
     }
   }
 
-  // 1. AVVIA CANALE STANDBY (Mantiene attiva la CPU e il processo anche a schermo spento)
+  // 1. PREPARA/SBLOCCA IL MOTORE AUDIO (senza alcun loop continuo che tenga acceso il DAC/altoparlante o la scheda player)
   public async startStandbyAudio(): Promise<boolean> {
     this.initAudioElement();
-    if (!this.audioElement) return false;
-
-    // Se sta già squillando, non interrompere la suoneria
     if (this.isCurrentlyRinging) return true;
 
     try {
-      this.audioElement.src = '/silent_standby.mp3';
-      this.audioElement.loop = true;
-      this.audioElement.volume = 0.01; // Portante sub-audibile per mantenere il lock audio OS
-      await this.audioElement.play();
+      const AudioCtxClass = window.AudioContext || (window as any).webkitAudioContext;
+      if (AudioCtxClass) {
+        if (!this.audioCtx || this.audioCtx.state === 'closed') {
+          this.audioCtx = new AudioCtxClass();
+        }
+        if (this.audioCtx.state === 'suspended') {
+          await this.audioCtx.resume().catch(() => {});
+        }
+      }
+      // Assicura che nessun file standby sia in riproduzione continua (evita fruscio e scheda multimediale bloccata)
+      if (this.audioElement && !this.audioElement.paused && !this.isCurrentlyRinging) {
+        this.audioElement.pause();
+        this.audioElement.removeAttribute('src');
+        this.audioElement.load();
+      }
+      if (!this.isCurrentlyRinging && !this.isBeeperActive) {
+        this.clearMediaSession();
+      }
       this.isStandbyActive = true;
-      console.log('[SoundEngine] Canale Audio Standby Attivo (Processo protetto in background)');
       return true;
-    } catch (err) {
-      console.warn('[SoundEngine] Impossibile avviare audio standby automaticamente (richiede gesto utente):', err);
+    } catch {
       this.isStandbyActive = false;
       return false;
     }
@@ -161,7 +167,7 @@ class SoundEngine {
     return true;
   }
 
-  // 3. SILENZIA SUONERIA E RIPRISTINA STANDBY
+  // 3. SILENZIA SUONERIA E RILASCIA COMPLETAMENTE IL CANALE AUDIO/MEDIASESSION
   public stopEmergencyRing() {
     this.isCurrentlyRinging = false;
     this.stopEmergencyVibration();
@@ -170,21 +176,13 @@ class SoundEngine {
       try {
         this.audioElement.pause();
         this.audioElement.currentTime = 0;
+        this.audioElement.removeAttribute('src');
+        this.audioElement.load();
       } catch {}
     }
 
-    // Torna in standby silenzioso per continuare a proteggere la connessione
-    this.startStandbyAudio().catch(() => {});
-
-    if (typeof window !== 'undefined' && 'mediaSession' in navigator) {
-      try {
-        navigator.mediaSession.playbackState = 'paused';
-        navigator.mediaSession.metadata = new MediaMetadata({
-          title: 'Croce Oro Massa Carrara',
-          artist: 'In Servizio Operativo',
-          album: 'Terminale Attivo'
-        });
-      } catch {}
+    if (!this.isBeeperActive) {
+      this.clearMediaSession();
     }
   }
 
@@ -336,9 +334,8 @@ class SoundEngine {
         navigator.vibrate(0);
       } catch {}
     }
-    // Ripristina standby audio se non c'è altra suoneria attiva
     if (!this.isCurrentlyRinging) {
-      this.startStandbyAudio().catch(() => {});
+      this.clearMediaSession();
     }
   }
 
@@ -457,17 +454,6 @@ class SoundEngine {
       noiseGain.connect(masterGain);
       whiteNoise.start(now + 0.29);
       whiteNoise.stop(now + 0.38);
-
-      // Aggiorna MediaSession metadata
-      if (typeof window !== 'undefined' && 'mediaSession' in navigator) {
-        try {
-          navigator.mediaSession.metadata = new MediaMetadata({
-            title: '📻 RICHIESTA RADIO CARABINIERI / CENTRALE',
-            artist: sorgente,
-            album: 'Croce Oro Massa Carrara'
-          });
-        } catch {}
-      }
     } catch (err) {
       console.warn('[SoundEngine] Errore riproduzione suono radio Carabinieri:', err);
     }

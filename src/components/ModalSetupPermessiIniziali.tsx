@@ -497,8 +497,13 @@ export const ModalSetupPermessiIniziali: React.FC<ModalSetupPermessiInizialiProp
               </button>
               <button
                 onClick={() => {
-                  localStorage.setItem('CROCE_ORO_DEVICE_PERMISSIONS_GRANTED', 'true');
-                  localStorage.setItem('CROCE_ORO_SETUP_COMPLETO', 'true');
+                  try {
+                    localStorage.setItem('CROCE_ORO_DEVICE_PERMISSIONS_GRANTED', 'true');
+                    localStorage.setItem('CROCE_ORO_SETUP_COMPLETO', 'true');
+                    localStorage.setItem('CROCE_ORO_PERMESSI_PERMANENTI', 'true');
+                  } catch {}
+                  markRadioBgConsentAccepted();
+                  segnaSetupPermessiCompletato();
                   onCompleta();
                 }}
                 className="text-slate-400 hover:text-white underline text-[11px] cursor-pointer"

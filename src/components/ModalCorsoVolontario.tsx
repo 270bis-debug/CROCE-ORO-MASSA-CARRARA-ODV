@@ -20,6 +20,7 @@ import {
 import { CorsoFormazione, PartecipanteCorso, LezioneCorso } from '../types/adminTypes';
 import { Volontario } from './DatabaseVolontariModal';
 import { formatISODateItaly } from '../utils/italianTime';
+import { ottieniPosizioneGpsAffidabile } from '../utils/smartGps';
 
 interface ModalCorsoVolontarioProps {
   corso: CorsoFormazione;
@@ -116,53 +117,48 @@ export const ModalCorsoVolontario: React.FC<ModalCorsoVolontarioProps> = ({
     ? (typeof timbraturaLezione.timbraturaUscita === 'object' ? timbraturaLezione.timbraturaUscita : null)
     : (typeof partecipante?.timbraturaUscita === 'object' ? partecipante.timbraturaUscita : null);
 
-  const eseguiTimbratura = (tipoForzato?: 'entrata' | 'uscita') => {
+  const eseguiTimbratura = async (tipoForzato?: 'entrata' | 'uscita') => {
     setGpsLoading(true);
     setGpsFeedback(null);
 
-    const proseguiConCoordinate = (lat: number, lng: number) => {
-      const dist = calcolaDistanzaMetri(lat, lng, coordTarget.lat, coordTarget.lng);
-      setDistanzaRilevata(dist);
+    const esito = await ottieniPosizioneGpsAffidabile({
+      timeoutMs: 14000,
+      refineMs: 2500,
+      desiredAccuracyMeters: 40
+    });
 
-      const tipo = tipoForzato || (!haTimbratoEntrata ? 'entrata' : 'uscita');
-      const RAGGIO_MAX = 500; // metri di tolleranza
-
-      if (dist <= RAGGIO_MAX) {
-        onTimbraPresenzaGPS(corso.id, volontario, tipo, { lat, lng }, dist, selectedLezioneId || undefined);
-        setGpsFeedback({
-          tipo: 'success',
-          messaggio: `✅ TIMBRATURA ${tipo.toUpperCase()} CONFERMATA CON SUCCESSO! Rilevato a ${dist}m dalla sede della lezione (${sedeTargetNome}). Presenza certificata nel registro presenze.`
-        });
-      } else {
-        setGpsFeedback({
-          tipo: 'warning',
-          messaggio: `⚠️ ATTENZIONE: Ti trovi a ${dist} metri dalla sede di questa lezione (raggio consentito entro 500m). In conformità con le direttive, la timbratura deve essere effettuata presso "${sedeTargetNome}" (${indirizzoTarget}), luogo effettivo di svolgimento della lezione.`
-        });
-      }
-      setGpsLoading(false);
-    };
-
-    if ('geolocation' in navigator) {
-      navigator.geolocation.getCurrentPosition(
-        (pos) => {
-          proseguiConCoordinate(pos.coords.latitude, pos.coords.longitude);
-        },
-        (err) => {
-          setGpsLoading(false);
-          setGpsFeedback({
-            tipo: 'warning',
-            messaggio: `⛔ Impossibile verificare la posizione GPS (${err.message}). La timbratura in entrata e uscita è consentita esclusivamente nelle posizioni autorizzate con GPS attivo.`
-          });
-        },
-        { enableHighAccuracy: true, timeout: 8000, maximumAge: 0 }
-      );
-    } else {
+    if (!esito.ok) {
       setGpsLoading(false);
       setGpsFeedback({
         tipo: 'warning',
-        messaggio: '⛔ Geolocalizzazione non supportata su questo dispositivo. Impossibile verificare la posizione autorizzata.'
+        messaggio: `⛔ ${esito.error}`
+      });
+      return;
+    }
+
+    const { lat, lng, accuratezza } = esito.posizione;
+    const dist = calcolaDistanzaMetri(lat, lng, coordTarget.lat, coordTarget.lng);
+    setDistanzaRilevata(dist);
+
+    const tipo = tipoForzato || (!haTimbratoEntrata ? 'entrata' : 'uscita');
+    const RAGGIO_MAX = 500; // metri di tolleranza
+
+    if (dist <= RAGGIO_MAX) {
+      onTimbraPresenzaGPS(corso.id, volontario, tipo, { lat, lng }, dist, selectedLezioneId || undefined);
+      setGpsFeedback({
+        tipo: 'success',
+        messaggio: `✅ TIMBRATURA ${tipo.toUpperCase()} CONFERMATA CON SUCCESSO! Rilevato a ${dist}m (±${Math.round(accuratezza || 0)}m) dalla sede della lezione (${sedeTargetNome}). Presenza certificata nel registro presenze.`
+      });
+    } else {
+      const hintIos = esito.isCoarseIos
+        ? ' Su iPhone verifica che "Posizione esatta" sia attiva in Impostazioni → Privacy e sicurezza → Localizzazione → Safari.'
+        : '';
+      setGpsFeedback({
+        tipo: 'warning',
+        messaggio: `⚠️ ATTENZIONE: Ti trovi a ${dist} metri dalla sede di questa lezione (raggio consentito entro 500m). In conformità con le direttive, la timbratura deve essere effettuata presso "${sedeTargetNome}" (${indirizzoTarget}), luogo effettivo di svolgimento della lezione.${hintIos}`
       });
     }
+    setGpsLoading(false);
   };
 
   return (

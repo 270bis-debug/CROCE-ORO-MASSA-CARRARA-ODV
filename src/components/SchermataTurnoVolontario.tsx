@@ -20,8 +20,16 @@ import {
   Clock,
   Bell,
   Paintbrush,
-  RefreshCw
+  RefreshCw,
+  Fingerprint
 } from 'lucide-react';
+import {
+  authenticateWithPasskey,
+  getAllKnownPasskeys,
+  getPasskeysForAccount,
+  isWebAuthnSupported,
+  saveCredentialsToPasswordManager,
+} from '../utils/passkeyAuth';
 import { Volontario } from './DatabaseVolontariModal';
 import { CroceOroLogo } from './CroceOroLogo';
 import { ModalResetPassword } from './ModalResetPassword';
@@ -132,6 +140,7 @@ export const SchermataTurnoVolontario: React.FC<SchermataTurnoVolontarioProps> =
   const [pinInput, setPinInput] = useState<string>('');
   const [ruoloSelezionato, setRuoloSelezionato] = useState<string>('Autista');
   const [errore, setErrore] = useState<string>('');
+  const [passkeyLoading, setPasskeyLoading] = useState<boolean>(false);
 
   // Modale Checklist Inizio Turno Guidata pre-operatività
   const [modaleChecklistAperta, setModaleChecklistAperta] = useState<boolean>(false);
@@ -411,6 +420,12 @@ export const SchermataTurnoVolontario: React.FC<SchermataTurnoVolontarioProps> =
     const verificaTurno = verificaVolontarioInTurnoAdesso(vol, turni, timbrature);
     const timbGiaAperta = Boolean(hasTimbraturaApertaPerVolontario(vol, timbrature));
 
+    // Salvataggio credenziali nel Gestore Password del browser/device (se PIN digitato)
+    if (pinInput && /^\d{4}$/.test(pinInput)) {
+      const fullName = `${vol.nome} ${vol.cognome}`.trim();
+      saveCredentialsToPasswordManager(fullName, pinInput, fullName).catch(() => {});
+    }
+
     onLogin(vol, '', ruoloSelezionato);
 
     if (!timbGiaAperta && verificaTurno.haTurnoProgrammato && onAvviaFlussoTimbraturaPoiChecklist) {
@@ -431,6 +446,84 @@ export const SchermataTurnoVolontario: React.FC<SchermataTurnoVolontarioProps> =
           'sistema'
         );
       }
+    }
+  };
+
+  // Accesso diretto Volontario tramite Passkey (Impronta Digitale / Face ID)
+  const handleAccediConPasskeyVolontario = async () => {
+    if (passkeyLoading) return;
+    setPasskeyLoading(true);
+    setErrore('');
+    try {
+      const volSelezionato = volontariOperativi.find((v) => v.id === volontarioSelezionatoId);
+      const selectedPks = volSelezionato
+        ? getPasskeysForAccount(volSelezionato.id, volSelezionato.passkeys)
+        : [];
+      const allVolPks = getAllKnownPasskeys(volontariOperativi).filter(
+        (pk) => pk.accountId !== 'admin-centrale-root' && pk.accountId !== 'vol-admin'
+      );
+      const allowed = selectedPks.length > 0 ? selectedPks : allVolPks;
+
+      const authRes = await authenticateWithPasskey({
+        allowedRecords: allowed,
+        expectedAccountId: selectedPks.length > 0 && volSelezionato ? volSelezionato.id : undefined,
+      });
+
+      if (!authRes.ok) {
+        setErrore(authRes.error);
+        return;
+      }
+
+      const matchedVol = volontari.find((v) => v.id === authRes.record.accountId);
+      if (!matchedVol) {
+        setErrore('Account volontario associato alla Passkey non trovato in elenco.');
+        return;
+      }
+      if (
+        matchedVol.id === 'vol-admin' ||
+        matchedVol.pin === '4451' ||
+        matchedVol.nome.toLowerCase().includes('amministratore')
+      ) {
+        setErrore("⛔ L'Amministratore non può accedere come volontario di bordo mezzo.");
+        return;
+      }
+      if (matchedVol.bloccatoPerTentativi || (matchedVol.tentativiErrati && matchedVol.tentativiErrati >= 3)) {
+        setErrore(
+          `🚨 Account bloccato per motivi di sicurezza dopo 3 tentativi errati (${matchedVol.dataBlocco || 'Data non reg.'}).`
+        );
+        return;
+      }
+
+      if (matchedVol.tentativiErrati && matchedVol.tentativiErrati > 0 && onAggiornaVolontari) {
+        onAggiornaVolontari(
+          volontari.map((v) => (v.id === matchedVol.id ? { ...v, tentativiErrati: 0 } : v))
+        );
+      }
+
+      if (richiedeAdeguamentoLogin(matchedVol)) {
+        setVolontarioDaFirmare(matchedVol);
+        setModaleFirmaMancanteAperta(true);
+        return;
+      }
+
+      const verificaTurno = verificaVolontarioInTurnoAdesso(matchedVol, turni, timbrature);
+      const timbGiaAperta = Boolean(hasTimbraturaApertaPerVolontario(matchedVol, timbrature));
+      const ruoloEffettivo = matchedVol.qualifica === 'Autista' ? 'Autista' : ruoloSelezionato;
+
+      onLogin(matchedVol, '', ruoloEffettivo);
+
+      if (!timbGiaAperta && verificaTurno.haTurnoProgrammato && onAvviaFlussoTimbraturaPoiChecklist) {
+        onAvviaFlussoTimbraturaPoiChecklist(matchedVol, '', ruoloEffettivo, false);
+      }
+
+      setPinInput('');
+      setErrore('');
+      onNotificaRadio?.(
+        `🔐 ACCESSO BIOMETRICO PASSKEY: ${matchedVol.nome} ${matchedVol.cognome} (${ruoloEffettivo}) ha effettuato l'accesso con Impronta / Face ID.`,
+        'sistema'
+      );
+    } finally {
+      setPasskeyLoading(false);
     }
   };
 
@@ -1026,10 +1119,45 @@ export const SchermataTurnoVolontario: React.FC<SchermataTurnoVolontarioProps> =
         }
 
         return (
-          <>
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (pinInput.length === 4) effettuaLogin();
+            }}
+            className="space-y-2.5"
+          >
+            {/* Accesso Diretto con Impronta Digitale / Face ID (Passkey) */}
+            {isWebAuthnSupported() && (
+              <button
+                type="button"
+                disabled={passkeyLoading}
+                onClick={handleAccediConPasskeyVolontario}
+                className="w-full py-2.5 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs uppercase shadow-md active:scale-95 transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-60"
+              >
+                <Fingerprint className="w-4 h-4 shrink-0" />
+                <span>
+                  {passkeyLoading
+                    ? 'Verifica Impronta / Face ID...'
+                    : 'Accedi con Impronta / Face ID (Passkey)'}
+                </span>
+              </button>
+            )}
+
+            {/* Campi semantici per consentire al browser / iCloud / Google Password Manager di salvare e autocompilare il PIN */}
+            <input
+              type="text"
+              name="username"
+              autoComplete="username"
+              value={volCorrente ? `${volCorrente.nome} ${volCorrente.cognome}`.trim() : ''}
+              readOnly
+              tabIndex={-1}
+              aria-hidden="true"
+              className="sr-only"
+            />
+
             <div className="space-y-1.5">
               <div className="flex items-center justify-between text-[11px] font-bold px-1">
-                <label className="text-slate-700 uppercase flex items-center gap-1">
+                <label htmlFor="volontario_pin_password" className="text-slate-700 uppercase flex items-center gap-1">
                   <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
                   2. Digita PIN (Hai 3 Tentativi)
                 </label>
@@ -1061,6 +1189,24 @@ export const SchermataTurnoVolontario: React.FC<SchermataTurnoVolontarioProps> =
                   );
                 })}
               </div>
+
+              {/* Campo password collegato al Gestore Password del dispositivo (riempimento automatico + salva password) */}
+              <input
+                id="volontario_pin_password"
+                type="password"
+                name="password"
+                autoComplete="current-password"
+                inputMode="numeric"
+                maxLength={4}
+                value={pinInput}
+                onChange={(e) => {
+                  const clean = e.target.value.replace(/\D/g, '').slice(0, 4);
+                  setPinInput(clean);
+                  setErrore('');
+                }}
+                placeholder="Oppure usa Gestore Password / digita PIN (4 cifre)"
+                className="w-full px-3 py-1.5 rounded-xl bg-white border border-slate-300 text-slate-800 text-xs text-center font-mono focus:ring-2 focus:ring-amber-500 focus:outline-none"
+              />
             </div>
 
             {/* Tastierino Numerico 0-9 Touch Friendly per Smartphone */}
@@ -1090,8 +1236,7 @@ export const SchermataTurnoVolontario: React.FC<SchermataTurnoVolontarioProps> =
                 0
               </button>
               <button
-                type="button"
-                onClick={() => effettuaLogin()}
+                type="submit"
                 disabled={pinInput.length !== 4}
                 className={`h-11 rounded-xl font-black text-xs uppercase active:scale-95 transition-all flex items-center justify-center shadow-md cursor-pointer ${
                   pinInput.length === 4
@@ -1102,7 +1247,7 @@ export const SchermataTurnoVolontario: React.FC<SchermataTurnoVolontarioProps> =
                 Entra
               </button>
             </div>
-          </>
+          </form>
         );
       })()}
 

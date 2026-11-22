@@ -1379,7 +1379,10 @@ class RealtimeService {
         const btns = Array.isArray(v?.pulsantiStrumentiAbilitati)
           ? [...v.pulsantiStrumentiAbilitati].sort().join(',')
           : '';
-        return `${v?.id || ''}:${v?.pin || ''}:${v?.approvato ? 1 : 0}:${v?.profiloCentrale ? 1 : 0}:${v?.loggato ? 1 : 0}:${v?.loggatoUpdatedAt || 0}:${firmaLen}:${v?.inTurno ? 1 : 0}:${(v?.macroCategorieAbilitate || []).join(',')}:${subs}:${btns}`;
+        const pks = Array.isArray(v?.passkeys)
+          ? v.passkeys.map((p: any) => p?.credentialIdB64 || '').sort().join(',')
+          : '';
+        return `${v?.id || ''}:${v?.pin || ''}:${v?.emailNotifiche || ''}:${pks}:${v?.approvato ? 1 : 0}:${v?.profiloCentrale ? 1 : 0}:${v?.loggato ? 1 : 0}:${v?.loggatoUpdatedAt || 0}:${firmaLen}:${v?.inTurno ? 1 : 0}:${(v?.macroCategorieAbilitate || []).join(',')}:${subs}:${btns}`;
       })
       .sort()
       .join('|');

@@ -716,7 +716,16 @@ class VhfRadioEngine {
           } catch {}
         }
         this.bgWavPlaying = false;
-        this.pumpBgWavQueue();
+        if (this.bgWavQueue.length > 0) {
+          this.pumpBgWavQueue();
+        } else {
+          try {
+            el.pause();
+            el.removeAttribute('src');
+            el.load();
+          } catch {}
+          this.releaseIdleMediaSession();
+        }
       };
       el.onerror = () => {
         const failedUrl = el.dataset.activeBlobUrl || '';
@@ -727,7 +736,16 @@ class VhfRadioEngine {
           } catch {}
         }
         this.bgWavPlaying = false;
-        this.pumpBgWavQueue();
+        if (this.bgWavQueue.length > 0) {
+          this.pumpBgWavQueue();
+        } else {
+          try {
+            el.pause();
+            el.removeAttribute('src');
+            el.load();
+          } catch {}
+          this.releaseIdleMediaSession();
+        }
       };
       this.attachHiddenAudioElement(el, 'croce-oro-radio-bg-voice');
       this.bgVoicePlayerAudio = el;
@@ -849,16 +867,69 @@ class VhfRadioEngine {
     document.body.appendChild(el);
   }
 
+  // Riconosce se il titolo descrive una trasmissione vocale/emergenza REALMENTE in corso
+  // (in stato di riposo/standby NON deve mai rimanere aperta la scheda multimediale OS né l'amplificatore audio)
+  private isActiveTransmissionLabel(label?: string): boolean {
+    if (!label) return false;
+    const norm = label.trim().toLowerCase();
+    if (!norm) return false;
+    if (
+      norm.includes('ascolto attivo') ||
+      norm.includes('generale (tutti) attiva') ||
+      norm.startsWith('📡 radio generale')
+    ) {
+      return false;
+    }
+    return (
+      label.includes('🚨') ||
+      label.includes('📻') ||
+      norm.includes('emergenza') ||
+      norm.includes('live:') ||
+      norm.includes('radio:') ||
+      norm.includes('gruppo ')
+    );
+  }
+
+  // Rilascia completamente MediaSession e chiude qualsiasi elemento audio di standby per azzerare
+  // fruscio hardware (DAC/amplificatore Android e iOS) e chiudere la scheda player nella tendina notifiche
+  public releaseIdleMediaSession() {
+    if (this.bgKeepAliveAudio) {
+      try {
+        this.bgKeepAliveAudio.pause();
+        this.bgKeepAliveAudio.removeAttribute('src');
+        this.bgKeepAliveAudio.load();
+      } catch {}
+    }
+    if (typeof navigator !== 'undefined' && 'mediaSession' in navigator) {
+      try {
+        const ms = (navigator as any).mediaSession;
+        ms.playbackState = 'none';
+        ms.metadata = null;
+        try {
+          ms.setActionHandler('play', null);
+          ms.setActionHandler('pause', null);
+          ms.setActionHandler('stop', null);
+        } catch {}
+      } catch {}
+    }
+  }
+
   public updateMediaSessionState(info?: { title?: string; artist?: string; isEmergency?: boolean }) {
     if (typeof navigator === 'undefined' || !('mediaSession' in navigator)) return;
+    const isActive = Boolean(info?.isEmergency || this.isActiveTransmissionLabel(info?.title));
+    if (!isActive) {
+      // Nessuna trasmissione attiva: rilascia subito la scheda multimediale OS
+      this.releaseIdleMediaSession();
+      return;
+    }
     try {
       const ms = (navigator as any).mediaSession;
       const MediaMetadataClass = (window as any).MediaMetadata;
       if (typeof MediaMetadataClass === 'function') {
         ms.metadata = new MediaMetadataClass({
-          title: info?.title || (info?.isEmergency ? '🚨 EMERGENZA RADIO CENTRALE' : 'Radio VHF/UHF • Ascolto Attivo'),
+          title: info?.title || '🚨 EMERGENZA RADIO CENTRALE',
           artist: info?.artist || 'Croce Oro Massa Carrara OdV',
-          album: info?.isEmergency ? 'Canale Emergenza Prioritario' : 'Ricetrasmittente Operativa in Background',
+          album: info?.isEmergency ? 'Canale Emergenza Prioritario' : 'Trasmissione Radio Live',
           artwork: [
             { src: '/icon-192-v2.png', sizes: '192x192', type: 'image/png' },
             { src: '/icon-512-v2.png', sizes: '512x512', type: 'image/png' },
@@ -866,16 +937,14 @@ class VhfRadioEngine {
         });
       }
       ms.playbackState = 'playing';
-      // Evita che il sistema metta in pausa il canale radio dai controlli lockscreen
       try {
-        ms.setActionHandler('play', () => {
-          this.armBackgroundReception().catch(() => {});
-        });
         ms.setActionHandler('pause', () => {
-          this.ensureAudioContext();
-          if (this.bgKeepAliveAudio && this.bgKeepAliveAudio.paused) {
-            this.bgKeepAliveAudio.play().catch(() => {});
-          }
+          this.interruptPlayback();
+          this.releaseIdleMediaSession();
+        });
+        ms.setActionHandler('stop', () => {
+          this.interruptPlayback();
+          this.releaseIdleMediaSession();
         });
       } catch {}
     } catch {}
@@ -901,68 +970,49 @@ class VhfRadioEngine {
       this.bgVisibilityHooked = true;
       document.addEventListener('visibilitychange', () => {
         if (!this.bgReceptionArmed) return;
-        const c = this.ensureAudioContext();
-        if (c && c.state === 'suspended') {
-          c.resume().catch(() => {});
-        }
-        if (this.bgKeepAliveAudio && this.bgKeepAliveAudio.paused) {
-          this.bgKeepAliveAudio.play().catch(() => {});
+        if (document.visibilityState === 'visible') {
+          const c = this.ensureAudioContext();
+          if (c && c.state === 'suspended') {
+            c.resume().catch(() => {});
+          }
         }
       });
     }
 
-    // Watchdog leggero: se l'OS mette in pausa AudioContext o il keep-alive WAV mentre siamo armati, tenta subito il ripristino
-    if (!this.bgKeepAliveWatchdog) {
-      this.bgKeepAliveWatchdog = setInterval(() => {
-        if (!this.bgReceptionArmed) return;
-        if (this.audioCtx && this.audioCtx.state === 'suspended') {
-          this.audioCtx.resume().catch(() => {});
-        }
-        if (this.bgKeepAliveAudio && this.bgKeepAliveAudio.paused) {
-          this.bgKeepAliveAudio.play().catch(() => {});
-        }
-      }, 15000);
+    // Assicura che nessun vecchio loop keep-alive resti attivo (zero fruscio e nessuna scheda player fissa)
+    if (this.bgKeepAliveWatchdog) {
+      clearInterval(this.bgKeepAliveWatchdog);
+      this.bgKeepAliveWatchdog = null;
+    }
+    if (this.bgKeepAliveAudio) {
+      try {
+        this.bgKeepAliveAudio.pause();
+        this.bgKeepAliveAudio.removeAttribute('src');
+        this.bgKeepAliveAudio.load();
+      } catch {}
     }
 
-    // Elemento <audio> montato nel DOM con WAV micro-dither continuo (6s loop) + MediaSession reale:
-    // Mantiene attivo AudioFocus + CPU + WebSocket + AudioContext su Android Chrome, iOS Safari e PC anche a schermo spento,
-    // lasciando tutta l'uscita vocale HD su ctx.destination (zero rischio di silenzio MediaStream).
     try {
-      if (!this.bgKeepAliveAudio) {
-        const blobUrl = this.createSilentWavBlobUrl();
-        if (blobUrl) {
-          const audio = document.createElement('audio');
-          audio.src = blobUrl;
-          audio.loop = true;
-          audio.volume = 0.015;
-          audio.preload = 'auto';
-          (audio as any).playsInline = true;
-          audio.setAttribute('playsinline', 'true');
-          audio.setAttribute('webkit-playsinline', 'true');
-          this.attachHiddenAudioElement(audio, 'croce-oro-radio-keepalive');
-          this.bgKeepAliveAudio = audio;
-        }
-      }
-      if (this.bgKeepAliveAudio) {
-        this.attachHiddenAudioElement(this.bgKeepAliveAudio, 'croce-oro-radio-keepalive');
-        if (this.bgKeepAliveAudio.paused) {
-          await this.bgKeepAliveAudio.play();
-        }
-      }
-
-      // Pre-sblocca il secondo elemento <audio> dedicato alla voce in background (indispensabile su iOS Safari e Android Chrome)
+      // Pre-sblocca una sola volta il player <audio> vocale in totale silenzio (muted=true, volume=0)
+      // e lo rilascia immediatamente così il browser autorizza futuri audio ma l'OS spegne subito l'amplificatore
       if (!this.bgVoicePlayerPrimed) {
         const voiceEl = this.ensureBgVoicePlayerElement();
         if (voiceEl && !this.bgWavPlaying) {
           const tinyUrl = this.createTinySilentWavDataUrl();
           try {
+            voiceEl.muted = true;
+            voiceEl.volume = 0;
             voiceEl.src = tinyUrl;
-            voiceEl.volume = 0.001;
             await voiceEl.play();
             voiceEl.pause();
+            voiceEl.removeAttribute('src');
+            voiceEl.load();
+            voiceEl.muted = false;
             voiceEl.volume = 1.0;
             this.bgVoicePlayerPrimed = true;
           } catch {
+            voiceEl.muted = false;
+            voiceEl.volume = 1.0;
           } finally {
             try {
               URL.revokeObjectURL(tinyUrl);
@@ -971,30 +1021,20 @@ class VhfRadioEngine {
         }
       }
 
-      // Richiede Screen WakeLock opzionale se supportato (previene sospensione radio durante turno attivo)
-      try {
-        const navAny = navigator as any;
-        if (navAny?.wakeLock?.request && !this.wakeLockSentinel && !document.hidden) {
-          navAny.wakeLock
-            .request('screen')
-            .then((sentinel: any) => {
-              this.wakeLockSentinel = sentinel;
-              sentinel.addEventListener?.('release', () => {
-                if (this.wakeLockSentinel === sentinel) {
-                  this.wakeLockSentinel = null;
-                }
-              });
-            })
-            .catch(() => {});
-        }
-      } catch {}
+      // Aggiorna MediaSession SOLO se è in corso una vera trasmissione o emergenza; altrimenti rilascia la scheda
+      if (this.isActiveTransmissionLabel(label)) {
+        this.updateMediaSessionState({
+          title: label,
+          isEmergency: Boolean(label?.includes('🚨') || label?.toLowerCase().includes('emergenza'))
+        });
+      } else {
+        this.releaseIdleMediaSession();
+      }
 
-      this.updateMediaSessionState(label ? { title: label } : undefined);
       this.notifyBackgroundArmed();
-      return Boolean(this.bgKeepAliveAudio && !this.bgKeepAliveAudio.paused);
+      return Boolean(this.bgVoicePlayerPrimed || (ctx && ctx.state === 'running'));
     } catch {
       this.notifyBackgroundArmed();
-      // L'autoplay potrà completarsi al primo gesto utente successivo
       return Boolean(ctx && ctx.state === 'running');
     }
   }
@@ -1004,7 +1044,7 @@ class VhfRadioEngine {
     this.bgGestureHooked = true;
     const armOnce = () => {
       if (this.isBackgroundReceptionArmed() && this.bgVoicePlayerPrimed) return;
-      this.armBackgroundReception('Radio VHF/UHF • Ascolto Attivo').catch(() => {});
+      this.armBackgroundReception().catch(() => {});
     };
     window.addEventListener('pointerdown', armOnce, { passive: true, capture: true });
     window.addEventListener('keydown', armOnce, { passive: true, capture: true });
@@ -1012,10 +1052,9 @@ class VhfRadioEngine {
 
   public disarmBackgroundReception() {
     this.bgReceptionArmed = false;
-    if (this.bgKeepAliveAudio) {
-      try {
-        this.bgKeepAliveAudio.pause();
-      } catch {}
+    if (this.bgKeepAliveWatchdog) {
+      clearInterval(this.bgKeepAliveWatchdog);
+      this.bgKeepAliveWatchdog = null;
     }
     if (this.wakeLockSentinel) {
       try {
@@ -1023,18 +1062,13 @@ class VhfRadioEngine {
       } catch {}
       this.wakeLockSentinel = null;
     }
-    try {
-      if ('mediaSession' in navigator) {
-        (navigator as any).mediaSession.playbackState = 'none';
-      }
-    } catch {}
+    this.releaseIdleMediaSession();
     this.notifyBackgroundArmed();
   }
 
   public isBackgroundReceptionArmed(): boolean {
-    const wavPlaying = Boolean(this.bgKeepAliveAudio && !this.bgKeepAliveAudio.paused);
     const ctxRunning = Boolean(this.audioCtx && this.audioCtx.state === 'running');
-    return this.bgReceptionArmed && (wavPlaying || ctxRunning);
+    return this.bgReceptionArmed && (this.bgVoicePlayerPrimed || ctxRunning);
   }
 
   public async playAudioDataUrl(dataUrl: string): Promise<boolean> {
@@ -1046,6 +1080,17 @@ class VhfRadioEngine {
         (el as any).playsInline = true;
         el.setAttribute('playsinline', 'true');
         el.setAttribute('webkit-playsinline', 'true');
+        el.onended = () => {
+          try {
+            el.pause();
+            el.removeAttribute('src');
+            el.load();
+          } catch {}
+          this.releaseIdleMediaSession();
+        };
+        el.onerror = () => {
+          this.releaseIdleMediaSession();
+        };
         this.attachHiddenAudioElement(el, 'croce-oro-radio-clip');
         this.activeVoiceClipAudio = el;
       } else {
@@ -2143,9 +2188,6 @@ class VhfRadioEngine {
       if (!ctx || ctx.state !== 'running' || isHiddenBg) {
         if (ctx && ctx.state === 'suspended') {
           ctx.resume().catch(() => {});
-        }
-        if (this.bgKeepAliveAudio && this.bgKeepAliveAudio.paused) {
-          this.bgKeepAliveAudio.play().catch(() => {});
         }
         this.bgStreamChunks.push(packet);
         if (this.bgStreamChunks.length >= 16) {

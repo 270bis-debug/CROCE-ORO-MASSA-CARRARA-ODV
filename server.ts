@@ -2008,7 +2008,7 @@ async function startServer() {
 
     for (const v of volontariList) {
       if (!v || v.eliminato || v.approvato === false) continue;
-      const email = String(v.email || '').trim().toLowerCase();
+      const email = String(v.emailNotifiche || v.email || '').trim().toLowerCase();
       if (!email || !email.includes('@') || !email.includes('.')) continue;
 
       const hasVolontariDb =
@@ -11220,9 +11220,10 @@ async function startServer() {
       const emailDirettivo = (state.volontari || [])
         .filter((v: any) => {
           const carica = String(v?.caricaConsiglioDirettivo || '').toLowerCase();
-          return (carica.includes('presidente') || carica.includes('tesoriere')) && typeof v?.email === 'string' && v.email.includes('@');
+          const targetEmail = String(v?.emailNotifiche || v?.email || '').trim();
+          return (carica.includes('presidente') || carica.includes('tesoriere')) && targetEmail.includes('@');
         })
-        .map((v: any) => String(v.email).trim().toLowerCase());
+        .map((v: any) => String(v.emailNotifiche || v.email || '').trim().toLowerCase());
 
       const destinatari = Array.from(new Set([
         'presidenza@croceoro.org',

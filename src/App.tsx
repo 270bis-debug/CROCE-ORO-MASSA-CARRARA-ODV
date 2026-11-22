@@ -81,6 +81,8 @@ import {
   ExternalLink
 } from 'lucide-react';
 import { ModalAccessoWeb } from './components/ModalAccessoWeb';
+import { ModalProfiloAccount } from './components/ModalProfiloAccount';
+import { PasskeyRecord, getNotificationEmailForVolontario } from './utils/passkeyAuth';
 import { ModalSyncServerCroceOro } from './components/admin/ModalSyncServerCroceOro';
 import { ModalRinominaDbSub } from './components/admin/ModalRinominaDbSub';
 import { ModalModificaFoglioViaggio } from './components/ModalModificaFoglioViaggio';
@@ -144,6 +146,7 @@ import {
   syncPinResetProfilesFirestore
 } from './services/firebase';
 import { getConfiguredPublicUrl } from './utils/publicUrl';
+import { ottieniPosizioneGpsAffidabile } from './utils/smartGps';
 import {
   RadioPttPanel,
   RadioPttState,
@@ -3513,33 +3516,41 @@ export default function App() {
   const [modalGuidaVolumeAperta, setModalGuidaVolumeAperta] = useState(false);
   const [copiedClean, setCopiedClean] = useState(false);
 
-  // Aggiornamento obbligatorio autorizzazioni per dispositivi che avevano già accettato le autorizzazioni precedenti
-  // prima dell'integrazione della Ricezione Radio in Background (Audio + Push), anche senza incremento versione app
+  // Aggiornamento obbligatorio autorizzazioni: disattivato di default sugli aggiornamenti di versione app.
+  // Si riattiva SOLO quando viene richiesto espressamente per un nuovo permesso obbligatorio.
   const [aggiornamentoPermessiObbligatorio, setAggiornamentoPermessiObbligatorio] = useState<boolean>(() => {
     try {
       if (typeof window === 'undefined') return false;
-      const params = new URLSearchParams(window.location.search);
-      const fromNotif = params.get('permessiObbligatori') === 'radio_bg';
-      return needsMandatoryRadioBgUpdate() || (fromNotif && !hasAcceptedRadioBgConsent());
+      return needsMandatoryRadioBgUpdate();
     } catch {
       return false;
     }
   });
 
-  // Modale di Setup Permessi Iniziali (Notifiche Push, Ricezione Radio Background Audio + Push, GPS, Wake Lock)
+  // Modale Profilo Account (accessibile dal menù Strumenti per ogni account)
+  const [modalProfiloAccountAperta, setModalProfiloAccountAperta] = useState<boolean>(false);
+
+  // Modale di Setup Permessi Iniziali (mostrata SOLO alla primissima installazione assoluta sul dispositivo)
   const [modalSetupPermessiAperta, setModalSetupPermessiAperta] = useState<boolean>(() => {
     try {
       if (typeof window === 'undefined') return false;
-      const params = new URLSearchParams(window.location.search);
-      const fromNotif = params.get('permessiObbligatori') === 'radio_bg';
-      if (needsMandatoryRadioBgUpdate() || (fromNotif && !hasAcceptedRadioBgConsent())) {
-        return true; // Obbligatorio per chi aveva già accettato le vecchie autorizzazioni
+      if (needsMandatoryRadioBgUpdate()) {
+        return true;
       }
       const deviceGiaConfigurato =
         localStorage.getItem('CROCE_ORO_DEVICE_PERMISSIONS_GRANTED') === 'true' ||
-        localStorage.getItem('CROCE_ORO_SETUP_COMPLETO') === 'true';
+        localStorage.getItem('CROCE_ORO_SETUP_COMPLETO') === 'true' ||
+        localStorage.getItem('CROCE_ORO_PERMESSI_PERMANENTI') === 'true' ||
+        localStorage.getItem('CROCE_ORO_DEVICE_PERMISSIONS_SETUP_V1') === 'true';
       if (deviceGiaConfigurato) {
-        return false; // Già autorizzato in modo permanente (incluso Radio Background Audio + Push)
+        return false; // Già configurato: non richiedere mai nuovamente i permessi agli aggiornamenti
+      }
+      // Se il browser ha già concesso le notifiche in precedenza, salva i flag permanenti e non disturbare
+      if ('Notification' in window && Notification.permission === 'granted') {
+        localStorage.setItem('CROCE_ORO_DEVICE_PERMISSIONS_GRANTED', 'true');
+        localStorage.setItem('CROCE_ORO_SETUP_COMPLETO', 'true');
+        localStorage.setItem('CROCE_ORO_PERMESSI_PERMANENTI', 'true');
+        return false;
       }
       return true; // Primissima installazione assoluta sul dispositivo
     } catch {
@@ -3547,8 +3558,7 @@ export default function App() {
     }
   });
 
-  // Invia una notifica una tantum sullo smartphone a chi aveva già accettato le autorizzazioni precedenti
-  // per invitarlo ad accettare obbligatoriamente la nuova Ricezione Radio in Background (Audio + Push)
+  // Pulizia eventuale query param legacy ?permessiObbligatori senza mai riaprire avvisi permessi sugli aggiornamenti
   useEffect(() => {
     if (typeof window === 'undefined') return;
     try {
@@ -3558,26 +3568,7 @@ export default function App() {
         window.history.replaceState({}, '', url.pathname + url.search + url.hash);
       }
     } catch {}
-
-    if (!aggiornamentoPermessiObbligatorio || hasAcceptedRadioBgConsent()) return;
-
-    try {
-      const alreadySent = localStorage.getItem(RADIO_BG_NOTIF_SENT_LS_KEY) === 'true';
-      if (!alreadySent && 'Notification' in window && Notification.permission === 'granted') {
-        localStorage.setItem(RADIO_BG_NOTIF_SENT_LS_KEY, 'true');
-        mostraNotificaNativa('📻 AGGIORNAMENTO OBBLIGATORIO AUTORIZZAZIONI - CROCE ORO', {
-          body: 'È stata integrata la Ricezione Radio in Background (Audio + Push). Conferma ora in modo obbligatorio per ricevere Emergenza, Tutti e Gruppi a schermo spento.',
-          tag: 'croce-oro-mandatory-perms-radio-bg-audio-push-v1',
-          requireInteraction: true,
-          vibrate: [400, 150, 400, 150, 600],
-          data: {
-            tipo: 'mandatory_permissions_update',
-            url: '/?permessiObbligatori=radio_bg'
-          }
-        });
-      }
-    } catch {}
-  }, [aggiornamentoPermessiObbligatorio]);
+  }, []);
 
   // Sistema Suoneria Telefono & Allarme Acustico
   const [isPhoneRinging, setIsPhoneRinging] = useState(false);
@@ -5960,7 +5951,8 @@ export default function App() {
       'centrale'
     );
 
-    if (v.email && v.email.includes('@')) {
+    const destinatarioResetEmail = getNotificationEmailForVolontario(v);
+    if (destinatarioResetEmail && destinatarioResetEmail.includes('@')) {
       const publicBaseUrl = realtime.getPublicAppUrl() || getConfiguredPublicUrl();
       fetch('/api/invia-email-invito-reset-pin', {
         method: 'POST',
@@ -5970,7 +5962,7 @@ export default function App() {
           nome: v.nome,
           cognome: v.cognome,
           qualifica: v.qualifica,
-          email: v.email,
+          email: destinatarioResetEmail,
           pinProvvisorio: pinProvv,
           token,
           origin: window.location.origin,
@@ -5990,7 +5982,7 @@ export default function App() {
         );
         try {
           const a = document.createElement('a');
-          a.href = `mailto:${v.email}?subject=${oggetto}&body=${corpo}`;
+          a.href = `mailto:${destinatarioResetEmail}?subject=${oggetto}&body=${corpo}`;
           a.target = '_blank';
           a.rel = 'noopener noreferrer';
           document.body.appendChild(a);
@@ -6534,38 +6526,53 @@ export default function App() {
     orario: formatTimeItaly()
   });
 
-  // Tracciamento continuo GPS da bordo mezzo
+  // Tracciamento continuo GPS da bordo mezzo (ottimizzato anche per Apple iOS CoreLocation)
   useEffect(() => {
     if (!('geolocation' in navigator)) return;
 
+    let fallbackWatchId: number | null = null;
+    const applicaFixGps = (pos: GeolocationPosition) => {
+      const speedKmh = pos.coords.speed ? Math.round(pos.coords.speed * 3.6) : null;
+      const nuovaPos: PosizioneGPS = {
+        lat: pos.coords.latitude,
+        lng: pos.coords.longitude,
+        accuratezza: Math.round(pos.coords.accuracy || 0),
+        velocita: speedKmh,
+        orario: formatTimeItaly()
+      };
+      setPosizioneVolontario(nuovaPos);
+      setStatoPermessi(p => ({ ...p, gps: 'granted' }));
+      if (ruoloRef.current === 'volontario' || sessioneTurnoRef.current?.attivo) {
+        realtime.updateGps(nuovaPos);
+      }
+    };
+
     const watchId = navigator.geolocation.watchPosition(
-      (pos) => {
-        const speedKmh = pos.coords.speed ? Math.round(pos.coords.speed * 3.6) : null;
-        const nuovaPos: PosizioneGPS = {
-          lat: pos.coords.latitude,
-          lng: pos.coords.longitude,
-          accuratezza: pos.coords.accuracy,
-          velocita: speedKmh,
-          orario: formatTimeItaly()
-        };
-        setPosizioneVolontario(nuovaPos);
-        setStatoPermessi(p => ({ ...p, gps: 'granted' }));
-        if (ruoloRef.current === 'volontario' || sessioneTurnoRef.current?.attivo) {
-          realtime.updateGps(nuovaPos);
+      applicaFixGps,
+      (err) => {
+        // Su iPhone al chiuso enableHighAccuracy può andare in timeout (code 2/3): attiva fallback Wi-Fi/rete
+        if ((err.code === 2 || err.code === 3) && fallbackWatchId === null) {
+          try {
+            fallbackWatchId = navigator.geolocation.watchPosition(
+              applicaFixGps,
+              () => {},
+              { enableHighAccuracy: false, maximumAge: 60000, timeout: 15000 }
+            );
+          } catch {}
         }
-      },
-      () => {
-        // Fallback silenzioso
       },
       {
         enableHighAccuracy: true,
-        maximumAge: 10000,
-        timeout: 4000
+        maximumAge: 15000,
+        timeout: 20000
       }
     );
 
     return () => {
       navigator.geolocation.clearWatch(watchId);
+      if (fallbackWatchId !== null) {
+        navigator.geolocation.clearWatch(fallbackWatchId);
+      }
     };
   }, []);
 
@@ -6613,29 +6620,14 @@ export default function App() {
       nuovoStato.audio = 'granted';
     }
 
-    // 3. Geolocalizzazione GPS Mezzo (Obbligatorio)
+    // 3. Geolocalizzazione GPS Mezzo (Obbligatorio — compatibile iOS CoreLocation + Android)
     try {
-      if ('geolocation' in navigator) {
-        await new Promise((resolve) => {
-          navigator.geolocation.getCurrentPosition(
-            (pos) => {
-              nuovoStato.gps = 'granted';
-              setPosizioneVolontario({
-                lat: pos.coords.latitude,
-                lng: pos.coords.longitude,
-                accuratezza: pos.coords.accuracy,
-                velocita: pos.coords.speed ? Math.round(pos.coords.speed * 3.6) : null,
-                orario: formatTimeItaly()
-              });
-              resolve(true);
-            },
-            () => {
-              nuovoStato.gps = 'denied';
-              resolve(false);
-            },
-            { enableHighAccuracy: true, timeout: 6000 }
-          );
-        });
+      const esitoGps = await ottieniPosizioneGpsAffidabile({ timeoutMs: 14000, refineMs: 2000 });
+      if (esitoGps.ok) {
+        nuovoStato.gps = 'granted';
+        setPosizioneVolontario(esitoGps.posizione);
+      } else {
+        nuovoStato.gps = esitoGps.isPermissionDenied ? 'denied' : 'prompt';
       }
     } catch {
       nuovoStato.gps = 'denied';
@@ -6699,36 +6691,32 @@ export default function App() {
   };
 
   // Funzione per la cattura e certificazione ufficiale delle coordinate GPS (Arrivo sul Posto e Arrivo a Destinazione)
-  const catturaCoordinateGPS = (): Promise<{ lat: number; lng: number; accuracy?: number; time: string } | null> => {
-    return new Promise((resolve) => {
-      const timeStr = formatTimeItaly();
-      if (typeof navigator === 'undefined' || !navigator.geolocation) {
-        resolve(null);
-        return;
-      }
-      navigator.geolocation.getCurrentPosition(
-        (pos) => {
-          resolve({
-            lat: Number(pos.coords.latitude.toFixed(6)),
-            lng: Number(pos.coords.longitude.toFixed(6)),
-            accuracy: Math.round(pos.coords.accuracy),
-            time: timeStr
-          });
-        },
-        (err) => {
-          if (err && err.code === 1) {
-            invitaAutorizzazioneNecessaria('gps', 'Rilevazione Coordinate GPS Servizio');
-          }
-          resolve(posizioneVolontario ? {
-            lat: Number(posizioneVolontario.lat.toFixed(6)),
-            lng: Number(posizioneVolontario.lng.toFixed(6)),
-            accuracy: 10,
-            time: timeStr
-          } : null);
-        },
-        { enableHighAccuracy: true, timeout: 6000, maximumAge: 10000 }
-      );
-    });
+  const catturaCoordinateGPS = async (): Promise<{ lat: number; lng: number; accuracy?: number; time: string } | null> => {
+    const timeStr = formatTimeItaly();
+    if (typeof navigator === 'undefined' || !navigator.geolocation) {
+      return null;
+    }
+    const esito = await ottieniPosizioneGpsAffidabile({ timeoutMs: 12000, refineMs: 2000 });
+    if (esito.ok) {
+      setPosizioneVolontario(esito.posizione);
+      return {
+        lat: Number(esito.posizione.lat.toFixed(6)),
+        lng: Number(esito.posizione.lng.toFixed(6)),
+        accuracy: Math.round(esito.posizione.accuratezza || 0),
+        time: timeStr
+      };
+    }
+    if (esito.isPermissionDenied) {
+      invitaAutorizzazioneNecessaria('gps', 'Rilevazione Coordinate GPS Servizio');
+    }
+    return posizioneVolontario
+      ? {
+          lat: Number(posizioneVolontario.lat.toFixed(6)),
+          lng: Number(posizioneVolontario.lng.toFixed(6)),
+          accuracy: Math.round(posizioneVolontario.accuratezza || 10),
+          time: timeStr
+        }
+      : null;
   };
 
   // Condivisione rapporto riservata ESCLUSIVAMENTE all'Amministratore (apre menu nativo del telefono)
@@ -9845,6 +9833,162 @@ export default function App() {
     return false;
   };
 
+  // Accesso diretto tramite Passkey (Impronta Digitale / Face ID / Windows Hello)
+  const handleLoginWithPasskey = (accountId: string): { ok: boolean; error?: string } => {
+    if (accountId === 'admin-centrale-root' || accountId === 'vol-admin') {
+      handleSelectAdmin('4451');
+      aggiungiNotifica("🔐 ACCESSO PASSKEY: Centrale Operativa sbloccata con Impronta / Face ID (Amministratore).", "centrale");
+      return { ok: true };
+    }
+
+    const vol = volontari.find((v) => v.id === accountId);
+    if (!vol) {
+      return { ok: false, error: 'Account associato alla Passkey non trovato nel sistema.' };
+    }
+    if (vol.bloccatoPerTentativi || (vol.tentativiErrati && vol.tentativiErrati >= 3)) {
+      return {
+        ok: false,
+        error: `Account di ${vol.nome} ${vol.cognome} bloccato per motivi di sicurezza. Contatta l'Amministratore.`,
+      };
+    }
+
+    if (haAccessoCentraleODatabase(vol)) {
+      const isPres = Boolean(
+        (vol.caricaConsiglioDirettivo && vol.caricaConsiglioDirettivo.toLowerCase().includes('presidente')) ||
+        (vol.qualifica && vol.qualifica.toLowerCase().includes('presidente'))
+      );
+      const opData = {
+        id: vol.id,
+        nome: vol.nome,
+        cognome: vol.cognome,
+        matricola: vol.matricola,
+        pin: vol.pin,
+        isAdmin: isPres,
+        caricaConsiglioDirettivo: vol.caricaConsiglioDirettivo,
+        firmaBase64: vol.firmaBase64,
+        macroCategorieAbilitate: vol.macroCategorieAbilitate || [],
+        sottosezioniAbilitate: vol.sottosezioniAbilitate,
+        pulsantiStrumentiAbilitati: vol.pulsantiStrumentiAbilitati || [],
+        profiloCentrale: vol.profiloCentrale,
+        qualifica: vol.qualifica,
+      };
+      setUtenteCentrale(opData);
+      try {
+        localStorage.setItem('CROCE_ORO_UTENTE_CENTRALE', JSON.stringify(opData));
+        localStorage.removeItem('CROCE_ORO_OPERATORE_IN_ATTIVAZIONE');
+      } catch {}
+      aggiornaStatoLoginCentrale(vol.id, true);
+      setAccountInAttivazione(null);
+      setProfiloScelto('admin');
+      setRuolo('admin');
+      setAdminSection('dashboard');
+      setLayoutView(typeof window !== 'undefined' && window.innerWidth >= 1280 ? 'both' : 'centrale');
+      try {
+        localStorage.setItem('CROCE_ORO_PROFILO_SCELTO', 'admin');
+        localStorage.setItem('CROCE_ORO_ADMIN_SECTION', 'dashboard');
+      } catch {}
+      aggiungiNotifica(
+        `🔐 ACCESSO PASSKEY: ${vol.nome} ${vol.cognome} ha sbloccato la Centrale / Portale con Impronta / Face ID.`,
+        'centrale'
+      );
+      if (richiedeAdeguamentoLogin(vol)) {
+        setObbligoAdeguamentoCentrale(vol);
+      }
+      attivaServiceWorkerEPush('admin');
+      return { ok: true };
+    }
+
+    // Account Volontario standard: entra direttamente nel Terminale di Bordo
+    setProfiloScelto('volontario');
+    setRuolo('volontario');
+    try {
+      localStorage.setItem('CROCE_ORO_PROFILO_SCELTO', 'volontario');
+    } catch {}
+    handleLoginVolontario(vol, '', vol.qualifica === 'Autista' ? 'Autista' : 'Soccorritore');
+    aggiungiNotifica(
+      `🔐 ACCESSO PASSKEY VOLONTARIO: ${vol.nome} ${vol.cognome} ha effettuato l'accesso diretto con Impronta / Face ID.`,
+      'sistema'
+    );
+    return { ok: true };
+  };
+
+  // Aggiornamento Email Notifiche dal Profilo Personale (NON tocca MAI v.email anagrafica in Gestione Volontari)
+  const handleAggiornaEmailNotificheProfilo = (volId: string, nuovaEmailNotifiche: string) => {
+    const cleaned = nuovaEmailNotifiche.trim().toLowerCase();
+    const aggiornati = volontari.map((v) =>
+      v.id === volId
+        ? {
+            ...v,
+            emailNotifiche: cleaned || undefined,
+          }
+        : v
+    );
+    aggiornaVolontari(aggiornati);
+  };
+
+  // Cambio PIN Personale dal Profilo Account (verifica PIN attuale + aggiorna hash + sincronizza Cloud)
+  const handleCambiaPinPersonale = (
+    volId: string,
+    pinAttuale: string,
+    nuovoPin: string
+  ): { ok: boolean; error?: string } => {
+    const target = volontari.find((v) => v.id === volId);
+    if (!target) {
+      return { ok: false, error: 'Account non trovato nel database.' };
+    }
+    const matchesCurrent =
+      (Boolean(target.pin) && target.pin === pinAttuale) ||
+      (Boolean(target.pinHash) && buildPinResetHash(target.id, pinAttuale) === target.pinHash);
+    if (!matchesCurrent) {
+      return { ok: false, error: 'Il PIN attuale inserito non è corretto.' };
+    }
+    if (!/^\d{4}$/.test(nuovoPin) || nuovoPin === '0000' || nuovoPin === '4451') {
+      return { ok: false, error: 'Il nuovo PIN deve essere di 4 cifre valido e non riservato.' };
+    }
+
+    const updatedVol: Volontario = {
+      ...target,
+      pin: nuovoPin,
+      pinHash: buildPinResetHash(target.id, nuovoPin),
+      pinProvvisorio: false,
+      richiedeResetPassword: false,
+      tentativiErrati: 0,
+      bloccatoPerTentativi: false,
+    };
+
+    const aggiornati = volontari.map((v) => (v.id === volId ? updatedVol : v));
+    aggiornaVolontari(aggiornati);
+    syncPinResetProfilesFirestore([updatedVol]).catch(() => {});
+
+    if (utenteCentrale && utenteCentrale.id === volId) {
+      const updatedOp = { ...utenteCentrale, pin: nuovoPin };
+      setUtenteCentrale(updatedOp);
+      try {
+        localStorage.setItem('CROCE_ORO_UTENTE_CENTRALE', JSON.stringify(updatedOp));
+      } catch {}
+    }
+
+    aggiungiNotifica(
+      `🔑 CAMBIO PIN PROFILO: ${target.nome} ${target.cognome} ha aggiornato autonomamente il proprio PIN personale.`,
+      'sistema'
+    );
+    return { ok: true };
+  };
+
+  // Aggiornamento elenco Passkey dell'account (sincronizzato su Cloud per i profili volontari)
+  const handleAggiornaPasskeysAccount = (accountId: string, passkeys: PasskeyRecord[]) => {
+    if (accountId === 'admin-centrale-root') return;
+    const aggiornati = volontari.map((v) =>
+      v.id === accountId
+        ? {
+            ...v,
+            passkeys,
+          }
+        : v
+    );
+    aggiornaVolontari(aggiornati);
+  };
+
   const handleDisconnettiProfilo = (silenzioso = false) => {
     const prevOpId = utenteCentraleRef.current?.id;
     setProfiloScelto(null);
@@ -12648,7 +12792,7 @@ KM TOTALI: ${kmTot} KM`;
           } else if (!nextEm.active && prevActive) {
             lastRemoteEmergencyTriggerRef.current = 0;
             vhfRadioEngine.stopEmergencyAnnouncement();
-            vhfRadioEngine.updateMediaSessionState({ title: 'Radio VHF/UHF • Ascolto Attivo', isEmergency: false });
+            vhfRadioEngine.releaseIdleMediaSession();
           }
         }
         if (payload?.radioPtt) {
@@ -12695,10 +12839,7 @@ KM TOTALI: ${kmTot} KM`;
             if (prevRemoteSpeakerIdRef.current && prevRemoteSpeakerIdRef.current !== localId) {
               vhfRadioEngine.flushBackgroundVoiceQueue();
               vhfRadioEngine.playVhfRogerBeep('normal');
-              vhfRadioEngine.updateMediaSessionState({
-                title: 'Radio VHF/UHF • Ascolto Attivo',
-                isEmergency: false
-              });
+              vhfRadioEngine.releaseIdleMediaSession();
             }
             prevRemoteSpeakerIdRef.current = null;
           }
@@ -12739,10 +12880,7 @@ KM TOTALI: ${kmTot} KM`;
             if (prevRemoteId && prevRemoteId !== localId) {
               vhfRadioEngine.flushBackgroundVoiceQueue();
               vhfRadioEngine.playVhfRogerBeep(chId === 'emergency' ? 'emergency' : 'normal');
-              vhfRadioEngine.updateMediaSessionState({
-                title: 'Radio VHF/UHF • Ascolto Attivo',
-                isEmergency: false
-              });
+              vhfRadioEngine.releaseIdleMediaSession();
             }
             prevRemoteSpeakerIdRef.current = null;
           }
@@ -14443,7 +14581,7 @@ KM TOTALI: ${kmTot} KM`;
     const todayStr = formatISODateItaly();
     const fingerprint = [
       todayStr,
-      ...volontari.map(v => `${v.id}:${v.dataNascita || ''}:${v.email || ''}:${(v.macroCategorieAbilitate || []).includes('volontari') ? '1' : '0'}`)
+      ...volontari.map(v => `${v.id}:${v.dataNascita || ''}:${v.emailNotifiche || v.email || ''}:${(v.macroCategorieAbilitate || []).includes('volontari') ? '1' : '0'}`)
     ].join('|');
 
     if (ultimoCheckCompleanniRef.current === fingerprint) return;
@@ -14641,6 +14779,7 @@ KM TOTALI: ${kmTot} KM`;
         <SchermataSceltaRuolo
           onSelectVolontario={handleSelectVolontario}
           onSelectAdmin={handleSelectAdmin}
+          onLoginWithPasskey={handleLoginWithPasskey}
           volontari={volontari}
           onRegistraOperatoreCentrale={handleRegistraNuovoOperatoreCentrale}
           onMostraAccountInAttivazione={(op) => setAccountInAttivazione(op)}
@@ -14837,23 +14976,25 @@ KM TOTALI: ${kmTot} KM`;
                   ))}
               </select>
 
-              {/* Switch rapido tra Vista Centrale/DB e Vista Volontario (Bordo) dell'account simulato */}
+              {/* Switch rapido tra Vista Centrale/DB (visibile SOLO se l'account è autorizzato ad almeno un DB/Centrale) e Vista Volontario */}
               <div className="flex items-center bg-slate-950/60 rounded-lg p-0.5 border border-indigo-400/40">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setRuolo('admin');
-                    setAdminSection('dashboard');
-                  }}
-                  className={`px-2 py-0.5 rounded-md text-[10.5px] font-black transition-all cursor-pointer ${
-                    ruolo === 'admin'
-                      ? 'bg-indigo-500 text-white shadow'
-                      : 'text-indigo-200 hover:text-white'
-                  }`}
-                  title="Visualizza i Database e la Barra Strumenti come questo account"
-                >
-                  Vista Centrale / DB
-                </button>
+                {haAccessoCentraleODatabase(accountSimulato) && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setRuolo('admin');
+                      setAdminSection('dashboard');
+                    }}
+                    className={`px-2 py-0.5 rounded-md text-[10.5px] font-black transition-all cursor-pointer ${
+                      ruolo === 'admin'
+                        ? 'bg-indigo-500 text-white shadow'
+                        : 'text-indigo-200 hover:text-white'
+                    }`}
+                    title="Visualizza i Database e la Barra Strumenti come questo account"
+                  >
+                    Vista Centrale / DB
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => setRuolo('volontario')}
@@ -15126,7 +15267,11 @@ KM TOTALI: ${kmTot} KM`;
                         if ('caches' in window) {
                           try {
                             const keys = await caches.keys();
-                            await Promise.all(keys.map(k => caches.delete(k)));
+                            await Promise.all(
+                              keys
+                                .filter((k) => k.startsWith('croce-oro-cache-'))
+                                .map((k) => caches.delete(k))
+                            );
                           } catch {}
                         }
                         window.location.reload();
@@ -15317,6 +15462,21 @@ KM TOTALI: ${kmTot} KM`;
                               </select>
                             </div>
                           </div>
+                        )}
+
+                        {/* Sezione PROFILO ACCOUNT — visibile ad ogni account loggato nel menù Strumenti */}
+                        {(ruolo === 'admin' || sessioneTurnoEffettiva.attivo) && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setMenuHeaderAzioniAperto(false);
+                              setModalProfiloAccountAperta(true);
+                            }}
+                            className="w-full px-2.5 py-2 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-400/40 font-black text-xs flex items-center gap-2 cursor-pointer"
+                          >
+                            <User className="w-4 h-4 text-amber-400 shrink-0" />
+                            <span>Profilo (Dati, PIN, Email, Passkey)</span>
+                          </button>
                         )}
 
                         {puoVedereBtnDatabase && (
@@ -15652,6 +15812,23 @@ KM TOTALI: ${kmTot} KM`;
                       >
                         <AlertTriangle className="w-3 h-3 shrink-0" />
                         <span>{scadenzaPatentiCount} Patenti</span>
+                      </button>
+                    )}
+
+                    {(ruolo === 'admin' || sessioneTurnoEffettiva.attivo) && (
+                      <button
+                        type="button"
+                        onClick={() => setModalProfiloAccountAperta(true)}
+                        className={`px-2 py-1 rounded-lg font-black text-[11px] flex items-center gap-1 cursor-pointer border whitespace-nowrap ${
+                          isWeb
+                            ? 'bg-amber-100 hover:bg-amber-200 text-amber-950 border-amber-500'
+                            : 'bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border-amber-400/50'
+                        }`}
+                        style={isWeb ? { backgroundColor: '#fef3c7', color: '#78350f', borderColor: '#f59e0b' } : undefined}
+                        title="Profilo Account: Dati in sola lettura, Email Notifiche, Cambio PIN e Passkey"
+                      >
+                        <User className="w-3.5 h-3.5 shrink-0" />
+                        <span>Profilo</span>
                       </button>
                     )}
 
@@ -23293,6 +23470,39 @@ KM TOTALI: ${kmTot} KM`;
         }}
         onTestSuoneria={() => faiSuonareTelefono('Centrale Operativa (Test)', 'telefono', false)}
       />
+
+      {/* Modale Profilo Account (Dati Sola Lettura, Email Notifiche, Cambio PIN, Passkey) */}
+      {(() => {
+        const profiloVolAttivo: Volontario | null = (() => {
+          if (accountSimulato) return accountSimulato;
+          if (ruolo === 'volontario' && sessioneTurno.attivo && sessioneTurno.volontarioId) {
+            return volontari.find((v) => v.id === sessioneTurno.volontarioId) || null;
+          }
+          if (utenteCentraleLive?.id && utenteCentraleLive.id !== 'admin-centrale-root') {
+            return volontari.find((v) => v.id === utenteCentraleLive.id) || null;
+          }
+          return null;
+        })();
+        const isRootMasterAdmin =
+          !accountSimulato &&
+          ruolo === 'admin' &&
+          (!utenteCentraleLive?.id || utenteCentraleLive.id === 'admin-centrale-root') &&
+          Boolean(utenteCentraleLive?.isAdmin || utenteCentraleLive?.pin === '4451');
+
+        return (
+          <ModalProfiloAccount
+            isOpen={modalProfiloAccountAperta}
+            onClose={() => setModalProfiloAccountAperta(false)}
+            volontario={profiloVolAttivo}
+            isAdminRoot={isRootMasterAdmin}
+            ruoloCorrente={ruolo || 'volontario'}
+            isSimulazione={Boolean(accountSimulato)}
+            onAggiornaEmailNotifiche={handleAggiornaEmailNotificheProfilo}
+            onCambiaPinPersonale={handleCambiaPinPersonale}
+            onAggiornaPasskeysAccount={handleAggiornaPasskeysAccount}
+          />
+        );
+      })()}
 
       {/* Modale Diagnostica e Stato Sincronizzazione Cloud Multi-Device */}
       <ModalStatoConnessione

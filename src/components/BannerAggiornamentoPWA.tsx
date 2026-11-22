@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { RefreshCw, X, Sparkles } from 'lucide-react';
-import { VersionInfo, applicaAggiornamento } from '../services/pwaUpdater';
+import { VersionInfo, applicaAggiornamento, compareSemver } from '../services/pwaUpdater';
+import { APP_VERSION } from '../version';
 
 export const BannerAggiornamentoPWA: React.FC = () => {
   const [nuovaVersione, setNuovaVersione] = useState<VersionInfo | null>(null);
@@ -9,7 +10,10 @@ export const BannerAggiornamentoPWA: React.FC = () => {
   useEffect(() => {
     const handleNuovaRelease = (e: Event) => {
       const customEvent = e as CustomEvent<VersionInfo>;
-      if (customEvent.detail) {
+      if (customEvent.detail && customEvent.detail.version) {
+        if (compareSemver(customEvent.detail.version, APP_VERSION) < 0) {
+          return;
+        }
         setNuovaVersione(customEvent.detail);
       }
     };
