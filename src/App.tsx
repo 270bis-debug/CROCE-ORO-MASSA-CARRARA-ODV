@@ -77,11 +77,33 @@ import {
   Paintbrush,
   Layers,
   Monitor,
+  Tv,
+  Smartphone,
   UserCheck,
   ExternalLink
 } from 'lucide-react';
 import { ModalAccessoWeb } from './components/ModalAccessoWeb';
 import { ModalProfiloAccount } from './components/ModalProfiloAccount';
+import { SimulatoreDispositivoMobile } from './components/SimulatoreDispositivoMobile';
+import { ModalGestioneDisplayRaspberry } from './components/ModalGestioneDisplayRaspberry';
+import { VistaDedicataRaspberrySenzaLogin } from './components/VistaDedicataRaspberrySenzaLogin';
+import {
+  RaspberryDisplayConfig,
+  applicaAutoChiusuraNfc24hSuLista,
+  isDedicatedRaspberryUrl,
+  loadRaspberryDisplayConfig,
+  sanitizeRaspberryDisplayConfig,
+  saveRaspberryDisplayConfigLocal,
+} from './utils/raspberryDisplayConfig';
+import {
+  SimulatedDevicePlatform,
+  SimulatedDisplayMode,
+  getSimulatedAccountIdFromUrl,
+  getSimulatedDeviceFromUrl,
+  getSimulatedRoleFromUrl,
+  isInsideDeviceSimulationFrame,
+  setRuntimeSimulatedDevice
+} from './utils/deviceSimulation';
 import { PasskeyRecord, getNotificationEmailForVolontario } from './utils/passkeyAuth';
 import { ModalSyncServerCroceOro } from './components/admin/ModalSyncServerCroceOro';
 import { ModalRinominaDbSub } from './components/admin/ModalRinominaDbSub';
@@ -1122,12 +1144,37 @@ export default function App() {
     );
   }, []);
 
+  // Link dedicato Display Raspberry di Sezione (senza login obbligatorio — /?view=raspberry&sede=...)
+  const isDedicatedRaspberryPage = useMemo(() => isDedicatedRaspberryUrl(), []);
+
   const isWeb = isAccessoDaWeb();
+  const isInFrameSimulazioneDispositivo = useMemo(() => isInsideDeviceSimulationFrame(), []);
+
+  // Verifica sicura se l'utente reale salvato in sessione locale è Amministratore o Presidente
+  const isStoredAdminOrPresident = (): boolean => {
+    try {
+      const saved = localStorage.getItem('CROCE_ORO_UTENTE_CENTRALE');
+      if (!saved) return false;
+      const u = JSON.parse(saved);
+      return Boolean(
+        u?.isAdmin ||
+        u?.pin === '4451' ||
+        (u?.caricaConsiglioDirettivo && String(u.caricaConsiglioDirettivo).toLowerCase().includes('presidente')) ||
+        (u?.qualifica && String(u.qualifica).toLowerCase().includes('presidente'))
+      );
+    } catch {
+      return false;
+    }
+  };
 
   // Profilo selezionato all'avvio: 'volontario' (solo bordo mezzo) oppure 'admin' (centrale operativa).
   // Se null, mostra subito la schermata di selezione profilo all'accesso.
   const [profiloScelto, setProfiloScelto] = useState<'volontario' | 'admin' | null>(() => {
     try {
+      if (isInsideDeviceSimulationFrame() && isStoredAdminOrPresident()) {
+        const simRole = getSimulatedRoleFromUrl();
+        if (simRole) return simRole;
+      }
       if (typeof window !== 'undefined') {
         const urlParams = new URLSearchParams(window.location.search);
         const view = (urlParams.get('view') || urlParams.get('ruolo') || urlParams.get('role'))?.toLowerCase();
@@ -1143,6 +1190,10 @@ export default function App() {
 
   const [ruolo, setRuolo] = useState<'volontario' | 'admin'>(() => {
     try {
+      if (isInsideDeviceSimulationFrame() && isStoredAdminOrPresident()) {
+        const simRole = getSimulatedRoleFromUrl();
+        if (simRole) return simRole;
+      }
       if (typeof window !== 'undefined') {
         const urlParams = new URLSearchParams(window.location.search);
         const view = (urlParams.get('view') || urlParams.get('ruolo') || urlParams.get('role'))?.toLowerCase();
@@ -1225,10 +1276,35 @@ export default function App() {
     (utenteCentrale?.qualifica && utenteCentrale.qualifica.toLowerCase().includes('presidente'))
   );
 
-  // Controlli esclusivi Amministratore / Presidente: Anteprima Modalità Monitor e Simulazione Account
+  // Controlli esclusivi Amministratore / Presidente: Anteprima Modalità Monitor e Simulazione Account + Dispositivo (Android / Apple)
   const [modalAnteprimaMonitorAperta, setModalAnteprimaMonitorAperta] = useState<boolean>(false);
-  const [accountSimulatoId, setAccountSimulatoId] = useState<string | null>(null);
+  // Gestione Display Raspberry di Sezione (esclusiva Amministratore, Presidente e Segretario)
+  const [modalGestioneRaspberryAperta, setModalGestioneRaspberryAperta] = useState<boolean>(false);
+  const [raspberryDisplayConfig, setRaspberryDisplayConfig] = useState<RaspberryDisplayConfig>(() =>
+    loadRaspberryDisplayConfig()
+  );
+  const [accountSimulatoId, setAccountSimulatoId] = useState<string | null>(() => {
+    if (isInsideDeviceSimulationFrame() && isStoredAdminOrPresident()) {
+      return getSimulatedAccountIdFromUrl();
+    }
+    return null;
+  });
+  const [dispositivoSimulato, setDispositivoSimulato] = useState<SimulatedDevicePlatform>(() => {
+    if (isInsideDeviceSimulationFrame() && isStoredAdminOrPresident()) {
+      return getSimulatedDeviceFromUrl() || 'desktop';
+    }
+    return 'desktop';
+  });
+  const [modalitaDisplaySimulato, setModalitaDisplaySimulato] = useState<SimulatedDisplayMode>('pwa');
   const prevRuoloPrimaSimulazioneRef = useRef<'volontario' | 'admin' | null>(null);
+
+  useEffect(() => {
+    if (isVeroAdminOPresidente && accountSimulatoId && dispositivoSimulato !== 'desktop') {
+      setRuntimeSimulatedDevice(dispositivoSimulato);
+    } else {
+      setRuntimeSimulatedDevice(null);
+    }
+  }, [isVeroAdminOPresidente, accountSimulatoId, dispositivoSimulato]);
 
   const ruoloRef = useRef<'volontario' | 'admin'>(ruolo);
   useEffect(() => {
@@ -1244,6 +1320,9 @@ export default function App() {
   // Layout display (solo smartphone per volontario, centrale o diviso per admin)
   const [layoutView, setLayoutView] = useState<'both' | 'smartphone' | 'centrale'>(() => {
     try {
+      if (isInsideDeviceSimulationFrame() && isStoredAdminOrPresident()) {
+        return getSimulatedRoleFromUrl() === 'admin' ? 'centrale' : 'smartphone';
+      }
       const salvato = localStorage.getItem('CROCE_ORO_PROFILO_SCELTO');
       if (salvato === 'volontario') return 'smartphone';
       if (salvato === 'admin') return typeof window !== 'undefined' && window.innerWidth >= 1280 ? 'both' : 'centrale';
@@ -5693,6 +5772,7 @@ export default function App() {
     return {
       ...utenteCentrale,
       isAdmin: isCentraleAdmin || utenteCentrale.isAdmin,
+      caricaConsiglioDirettivo: currentVol.caricaConsiglioDirettivo ?? utenteCentrale.caricaConsiglioDirettivo,
       macroCategorieAbilitate: currentVol.macroCategorieAbilitate ?? utenteCentrale.macroCategorieAbilitate,
       sottosezioniAbilitate: currentVol.sottosezioniAbilitate ?? utenteCentrale.sottosezioniAbilitate,
       pulsantiStrumentiAbilitati: currentVol.pulsantiStrumentiAbilitati ?? utenteCentrale.pulsantiStrumentiAbilitati,
@@ -5700,6 +5780,102 @@ export default function App() {
       qualifica: currentVol.qualifica,
     };
   }, [accountSimulato, utenteCentrale, volontari, isCentraleAdmin]);
+
+  // Accesso esclusivo alla Gestione Display Raspberry di Sezione: Amministratore, Presidente e Segretario
+  const puoGestireDisplayRaspberry = useMemo(() => {
+    const checkRuolo = (
+      u?: { isAdmin?: boolean; pin?: string; caricaConsiglioDirettivo?: string; qualifica?: string } | null
+    ) => {
+      if (!u) return false;
+      const carica = String(u.caricaConsiglioDirettivo || '').toLowerCase();
+      const qual = String(u.qualifica || '').toLowerCase();
+      return Boolean(
+        u.isAdmin ||
+        u.pin === '4451' ||
+        carica.includes('presidente') ||
+        qual.includes('presidente') ||
+        carica.includes('segretar') ||
+        qual.includes('segretar')
+      );
+    };
+    if (accountSimulato) {
+      return checkRuolo(accountSimulato);
+    }
+    return checkRuolo(utenteCentraleLive) || checkRuolo(volontarioLoggatoCorrente);
+  }, [accountSimulato, utenteCentraleLive, volontarioLoggatoCorrente]);
+
+  // Sincronizzazione live configurazione Display Raspberry tra dispositivi
+  useEffect(() => {
+    const unsubCfg = realtime.on('RASPBERRY_CONFIG_UPDATED', (payload: any) => {
+      if (payload?.config && typeof payload.config === 'object') {
+        setRaspberryDisplayConfig(saveRaspberryDisplayConfigLocal(payload.config));
+      }
+    });
+    const unsubInit = realtime.on('INIT_SYNC', (payload: any) => {
+      const cfg = payload?.state?.raspberryDisplayConfig;
+      if (cfg && typeof cfg === 'object') {
+        setRaspberryDisplayConfig(saveRaspberryDisplayConfigLocal(cfg));
+      }
+    });
+    return () => {
+      unsubCfg();
+      unsubInit();
+    };
+  }, []);
+
+  const handleSalvaConfigDisplayRaspberry = useCallback(
+    (nuovaCfg: RaspberryDisplayConfig) => {
+      const clean = sanitizeRaspberryDisplayConfig(nuovaCfg, sediAssociative[0]?.id);
+      setRaspberryDisplayConfig(clean);
+      realtime.syncRaspberryConfig(clean);
+      realtime.publishRaspberryBoardNow({
+        sedi: sediAssociative,
+        bacheca: comunicazioniBacheca,
+        timbrature: timbratureVolontari,
+        config: clean,
+      });
+    },
+    [sediAssociative, comunicazioniBacheca, timbratureVolontari]
+  );
+
+  // Pubblicazione automatica deduplicata dello snapshot pubblico Display Raspberry (Zero-PII)
+  useEffect(() => {
+    if (!puoGestireDisplayRaspberry && !utenteCentraleLive) return;
+    if (!Array.isArray(sediAssociative) || sediAssociative.length === 0) return;
+    const timer = window.setTimeout(() => {
+      realtime.publishRaspberryBoardNow({
+        sedi: sediAssociative,
+        bacheca: comunicazioniBacheca,
+        timbrature: timbratureVolontari,
+        config: raspberryDisplayConfig,
+      });
+    }, 1200);
+    return () => window.clearTimeout(timer);
+  }, [
+    puoGestireDisplayRaspberry,
+    utenteCentraleLive,
+    sediAssociative,
+    comunicazioniBacheca,
+    timbratureVolontari,
+    raspberryDisplayConfig,
+  ]);
+
+  // Auto-chiusura silente dopo 24 ore per ingressi da lettore NFC senza uscita:
+  // chiude lo stato di presenza sul display/app senza scrivere alcun orario di uscita sul file timbrature
+  // e con validità zero ai fini di tutti i conteggi ore/presenze.
+  useEffect(() => {
+    const verificaAutoChiusuraNfc = () => {
+      const listaCorrente = timbratureVolontariRef.current;
+      if (!Array.isArray(listaCorrente) || listaCorrente.length === 0) return;
+      const { listaAggiornata, modificateCount } = applicaAutoChiusuraNfc24hSuLista(listaCorrente);
+      if (modificateCount > 0) {
+        handleAggiornaTimbrature(listaAggiornata);
+      }
+    };
+    verificaAutoChiusuraNfc();
+    const intervalId = window.setInterval(verificaAutoChiusuraNfc, 60_000);
+    return () => window.clearInterval(intervalId);
+  }, [timbratureVolontari.length]);
 
   // Consegna notifica in-app agli account loggati che non hanno ancora caricato la propria firma sull'app
   useEffect(() => {
@@ -10057,9 +10233,16 @@ export default function App() {
     return isPres || haMacro || haSottosezioni || haPulsanti || (isOpCentrale && v.approvato !== false);
   };
 
-  // Simulazione account (esclusiva Amministratore & Presidente)
+  // Simulazione account + dispositivo Android/Apple (esclusiva Amministratore & Presidente)
   const handleTerminaSimulazioneAccount = () => {
+    if (isInFrameSimulazioneDispositivo && typeof window !== 'undefined' && window.parent && window.parent !== window) {
+      try {
+        window.parent.postMessage({ type: 'CROCE_ORO_EXIT_DEVICE_SIMULATION' }, window.location.origin);
+      } catch {}
+      return;
+    }
     setAccountSimulatoId(null);
+    setDispositivoSimulato('desktop');
     const prevRuolo = prevRuoloPrimaSimulazioneRef.current || 'admin';
     prevRuoloPrimaSimulazioneRef.current = null;
     setRuolo(prevRuolo);
@@ -10068,7 +10251,7 @@ export default function App() {
     }
   };
 
-  const handleAvviaSimulazioneAccount = (volId: string) => {
+  const handleAvviaSimulazioneAccount = (volId: string, deviceOverride?: SimulatedDevicePlatform) => {
     if (!isVeroAdminOPresidente) return;
     if (!volId) {
       handleTerminaSimulazioneAccount();
@@ -10080,6 +10263,9 @@ export default function App() {
       prevRuoloPrimaSimulazioneRef.current = ruolo;
     }
     setAccountSimulatoId(target.id);
+    if (deviceOverride) {
+      setDispositivoSimulato(deviceOverride);
+    }
     if (haAccessoCentraleODatabase(target)) {
       setRuolo('admin');
       setAdminSection('dashboard');
@@ -14759,6 +14945,17 @@ KM TOTALI: ${kmTot} KM`;
     );
   }
 
+  // Display Raspberry di Sezione accessibile via link diretto senza login obbligatorio (/?view=raspberry&sede=...)
+  if (isDedicatedRaspberryPage) {
+    return (
+      <VistaDedicataRaspberrySenzaLogin
+        initialSedi={sediAssociative}
+        initialComunicazioni={comunicazioniBacheca}
+        initialTimbrature={timbratureVolontari}
+      />
+    );
+  }
+
   // Tabellone turni riservato accessibile via link diretto senza login obbligatorio
   // Si aggiorna in automatico ogni minuto (60 secondi) senza alcuna interferenza umana
   if (isDedicatedTabellonePage) {
@@ -14940,8 +15137,8 @@ KM TOTALI: ${kmTot} KM`;
         </div>
       )}
 
-      {/* BANNER SIMULAZIONE ACCOUNT ATTIVA — SEMPRE VISIBILE AD AMMINISTRATORE / PRESIDENTE */}
-      {isVeroAdminOPresidente && accountSimulato && (
+      {/* BANNER SIMULAZIONE ACCOUNT ATTIVA — SEMPRE VISIBILE AD AMMINISTRATORE / PRESIDENTE (fuori dall'iframe mobile) */}
+      {isVeroAdminOPresidente && accountSimulato && !isInFrameSimulazioneDispositivo && (
         <div className="sticky top-0 z-[70] bg-gradient-to-r from-violet-900 via-indigo-900 to-fuchsia-900 border-b-2 border-fuchsia-400 px-3 py-2 text-white shadow-xl">
           <div className="max-w-[1440px] mx-auto flex flex-wrap items-center justify-between gap-2">
             <div className="flex items-center gap-2 min-w-0">
@@ -14962,7 +15159,7 @@ KM TOTALI: ${kmTot} KM`;
               <select
                 value={accountSimulato.id}
                 onChange={(e) => handleAvviaSimulazioneAccount(e.target.value)}
-                className="bg-slate-950/90 border border-indigo-400/60 rounded-lg px-2 py-1 text-[11px] font-bold text-white focus:outline-none focus:border-fuchsia-300 cursor-pointer max-w-[200px]"
+                className="bg-slate-950/90 border border-indigo-400/60 rounded-lg px-2 py-1 text-[11px] font-bold text-white focus:outline-none focus:border-fuchsia-300 cursor-pointer max-w-[190px]"
                 title="Cambia account simulato"
               >
                 <option value="">-- Disattiva Simulazione --</option>
@@ -14975,6 +15172,49 @@ KM TOTALI: ${kmTot} KM`;
                     </option>
                   ))}
               </select>
+
+              {/* Selettore Dispositivo Simulato: Schermo Reale / Android / Apple iPhone */}
+              <div
+                className="flex items-center bg-slate-950/75 rounded-lg p-0.5 border border-fuchsia-400/50"
+                title="Scegli come visualizza l'account selezionato: su questo schermo, su smartphone Android o su Apple iPhone"
+              >
+                <button
+                  type="button"
+                  onClick={() => setDispositivoSimulato('desktop')}
+                  className={`px-2 py-0.5 rounded-md text-[10.5px] font-black transition-all cursor-pointer flex items-center gap-1 ${
+                    dispositivoSimulato === 'desktop'
+                      ? 'bg-fuchsia-500 text-white shadow'
+                      : 'text-indigo-200 hover:text-white'
+                  }`}
+                >
+                  <Monitor className="w-3 h-3" />
+                  <span>PC</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setDispositivoSimulato('android')}
+                  className={`px-2 py-0.5 rounded-md text-[10.5px] font-black transition-all cursor-pointer flex items-center gap-1 ${
+                    dispositivoSimulato === 'android'
+                      ? 'bg-emerald-500 text-slate-950 shadow'
+                      : 'text-indigo-200 hover:text-white'
+                  }`}
+                >
+                  <span>🤖</span>
+                  <span>Android</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setDispositivoSimulato('apple')}
+                  className={`px-2 py-0.5 rounded-md text-[10.5px] font-black transition-all cursor-pointer flex items-center gap-1 ${
+                    dispositivoSimulato === 'apple'
+                      ? 'bg-sky-400 text-slate-950 shadow'
+                      : 'text-indigo-200 hover:text-white'
+                  }`}
+                >
+                  <span></span>
+                  <span>Apple</span>
+                </button>
+              </div>
 
               {/* Switch rapido tra Vista Centrale/DB (visibile SOLO se l'account è autorizzato ad almeno un DB/Centrale) e Vista Volontario */}
               <div className="flex items-center bg-slate-950/60 rounded-lg p-0.5 border border-indigo-400/40">
@@ -15021,6 +15261,23 @@ KM TOTALI: ${kmTot} KM`;
           </div>
         </div>
       )}
+
+      {/* SIMULATORE INTERATTIVO SMARTPHONE ANDROID / APPLE iPHONE (Esclusivo Amministratore & Presidente) */}
+      {!isInFrameSimulazioneDispositivo &&
+      isVeroAdminOPresidente &&
+      accountSimulato &&
+      (dispositivoSimulato === 'android' || dispositivoSimulato === 'apple') ? (
+        <SimulatoreDispositivoMobile
+          account={accountSimulato}
+          device={dispositivoSimulato}
+          ruoloSimulato={ruolo}
+          displayMode={modalitaDisplaySimulato}
+          onChangeDevice={setDispositivoSimulato}
+          onChangeDisplayMode={setModalitaDisplaySimulato}
+          onExitFromIframe={handleTerminaSimulazioneAccount}
+        />
+      ) : (
+      <>
 
       {/* Intestazione Principale Compatta & Adattiva (Mobile, Tablet, Desktop) */}
       {ruolo && (() => {
@@ -15421,8 +15678,8 @@ KM TOTALI: ${kmTot} KM`;
 
                         <div className="border-t border-slate-800 my-1" />
 
-                        {/* Controlli Esclusivi Amministratore & Presidente: Anteprima Monitor & Simula Account */}
-                        {isVeroAdminOPresidente && (
+                        {/* Controlli Esclusivi Amministratore & Presidente: Anteprima Monitor & Simula Account + Android / Apple */}
+                        {isVeroAdminOPresidente && !isInFrameSimulazioneDispositivo && (
                           <div className="space-y-1.5 p-2 rounded-lg bg-indigo-950/60 border border-indigo-500/40">
                             <div className="text-[9.5px] font-black uppercase tracking-wider text-indigo-300">
                               Strumenti Direttivo (Admin / Presidente)
@@ -15440,7 +15697,7 @@ KM TOTALI: ${kmTot} KM`;
                               <span>Anteprima Modalità Monitor</span>
                             </button>
 
-                            <div className="space-y-1">
+                            <div className="space-y-1.5">
                               <label className="text-[10px] font-bold text-fuchsia-300 flex items-center gap-1.5">
                                 <UserCheck className="w-3.5 h-3.5 text-fuchsia-400 shrink-0" />
                                 <span>Simula Vista Account:</span>
@@ -15460,8 +15717,89 @@ KM TOTALI: ${kmTot} KM`;
                                   </option>
                                 ))}
                               </select>
+
+                              {/* Scelta Dispositivo Simulato: PC / Android / Apple */}
+                              <div className="space-y-1 pt-0.5">
+                                <div className="text-[9.5px] font-bold text-indigo-200 flex items-center gap-1">
+                                  <Smartphone className="w-3 h-3 text-fuchsia-300 shrink-0" />
+                                  <span>Simula Dispositivo (dopo scelta account):</span>
+                                </div>
+                                <div className="grid grid-cols-3 gap-1">
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setDispositivoSimulato('desktop');
+                                      if (accountSimulatoId) setMenuHeaderAzioniAperto(false);
+                                    }}
+                                    className={`px-1.5 py-1.5 rounded-lg text-[10.5px] font-black border transition-all cursor-pointer flex items-center justify-center gap-1 ${
+                                      dispositivoSimulato === 'desktop'
+                                        ? 'bg-fuchsia-600 text-white border-fuchsia-300'
+                                        : 'bg-slate-900 text-slate-300 border-slate-700 hover:border-fuchsia-400'
+                                    }`}
+                                  >
+                                    <Monitor className="w-3 h-3" />
+                                    <span>PC</span>
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setDispositivoSimulato('android');
+                                      if (accountSimulatoId) setMenuHeaderAzioniAperto(false);
+                                    }}
+                                    className={`px-1.5 py-1.5 rounded-lg text-[10.5px] font-black border transition-all cursor-pointer flex items-center justify-center gap-1 ${
+                                      dispositivoSimulato === 'android'
+                                        ? 'bg-emerald-500 text-slate-950 border-emerald-300'
+                                        : 'bg-slate-900 text-emerald-300 border-slate-700 hover:border-emerald-400'
+                                    }`}
+                                  >
+                                    <span>🤖</span>
+                                    <span>Android</span>
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setDispositivoSimulato('apple');
+                                      if (accountSimulatoId) setMenuHeaderAzioniAperto(false);
+                                    }}
+                                    className={`px-1.5 py-1.5 rounded-lg text-[10.5px] font-black border transition-all cursor-pointer flex items-center justify-center gap-1 ${
+                                      dispositivoSimulato === 'apple'
+                                        ? 'bg-sky-400 text-slate-950 border-sky-200'
+                                        : 'bg-slate-900 text-sky-200 border-slate-700 hover:border-sky-400'
+                                    }`}
+                                  >
+                                    <span></span>
+                                    <span>Apple</span>
+                                  </button>
+                                </div>
+                              </div>
                             </div>
                           </div>
+                        )}
+
+                        {/* Gestione Display Raspberry di Sezione — ESCLUSIVO Amministratore, Presidente e Segretario */}
+                        {puoGestireDisplayRaspberry && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setMenuHeaderAzioniAperto(false);
+                              realtime.publishRaspberryBoardNow({
+                                sedi: sediAssociative,
+                                bacheca: comunicazioniBacheca,
+                                timbrature: timbratureVolontari,
+                                config: raspberryDisplayConfig,
+                              });
+                              setModalGestioneRaspberryAperta(true);
+                            }}
+                            className="w-full px-2.5 py-2 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-400/50 font-black text-xs flex items-center justify-between gap-2 cursor-pointer"
+                          >
+                            <span className="flex items-center gap-2 min-w-0">
+                              <Tv className="w-4 h-4 text-emerald-400 shrink-0" />
+                              <span className="truncate">Display Raspberry Sezione</span>
+                            </span>
+                            <span className="px-1.5 py-0.5 rounded bg-emerald-500/20 text-[9px] font-black uppercase text-emerald-200 shrink-0">
+                              TV
+                            </span>
+                          </button>
                         )}
 
                         {/* Sezione PROFILO ACCOUNT — visibile ad ogni account loggato nel menù Strumenti */}
@@ -15655,8 +15993,8 @@ KM TOTALI: ${kmTot} KM`;
                       </button>
                     </div>
 
-                    {/* Pulsanti Esclusivi Amministratore & Presidente: Anteprima Monitor + Simula Account */}
-                    {isVeroAdminOPresidente && (
+                    {/* Pulsanti Esclusivi Amministratore & Presidente: Anteprima Monitor + Simula Account (con Android / Apple) */}
+                    {isVeroAdminOPresidente && !isInFrameSimulazioneDispositivo && (
                       <>
                         <button
                           type="button"
@@ -15684,13 +16022,13 @@ KM TOTALI: ${kmTot} KM`;
                               ? 'bg-fuchsia-50 border-fuchsia-300 text-fuchsia-950'
                               : 'bg-slate-800/90 border-fuchsia-500/40 text-fuchsia-200'
                           }`}
-                          title="Simula la visualizzazione esatta di un altro account (Database, Pulsanti e Terminale Volontario)"
+                          title="Simula la visualizzazione esatta di un altro account su PC, Android o Apple iPhone"
                         >
                           <UserCheck className="w-3.5 h-3.5 text-fuchsia-400 shrink-0" />
                           <select
                             value={accountSimulatoId || ''}
                             onChange={(e) => handleAvviaSimulazioneAccount(e.target.value)}
-                            className={`bg-transparent text-[11px] font-bold focus:outline-none cursor-pointer max-w-[155px] ${
+                            className={`bg-transparent text-[11px] font-bold focus:outline-none cursor-pointer max-w-[145px] ${
                               isWeb && !accountSimulato ? 'text-fuchsia-950' : 'text-white'
                             }`}
                           >
@@ -15703,8 +16041,79 @@ KM TOTALI: ${kmTot} KM`;
                               </option>
                             ))}
                           </select>
+
+                          <div className="flex items-center gap-0.5 pl-1 border-l border-fuchsia-400/40">
+                            <button
+                              type="button"
+                              onClick={() => setDispositivoSimulato('desktop')}
+                              className={`px-1.5 py-0.5 rounded text-[10px] font-black cursor-pointer transition-all ${
+                                dispositivoSimulato === 'desktop'
+                                  ? 'bg-fuchsia-600 text-white'
+                                  : isWeb && !accountSimulato
+                                  ? 'text-fuchsia-800 hover:bg-fuchsia-200/70'
+                                  : 'text-slate-300 hover:text-white'
+                              }`}
+                              title="Visualizza l'account selezionato su schermo PC / Reale"
+                            >
+                              PC
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setDispositivoSimulato('android')}
+                              className={`px-1.5 py-0.5 rounded text-[10px] font-black cursor-pointer transition-all ${
+                                dispositivoSimulato === 'android'
+                                  ? 'bg-emerald-500 text-slate-950'
+                                  : isWeb && !accountSimulato
+                                  ? 'text-emerald-800 hover:bg-emerald-100'
+                                  : 'text-emerald-300 hover:bg-emerald-950/60'
+                              }`}
+                              title="Simula come l'account selezionato vede su smartphone Android"
+                            >
+                              🤖
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setDispositivoSimulato('apple')}
+                              className={`px-1.5 py-0.5 rounded text-[10px] font-black cursor-pointer transition-all ${
+                                dispositivoSimulato === 'apple'
+                                  ? 'bg-sky-400 text-slate-950'
+                                  : isWeb && !accountSimulato
+                                  ? 'text-sky-900 hover:bg-sky-100'
+                                  : 'text-sky-200 hover:bg-sky-950/60'
+                              }`}
+                              title="Simula come l'account selezionato vede su Apple iPhone (iOS)"
+                            >
+                              
+                            </button>
+                          </div>
                         </div>
                       </>
+                    )}
+
+                    {/* Pulsante Display Raspberry di Sezione — ESCLUSIVO Amministratore, Presidente e Segretario */}
+                    {puoGestireDisplayRaspberry && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          realtime.publishRaspberryBoardNow({
+                            sedi: sediAssociative,
+                            bacheca: comunicazioniBacheca,
+                            timbrature: timbratureVolontari,
+                            config: raspberryDisplayConfig,
+                          });
+                          setModalGestioneRaspberryAperta(true);
+                        }}
+                        className={`px-2 py-1 rounded-lg font-black text-[11px] flex items-center gap-1 cursor-pointer border whitespace-nowrap transition-all ${
+                          isWeb
+                            ? 'bg-emerald-100 hover:bg-emerald-200 text-emerald-950 border-emerald-500'
+                            : 'bg-emerald-950/75 hover:bg-emerald-900/80 text-emerald-200 border-emerald-400/60'
+                        }`}
+                        style={isWeb ? { backgroundColor: '#d1fae5', color: '#064e3b', borderColor: '#10b981' } : undefined}
+                        title="Gestione Display Raspberry di Sezione (Bacheca Associativa, Bacheca Sezione, Presenti & Usciti)"
+                      >
+                        <Tv className="w-3.5 h-3.5 shrink-0" />
+                        <span>Display Raspberry</span>
+                      </button>
                     )}
 
                     {permessiDaRiabilitare && (
@@ -16063,6 +16472,7 @@ KM TOTALI: ${kmTot} KM`;
             onAggiornaMezzi={handleAggiornaMezziFlotta}
             operatoreCorrente={utenteCentrale?.nome ? `${utenteCentrale.nome} ${utenteCentrale.cognome || ''}` : 'Amministratore'}
             isAdmin={isCentraleAdmin}
+            puoGestireWifiRaspberry={puoGestireDisplayRaspberry}
             onNotificaRadio={aggiungiNotifica}
             allowedSubtabs={isCentraleAdmin ? null : getAllowedSubtabsForDatabase(utenteCentraleLive, 'sedi')}
           />
@@ -25360,6 +25770,40 @@ KM TOTALI: ${kmTot} KM`;
       )}
 
       {/* ------------------------------------------------------------- */}
+      {/* GESTIONE DISPLAY RASPBERRY DI SEZIONE (ADMIN / PRESIDENTE / SEGRETARIO) */}
+      {/* ------------------------------------------------------------- */}
+      {modalGestioneRaspberryAperta && puoGestireDisplayRaspberry && (
+        <ModalGestioneDisplayRaspberry
+          isOpen={modalGestioneRaspberryAperta}
+          onClose={() => setModalGestioneRaspberryAperta(false)}
+          sedi={sediAssociative}
+          onAggiornaSedi={handleAggiornaSedi}
+          comunicazioni={comunicazioniBacheca}
+          onAggiornaComunicazioni={handleAggiornaComunicazioniBacheca}
+          timbrature={timbratureVolontari}
+          config={raspberryDisplayConfig}
+          onSalvaConfig={handleSalvaConfigDisplayRaspberry}
+          operatoreCorrente={
+            utenteCentraleLive?.nome
+              ? `${utenteCentraleLive.nome} ${utenteCentraleLive.cognome || ''}`.trim()
+              : volontarioLoggatoCorrente
+              ? `${volontarioLoggatoCorrente.nome} ${volontarioLoggatoCorrente.cognome || ''}`.trim()
+              : 'Direzione Associativa'
+          }
+          operatoreId={utenteCentraleLive?.id || volontarioLoggatoCorrente?.id}
+          onRefreshSync={() => {
+            realtime.publishRaspberryBoardNow({
+              sedi: sediAssociative,
+              bacheca: comunicazioniBacheca,
+              timbrature: timbratureVolontari,
+              config: raspberryDisplayConfig,
+            });
+            realtime.refreshPublicRaspberryBoard().catch(() => {});
+          }}
+        />
+      )}
+
+      {/* ------------------------------------------------------------- */}
       {/* MODALE BACHECA DI SEZIONE PER VOLONTARI */}
       {/* ------------------------------------------------------------- */}
       <ModalBachecaVolontario
@@ -25629,7 +26073,10 @@ KM TOTALI: ${kmTot} KM`;
       )}
 
       {/* BANNER NOTIFICA AGGIORNAMENTO DISPONIBILE */}
-      <BannerAggiornamentoPWA />
+      {!isInFrameSimulazioneDispositivo && <BannerAggiornamentoPWA />}
+
+      </>
+      )}
 
     </div>
   );

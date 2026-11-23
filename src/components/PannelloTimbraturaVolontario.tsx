@@ -35,6 +35,11 @@ import {
   detectCanonicalSedeKey
 } from '../utils/sediNormalize';
 import { ottieniPosizioneGpsAffidabile, isAppleMobileDevice } from '../utils/smartGps';
+import {
+  isTimbraturaAttualmentePresente,
+  isTimbraturaConUscitaValida,
+  isTimbraturaNfcScaduta24h
+} from '../utils/raspberryDisplayConfig';
 
 // Formula geodesica di Haversine per calcolare la distanza in metri tra due coordinate GPS
 export function calcolaDistanzaMetri(lat1: number, lon1: number, lat2: number, lon2: number): number {
@@ -334,7 +339,7 @@ export const PannelloTimbraturaVolontario: React.FC<PannelloTimbraturaVolontario
   // Verifica se il volontario ha una timbratura attiva aperta (senza orario di uscita)
   const timbraturaAttiva = useMemo(() => {
     return timbrature.find(
-      (t) => isMioRecord(t) && !t.orarioUscita
+      (t) => isMioRecord(t) && isTimbraturaAttualmentePresente(t)
     );
   }, [timbrature, volontarioId, volontarioNome]);
 
@@ -363,7 +368,12 @@ export const PannelloTimbraturaVolontario: React.FC<PannelloTimbraturaVolontario
   const oreMeseCorrente = useMemo(() => {
     const prefissoMese = oggiStr.slice(0, 7); // es. "2026-10"
     const mieDelMese = timbrature.filter(
-      (t) => isMioRecord(t) && t.data.startsWith(prefissoMese) && typeof t.oreTotali === 'number'
+      (t) =>
+        isMioRecord(t) &&
+        !isTimbraturaNfcScaduta24h(t) &&
+        isTimbraturaConUscitaValida(t) &&
+        t.data.startsWith(prefissoMese) &&
+        typeof t.oreTotali === 'number'
     );
     const sommaOre = mieDelMese.reduce((acc, curr) => acc + (curr.oreTotali || 0), 0);
     return Math.round(sommaOre * 10) / 10;
@@ -372,7 +382,7 @@ export const PannelloTimbraturaVolontario: React.FC<PannelloTimbraturaVolontario
   const conteggioTurniMese = useMemo(() => {
     const prefissoMese = oggiStr.slice(0, 7);
     return timbrature.filter(
-      (t) => isMioRecord(t) && t.data.startsWith(prefissoMese)
+      (t) => isMioRecord(t) && !isTimbraturaNfcScaduta24h(t) && t.data.startsWith(prefissoMese)
     ).length;
   }, [timbrature, volontarioId, volontarioNome, oggiStr]);
 
@@ -380,7 +390,13 @@ export const PannelloTimbraturaVolontario: React.FC<PannelloTimbraturaVolontario
   const annoCorrenteStr = oggiStr.slice(0, 4); // "2026"
   const oreAnnoCorrente = useMemo(() => {
     const mieDellAnno = timbrature.filter(
-      (t) => isMioRecord(t) && t.data && t.data.startsWith(annoCorrenteStr) && typeof t.oreTotali === 'number'
+      (t) =>
+        isMioRecord(t) &&
+        !isTimbraturaNfcScaduta24h(t) &&
+        isTimbraturaConUscitaValida(t) &&
+        t.data &&
+        t.data.startsWith(annoCorrenteStr) &&
+        typeof t.oreTotali === 'number'
     );
     const sommaOre = mieDellAnno.reduce((acc, curr) => acc + (curr.oreTotali || 0), 0);
     return Math.round(sommaOre * 10) / 10;
@@ -388,7 +404,7 @@ export const PannelloTimbraturaVolontario: React.FC<PannelloTimbraturaVolontario
 
   const conteggioTurniAnno = useMemo(() => {
     return timbrature.filter(
-      (t) => isMioRecord(t) && t.data && t.data.startsWith(annoCorrenteStr)
+      (t) => isMioRecord(t) && !isTimbraturaNfcScaduta24h(t) && t.data && t.data.startsWith(annoCorrenteStr)
     ).length;
   }, [timbrature, volontarioId, volontarioNome, annoCorrenteStr]);
 
@@ -409,7 +425,10 @@ export const PannelloTimbraturaVolontario: React.FC<PannelloTimbraturaVolontario
   }, [timbrature, volontarioId, dataInizioFiltro, dataFineFiltro]);
 
   const oreTotaliPeriodoFiltrato = useMemo(() => {
-    const sum = timbratureFiltrate.reduce((acc, curr) => acc + (curr.oreTotali || 0), 0);
+    const sum = timbratureFiltrate.reduce(
+      (acc, curr) => acc + (!isTimbraturaNfcScaduta24h(curr) && isTimbraturaConUscitaValida(curr) ? curr.oreTotali || 0 : 0),
+      0
+    );
     return Math.round(sum * 10) / 10;
   }, [timbratureFiltrate]);
 
@@ -593,6 +612,7 @@ export const PannelloTimbraturaVolontario: React.FC<PannelloTimbraturaVolontario
         turnoId: attivitaRilevata.turnoId,
         attivitaSvolta: attivitaEffettiva,
         tipoAttivita: tipoTimb,
+        metodoTimbratura: 'app',
         note: isSimultaneous
           ? `Timbratura SIMULTANEA INGRESSO TURNO + CORSO FORMATIVO validata via GPS alle ${orarioCorrente} a ${analisiEffettiva.distanzaMetri}m da ${nomeLuogo} (Raggio: ${raggioApplicato}m)`
           : hasCorso && !hasTurno
@@ -674,6 +694,7 @@ export const PannelloTimbraturaVolontario: React.FC<PannelloTimbraturaVolontario
 
       const timbChiusa: TimbraturaVolontario = {
         ...timbraturaAttiva,
+        dataUscita: dataCorrente,
         orarioUscita: orarioCorrente,
         sedeUscita: nomeLuogo,
         coordinateUscita: { lat: posizioneEffettiva.lat, lng: posizioneEffettiva.lng },

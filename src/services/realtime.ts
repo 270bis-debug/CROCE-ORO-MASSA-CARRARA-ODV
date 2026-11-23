@@ -46,7 +46,15 @@ import {
   listenPublicBoardFirestore,
   readPublicBoardFromServer,
   PublicBoardDoc,
+  syncPublicRaspberryBoardFirestore,
+  listenPublicRaspberryBoardFirestore,
+  readPublicRaspberryBoardFromServer,
+  PublicRaspberryBoardDoc,
 } from './firebase';
+import {
+  loadRaspberryDisplayConfig,
+  saveRaspberryDisplayConfigLocal,
+} from '../utils/raspberryDisplayConfig';
 import { formatDateTimeItaly, formatTimeItaly } from '../utils/italianTime';
 import { mergeLoggedSessionsSafe, mergeVolontariListsSafe, normalizeDeletedIds } from '../utils/volontariMerge';
 import { mergeNotificheBachecaRecenti, NotificaBachecaRecord } from '../utils/bachecaCorsi';
@@ -269,6 +277,7 @@ class RealtimeService {
   private pendingShiftSignupsQueue: ShiftSignupRecord[] = [];
   private publicRosterUnsub: (() => void) | null = null;
   private publicBoardUnsub: (() => void) | null = null;
+  private publicRaspberryUnsub: (() => void) | null = null;
   private lastGpsSentAt: number = 0;
   private lastGpsSentCoords: { lat: number; lng: number } | null = null;
 
@@ -724,6 +733,166 @@ class RealtimeService {
       return { ok: true, ...counts };
     } catch {
       return { ok: false, turniCount: 0, sediCount: 0 };
+    }
+  }
+
+  private applyPublicRaspberrySnapshot(docData: PublicRaspberryBoardDoc | null): {
+    sediCount: number;
+    bachecaCount: number;
+    timbratureCount: number;
+  } {
+    if (!docData) return { sediCount: 0, bachecaCount: 0, timbratureCount: 0 };
+    const sediRaw = Array.isArray(docData.sedi) ? docData.sedi : [];
+    const bachecaRaw = Array.isArray(docData.bacheca) ? docData.bacheca : [];
+    const timbratureRaw = Array.isArray(docData.timbrature) ? docData.timbrature : [];
+    const cfgRaw = docData.config && typeof docData.config === 'object' ? docData.config : null;
+
+    if (sediRaw.length > 0) {
+      const sediNorm = normalizzaListaSediAssociative(sediRaw);
+      try {
+        localStorage.setItem('CROCE_ORO_SEDI_COMPLETE', JSON.stringify(sediNorm));
+      } catch {}
+      this.emit('SEDI_UPDATED', { sedi: sediNorm });
+    }
+
+    if (bachecaRaw.length > 0) {
+      const bachecaNorm = normalizzaComunicazioniBacheca(bachecaRaw);
+      this.emit('BACHECA_UPDATED', { bacheca: bachecaNorm });
+    }
+
+    if (timbratureRaw.length > 0) {
+      this.emit('TIMBRATURE_UPDATED', { timbrature: timbratureRaw });
+    }
+
+    if (cfgRaw && Object.keys(cfgRaw).length > 0) {
+      const savedCfg = saveRaspberryDisplayConfigLocal(cfgRaw as any);
+      this.emit('RASPBERRY_CONFIG_UPDATED', { config: savedCfg });
+    }
+
+    this.emit('RASPBERRY_BOARD_UPDATED', {
+      sedi: sediRaw.length > 0 ? normalizzaListaSediAssociative(sediRaw) : [],
+      bacheca: normalizzaComunicazioniBacheca(bachecaRaw),
+      timbrature: timbratureRaw,
+      config: cfgRaw ? saveRaspberryDisplayConfigLocal(cfgRaw as any) : null,
+    });
+
+    return {
+      sediCount: sediRaw.length,
+      bachecaCount: bachecaRaw.length,
+      timbratureCount: timbratureRaw.length,
+    };
+  }
+
+  public attachPublicRaspberryListener() {
+    if (this.publicRaspberryUnsub) {
+      try {
+        this.publicRaspberryUnsub();
+      } catch {}
+      this.publicRaspberryUnsub = null;
+    }
+
+    readPublicRaspberryBoardFromServer()
+      .then((res) => {
+        if (res.exists && res.data) {
+          this.applyPublicRaspberrySnapshot(res.data);
+        }
+      })
+      .catch(() => {});
+
+    try {
+      this.publicRaspberryUnsub = listenPublicRaspberryBoardFirestore(
+        (exists, docData) => {
+          if (exists && docData) {
+            this.applyPublicRaspberrySnapshot(docData);
+          }
+        },
+        () => {}
+      );
+    } catch {}
+  }
+
+  public detachPublicRaspberryListener() {
+    if (this.publicRaspberryUnsub) {
+      try {
+        this.publicRaspberryUnsub();
+      } catch {}
+      this.publicRaspberryUnsub = null;
+    }
+  }
+
+  public publishRaspberryBoardNow(overrides?: {
+    sedi?: any[];
+    bacheca?: any[];
+    timbrature?: any[];
+    config?: Record<string, any>;
+  }) {
+    const readArrLS = (key: string): any[] => {
+      try {
+        const raw = localStorage.getItem(key);
+        const parsed = raw ? JSON.parse(raw) : [];
+        return Array.isArray(parsed) ? parsed : [];
+      } catch {
+        return [];
+      }
+    };
+
+    const sedi =
+      overrides?.sedi ??
+      (Array.isArray(this.cloudState.sedi) && this.cloudState.sedi.length > 0
+        ? this.cloudState.sedi
+        : readArrLS('CROCE_ORO_SEDI_COMPLETE'));
+
+    const bacheca =
+      overrides?.bacheca ??
+      (Array.isArray(this.cloudState.bacheca) && this.cloudState.bacheca.length > 0
+        ? this.cloudState.bacheca
+        : readArrLS('CROCE_ORO_BACHECA_COMUNICAZIONI'));
+
+    const timbrature =
+      overrides?.timbrature ??
+      (Array.isArray(this.cloudState.timbrature) && this.cloudState.timbrature.length > 0
+        ? this.cloudState.timbrature
+        : readArrLS('CROCE_ORO_TIMBRATURE_VOLONTARI'));
+
+    const config =
+      overrides?.config ??
+      (this.cloudState.raspberryDisplayConfig && typeof this.cloudState.raspberryDisplayConfig === 'object'
+        ? this.cloudState.raspberryDisplayConfig
+        : loadRaspberryDisplayConfig());
+
+    syncPublicRaspberryBoardFirestore(sedi, bacheca, timbrature, config).catch(() => {});
+  }
+
+  public async refreshPublicRaspberryBoard(): Promise<{
+    ok: boolean;
+    sediCount: number;
+    bachecaCount: number;
+    timbratureCount: number;
+  }> {
+    try {
+      if (this.firebaseSession.isAuthorized) {
+        await Promise.all([
+          this.refreshShardFromServer('bacheca').catch(() => {}),
+          this.refreshShardFromServer('timbrature').catch(() => {}),
+          this.refreshShardFromServer('config').catch(() => {}),
+        ]);
+        this.publishRaspberryBoardNow();
+        return {
+          ok: true,
+          sediCount: Array.isArray(this.cloudState.sedi) ? this.cloudState.sedi.length : 0,
+          bachecaCount: Array.isArray(this.cloudState.bacheca) ? this.cloudState.bacheca.length : 0,
+          timbratureCount: Array.isArray(this.cloudState.timbrature) ? this.cloudState.timbrature.length : 0,
+        };
+      }
+
+      const res = await readPublicRaspberryBoardFromServer();
+      if (!res.exists || !res.data) {
+        return { ok: false, sediCount: 0, bachecaCount: 0, timbratureCount: 0 };
+      }
+      const counts = this.applyPublicRaspberrySnapshot(res.data);
+      return { ok: true, ...counts };
+    } catch {
+      return { ok: false, sediCount: 0, bachecaCount: 0, timbratureCount: 0 };
     }
   }
 
@@ -4312,7 +4481,9 @@ class RealtimeService {
   }
 
   public syncSedi(sedi: any[]) {
+    this.cloudState.sedi = sedi;
     this.scheduleShardWrite('config', { sedi });
+    this.publishRaspberryBoardNow({ sedi });
     if (!this.isServerlessStaticHost()) {
       try {
         const baseUrl = this.getApiBaseUrl();
@@ -4324,6 +4495,25 @@ class RealtimeService {
         }).catch(() => {});
       } catch {}
     }
+  }
+
+  public syncRaspberryConfig(config: Record<string, any>) {
+    const saved = saveRaspberryDisplayConfigLocal(config as any);
+    this.cloudState.raspberryDisplayConfig = saved;
+    this.scheduleShardWrite('config', { raspberryDisplayConfig: saved });
+    this.publishRaspberryBoardNow({ config: saved });
+    if (!this.isServerlessStaticHost()) {
+      try {
+        const baseUrl = this.getApiBaseUrl();
+        fetch(`${baseUrl}/api/raspberry-config`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ config: saved }),
+          cache: 'no-store',
+        }).catch(() => {});
+      } catch {}
+    }
+    this.emit('RASPBERRY_CONFIG_UPDATED', { config: saved });
   }
 
   public syncCartaIntestata(datiCartaIntestata: any) {
@@ -5300,7 +5490,9 @@ class RealtimeService {
   }
 
   public syncTimbrature(timbrature: any[], messaggio?: string) {
+    this.cloudState.timbrature = timbrature;
     this.send('UPDATE_TIMBRATURE', { timbrature, messaggio });
+    this.publishRaspberryBoardNow({ timbrature });
     if (!this.isServerlessStaticHost()) {
       try {
         const baseUrl = this.getApiBaseUrl();
@@ -5334,7 +5526,9 @@ class RealtimeService {
       ...(Array.isArray(this.cloudState.bachecaEliminatiIds) ? this.cloudState.bachecaEliminatiIds : []),
       ...(Array.isArray(bachecaEliminatiIds) ? bachecaEliminatiIds : []),
     ]);
+    this.cloudState.bacheca = bacheca;
     this.send('UPDATE_BACHECA', { bacheca, notifica, bachecaEliminatiIds: deletedIds });
+    this.publishRaspberryBoardNow({ bacheca });
     if (!this.isServerlessStaticHost()) {
       try {
         const baseUrl = this.getApiBaseUrl();

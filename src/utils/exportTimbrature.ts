@@ -1,6 +1,7 @@
 import { TimbraturaVolontario } from '../types/adminTypes';
 import { Volontario } from '../components/DatabaseVolontariModal';
 import { addDaysISODate, formatDateItaly, formatISODateItaly, formatTimeItaly } from './italianTime';
+import { isTimbraturaConUscitaValida, isTimbraturaNfc, isTimbraturaNfcScaduta24h } from './raspberryDisplayConfig';
 
 export type ModalitaPeriodoTimbrature = 'tutto' | 'giornaliero' | 'settimanale' | 'personalizzato';
 
@@ -130,6 +131,9 @@ export function calcolaDurataTimbratura(ingresso?: string, uscita?: string): {
  * Converte ore decimali o orari ingresso/uscita in formato leggibile con secondi
  */
 export function formatDurataTimbratura(t: TimbraturaVolontario): string {
+  if (isTimbraturaNfcScaduta24h(t)) {
+    return '—';
+  }
   if (t.orarioIngresso && t.orarioUscita) {
     const calc = calcolaDurataTimbratura(t.orarioIngresso, t.orarioUscita);
     if (calc.durataTesto !== '—') return calc.durataTesto;
@@ -179,6 +183,8 @@ function calcolaRiepilogoPerVolontario(
 ): RigaRiepilogoVolontario[] {
   const map = new Map<string, RigaRiepilogoVolontario>();
   for (const t of timbrature) {
+    // Le chiusure automatiche NFC >24h non hanno alcuna validità ai fini dei conteggi presenze
+    if (isTimbraturaNfcScaduta24h(t)) continue;
     const vol = trovaVolontarioRecord(t, volontari);
     const key = vol?.id || t.volontarioId || t.volontarioNome.trim().toLowerCase();
     const nominativo = vol ? `${vol.nome} ${vol.cognome}`.trim() : t.volontarioNome;
@@ -191,10 +197,9 @@ function calcolaRiepilogoPerVolontario(
       oreTotali: 0,
     };
     existing.numeroTurni += 1;
-    if (!t.orarioUscita || !t.orarioUscita.trim()) {
+    if (!isTimbraturaConUscitaValida(t)) {
       existing.turniAperti += 1;
-    }
-    if (typeof t.oreTotali === 'number' && !Number.isNaN(t.oreTotali)) {
+    } else if (typeof t.oreTotali === 'number' && !Number.isNaN(t.oreTotali)) {
       existing.oreTotali = Math.round((existing.oreTotali + t.oreTotali) * 100) / 100;
     }
     map.set(key, existing);
@@ -239,7 +244,14 @@ function escapeHTML(val: unknown): string {
  */
 export function esportaReportTimbratureCSV(params: ExportReportTimbratureParams): string {
   const { timbrature, volontari, etichettaVolontario, etichettaPeriodo, filtroSede, filtroTesto } = params;
-  const totaleOre = Math.round(timbrature.reduce((acc, t) => acc + (Number(t.oreTotali) || 0), 0) * 100) / 100;
+  const timbratureValidePerConteggio = timbrature.filter((t) => !isTimbraturaNfcScaduta24h(t));
+  const totaleOre =
+    Math.round(
+      timbratureValidePerConteggio.reduce(
+        (acc, t) => acc + (isTimbraturaConUscitaValida(t) ? Number(t.oreTotali) || 0 : 0),
+        0
+      ) * 100
+    ) / 100;
   const riepilogoVolontari = calcolaRiepilogoPerVolontario(timbrature, volontari);
 
   const metaRows = [
@@ -249,7 +261,12 @@ export function esportaReportTimbratureCSV(params: ExportReportTimbratureParams)
     [`Periodo Filtrato:`, etichettaPeriodo],
     [`Sede / Luogo:`, filtroSede === 'tutte' ? 'Tutte le Sedi Operative' : filtroSede],
     ...(filtroTesto?.trim() ? [[`Ricerca Testuale:`, filtroTesto.trim()]] : []),
-    [`Totale Timbrature:`, String(timbrature.length), `Totale Ore Registrate:`, totaleOre.toFixed(2).replace('.', ',')],
+    [
+      `Totale Presenze Valide:`,
+      String(timbratureValidePerConteggio.length),
+      `Totale Ore Registrate:`,
+      totaleOre.toFixed(2).replace('.', ','),
+    ],
     [],
   ];
 
@@ -276,12 +293,26 @@ export function esportaReportTimbratureCSV(params: ExportReportTimbratureParams)
 
   const dataRows = timbrature.map((t, idx) => {
     const vol = trovaVolontarioRecord(t, volontari);
-    const stato = !t.orarioUscita
-      ? 'Turno in Corso (Aperto)'
+    const scadutaNfc = isTimbraturaNfcScaduta24h(t);
+    const hasUscitaValida = isTimbraturaConUscitaValida(t);
+    const stato = scadutaNfc
+      ? 'Solo Entrata NFC (senza uscita)'
+      : !hasUscitaValida
+      ? isTimbraturaNfc(t)
+        ? 'Turno in Corso (NFC)'
+        : 'Turno in Corso (Aperto)'
       : t.modificataDaAdmin
       ? 'Modificata da Admin'
+      : isTimbraturaNfc(t)
+      ? 'Originale NFC'
       : 'Originale GPS/App';
-    const sedeUscitaVal = t.sedeUscita || (t.orarioUscita ? t.sede || '' : 'In Turno');
+    const sedeUscitaVal = scadutaNfc ? '' : t.sedeUscita || (hasUscitaValida ? t.sede || '' : 'In Turno');
+    const uscitaVal = scadutaNfc ? '' : t.orarioUscita || 'In Turno';
+    const oreVal = scadutaNfc
+      ? ''
+      : hasUscitaValida && typeof t.oreTotali === 'number'
+      ? t.oreTotali.toFixed(2).replace('.', ',')
+      : '0,00';
     return [
       idx + 1,
       formatDataItaliana(t.data),
@@ -294,8 +325,8 @@ export function esportaReportTimbratureCSV(params: ExportReportTimbratureParams)
       sedeUscitaVal,
       t.attivitaSvolta || '—',
       t.orarioIngresso || '',
-      t.orarioUscita || 'In Turno',
-      typeof t.oreTotali === 'number' ? t.oreTotali.toFixed(2).replace('.', ',') : '0,00',
+      uscitaVal,
+      oreVal,
       formatDurataTimbratura(t),
       stato,
       t.modificataDaAdmin ? t.dataUltimaModifica || '' : '',
@@ -309,7 +340,7 @@ export function esportaReportTimbratureCSV(params: ExportReportTimbratureParams)
     'TOTALE GENERALE',
     '',
     '',
-    `${timbrature.length} Timbrature`,
+    `${timbratureValidePerConteggio.length} Presenze Valide`,
     '',
     '',
     '',
@@ -379,20 +410,40 @@ export function esportaReportTimbratureCSV(params: ExportReportTimbratureParams)
  */
 export function esportaReportTimbratureExcel(params: ExportReportTimbratureParams): string {
   const { timbrature, volontari, etichettaVolontario, etichettaPeriodo, filtroSede, filtroTesto } = params;
-  const totaleOre = Math.round(timbrature.reduce((acc, t) => acc + (Number(t.oreTotali) || 0), 0) * 100) / 100;
+  const timbratureValidePerConteggio = timbrature.filter((t) => !isTimbraturaNfcScaduta24h(t));
+  const totaleOre =
+    Math.round(
+      timbratureValidePerConteggio.reduce(
+        (acc, t) => acc + (isTimbraturaConUscitaValida(t) ? Number(t.oreTotali) || 0 : 0),
+        0
+      ) * 100
+    ) / 100;
   const riepilogoVolontari = calcolaRiepilogoPerVolontario(timbrature, volontari);
 
   const dataRowsHtml = timbrature
     .map((t, idx) => {
       const vol = trovaVolontarioRecord(t, volontari);
-      const stato = !t.orarioUscita
-        ? 'In Corso (Aperto)'
+      const scadutaNfc = isTimbraturaNfcScaduta24h(t);
+      const hasUscitaValida = isTimbraturaConUscitaValida(t);
+      const stato = scadutaNfc
+        ? 'Solo Entrata NFC (senza uscita)'
+        : !hasUscitaValida
+        ? isTimbraturaNfc(t)
+          ? 'In Corso (NFC)'
+          : 'In Corso (Aperto)'
         : t.modificataDaAdmin
         ? `Modificata Admin (${t.operatoreModifica || 'Admin'})`
+        : isTimbraturaNfc(t)
+        ? 'Originale NFC'
         : 'Originale GPS/App';
-      const oreVal = typeof t.oreTotali === 'number' ? t.oreTotali.toFixed(2).replace('.', ',') : '0,00';
+      const oreVal = scadutaNfc
+        ? ''
+        : hasUscitaValida && typeof t.oreTotali === 'number'
+        ? t.oreTotali.toFixed(2).replace('.', ',')
+        : '0,00';
       const bg = idx % 2 === 0 ? '#ffffff' : '#f8fafc';
-      const sedeUscitaVal = t.sedeUscita || (t.orarioUscita ? t.sede || '' : 'In Turno');
+      const sedeUscitaVal = scadutaNfc ? '' : t.sedeUscita || (hasUscitaValida ? t.sede || '' : 'In Turno');
+      const uscitaVal = scadutaNfc ? '' : t.orarioUscita || 'In Turno';
       return `
         <tr style="background:${bg};">
           <td style="border:1px solid #cbd5e1;padding:5px;text-align:center;">${idx + 1}</td>
@@ -405,7 +456,7 @@ export function esportaReportTimbratureExcel(params: ExportReportTimbratureParam
           <td style="border:1px solid #cbd5e1;padding:5px;">${escapeHTML(sedeUscitaVal)}</td>
           <td style="border:1px solid #cbd5e1;padding:5px;font-weight:bold;">${escapeHTML(t.attivitaSvolta || '—')}</td>
           <td style="border:1px solid #cbd5e1;padding:5px;text-align:center;mso-number-format:'\\@';">${escapeHTML(t.orarioIngresso || '')}</td>
-          <td style="border:1px solid #cbd5e1;padding:5px;text-align:center;mso-number-format:'\\@';">${escapeHTML(t.orarioUscita || 'In Turno')}</td>
+          <td style="border:1px solid #cbd5e1;padding:5px;text-align:center;mso-number-format:'\\@';">${escapeHTML(uscitaVal)}</td>
           <td style="border:1px solid #cbd5e1;padding:5px;text-align:right;font-weight:bold;mso-number-format:'0\\.00';">${oreVal}</td>
           <td style="border:1px solid #cbd5e1;padding:5px;text-align:center;">${escapeHTML(formatDurataTimbratura(t))}</td>
           <td style="border:1px solid #cbd5e1;padding:5px;">${escapeHTML(stato)}</td>
@@ -505,7 +556,7 @@ export function esportaReportTimbratureExcel(params: ExportReportTimbratureParam
     }
     <tr style="background:#fef3c7;font-weight:bold;">
       <td colspan="11" style="border:1px solid #0f172a;padding:7px;text-align:right;text-transform:uppercase;">
-        TOTALE GENERALE (${timbrature.length} TIMBRATURE):
+        TOTALE GENERALE (${timbratureValidePerConteggio.length} PRESENZE VALIDE):
       </td>
       <td style="border:1px solid #0f172a;padding:7px;text-align:right;mso-number-format:'0\\.00';">${totaleOre.toFixed(2).replace('.', ',')}</td>
       <td style="border:1px solid #0f172a;padding:7px;text-align:center;">${escapeHTML(formatSecondiInDurata(Math.round(totaleOre * 3600)))}</td>

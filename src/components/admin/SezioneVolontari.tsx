@@ -74,6 +74,11 @@ import { normalizzaNomeCarraraTesto, normalizzaListaLuoghiTimbratura } from '../
 import { calcolaCauzioneTotale } from '../../data/vestiarioDocumenti';
 import { realtime } from '../../services/realtime';
 import {
+  isTimbraturaConUscitaValida,
+  isTimbraturaNfc,
+  isTimbraturaNfcScaduta24h
+} from '../../utils/raspberryDisplayConfig';
+import {
   ModalitaPeriodoTimbrature,
   formatLocalISODate,
   normalizzaDataISO,
@@ -642,6 +647,7 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
   // Calcolo automatico delle ore di servizio timbrate nell'anno solare (2026) per ciascun volontario
   const calcolaOreAnnoVolontario = (vol: Volontario, anno = '2026') => {
     const list = (timbrature || []).filter((t) => {
+      if (isTimbraturaNfcScaduta24h(t) || !isTimbraturaConUscitaValida(t)) return false;
       const matchId = vol.id && t.volontarioId === vol.id;
       const matchNome = (vol.nome || vol.cognome) && t.volontarioNome && (
         t.volontarioNome.trim().toLowerCase() === `${vol.nome} ${vol.cognome}`.trim().toLowerCase() ||
@@ -660,11 +666,18 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
   // Statistiche globali delle timbrature dell'anno per la Centrale
   const statisticheOreAnno = React.useMemo(() => {
     const anno = '2026';
-    const timbAnno = (timbrature || []).filter((t) => t.data && t.data.startsWith(anno) && typeof t.oreTotali === 'number');
+    const timbAnno = (timbrature || []).filter(
+      (t) =>
+        !isTimbraturaNfcScaduta24h(t) &&
+        isTimbraturaConUscitaValida(t) &&
+        t.data &&
+        t.data.startsWith(anno) &&
+        typeof t.oreTotali === 'number'
+    );
     const totaleOre = Math.round(timbAnno.reduce((acc, curr) => acc + (curr.oreTotali || 0), 0) * 10) / 10;
     const totaleTurni = timbAnno.length;
     
-    // Volontari unici con almeno una timbratura
+    // Volontari unici con almeno una timbratura valida
     const volontariUnici = new Set(timbAnno.map((t) => t.volontarioId || t.volontarioNome).filter(Boolean));
     const mediaOre = volontariUnici.size > 0 ? Math.round((totaleOre / volontariUnici.size) * 10) / 10 : 0;
 
@@ -1273,8 +1286,12 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
     }
   };
 
-  // Totale ore timbrate filtrate
-  const totaleOreFiltrate = timbratureFiltrate.reduce((acc, curr) => acc + (curr.oreTotali || 0), 0);
+  // Totale ore e presenze valide filtrate (esclude chiusure automatiche NFC >24h)
+  const presenzeValideFiltrate = timbratureFiltrate.filter((t) => !isTimbraturaNfcScaduta24h(t));
+  const totaleOreFiltrate = presenzeValideFiltrate.reduce(
+    (acc, curr) => acc + (isTimbraturaConUscitaValida(curr) ? curr.oreTotali || 0 : 0),
+    0
+  );
 
   return (
     <div className="w-full max-w-7xl mx-auto space-y-5 animate-in fade-in duration-200">
@@ -2543,8 +2560,8 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
                 </div>
                 <div className="flex items-center gap-4 text-xs font-mono">
                   <div className="text-right">
-                    <span className="text-[10px] text-slate-400 block uppercase">Log nel Periodo</span>
-                    <strong className="text-white text-sm">{timbratureFiltrate.length}</strong>
+                    <span className="text-[10px] text-slate-400 block uppercase">Presenze Valide</span>
+                    <strong className="text-white text-sm">{presenzeValideFiltrate.length}</strong>
                   </div>
                   <div className="text-right">
                     <span className="text-[10px] text-slate-400 block uppercase">Ore Totali Periodo</span>
@@ -2558,7 +2575,10 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-2 border-t border-slate-800/80">
               <div className="flex flex-wrap items-center gap-4 text-xs font-mono">
                 <span className="text-slate-400">
-                  Timbrature trovate: <strong className="text-white font-bold">{timbratureFiltrate.length}</strong>
+                  Presenze valide: <strong className="text-white font-bold">{presenzeValideFiltrate.length}</strong>
+                  {timbratureFiltrate.length !== presenzeValideFiltrate.length && (
+                    <span className="ml-1 text-[10px] text-slate-500">({timbratureFiltrate.length} righe)</span>
+                  )}
                 </span>
                 <span className="text-slate-400">
                   Totale Ore Filtrate: <strong className="text-amber-400 font-bold text-sm">{totaleOreFiltrate.toFixed(1)} Ore</strong>
@@ -2622,13 +2642,19 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
                         <td className="py-3 px-4 font-mono">
                           <span className="text-emerald-400 font-bold">{t.orarioIngresso}</span>
                           <span className="text-slate-500 mx-1.5">➔</span>
-                          <span className={t.orarioUscita ? 'text-amber-400 font-bold' : 'text-slate-500 italic'}>
-                            {t.orarioUscita || 'In Turno...'}
-                          </span>
+                          {isTimbraturaNfcScaduta24h(t) ? (
+                            <span className="text-slate-500 italic" title="Ingresso NFC senza uscita oltre 24h: chiuso automaticamente dal display senza uscita sul file timbrature">
+                              —
+                            </span>
+                          ) : (
+                            <span className={t.orarioUscita ? 'text-amber-400 font-bold' : 'text-slate-500 italic'}>
+                              {t.orarioUscita || 'In Turno...'}
+                            </span>
+                          )}
                         </td>
                         <td className="py-3 px-4 font-mono font-black text-amber-400 text-sm">
-                          <div>{t.oreTotali !== undefined ? `${t.oreTotali}h` : '—'}</div>
-                          {t.orarioUscita && (
+                          <div>{!isTimbraturaNfcScaduta24h(t) && isTimbraturaConUscitaValida(t) && t.oreTotali !== undefined ? `${t.oreTotali}h` : '—'}</div>
+                          {!isTimbraturaNfcScaduta24h(t) && t.orarioUscita && (
                             <div className="text-[10px] font-normal text-slate-400">{formatDurataTimbratura(t)}</div>
                           )}
                         </td>
@@ -2652,13 +2678,21 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
                           )}
                         </td>
                         <td className="py-3 px-4">
-                          {t.modificataDaAdmin ? (
+                          {isTimbraturaNfcScaduta24h(t) ? (
+                            <span className="px-2 py-0.5 rounded bg-slate-900 text-slate-400 border border-slate-700 text-[10px] font-bold block w-fit" title="Auto-uscita NFC dopo 24h: esclusa da tutti i conteggi presenze e senza orario di uscita sul file timbrature">
+                              Solo Entrata NFC (non valida)
+                            </span>
+                          ) : t.modificataDaAdmin ? (
                             <span className="px-2 py-0.5 rounded bg-amber-950 text-amber-300 border border-amber-700/50 text-[10px] font-bold block w-fit" title={`Modificato da ${t.operatoreModifica || 'Admin'} il ${t.dataUltimaModifica || ''}`}>
                               ✏️ Modificata da Admin
                             </span>
+                          ) : isTimbraturaNfc(t) ? (
+                            <span className="px-2 py-0.5 rounded bg-cyan-950 text-cyan-300 border border-cyan-700/50 text-[10px] font-bold block w-fit">
+                              NFC
+                            </span>
                           ) : (
                             <span className="px-2 py-0.5 rounded bg-slate-900 text-slate-400 text-[10px] font-bold block w-fit">
-                              Originale
+                              Originale App
                             </span>
                           )}
                           {t.note && <div className="text-[10px] text-slate-400 italic mt-0.5 max-w-[200px] truncate">{t.note}</div>}
@@ -3565,7 +3599,7 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
                     <div className="text-right">
                       <span className="font-bold text-slate-600 block uppercase">Totale Ore Certificate:</span>
                       <span className="font-black text-amber-700 font-mono text-xs">
-                        {totaleOreFiltrate.toFixed(1)} Ore ({timbratureFiltrate.length} turni)
+                        {totaleOreFiltrate.toFixed(1)} Ore ({presenzeValideFiltrate.length} turni)
                       </span>
                     </div>
                   </div>
@@ -3623,11 +3657,11 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
                               {t.orarioIngresso}
                             </td>
                             <td className="py-1.5 px-2 border-r border-slate-300 text-center font-mono font-bold text-slate-900">
-                              {t.orarioUscita || '—'}
+                              {!isTimbraturaNfcScaduta24h(t) && t.orarioUscita ? t.orarioUscita : '—'}
                             </td>
                             <td className="py-1.5 px-2 border-r border-slate-300 text-center font-mono font-black text-slate-950">
-                              <div>{t.oreTotali !== undefined ? `${t.oreTotali}h` : '—'}</div>
-                              {t.orarioUscita && (
+                              <div>{!isTimbraturaNfcScaduta24h(t) && isTimbraturaConUscitaValida(t) && t.oreTotali !== undefined ? `${t.oreTotali}h` : '—'}</div>
+                              {!isTimbraturaNfcScaduta24h(t) && t.orarioUscita && (
                                 <div className="text-[9px] font-normal text-slate-600">{formatDurataTimbratura(t)}</div>
                               )}
                             </td>
@@ -3647,7 +3681,7 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
                           {totaleOreFiltrate.toFixed(1)}h
                         </td>
                         <td className="py-2 px-2 text-center text-[9px] text-slate-600">
-                          {timbratureFiltrate.length} Servizi
+                          {presenzeValideFiltrate.length} Servizi
                         </td>
                       </tr>
                     </tfoot>

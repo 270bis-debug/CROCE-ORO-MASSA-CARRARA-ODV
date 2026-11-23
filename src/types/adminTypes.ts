@@ -12,6 +12,7 @@ export interface TimbraturaVolontario {
   volontarioNome: string;
   qualifica: string;
   data: string; // YYYY-MM-DD
+  dataUscita?: string; // YYYY-MM-DD (data effettiva di uscita, utile per turni notturni o storico)
   orarioIngresso: string; // HH:mm:ss
   orarioUscita?: string; // HH:mm:ss
   oreTotali?: number; // es. 6.5
@@ -29,6 +30,9 @@ export interface TimbraturaVolontario {
   oreEMinuti?: string; // es. "2h 30m 15s"
   attivitaSvolta?: string; // Cosa sta facendo il volontario/operatore (turno, corso o descrizione manuale)
   tipoAttivita?: 'turno' | 'corso' | 'manuale';
+  metodoTimbratura?: 'app' | 'nfc' | 'manuale'; // Origine timbratura: App/GPS, Lettore NFC Raspberry o inserimento manuale
+  autoChiusuraNfc24h?: boolean; // True se ingresso NFC >24h senza uscita: rimosso dai presenti/display, ma orarioUscita resta vuoto e non conta mai nei conteggi presenze o sul file timbrature
+  autoChiusuraNfc24hAt?: string; // Timestamp ISO interno della chiusura automatica presenza >24h
   note?: string;
 }
 
@@ -599,6 +603,11 @@ export interface SedeAssociativaCompleta {
   bancaAppoggio?: string;
   ibanBanca?: string;
   contiCorrenti?: ContoCorrenteSede[];
+  // Configurazione Wi-Fi associativo della singola sezione per Raspberry Pi (privata, MAI pubblicata su board pubbliche)
+  wifiSsid?: string;
+  wifiPassword?: string;
+  wifiSicurezza?: 'WPA-PSK' | 'SAE' | 'NONE';
+  wifiCountry?: string;
 }
 
 // ---------------------------------------------------------------------------

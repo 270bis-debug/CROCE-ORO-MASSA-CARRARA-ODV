@@ -194,14 +194,14 @@ export const ModalNumeriUtili: React.FC<ModalNumeriUtiliProps> = ({
         onClick={(e) => e.stopPropagation()}
       >
         {/* Intestazione Modale Unificata */}
-        <div className="bg-[#1d1a60] text-white p-3.5 sm:p-4 flex items-center justify-between gap-2 border-b-2 border-[#bfa353]">
-          <div className="flex items-center gap-2.5 min-w-0">
-            <CroceOroLogo size="sm" className="shrink-0" />
-            <div className="min-w-0">
-              <span className="font-black text-xs sm:text-sm uppercase tracking-wide block text-amber-300 truncate">
+        <div className="bg-[#1d1a60] text-white p-3.5 sm:p-4 flex items-start sm:items-center justify-between gap-2 border-b-2 border-[#bfa353]">
+          <div className="flex items-start sm:items-center gap-2.5 min-w-0 flex-1">
+            <CroceOroLogo size="sm" className="shrink-0 mt-0.5 sm:mt-0" />
+            <div className="min-w-0 flex-1">
+              <span className="font-black text-xs sm:text-sm uppercase tracking-wide block text-amber-300 whitespace-normal break-words leading-snug">
                 Numeri Utili di Emergenza & Interni
               </span>
-              <span className="text-[10px] sm:text-xs text-slate-300 block truncate">
+              <span className="text-[10px] sm:text-xs text-slate-300 block whitespace-normal break-words leading-snug mt-0.5">
                 {modalitaModifica
                   ? 'Modalità Modifica: aggiungi, modifica o rimuovi numeri in tempo reale'
                   : 'Massa-Carrara, NUE 112/118, C.O.C. & Interni Croce Oro'}
@@ -399,7 +399,7 @@ export const ModalNumeriUtili: React.FC<ModalNumeriUtiliProps> = ({
                       </button>
                     </div>
                   ) : (
-                    <span className="text-[11px] sm:text-xs font-black uppercase text-[#1d1a60] tracking-wide">
+                    <span className="text-[11px] sm:text-xs font-black uppercase text-[#1d1a60] tracking-wide min-w-0 flex-1 whitespace-normal break-words leading-snug">
                       {cat.categoria} ({vociFiltrate.length})
                     </span>
                   )}
@@ -574,25 +574,25 @@ export const ModalNumeriUtili: React.FC<ModalNumeriUtiliProps> = ({
                       return (
                         <div
                           key={voce.id}
-                          className="flex items-center justify-between p-2.5 rounded-xl bg-slate-50 border-l-4 border-[#1d1a60] hover:bg-slate-100 transition-all shadow-sm gap-2"
+                          className="flex flex-wrap sm:flex-nowrap items-center justify-between p-2.5 rounded-xl bg-slate-50 border-l-4 border-[#1d1a60] hover:bg-slate-100 transition-all shadow-sm gap-x-2.5 gap-y-2"
                         >
-                          <div className="min-w-0 flex-1">
-                            <div className="font-bold text-slate-900 text-xs truncate">
+                          <div className="min-w-[140px] flex-1">
+                            <div className="font-bold text-slate-900 text-xs whitespace-normal break-words leading-snug">
                               {voce.nome}
                             </div>
-                            <div className="flex items-center gap-2 flex-wrap mt-0.5">
-                              <span className="font-mono text-[11.5px] font-semibold text-slate-700 tracking-wide">
+                            <div className="flex items-baseline gap-x-2 gap-y-0.5 flex-wrap mt-0.5">
+                              <span className="font-mono text-[11.5px] font-semibold text-slate-700 tracking-wide whitespace-normal break-words">
                                 {voce.numero}
                               </span>
                               {voce.note && (
-                                <span className="text-[10px] text-slate-500 italic">
+                                <span className="text-[10.5px] text-slate-500 italic whitespace-normal break-words leading-snug">
                                   • {voce.note}
                                 </span>
                               )}
                             </div>
                           </div>
 
-                          <div className="flex items-center gap-1.5 shrink-0">
+                          <div className="flex items-center flex-wrap gap-1.5 shrink-0 ml-auto">
                             {canManage && modalitaModifica && (
                               <>
                                 <button

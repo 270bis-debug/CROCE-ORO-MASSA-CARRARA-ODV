@@ -611,6 +611,55 @@
         }
       },
       "required": ["boardId", "version", "turni", "sedi", "updatedByUid", "createdAt", "updatedAt"]
+    },
+    "PublicRaspberryBoard": {
+      "title": "PublicRaspberryBoard",
+      "description": "Zero-PII published Raspberry Pi section display board (single whitelisted document display_v1) exposing central association notices, section notices, active/exited shift badge timestamps (display names only, zero PII), and display configuration for unattended Raspberry Pi kiosks without login.",
+      "type": "object",
+      "properties": {
+        "boardId": {
+          "type": "string",
+          "enum": ["display_v1"],
+          "minLength": 10,
+          "maxLength": 10,
+          "pattern": "^display_v1$"
+        },
+        "version": {
+          "type": "number",
+          "description": "Monotonic revision counter incremented on every Raspberry board publication"
+        },
+        "sedi": {
+          "type": "array",
+          "description": "Bounded list (max 60) of zero-PII territorial section definitions"
+        },
+        "bacheca": {
+          "type": "array",
+          "description": "Bounded list (max 150) of zero-PII association and section notice cards"
+        },
+        "timbrature": {
+          "type": "array",
+          "description": "Bounded list (max 350) of zero-PII active and recent exited shift badge records (display name, role, entry/exit timestamps, section only)"
+        },
+        "config": {
+          "type": "object",
+          "description": "Display preferences configured by Admin, President, or Secretary"
+        },
+        "updatedByUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["boardId", "version", "sedi", "bacheca", "timbrature", "config", "updatedByUid", "createdAt", "updatedAt"]
     }
   },
   "firestore": {
@@ -657,6 +706,10 @@
     "/public_board/{boardId}": {
       "schema": { "$ref": "#/entities/PublicBoard" },
       "description": "Zero-PII published shift schedule board (single document shifts_v1) for Monitor Mode and volunteer shift boards."
+    },
+    "/public_raspberry/{boardId}": {
+      "schema": { "$ref": "#/entities/PublicRaspberryBoard" },
+      "description": "Zero-PII published Raspberry Pi section display board (single document display_v1) for association notices, section notices, and badge presence/exit timestamps."
     }
   }
 }

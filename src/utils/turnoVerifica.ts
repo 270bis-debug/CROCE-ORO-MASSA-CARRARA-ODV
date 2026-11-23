@@ -2,6 +2,7 @@ import { TurnoSedeOperativa, TimbraturaVolontario, CorsoFormazione } from '../ty
 import { Volontario } from '../components/DatabaseVolontariModal';
 import { addDaysISODate, getItalianDateParts, parseItalianDateTimeMs } from './italianTime';
 import { getCapoServizioTurno, getVolontariAssegnatiTurno } from './tipiTurno';
+import { isTimbraturaAttualmentePresente } from './raspberryDisplayConfig';
 
 export interface EsitoVerificaTurno {
   isDiTurno: boolean;
@@ -384,7 +385,7 @@ export function hasTimbraturaApertaPerVolontario(
   const nomeCompletoNorm = normalizzaNome(`${vol.nome || ''} ${vol.cognome || ''}`);
   const cognomeNomeNorm = normalizzaNome(`${vol.cognome || ''} ${vol.nome || ''}`);
   return listaTimbrature.find((t) => {
-    if (!t || (t.orarioUscita && String(t.orarioUscita).trim() !== '')) return false;
+    if (!isTimbraturaAttualmentePresente(t)) return false;
     if (vol.id && t.volontarioId === vol.id) return true;
     const tNomeNorm = normalizzaNome(t.volontarioNome);
     if (tNomeNorm && (tNomeNorm === nomeCompletoNorm || (cognomeNomeNorm && tNomeNorm === cognomeNomeNorm))) {

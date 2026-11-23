@@ -4,7 +4,7 @@
 // 2. Strategia Network-First su navigazione per caricare SEMPRE l'ultima release pubblicata
 // 3. Notifiche Push in Background ad Alta Priorità e Risveglio Schermo Bloccato
 
-const CACHE_NAME = 'croce-oro-cache-v5.0.9';
+const CACHE_NAME = 'croce-oro-cache-v5.1.3';
 const MANDATORY_PERMS_REVISION = 'radio-bg-audio-push-v1';
 const MANDATORY_PERMS_META_CACHE = 'croce-oro-perm-revisions-v1';
 

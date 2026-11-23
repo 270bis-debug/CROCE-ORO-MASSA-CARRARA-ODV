@@ -2364,6 +2364,363 @@ export async function readPublicBoardFromServer(): Promise<{
   }
 }
 
+// =============================================================================
+// ZERO-PII PUBLIC RASPBERRY SECTION DISPLAY BOARD (public_raspberry/display_v1)
+// Consente ai monitor collegati a Raspberry Pi nelle singole sezioni (senza login)
+// di visualizzare in tempo reale:
+// 1. Bacheca Associativa (Sede Centrale)
+// 2. Bacheca di Sezione (Singola Sezione)
+// 3. Volontari presenti di turno (badgiato ingresso) e usciti (ingresso + uscita)
+// =============================================================================
+const PUBLIC_RASPBERRY_DOC_ID = 'display_v1';
 
+export interface PublicRaspberryBoardDoc {
+  boardId: 'display_v1';
+  version: number;
+  sedi: any[];
+  bacheca: any[];
+  timbrature: any[];
+  config: Record<string, any>;
+  updatedByUid: string;
+  createdAt?: any;
+  updatedAt?: any;
+}
 
+export function buildPublicRaspberryBacheca(bacheca: any[]): any[] {
+  if (!Array.isArray(bacheca)) return [];
+  const activeOnly = bacheca
+    .filter((c) => c && typeof c === 'object' && c.attiva !== false)
+    .sort((a, b) => {
+      if (Boolean(a.evidenziata) !== Boolean(b.evidenziata)) return a.evidenziata ? -1 : 1;
+      const dtA = `${a.dataPubblicazione || ''} ${a.oraPubblicazione || ''}`;
+      const dtB = `${b.dataPubblicazione || ''} ${b.oraPubblicazione || ''}`;
+      return dtB.localeCompare(dtA);
+    });
 
+  const out: any[] = [];
+  for (const c of activeOnly) {
+    const id = typeof c.id === 'string' ? c.id.trim().slice(0, 128) : '';
+    const titolo = typeof c.titolo === 'string' ? c.titolo.trim().slice(0, 220) : '';
+    if (!id || !titolo) continue;
+    out.push({
+      id,
+      titolo,
+      contenuto: typeof c.contenuto === 'string' ? c.contenuto.trim().slice(0, 1800) : '',
+      sezioneTargetId: typeof c.sezioneTargetId === 'string' ? c.sezioneTargetId.trim().slice(0, 128) : 'tutte',
+      sezioneTargetNome: typeof c.sezioneTargetNome === 'string' ? c.sezioneTargetNome.trim().slice(0, 160) : 'Tutte le Sezioni',
+      priorita: typeof c.priorita === 'string' ? c.priorita.trim().slice(0, 32) : 'Ordinaria',
+      categoria: typeof c.categoria === 'string' ? c.categoria.trim().slice(0, 64) : 'Comunicazione Generale',
+      dataPubblicazione: typeof c.dataPubblicazione === 'string' ? c.dataPubblicazione.trim().slice(0, 24) : '',
+      oraPubblicazione: typeof c.oraPubblicazione === 'string' ? c.oraPubblicazione.trim().slice(0, 16) : '',
+      autore: typeof c.autore === 'string' ? c.autore.trim().slice(0, 120) : 'Direzione',
+      attiva: true,
+      evidenziata: Boolean(c.evidenziata),
+      ...(typeof c.updatedAt === 'number' ? { updatedAt: c.updatedAt } : {}),
+    });
+    if (out.length >= 140) break;
+  }
+  return out;
+}
+
+export function buildPublicRaspberryTimbrature(timbrature: any[]): any[] {
+  if (!Array.isArray(timbrature)) return [];
+  const openItems: any[] = [];
+  const closedItems: any[] = [];
+  const nowMs = Date.now();
+
+  for (const t of timbrature) {
+    if (!t || typeof t !== 'object') continue;
+    const hasExit = typeof t.orarioUscita === 'string' && t.orarioUscita.trim().length > 0;
+    const isAutoClosed = t.autoChiusuraNfc24h === true;
+    const isNfc =
+      t.metodoTimbratura === 'nfc' ||
+      String(t.note || '').toLowerCase().includes('[nfc]') ||
+      String(t.note || '').toLowerCase().includes('lettore nfc');
+
+    if (!hasExit) {
+      if (isAutoClosed) continue;
+      if (isNfc && typeof t.data === 'string' && typeof t.orarioIngresso === 'string') {
+        const timeClean = t.orarioIngresso.trim().length === 5 ? `${t.orarioIngresso.trim()}:00` : t.orarioIngresso.trim().slice(0, 8);
+        const startMs = new Date(`${t.data.trim().slice(0, 10)}T${timeClean}`).getTime();
+        if (!Number.isNaN(startMs) && nowMs - startMs >= 24 * 3600 * 1000) {
+          continue;
+        }
+      }
+      openItems.push(t);
+    } else if (!isAutoClosed) {
+      closedItems.push(t);
+    }
+  }
+
+  closedItems.sort((a, b) => {
+    const dtA = `${a.dataUscita || a.data || ''} ${a.orarioUscita || a.orarioIngresso || ''}`;
+    const dtB = `${b.dataUscita || b.data || ''} ${b.orarioUscita || b.orarioIngresso || ''}`;
+    return dtB.localeCompare(dtA);
+  });
+
+  openItems.sort((a, b) => {
+    const dtA = `${a.data || ''} ${a.orarioIngresso || ''}`;
+    const dtB = `${b.data || ''} ${b.orarioIngresso || ''}`;
+    return dtB.localeCompare(dtA);
+  });
+
+  // Garantisce almeno gli ultimi 15 usciti per ogni singola sede (così ogni display ha sempre gli ultimi 10 completi)
+  const perSedeCount = new Map<string, number>();
+  const balancedClosed: any[] = [];
+  const overflowClosed: any[] = [];
+  for (const item of closedItems) {
+    const key = String(item.sede || item.sedeUscita || 'altro').trim().toLowerCase();
+    const cur = perSedeCount.get(key) || 0;
+    if (cur < 15) {
+      perSedeCount.set(key, cur + 1);
+      balancedClosed.push(item);
+    } else {
+      overflowClosed.push(item);
+    }
+  }
+
+  const combined = [...openItems, ...balancedClosed, ...overflowClosed];
+  const out: any[] = [];
+
+  for (const t of combined) {
+    const id = typeof t.id === 'string' ? t.id.trim().slice(0, 128) : '';
+    const volontarioNome = typeof t.volontarioNome === 'string' ? t.volontarioNome.trim().slice(0, 120) : '';
+    if (!id || !volontarioNome) continue;
+    const clean: Record<string, any> = {
+      id,
+      volontarioNome,
+      qualifica: typeof t.qualifica === 'string' ? t.qualifica.trim().slice(0, 80) : 'Volontario',
+      data: typeof t.data === 'string' ? t.data.trim().slice(0, 16) : '',
+      orarioIngresso: typeof t.orarioIngresso === 'string' ? t.orarioIngresso.trim().slice(0, 16) : '',
+      sede: typeof t.sede === 'string' ? t.sede.trim().slice(0, 160) : '',
+    };
+    if (typeof t.dataUscita === 'string' && t.dataUscita.trim()) {
+      clean.dataUscita = t.dataUscita.trim().slice(0, 16);
+    }
+    if (typeof t.orarioUscita === 'string' && t.orarioUscita.trim()) {
+      clean.orarioUscita = t.orarioUscita.trim().slice(0, 16);
+    }
+    if (typeof t.sedeUscita === 'string' && t.sedeUscita.trim()) {
+      clean.sedeUscita = t.sedeUscita.trim().slice(0, 160);
+    }
+    if (typeof t.oreTotali === 'number' && Number.isFinite(t.oreTotali)) {
+      clean.oreTotali = Math.round(t.oreTotali * 100) / 100;
+    }
+    if (typeof t.oreEMinuti === 'string' && t.oreEMinuti.trim()) {
+      clean.oreEMinuti = t.oreEMinuti.trim().slice(0, 32);
+    }
+    if (typeof t.mezzoAssegnato === 'string' && t.mezzoAssegnato.trim()) {
+      clean.mezzoAssegnato = t.mezzoAssegnato.trim().slice(0, 64);
+    }
+    if (typeof t.attivitaSvolta === 'string' && t.attivitaSvolta.trim()) {
+      clean.attivitaSvolta = t.attivitaSvolta.trim().slice(0, 160);
+    }
+    if (typeof t.tipoAttivita === 'string' && t.tipoAttivita.trim()) {
+      clean.tipoAttivita = t.tipoAttivita.trim().slice(0, 32);
+    }
+    if (t.metodoTimbratura === 'nfc' || t.metodoTimbratura === 'app' || t.metodoTimbratura === 'manuale') {
+      clean.metodoTimbratura = t.metodoTimbratura;
+    }
+    out.push(clean);
+    if (out.length >= 320) break;
+  }
+
+  return out;
+}
+
+let lastPublishedPublicRaspberrySig = '';
+let publicRaspberrySyncChain: Promise<void> = Promise.resolve();
+
+export function resetPublicRaspberrySyncCache(): void {
+  lastPublishedPublicRaspberrySig = '';
+}
+
+export function syncPublicRaspberryBoardFirestore(
+  sedi: any[],
+  bacheca: any[],
+  timbrature: any[],
+  config: Record<string, any>
+): Promise<void> {
+  const user = auth.currentUser;
+  if (!user || !user.emailVerified) {
+    return Promise.resolve();
+  }
+  const cleanSedi = buildPublicBoardSedi(Array.isArray(sedi) ? sedi : []);
+  const cleanBacheca = buildPublicRaspberryBacheca(Array.isArray(bacheca) ? bacheca : []);
+  const cleanTimbrature = buildPublicRaspberryTimbrature(Array.isArray(timbrature) ? timbrature : []);
+  const cleanConfig = config && typeof config === 'object' ? sanitizeForFirestore(config) : {};
+
+  if (cleanSedi.length === 0 && cleanBacheca.length === 0 && cleanTimbrature.length === 0) {
+    return Promise.resolve();
+  }
+
+  const sig = JSON.stringify({ cleanSedi, cleanBacheca, cleanTimbrature, cleanConfig });
+  if (sig === lastPublishedPublicRaspberrySig) {
+    return Promise.resolve();
+  }
+
+  publicRaspberrySyncChain = publicRaspberrySyncChain
+    .then(async () => {
+      const currentUser = auth.currentUser;
+      if (!currentUser || !currentUser.emailVerified) return;
+      if (sig === lastPublishedPublicRaspberrySig) return;
+
+      const docRef = doc(db, 'public_raspberry', PUBLIC_RASPBERRY_DOC_ID);
+      const sanitizedSedi = sanitizeForFirestore(cleanSedi);
+      const sanitizedBacheca = sanitizeForFirestore(cleanBacheca);
+      const sanitizedTimbrature = sanitizeForFirestore(cleanTimbrature);
+      try {
+        const snap = await getDoc(docRef);
+        if (!snap.exists()) {
+          await setDoc(docRef, {
+            boardId: PUBLIC_RASPBERRY_DOC_ID,
+            version: 1,
+            sedi: sanitizedSedi,
+            bacheca: sanitizedBacheca,
+            timbrature: sanitizedTimbrature,
+            config: cleanConfig,
+            updatedByUid: currentUser.uid,
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          });
+        } else {
+          const snapData = snap.data() as Partial<PublicRaspberryBoardDoc> | undefined;
+          const prevVer = typeof snapData?.version === 'number' && snapData.version >= 1 ? snapData.version : 1;
+          await updateDoc(docRef, {
+            version: prevVer + 1,
+            sedi: sanitizedSedi,
+            bacheca: sanitizedBacheca,
+            timbrature: sanitizedTimbrature,
+            config: cleanConfig,
+            updatedByUid: currentUser.uid,
+            updatedAt: serverTimestamp(),
+          });
+        }
+        lastPublishedPublicRaspberrySig = sig;
+      } catch (err) {
+        try {
+          handleFirestoreError(err, OperationType.WRITE, `public_raspberry/${PUBLIC_RASPBERRY_DOC_ID}`);
+        } catch {
+          // Non bloccare il sync principale se la pubblicazione Raspberry fallisce temporaneamente
+        }
+      }
+    })
+    .catch(() => {});
+
+  return publicRaspberrySyncChain;
+}
+
+async function readPublicRaspberryBoardViaRest(): Promise<{
+  exists: boolean;
+  data: PublicRaspberryBoardDoc | null;
+  status: 'ok' | 'not_found' | 'error';
+}> {
+  const url = `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(
+    firebaseConfig.projectId
+  )}/databases/${encodeURIComponent(
+    firebaseConfig.firestoreDatabaseId
+  )}/documents/public_raspberry/${PUBLIC_RASPBERRY_DOC_ID}?key=${encodeURIComponent(
+    firebaseConfig.apiKey
+  )}`;
+
+  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const timeoutId = controller ? setTimeout(() => controller.abort(), 8000) : null;
+
+  try {
+    const res = await fetch(url, {
+      method: 'GET',
+      cache: 'no-store',
+      signal: controller ? controller.signal : undefined,
+    });
+    if (timeoutId) clearTimeout(timeoutId);
+
+    if (res.status === 404) {
+      return { exists: false, data: null, status: 'not_found' };
+    }
+    if (!res.ok) {
+      return { exists: false, data: null, status: 'error' };
+    }
+    const json = await res.json();
+    const decoded = decodeFirestoreRestValue({ mapValue: { fields: json?.fields || {} } });
+    if (!decoded) {
+      return { exists: false, data: null, status: 'not_found' };
+    }
+    return {
+      exists: true,
+      data: {
+        boardId: 'display_v1',
+        version: typeof decoded.version === 'number' ? decoded.version : 1,
+        sedi: Array.isArray(decoded.sedi) ? decoded.sedi : [],
+        bacheca: Array.isArray(decoded.bacheca) ? decoded.bacheca : [],
+        timbrature: Array.isArray(decoded.timbrature) ? decoded.timbrature : [],
+        config: decoded.config && typeof decoded.config === 'object' ? decoded.config : {},
+        updatedByUid: String(decoded.updatedByUid || ''),
+        createdAt: decoded.createdAt,
+        updatedAt: decoded.updatedAt,
+      },
+      status: 'ok',
+    };
+  } catch {
+    if (timeoutId) clearTimeout(timeoutId);
+    return { exists: false, data: null, status: 'error' };
+  }
+}
+
+export function listenPublicRaspberryBoardFirestore(
+  onData: (exists: boolean, docData: PublicRaspberryBoardDoc | null) => void,
+  onError?: (err: Error) => void
+): Unsubscribe {
+  const path = `public_raspberry/${PUBLIC_RASPBERRY_DOC_ID}`;
+  return onSnapshot(
+    doc(db, 'public_raspberry', PUBLIC_RASPBERRY_DOC_ID),
+    (snapshot) => {
+      if (!snapshot.exists()) {
+        onData(false, null);
+      } else {
+        onData(true, snapshot.data() as PublicRaspberryBoardDoc);
+      }
+    },
+    (error) => {
+      try {
+        handleFirestoreError(error, OperationType.GET, path);
+      } catch (wrapped: any) {
+        onError?.(wrapped);
+      }
+    }
+  );
+}
+
+export async function readPublicRaspberryBoardFromServer(): Promise<{
+  exists: boolean;
+  data: PublicRaspberryBoardDoc | null;
+  status?: 'ok' | 'not_found' | 'error';
+}> {
+  const restRes = await readPublicRaspberryBoardViaRest();
+  if (restRes.status === 'ok' || restRes.status === 'not_found') {
+    return restRes;
+  }
+  const path = `public_raspberry/${PUBLIC_RASPBERRY_DOC_ID}`;
+  try {
+    const snap = await getDocFromServer(doc(db, 'public_raspberry', PUBLIC_RASPBERRY_DOC_ID));
+    return {
+      exists: snap.exists(),
+      data: snap.exists() ? (snap.data() as PublicRaspberryBoardDoc) : null,
+      status: snap.exists() ? 'ok' : 'not_found',
+    };
+  } catch {
+    try {
+      const snap = await getDoc(doc(db, 'public_raspberry', PUBLIC_RASPBERRY_DOC_ID));
+      return {
+        exists: snap.exists(),
+        data: snap.exists() ? (snap.data() as PublicRaspberryBoardDoc) : null,
+        status: snap.exists() ? 'ok' : 'not_found',
+      };
+    } catch (innerErr) {
+      try {
+        handleFirestoreError(innerErr, OperationType.GET, path);
+      } catch {
+        return { exists: false, data: null, status: 'error' };
+      }
+    }
+  }
+}

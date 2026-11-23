@@ -511,6 +511,7 @@ export interface ServerState {
   timbrature?: any[];
   bacheca?: any[];
   bachecaEliminatiIds?: string[];
+  raspberryDisplayConfig?: Record<string, any>;
   notificheBachecaRecenti?: NotificaBachecaRecord[];
   giornaleBordo?: any[];
   codiciEliminati?: string[];
@@ -7769,6 +7770,29 @@ async function startServer() {
     } catch (err: any) {
       console.error('[Sedi Associative] Errore aggiornamento sedi:', err);
       res.status(500).json({ error: 'Errore salvataggio sedi associative' });
+    }
+  });
+
+  // REST API per la configurazione Display Raspberry di Sezione
+  app.get('/api/raspberry-config', (_req, res) => {
+    res.json({ success: true, config: state.raspberryDisplayConfig || null });
+  });
+
+  app.post('/api/raspberry-config', (req, res) => {
+    try {
+      const cfg = req.body?.config;
+      if (!cfg || typeof cfg !== 'object') {
+        return res.status(400).json({ error: 'Payload config non valido' });
+      }
+      state.raspberryDisplayConfig = cfg;
+      persistState();
+      broadcast({
+        type: 'RASPBERRY_CONFIG_UPDATED',
+        config: state.raspberryDisplayConfig,
+      });
+      res.json({ success: true, config: state.raspberryDisplayConfig });
+    } catch (err: any) {
+      res.status(500).json({ error: 'Errore salvataggio configurazione Raspberry' });
     }
   });
 

@@ -1,7 +1,11 @@
 import { PosizioneGPS } from '../components/MappaOperativa';
 import { formatTimeItaly } from './italianTime';
+import { getEffectiveSimulatedDevice } from './deviceSimulation';
 
 export function isAppleMobileDevice(): boolean {
+  const simulated = getEffectiveSimulatedDevice();
+  if (simulated === 'apple') return true;
+  if (simulated === 'android') return false;
   if (typeof navigator === 'undefined') return false;
   const ua = navigator.userAgent || '';
   if (/iPhone|iPad|iPod/i.test(ua)) return true;

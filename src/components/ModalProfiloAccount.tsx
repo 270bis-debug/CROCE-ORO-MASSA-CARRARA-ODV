@@ -344,16 +344,16 @@ export const ModalProfiloAccount: React.FC<ModalProfiloAccountProps> = ({
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="px-4 sm:px-5 py-3.5 bg-gradient-to-r from-[#1d1a60] via-slate-900 to-slate-900 border-b border-slate-700/80 flex items-center justify-between gap-3">
-          <div className="flex items-center gap-3 min-w-0">
-            <div className="w-10 h-10 rounded-xl bg-amber-500/20 border border-amber-400/50 flex items-center justify-center shrink-0">
-              <User className="w-5 h-5 text-amber-400" />
+        <div className="shrink-0 px-3.5 sm:px-5 py-3.5 bg-gradient-to-r from-[#1d1a60] via-slate-900 to-slate-900 border-b border-slate-700/80 flex items-start sm:items-center justify-between gap-2.5">
+          <div className="flex items-start sm:items-center gap-2.5 sm:gap-3 min-w-0 flex-1">
+            <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-amber-500/20 border border-amber-400/50 flex items-center justify-center shrink-0 mt-0.5 sm:mt-0">
+              <User className="w-4 h-4 sm:w-5 sm:h-5 text-amber-400" />
             </div>
-            <div className="min-w-0">
-              <h2 className="text-base sm:text-lg font-black text-white truncate">
+            <div className="min-w-0 flex-1">
+              <h2 className="text-sm sm:text-lg font-black text-white whitespace-normal break-words leading-snug">
                 Profilo Account — {accountDisplayName}
               </h2>
-              <p className="text-[11px] text-slate-300 truncate">
+              <p className="text-[11px] text-slate-300 whitespace-normal break-words leading-snug mt-0.5">
                 Dati anagrafici in sola lettura, Email Notifiche, Cambio PIN e Passkey (Impronta / Face ID)
               </p>
             </div>
@@ -370,26 +370,26 @@ export const ModalProfiloAccount: React.FC<ModalProfiloAccountProps> = ({
 
         {/* Avviso se modalità simulazione */}
         {isSimulazione && (
-          <div className="px-4 py-2 bg-fuchsia-950/80 border-b border-fuchsia-500/40 text-fuchsia-200 text-xs font-bold flex items-center gap-2">
-            <AlertTriangle className="w-4 h-4 text-fuchsia-400 shrink-0" />
-            <span>
+          <div className="shrink-0 px-4 py-2 bg-fuchsia-950/80 border-b border-fuchsia-500/40 text-fuchsia-200 text-xs font-bold flex items-start sm:items-center gap-2">
+            <AlertTriangle className="w-4 h-4 text-fuchsia-400 shrink-0 mt-0.5 sm:mt-0" />
+            <span className="leading-snug">
               Modalità Simulazione Account attiva: puoi consultare il profilo in sola lettura, ma le modifiche a PIN, Email Notifiche e Passkey sono disabilitate per sicurezza.
             </span>
           </div>
         )}
 
-        {/* Tab Bar */}
-        <div className="px-3 sm:px-5 pt-2.5 pb-2 bg-slate-950/70 border-b border-slate-800 flex items-center gap-1.5 overflow-x-auto">
+        {/* Tab Bar — tutto visibile su schermo senza scroll orizzontale né taglio verticale */}
+        <div className="shrink-0 px-3 sm:px-5 py-2.5 bg-slate-950/80 border-b border-slate-800 grid grid-cols-2 sm:flex sm:flex-wrap items-stretch gap-2">
           <button
             type="button"
             onClick={() => setActiveTab('dati')}
-            className={`px-3 py-1.5 rounded-lg text-xs font-black flex items-center gap-1.5 whitespace-nowrap transition-all cursor-pointer ${
+            className={`min-h-[38px] px-2.5 sm:px-3 py-2 rounded-xl text-[11.5px] sm:text-xs font-black flex items-center justify-center sm:justify-start gap-1.5 leading-tight text-center transition-all cursor-pointer ${
               activeTab === 'dati'
                 ? 'bg-amber-500 text-slate-950 shadow'
                 : 'bg-slate-800/80 text-slate-300 hover:bg-slate-800 hover:text-white'
             }`}
           >
-            <User className="w-3.5 h-3.5" />
+            <User className="w-3.5 h-3.5 shrink-0" />
             <span>Dati Profilo</span>
           </button>
 
@@ -397,13 +397,13 @@ export const ModalProfiloAccount: React.FC<ModalProfiloAccountProps> = ({
             <button
               type="button"
               onClick={() => setActiveTab('notifiche')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-black flex items-center gap-1.5 whitespace-nowrap transition-all cursor-pointer ${
+              className={`min-h-[38px] px-2.5 sm:px-3 py-2 rounded-xl text-[11.5px] sm:text-xs font-black flex items-center justify-center sm:justify-start gap-1.5 leading-tight text-center transition-all cursor-pointer ${
                 activeTab === 'notifiche'
                   ? 'bg-amber-500 text-slate-950 shadow'
                   : 'bg-slate-800/80 text-slate-300 hover:bg-slate-800 hover:text-white'
               }`}
             >
-              <Mail className="w-3.5 h-3.5" />
+              <Mail className="w-3.5 h-3.5 shrink-0" />
               <span>Email Notifiche</span>
             </button>
           )}
@@ -411,32 +411,34 @@ export const ModalProfiloAccount: React.FC<ModalProfiloAccountProps> = ({
           <button
             type="button"
             onClick={() => setActiveTab('pin')}
-            className={`px-3 py-1.5 rounded-lg text-xs font-black flex items-center gap-1.5 whitespace-nowrap transition-all cursor-pointer ${
+            className={`min-h-[38px] px-2.5 sm:px-3 py-2 rounded-xl text-[11.5px] sm:text-xs font-black flex items-center justify-center sm:justify-start gap-1.5 leading-tight text-center transition-all cursor-pointer ${
               activeTab === 'pin'
                 ? 'bg-amber-500 text-slate-950 shadow'
                 : 'bg-slate-800/80 text-slate-300 hover:bg-slate-800 hover:text-white'
             }`}
           >
-            <KeyRound className="w-3.5 h-3.5" />
-            <span>PIN & Password</span>
+            <KeyRound className="w-3.5 h-3.5 shrink-0" />
+            <span>PIN &amp; Password</span>
           </button>
 
           <button
             type="button"
             onClick={() => setActiveTab('passkey')}
-            className={`px-3 py-1.5 rounded-lg text-xs font-black flex items-center gap-1.5 whitespace-nowrap transition-all cursor-pointer ${
+            className={`min-h-[38px] px-2.5 sm:px-3 py-2 rounded-xl text-[11.5px] sm:text-xs font-black flex items-center justify-center sm:justify-start gap-1.5 leading-tight text-center transition-all cursor-pointer ${
+              isAdminRoot ? 'col-span-2 sm:col-span-1' : ''
+            } ${
               activeTab === 'passkey'
                 ? 'bg-amber-500 text-slate-950 shadow'
                 : 'bg-slate-800/80 text-slate-300 hover:bg-slate-800 hover:text-white'
             }`}
           >
-            <Fingerprint className="w-3.5 h-3.5" />
+            <Fingerprint className="w-3.5 h-3.5 shrink-0" />
             <span>Passkey ({passkeysAccount.length})</span>
           </button>
         </div>
 
         {/* Body */}
-        <div className="p-4 sm:p-5 overflow-y-auto space-y-4 flex-1">
+        <div className="p-3.5 sm:p-5 overflow-y-auto space-y-4 flex-1 min-h-0">
           {/* TAB 1: DATI PERSONALI (SOLA LETTURA) */}
           {activeTab === 'dati' && (
             <div className="space-y-3">
@@ -486,12 +488,12 @@ export const ModalProfiloAccount: React.FC<ModalProfiloAccountProps> = ({
                 </p>
               </div>
 
-              <div className="p-3 rounded-xl bg-slate-950/70 border border-slate-800 flex items-center justify-between gap-3">
-                <div className="min-w-0">
-                  <div className="text-[10px] font-bold uppercase text-slate-400">
+              <div className="p-3 rounded-xl bg-slate-950/70 border border-slate-800 flex flex-wrap items-center justify-between gap-2.5">
+                <div className="min-w-0 flex-1">
+                  <div className="text-[10px] font-bold uppercase text-slate-400 leading-snug">
                     Email Anagrafica (Gestione Volontari — non modificabile)
                   </div>
-                  <div className="text-sm font-bold text-slate-200 truncate">
+                  <div className="text-sm font-bold text-slate-200 break-all sm:break-words mt-0.5">
                     {volontario.email || 'Nessuna email in anagrafica'}
                   </div>
                 </div>
@@ -848,9 +850,9 @@ export const ModalProfiloAccount: React.FC<ModalProfiloAccountProps> = ({
                           <div className="w-9 h-9 rounded-lg bg-emerald-500/15 border border-emerald-500/40 flex items-center justify-center shrink-0">
                             <Smartphone className="w-4 h-4 text-emerald-400" />
                           </div>
-                          <div className="min-w-0">
-                            <div className="text-xs font-black text-white truncate">{pk.label}</div>
-                            <div className="text-[10.5px] text-slate-400 truncate">
+                          <div className="min-w-0 flex-1">
+                            <div className="text-xs font-black text-white whitespace-normal break-words leading-snug">{pk.label}</div>
+                            <div className="text-[10.5px] text-slate-400 whitespace-normal break-words leading-snug mt-0.5">
                               Creata il {pk.createdAt}
                               {pk.lastUsedAt ? ` • Ultimo accesso: ${pk.lastUsedAt}` : ''}
                             </div>
@@ -875,7 +877,7 @@ export const ModalProfiloAccount: React.FC<ModalProfiloAccountProps> = ({
         </div>
 
         {/* Footer */}
-        <div className="px-4 sm:px-5 py-3 bg-slate-950/90 border-t border-slate-800 flex items-center justify-end">
+        <div className="shrink-0 px-4 sm:px-5 py-3 bg-slate-950/90 border-t border-slate-800 flex items-center justify-end">
           <button
             type="button"
             onClick={onClose}

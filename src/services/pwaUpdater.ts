@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { APP_VERSION } from '../version';
 import { BUILD_INFO } from '../buildInfo';
+import { getEffectiveSimulatedDevice, getSimulatedDisplayModeFromUrl } from '../utils/deviceSimulation';
 
 interface BeforeInstallPromptEvent extends Event {
   prompt: () => Promise<void>;
@@ -405,15 +406,27 @@ export function usePWAInstall() {
   const [isIOS, setIsIOS] = useState(false);
 
   useEffect(() => {
+    const simulatedDevice = getEffectiveSimulatedDevice();
+    const simulatedMode = getSimulatedDisplayModeFromUrl();
+
     const isStandalone =
-      window.matchMedia('(display-mode: standalone)').matches ||
-      (window.navigator as unknown as { standalone?: boolean }).standalone === true ||
-      document.referrer.includes('android-app://');
+      simulatedMode === 'pwa'
+        ? true
+        : simulatedMode === 'browser'
+        ? false
+        : window.matchMedia('(display-mode: standalone)').matches ||
+          (window.navigator as unknown as { standalone?: boolean }).standalone === true ||
+          document.referrer.includes('android-app://');
 
     setIsInstalled(isStandalone);
 
     const userAgent = window.navigator.userAgent.toLowerCase();
-    const isIOSDevice = /iphone|ipad|ipod/.test(userAgent);
+    const isIOSDevice =
+      simulatedDevice === 'apple'
+        ? true
+        : simulatedDevice === 'android'
+        ? false
+        : /iphone|ipad|ipod/.test(userAgent);
     setIsIOS(isIOSDevice);
 
     const handleBeforeInstallPrompt = (e: Event) => {

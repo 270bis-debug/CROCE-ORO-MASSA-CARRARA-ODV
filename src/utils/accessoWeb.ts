@@ -24,11 +24,11 @@ export const isAccessoDaWeb = (): boolean => {
     return true;
   }
 
-  // 2. Controllo query string esplicita (?web=1 o ?web=0)
-  if (search.includes('web=1') || search.includes('mode=web') || search.includes('sfondo=bianco')) {
+  // 2. Controllo query string esplicita (?simulaWeb=0/1, ?web=1 o ?web=0)
+  if (search.includes('simulaweb=1') || search.includes('web=1') || search.includes('mode=web') || search.includes('sfondo=bianco')) {
     return true;
   }
-  if (search.includes('web=0') || search.includes('mode=device')) {
+  if (search.includes('simulaweb=0') || search.includes('web=0') || search.includes('mode=device')) {
     return false;
   }
 

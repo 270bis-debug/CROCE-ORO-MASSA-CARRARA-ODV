@@ -145,6 +145,11 @@ import {
   MovimentoMagazzino,
   ChiaveVestiarioAccount
 } from '../types/adminTypes';
+import {
+  isTimbraturaAttualmentePresente,
+  isTimbraturaConUscitaValida,
+  isTimbraturaNfcScaduta24h
+} from '../utils/raspberryDisplayConfig';
 export const SEDI_TURNI_DISPONIBILI = [
   { id: 'sede-massa-ronchi', codice: 'SEDE-01-RONCHI', nome: 'Sede Legale & Direzione Generale Massa (Ronchi)', icona: '🏛️' },
   { id: 'sede-massa-lejare', codice: 'SEDE-02-LEJARE', nome: 'Sede Operativa H24 & Autoparco Emergenze Massa (Le Jare)', icona: '🚑' },
@@ -268,6 +273,7 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
   // Calcolo automatico delle ore di servizio timbrate nell'anno solare (2026) per ciascun volontario
   const calcolaOreAnnoVolontario = (vol: Volontario, anno = '2026') => {
     const list = (timbrature || []).filter(t => {
+      if (isTimbraturaNfcScaduta24h(t) || !isTimbraturaConUscitaValida(t)) return false;
       const matchId = vol.id && t.volontarioId === vol.id;
       const matchNome = (vol.nome || vol.cognome) && t.volontarioNome && (
         t.volontarioNome.trim().toLowerCase() === `${vol.nome} ${vol.cognome}`.trim().toLowerCase() ||
@@ -283,22 +289,25 @@ export const DatabaseVolontariModal: React.FC<DatabaseVolontariModalProps> = ({
     };
   };
 
-  // Helper per verificare se un volontario ha una timbratura di ingresso attiva (senza orario di uscita)
+  // Helper per verificare se un volontario ha una timbratura di ingresso attiva (esclude NFC >24h auto-chiuse)
   const getTimbraturaAttiva = (vol: Volontario) => {
     return (timbrature || []).find(t => {
+      if (!isTimbraturaAttualmentePresente(t)) return false;
       const matchId = vol.id && t.volontarioId === vol.id;
       const matchNome = (vol.nome || vol.cognome) && t.volontarioNome && (
         t.volontarioNome.trim().toLowerCase() === `${vol.nome} ${vol.cognome}`.trim().toLowerCase() ||
         t.volontarioNome.trim().toLowerCase() === `${vol.cognome} ${vol.nome}`.trim().toLowerCase()
       );
-      return (matchId || matchNome) && (!t.orarioUscita || t.orarioUscita.trim() === '');
+      return Boolean(matchId || matchNome);
     });
   };
 
   // Somma totale di tutte le ore timbrate da tutti i volontari nell'anno solare (2026)
   const totaleOreTuttiVolontariAnno = React.useMemo(() => {
     const anno = '2026';
-    const timbAnno = (timbrature || []).filter(t => t.data && t.data.startsWith(anno) && typeof t.oreTotali === 'number');
+    const timbAnno = (timbrature || []).filter(
+      t => !isTimbraturaNfcScaduta24h(t) && isTimbraturaConUscitaValida(t) && t.data && t.data.startsWith(anno) && typeof t.oreTotali === 'number'
+    );
     const sum = timbAnno.reduce((acc, curr) => acc + (curr.oreTotali || 0), 0);
     return Math.round(sum * 10) / 10;
   }, [timbrature]);

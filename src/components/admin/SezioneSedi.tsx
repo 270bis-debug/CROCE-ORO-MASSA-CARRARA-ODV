@@ -31,7 +31,12 @@ import {
   Copy,
   Landmark,
   CheckCheck,
-  Share2
+  Share2,
+  Wifi,
+  Download,
+  Eye,
+  EyeOff,
+  Terminal
 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import { SedeAssociativaCompleta, MezzoFlotta, ContoCorrenteSede } from '../../types/adminTypes';
@@ -58,6 +63,15 @@ import {
   disegnaHeaderIstituzionale,
   disegnaFooterIstituzionale
 } from '../../utils/pdfInstitutionalLayout';
+import {
+  buildRaspberryKioskUrl,
+  generaContenutoNmConnection,
+  generaContenutoWpaSupplicant,
+  generaScriptSetupWifiRaspberry,
+  scaricaFileTestoLinux,
+  slugifyNomeSedeFile
+} from '../../utils/raspberryDisplayConfig';
+import { getConfiguredPublicUrl } from '../../utils/publicUrl';
 
 interface SezioneSediProps {
   sedi: SedeAssociativaCompleta[];
@@ -66,6 +80,7 @@ interface SezioneSediProps {
   onAggiornaMezzi?: (mezzi: MezzoFlotta[]) => void;
   operatoreCorrente?: string;
   isAdmin?: boolean;
+  puoGestireWifiRaspberry?: boolean;
   onNotificaRadio?: (testo: string, tipo?: 'centrale' | 'mezzo' | 'sistema' | 'allarme') => void;
   allowedSubtabs?: string[] | null;
 }
@@ -77,9 +92,11 @@ export const SezioneSedi: React.FC<SezioneSediProps> = ({
   onAggiornaMezzi,
   operatoreCorrente = 'Amministratore',
   isAdmin = true,
+  puoGestireWifiRaspberry,
   onNotificaRadio,
   allowedSubtabs = null
 }) => {
+  const canManageWifiRaspberry = puoGestireWifiRaspberry !== undefined ? puoGestireWifiRaspberry : isAdmin;
   const nomiSubCustom = useNomiSottosezioniCustom();
   const [sottoTab, setSottoTab] = useState<'elenco' | 'mappa' | 'autoparco' | 'cartaIntestata' | 'contiCorrenti'>('elenco');
   const canShowSubtab = (id: string) => !allowedSubtabs || allowedSubtabs.includes(id);
@@ -173,6 +190,53 @@ export const SezioneSedi: React.FC<SezioneSediProps> = ({
   const [formCcPostale, setFormCcPostale] = useState('00001007035676');
   const [formBancaAppoggio, setFormBancaAppoggio] = useState('Credit Agricole');
   const [formIbanBanca, setFormIbanBanca] = useState('IT79M0623024500000046980317');
+
+  // Credenziali Wi-Fi Associativo Raspberry Pi per singola sezione (riservato Admin / Presidente / Segretario)
+  const [formWifiSsid, setFormWifiSsid] = useState('');
+  const [formWifiPassword, setFormWifiPassword] = useState('');
+  const [formWifiSicurezza, setFormWifiSicurezza] = useState<'WPA-PSK' | 'SAE' | 'NONE'>('WPA-PSK');
+  const [formWifiCountry, setFormWifiCountry] = useState('IT');
+  const [mostraFormWifiPass, setMostraFormWifiPass] = useState(false);
+
+  const scaricaFileWifiPerSede = (
+    opts: {
+      sedeId?: string;
+      sedeNome: string;
+      ssid: string;
+      password: string;
+      sicurezza?: 'WPA-PSK' | 'SAE' | 'NONE';
+      country?: string;
+    },
+    formato: 'wpa' | 'nmconnection' | 'script'
+  ) => {
+    const ssidClean = opts.ssid.trim();
+    if (!ssidClean) {
+      mostraAvviso('⚠️ Inserisci prima il Nome Rete Wi-Fi (SSID) della sezione.');
+      return;
+    }
+    const slug = slugifyNomeSedeFile(opts.sedeNome);
+    const kioskUrl = buildRaspberryKioskUrl(getConfiguredPublicUrl(), opts.sedeId);
+    const params = {
+      ssid: ssidClean,
+      password: opts.sicurezza === 'NONE' ? '' : opts.password,
+      sicurezza: opts.sicurezza || 'WPA-PSK',
+      country: (opts.country || 'IT').trim().toUpperCase().slice(0, 2) || 'IT',
+      sedeNome: opts.sedeNome,
+      kioskUrl,
+    };
+    if (formato === 'wpa') {
+      scaricaFileTestoLinux('wpa_supplicant.conf', generaContenutoWpaSupplicant(params));
+      mostraAvviso(`✓ File "wpa_supplicant.conf" generato per ${opts.sedeNome}!`);
+    } else if (formato === 'nmconnection') {
+      const fn = `CroceOro-WiFi-${slug}.nmconnection`;
+      scaricaFileTestoLinux(fn, generaContenutoNmConnection(params));
+      mostraAvviso(`✓ File NetworkManager "${fn}" generato per ${opts.sedeNome}!`);
+    } else {
+      const fn = `setup-wifi-raspberry-${slug}.sh`;
+      scaricaFileTestoLinux(fn, generaScriptSetupWifiRaspberry(params));
+      mostraAvviso(`✓ Script automatico "${fn}" generato per ${opts.sedeNome}!`);
+    }
+  };
 
   // Notifiche
   const [avviso, setAvviso] = useState<string | null>(null);
@@ -277,7 +341,15 @@ export const SezioneSedi: React.FC<SezioneSediProps> = ({
             ccPostale: formCcPostale.trim() || '00001007035676',
             bancaAppoggio: formBancaAppoggio.trim() || 'Credit Agricole',
             ibanBanca: formIbanBanca.trim().toUpperCase() || 'IT79M0623024500000046980317',
-            contiCorrenti: contiAssociativi
+            contiCorrenti: contiAssociativi,
+            ...(canManageWifiRaspberry
+              ? {
+                  wifiSsid: formWifiSsid.trim() || undefined,
+                  wifiPassword: formWifiSicurezza === 'NONE' ? '' : formWifiPassword || undefined,
+                  wifiSicurezza: formWifiSicurezza,
+                  wifiCountry: (formWifiCountry || 'IT').trim().toUpperCase().slice(0, 2) || 'IT',
+                }
+              : {}),
           };
         }
         return s;
@@ -311,7 +383,15 @@ export const SezioneSedi: React.FC<SezioneSediProps> = ({
         ccPostale: formCcPostale.trim() || '00001007035676',
         bancaAppoggio: formBancaAppoggio.trim() || 'Credit Agricole',
         ibanBanca: formIbanBanca.trim().toUpperCase() || 'IT79M0623024500000046980317',
-        contiCorrenti: contiAssociativi
+        contiCorrenti: contiAssociativi,
+        ...(canManageWifiRaspberry
+          ? {
+              wifiSsid: formWifiSsid.trim() || undefined,
+              wifiPassword: formWifiSicurezza === 'NONE' ? '' : formWifiPassword || undefined,
+              wifiSicurezza: formWifiSicurezza,
+              wifiCountry: (formWifiCountry || 'IT').trim().toUpperCase().slice(0, 2) || 'IT',
+            }
+          : {}),
       };
       onAggiornaSedi([...sedi, nuova]);
       onNotificaRadio?.(`🏢 NUOVA SEDE: Inserita nel database la sede "${nuova.nome}" (${nuova.comune})`, 'sistema');
@@ -704,6 +784,11 @@ export const SezioneSedi: React.FC<SezioneSediProps> = ({
               setFormCcPostale('00001007035676');
               setFormBancaAppoggio('Credit Agricole');
               setFormIbanBanca('IT79M0623024500000046980317');
+              setFormWifiSsid('');
+              setFormWifiPassword('');
+              setFormWifiSicurezza('WPA-PSK');
+              setFormWifiCountry('IT');
+              setMostraFormWifiPass(false);
               setModaleSedeAperta(true);
             }}
             className="px-3.5 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs uppercase flex items-center gap-2 shadow-lg transition-transform active:scale-95 cursor-pointer"
@@ -971,6 +1056,69 @@ export const SezioneSedi: React.FC<SezioneSediProps> = ({
                       <span>Intestato a: <strong className="text-white">{s.intestatarioConti || 'CROCE ORO MASSA CARRARA ODV'}</strong></span>
                     </div>
                   </div>
+
+                  {/* WI-FI RASPBERRY PI DELLA SINGOLA SEZIONE (riservato Admin / Presidente / Segretario) */}
+                  {canManageWifiRaspberry && (
+                    <div className="mt-2 p-2.5 rounded-xl bg-sky-950/30 border border-sky-500/35 space-y-1.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-[10px] font-black uppercase text-sky-300 flex items-center gap-1.5">
+                          <Wifi className="w-3.5 h-3.5 shrink-0" />
+                          <span>Wi-Fi Raspberry Sezione</span>
+                        </span>
+                        <span className="text-[9.5px] font-mono text-slate-300 truncate max-w-[160px]">
+                          {s.wifiSsid ? s.wifiSsid : 'Non configurato'}
+                        </span>
+                      </div>
+                      {s.wifiSsid ? (
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              scaricaFileWifiPerSede(
+                                {
+                                  sedeId: s.id,
+                                  sedeNome: s.nome,
+                                  ssid: s.wifiSsid || '',
+                                  password: s.wifiPassword || '',
+                                  sicurezza: s.wifiSicurezza,
+                                  country: s.wifiCountry,
+                                },
+                                'wpa'
+                              )
+                            }
+                            className="px-2 py-1 rounded-lg bg-sky-600 hover:bg-sky-500 text-white text-[10px] font-black flex items-center gap-1 cursor-pointer"
+                          >
+                            <Download className="w-3 h-3" />
+                            <span>wpa_supplicant.conf</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              scaricaFileWifiPerSede(
+                                {
+                                  sedeId: s.id,
+                                  sedeNome: s.nome,
+                                  ssid: s.wifiSsid || '',
+                                  password: s.wifiPassword || '',
+                                  sicurezza: s.wifiSicurezza,
+                                  country: s.wifiCountry,
+                                },
+                                'script'
+                              )
+                            }
+                            className="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-sky-200 border border-sky-500/40 text-[10px] font-bold flex items-center gap-1 cursor-pointer"
+                          >
+                            <Terminal className="w-3 h-3" />
+                            <span>Script .sh</span>
+                          </button>
+                        </div>
+                      ) : (
+                        <p className="text-[10px] text-slate-400">
+                          Apri &quot;Modifica Dati Sede&quot; (icona matita) per inserire nome rete Wi-Fi e password del Raspberry.
+                        </p>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 <div className="flex items-center justify-between gap-2 pt-3 border-t border-slate-800 text-xs">
@@ -1015,6 +1163,11 @@ export const SezioneSedi: React.FC<SezioneSediProps> = ({
                         setFormCcPostale(s.ccPostale || '00001007035676');
                         setFormBancaAppoggio(s.bancaAppoggio || 'Credit Agricole');
                         setFormIbanBanca(s.ibanBanca || 'IT79M0623024500000046980317');
+                        setFormWifiSsid(s.wifiSsid || '');
+                        setFormWifiPassword(s.wifiPassword || '');
+                        setFormWifiSicurezza(s.wifiSicurezza || 'WPA-PSK');
+                        setFormWifiCountry(s.wifiCountry || 'IT');
+                        setMostraFormWifiPass(false);
                         setModaleSedeAperta(true);
                       }}
                       className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 cursor-pointer"
@@ -2320,6 +2473,157 @@ export const SezioneSedi: React.FC<SezioneSediProps> = ({
                   </div>
                 </div>
               </div>
+
+              {/* WI-FI ASSOCIATIVO & GENERATORE FILE RASPBERRY PI PER QUESTA SEZIONE (Admin / Presidente / Segretario) */}
+              {canManageWifiRaspberry && (
+                <div className="p-3.5 rounded-2xl bg-slate-950 border border-sky-500/45 space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 pb-2">
+                    <span className="font-bold text-xs text-sky-400 uppercase flex items-center gap-1.5">
+                      <Wifi className="w-4 h-4 shrink-0" />
+                      <span>Wi-Fi Associativo &amp; File Connessione Raspberry Pi</span>
+                    </span>
+                    <span className="text-[10px] text-amber-300 font-bold uppercase">
+                      Admin • Presidente • Segretario
+                    </span>
+                  </div>
+
+                  <p className="text-[11px] text-slate-400 leading-snug">
+                    Inserisci nome della rete Wi-Fi associativa (SSID) e password di questa sezione per generare il file di configurazione automatica del Raspberry Pi. Le credenziali restano riservate e non compaiono sui link pubblici.
+                  </p>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-slate-300 font-bold mb-1 text-[11px]">
+                        Nome Rete Wi-Fi (SSID)
+                      </label>
+                      <input
+                        type="text"
+                        value={formWifiSsid}
+                        onChange={(e) => setFormWifiSsid(e.target.value)}
+                        className="w-full p-2 rounded-xl bg-slate-900 border border-slate-700 text-white font-bold text-xs focus:outline-none focus:border-sky-400"
+                        placeholder="Es. CroceOro_Sezione_WiFi"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-slate-300 font-bold mb-1 text-[11px]">
+                        Password Rete Wi-Fi
+                      </label>
+                      <div className="relative">
+                        <input
+                          type={mostraFormWifiPass ? 'text' : 'password'}
+                          disabled={formWifiSicurezza === 'NONE'}
+                          value={formWifiSicurezza === 'NONE' ? '' : formWifiPassword}
+                          onChange={(e) => setFormWifiPassword(e.target.value)}
+                          className="w-full pl-2.5 pr-9 p-2 rounded-xl bg-slate-900 border border-slate-700 text-white font-mono font-bold text-xs focus:outline-none focus:border-sky-400 disabled:opacity-50"
+                          placeholder={formWifiSicurezza === 'NONE' ? 'Rete aperta' : 'Password Wi-Fi della sezione'}
+                        />
+                        {formWifiSicurezza !== 'NONE' && (
+                          <button
+                            type="button"
+                            onClick={() => setMostraFormWifiPass((v) => !v)}
+                            className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-white cursor-pointer"
+                            title={mostraFormWifiPass ? 'Nascondi password' : 'Mostra password'}
+                          >
+                            {mostraFormWifiPass ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-slate-400 font-bold mb-1 text-[10.5px]">Sicurezza Wi-Fi</label>
+                      <select
+                        value={formWifiSicurezza}
+                        onChange={(e) => setFormWifiSicurezza(e.target.value as 'WPA-PSK' | 'SAE' | 'NONE')}
+                        className="w-full p-2 rounded-xl bg-slate-900 border border-slate-700 text-white text-xs font-bold cursor-pointer"
+                      >
+                        <option value="WPA-PSK">WPA / WPA2-PSK (Consigliato)</option>
+                        <option value="SAE">WPA3-Personal (SAE)</option>
+                        <option value="NONE">Rete Aperta (Senza Password)</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-slate-400 font-bold mb-1 text-[10.5px]">Paese Wi-Fi (es. IT)</label>
+                      <input
+                        type="text"
+                        maxLength={2}
+                        value={formWifiCountry}
+                        onChange={(e) => setFormWifiCountry(e.target.value.toUpperCase())}
+                        className="w-full p-2 rounded-xl bg-slate-900 border border-slate-700 text-white font-mono text-xs font-bold uppercase"
+                        placeholder="IT"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2 pt-1">
+                    <button
+                      type="button"
+                      disabled={!formWifiSsid.trim()}
+                      onClick={() =>
+                        scaricaFileWifiPerSede(
+                          {
+                            sedeId: sedeInModifica?.id,
+                            sedeNome: formNome || sedeInModifica?.nome || 'Sezione',
+                            ssid: formWifiSsid,
+                            password: formWifiPassword,
+                            sicurezza: formWifiSicurezza,
+                            country: formWifiCountry,
+                          },
+                          'wpa'
+                        )
+                      }
+                      className="px-3 py-1.5 rounded-xl bg-sky-600 hover:bg-sky-500 disabled:opacity-40 text-white text-[11px] font-black flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      <span>Genera wpa_supplicant.conf</span>
+                    </button>
+                    <button
+                      type="button"
+                      disabled={!formWifiSsid.trim()}
+                      onClick={() =>
+                        scaricaFileWifiPerSede(
+                          {
+                            sedeId: sedeInModifica?.id,
+                            sedeNome: formNome || sedeInModifica?.nome || 'Sezione',
+                            ssid: formWifiSsid,
+                            password: formWifiPassword,
+                            sicurezza: formWifiSicurezza,
+                            country: formWifiCountry,
+                          },
+                          'nmconnection'
+                        )
+                      }
+                      className="px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white text-[11px] font-black flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      <span>Genera .nmconnection</span>
+                    </button>
+                    <button
+                      type="button"
+                      disabled={!formWifiSsid.trim()}
+                      onClick={() =>
+                        scaricaFileWifiPerSede(
+                          {
+                            sedeId: sedeInModifica?.id,
+                            sedeNome: formNome || sedeInModifica?.nome || 'Sezione',
+                            ssid: formWifiSsid,
+                            password: formWifiPassword,
+                            sicurezza: formWifiSicurezza,
+                            country: formWifiCountry,
+                          },
+                          'script'
+                        )
+                      }
+                      className="px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-400 disabled:opacity-40 text-slate-950 text-[11px] font-black flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <Terminal className="w-3.5 h-3.5" />
+                      <span>Script Automatico .sh</span>
+                    </button>
+                  </div>
+                </div>
+              )}
 
               {/* GEOLOCALIZZAZIONE SU MAPPA INTERATTIVA O COORDINATE MANUALI */}
               <GeolocalizzazioneMappaSede

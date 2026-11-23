@@ -1,4 +1,5 @@
 import { formatDateTimeItaly } from './italianTime';
+import { getEffectiveSimulatedDevice } from './deviceSimulation';
 
 export interface PasskeyRecord {
   id: string;
@@ -78,6 +79,9 @@ export async function isPlatformAuthenticatorAvailable(): Promise<boolean> {
 }
 
 export function detectDeviceHint(): string {
+  const simulated = getEffectiveSimulatedDevice();
+  if (simulated === 'apple') return 'iPhone (Face ID / Touch ID)';
+  if (simulated === 'android') return 'Smartphone Android (Impronta / Viso)';
   if (typeof navigator === 'undefined') return 'Questo Dispositivo';
   const ua = navigator.userAgent || '';
   if (/iPhone/i.test(ua)) return 'iPhone (Face ID / Touch ID)';
