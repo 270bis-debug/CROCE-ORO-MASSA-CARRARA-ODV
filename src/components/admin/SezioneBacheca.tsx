@@ -32,6 +32,7 @@ import {
   Upload
 } from 'lucide-react';
 import { ComunicazioneBacheca, CorsoFormazione, SedeAssociativaCompleta } from '../../types/adminTypes';
+import { Volontario } from '../DatabaseVolontariModal';
 import { CroceOroLogo } from '../CroceOroLogo';
 import { inviaNotificaModificaAdmin } from '../../utils/notificaModificaAdmin';
 import { CommentiBachecaPost } from '../bacheca/CommentiBachecaPost';
@@ -49,7 +50,7 @@ import {
   formatDimensioneFile
 } from '../../utils/bachecaMedia';
 import { realtime } from '../../services/realtime';
-import { formatISODateItaly, formatTimeItaly } from '../../utils/italianTime';
+import { formatDateTimeItaly, formatISODateItaly, formatTimeItaly } from '../../utils/italianTime';
 import { useTitoloDatabase, useNomiSottosezioniCustom } from '../../hooks/useNomiDatabase';
 import { getTitoloSottosezione } from '../../constants/macroCategorie';
 import {
@@ -64,6 +65,7 @@ interface SezioneBachecaProps {
   onAggiornaComunicazioni: (nuove: ComunicazioneBacheca[], opts?: { notifica?: any; deletedId?: string }) => void;
   corsiFormazione?: CorsoFormazione[];
   sedi: SedeAssociativaCompleta[];
+  volontari?: Volontario[];
   operatoreCorrente: string;
   operatoreId?: string;
   isAdmin?: boolean;
@@ -77,6 +79,7 @@ export const SezioneBacheca: React.FC<SezioneBachecaProps> = ({
   onAggiornaComunicazioni,
   corsiFormazione = [],
   sedi,
+  volontari = [],
   operatoreCorrente,
   operatoreId,
   isAdmin = true,
@@ -106,7 +109,10 @@ export const SezioneBacheca: React.FC<SezioneBachecaProps> = ({
   const [formPriorita, setFormPriorita] = useState<ComunicazioneBacheca['priorita']>('Ordinaria');
   const [formCategoria, setFormCategoria] = useState<ComunicazioneBacheca['categoria']>('Comunicazione Generale');
   const [formEvidenziata, setFormEvidenziata] = useState(false);
+  const [formRichiedePresaVisione, setFormRichiedePresaVisione] = useState(false);
   const [formAutore, setFormAutore] = useState(operatoreCorrente || 'Direzione Operativa');
+  const [dettaglioPresaVisionePostId, setDettaglioPresaVisionePostId] = useState<string | null>(null);
+  const [invioPromemoriaPostId, setInvioPromemoriaPostId] = useState<string | null>(null);
   const [formImmaginePostDataUrl, setFormImmaginePostDataUrl] = useState<string | undefined>(undefined);
   const [formImmaginePostNome, setFormImmaginePostNome] = useState<string | undefined>(undefined);
   const [formAllegatoDataUrl, setFormAllegatoDataUrl] = useState<string | undefined>(undefined);
@@ -139,6 +145,7 @@ export const SezioneBacheca: React.FC<SezioneBachecaProps> = ({
     setFormPriorita('Ordinaria');
     setFormCategoria('Comunicazione Generale');
     setFormEvidenziata(false);
+    setFormRichiedePresaVisione(false);
     setFormAutore(operatoreCorrente || 'Direzione Operativa');
     setFormImmaginePostDataUrl(undefined);
     setFormImmaginePostNome(undefined);
@@ -160,6 +167,7 @@ export const SezioneBacheca: React.FC<SezioneBachecaProps> = ({
     setFormPriorita(com.priorita);
     setFormCategoria(com.categoria);
     setFormEvidenziata(Boolean(com.evidenziata));
+    setFormRichiedePresaVisione(Boolean(com.richiedePresaVisione));
     setFormAutore(com.autore);
     setFormImmaginePostDataUrl(com.immaginePostDataUrl);
     setFormImmaginePostNome(com.immaginePostNome);
@@ -170,6 +178,70 @@ export const SezioneBacheca: React.FC<SezioneBachecaProps> = ({
     setFormAllegatoDimensione(com.allegatoDimensione);
     setErroreMediaForm(null);
     setModaleAperta(true);
+  };
+
+  const calcolaStatoPresaVisione = (com: ComunicazioneBacheca) => {
+    const attivi = (volontari || []).filter((v) => {
+      if (!v || v.approvato === false || v.bloccatoPerTentativi) return false;
+      if (com.sezioneTargetId && com.sezioneTargetId !== 'tutte') {
+        return v.sezioneAppartenenzaId === com.sezioneTargetId;
+      }
+      return true;
+    });
+    const conferme = com.preseVisione || [];
+    const confermatiIds = new Set(conferme.map((p) => p.volontarioId).filter(Boolean));
+    const confermatiNomi = new Set(conferme.map((p) => (p.volontarioNome || '').trim().toLowerCase()).filter(Boolean));
+
+    const mancanti = attivi.filter((v) => {
+      const full1 = `${v.cognome || ''} ${v.nome || ''}`.trim().toLowerCase();
+      const full2 = `${v.nome || ''} ${v.cognome || ''}`.trim().toLowerCase();
+      return !confermatiIds.has(v.id) && !confermatiNomi.has(full1) && !confermatiNomi.has(full2);
+    });
+
+    const totaleTarget = Math.max(attivi.length, conferme.length);
+    const percentuale = totaleTarget > 0 ? Math.min(100, Math.round((conferme.length / totaleTarget) * 100)) : 0;
+    return { totaleTarget, conferme, mancanti, percentuale };
+  };
+
+  const handleInviaPromemoriaMancanti = async (com: ComunicazioneBacheca) => {
+    const { mancanti } = calcolaStatoPresaVisione(com);
+    if (mancanti.length === 0) {
+      mostraAvviso('✓ Tutti i volontari destinatari hanno già confermato la presa visione!');
+      return;
+    }
+    setInvioPromemoriaPostId(com.id);
+    try {
+      const resp = await fetch('/api/notifica-presa-visione', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          postId: com.id,
+          titolo: com.titolo,
+          sezioneTargetNome: com.sezioneTargetNome,
+          operatore: operatoreCorrente,
+          mancanti: mancanti.map((v) => ({
+            id: v.id,
+            nome: `${v.nome || ''} ${v.cognome || ''}`.trim(),
+            email: v.emailNotifiche || v.email || undefined,
+          })),
+        }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      const oraStr = formatDateTimeItaly();
+      const aggiornate = comunicazioni.map((c) =>
+        c.id === com.id ? { ...c, ultimoPromemoriaPresaVisione: oraStr, updatedAt: Date.now() } : c
+      );
+      onAggiornaComunicazioni(aggiornate);
+      mostraAvviso(
+        resp.ok
+          ? `✓ Promemoria inviato a ${mancanti.length} volontari mancanti (${data.emailInviate || 0} email + notifica in-app).`
+          : `⚠️ Promemoria in-app inviato, verifica configurazione email.`
+      );
+    } catch {
+      mostraAvviso('⚠️ Errore di connessione durante l’invio del promemoria ai mancanti.');
+    } finally {
+      setInvioPromemoriaPostId(null);
+    }
   };
 
   const handleCaricaImmaginePost = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -248,6 +320,7 @@ export const SezioneBacheca: React.FC<SezioneBachecaProps> = ({
             priorita: formPriorita,
             categoria: formCategoria,
             evidenziata: formEvidenziata,
+            richiedePresaVisione: formRichiedePresaVisione,
             autore: formAutore.trim() || operatoreCorrente,
             updatedAt: nowTs,
             immaginePostDataUrl: formImmaginePostDataUrl,
@@ -287,6 +360,8 @@ export const SezioneBacheca: React.FC<SezioneBachecaProps> = ({
         autoreId: operatoreId,
         attiva: true,
         evidenziata: formEvidenziata,
+        richiedePresaVisione: formRichiedePresaVisione,
+        preseVisione: [],
         updatedAt: nowTs,
         immaginePostDataUrl: formImmaginePostDataUrl,
         immaginePostNome: formImmaginePostNome,
@@ -1002,6 +1077,107 @@ export const SezioneBacheca: React.FC<SezioneBachecaProps> = ({
                   )}
                 </div>
 
+                {/* Tracking Presa Visione Obbligatoria */}
+                {com.richiedePresaVisione && (() => {
+                  const pv = calcolaStatoPresaVisione(com);
+                  const isAperto = dettaglioPresaVisionePostId === com.id;
+                  return (
+                    <div className="mb-3 p-3 rounded-xl bg-slate-950/90 border border-emerald-500/40 space-y-2.5">
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="px-2 py-0.5 rounded-full bg-emerald-950 text-emerald-300 border border-emerald-600/50 text-[10px] font-black uppercase inline-flex items-center gap-1">
+                            <CheckCircle2 className="w-3 h-3" />
+                            <span>Presa Visione: {pv.conferme.length} / {pv.totaleTarget} ({pv.percentuale}%)</span>
+                          </span>
+                          {pv.mancanti.length > 0 && (
+                            <span className="text-[11px] font-bold text-amber-300">
+                              Mancano {pv.mancanti.length} volontari
+                            </span>
+                          )}
+                          {com.ultimoPromemoriaPresaVisione && (
+                            <span className="text-[10px] text-slate-400">
+                              Ultimo sollecito: {com.ultimoPromemoriaPresaVisione}
+                            </span>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <button
+                            type="button"
+                            onClick={() => setDettaglioPresaVisionePostId(isAperto ? null : com.id)}
+                            className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-[10.5px] font-bold inline-flex items-center gap-1 cursor-pointer"
+                          >
+                            <Users className="w-3 h-3 text-emerald-400" />
+                            <span>{isAperto ? 'Nascondi Elenco' : 'Vedi Chi Ha Letto'}</span>
+                          </button>
+                          {pv.mancanti.length > 0 && (
+                            <button
+                              type="button"
+                              disabled={invioPromemoriaPostId === com.id}
+                              onClick={() => handleInviaPromemoriaMancanti(com)}
+                              className="px-2.5 py-1 rounded-lg bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-slate-950 text-[10.5px] font-black uppercase inline-flex items-center gap-1 cursor-pointer"
+                            >
+                              <Send className="w-3 h-3" />
+                              <span>
+                                {invioPromemoriaPostId === com.id
+                                  ? 'Invio...'
+                                  : `Sollecita Mancanti (${pv.mancanti.length})`}
+                              </span>
+                            </button>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="h-2 rounded-full bg-slate-800 overflow-hidden">
+                        <div
+                          className={`h-full rounded-full transition-all ${
+                            pv.percentuale >= 85 ? 'bg-emerald-500' : pv.percentuale >= 50 ? 'bg-amber-500' : 'bg-rose-500'
+                          }`}
+                          style={{ width: `${pv.percentuale}%` }}
+                        />
+                      </div>
+
+                      {isAperto && (
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5 pt-1 text-[11px]">
+                          <div className="p-2.5 rounded-xl bg-emerald-950/20 border border-emerald-500/30">
+                            <div className="font-black text-emerald-300 uppercase text-[10px] mb-1.5">
+                              ✓ Confermati ({pv.conferme.length})
+                            </div>
+                            {pv.conferme.length === 0 ? (
+                              <div className="text-slate-500">Nessuna conferma ancora ricevuta.</div>
+                            ) : (
+                              <div className="max-h-36 overflow-y-auto space-y-1">
+                                {pv.conferme.map((p, idx) => (
+                                  <div key={`${p.volontarioId}-${idx}`} className="flex items-center justify-between gap-2 text-slate-200">
+                                    <span className="truncate font-semibold">{p.volontarioNome}</span>
+                                    <span className="text-[10px] font-mono text-emerald-400 shrink-0">{p.dataOra}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                          <div className="p-2.5 rounded-xl bg-amber-950/20 border border-amber-500/30">
+                            <div className="font-black text-amber-300 uppercase text-[10px] mb-1.5">
+                              ⏳ In Attesa di Conferma ({pv.mancanti.length})
+                            </div>
+                            {pv.mancanti.length === 0 ? (
+                              <div className="text-emerald-300 font-bold">Tutti i volontari hanno confermato!</div>
+                            ) : (
+                              <div className="max-h-36 overflow-y-auto space-y-1">
+                                {pv.mancanti.map((v) => (
+                                  <div key={v.id} className="flex items-center justify-between gap-2 text-slate-300">
+                                    <span className="truncate">{v.cognome} {v.nome}</span>
+                                    <span className="text-[10px] text-slate-500 shrink-0">{v.sezioneAppartenenzaNome || 'Sede'}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
+
                 {/* Footer Scheda: Autore e Azioni Amministratore */}
                 <div className="pt-2.5 border-t border-slate-800/80 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs">
                   <div className="flex items-center gap-2 text-slate-400 text-[11px]">
@@ -1173,7 +1349,13 @@ export const SezioneBacheca: React.FC<SezioneBachecaProps> = ({
                     <label className="block text-slate-400 font-bold mb-1">Livello Priorità</label>
                     <select
                       value={formPriorita}
-                      onChange={(e) => setFormPriorita(e.target.value as any)}
+                      onChange={(e) => {
+                        const val = e.target.value as ComunicazioneBacheca['priorita'];
+                        setFormPriorita(val);
+                        if (!comunicazioneInModifica && (val === 'Importante' || val === 'Urgente')) {
+                          setFormRichiedePresaVisione(true);
+                        }
+                      }}
                       className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white font-bold"
                     >
                       <option value="Ordinaria">🟢 Ordinaria</option>
@@ -1307,7 +1489,7 @@ export const SezioneBacheca: React.FC<SezioneBachecaProps> = ({
                     />
                   </div>
 
-                  <div className="flex items-center pt-5">
+                  <div className="flex flex-col justify-center gap-2 pt-3">
                     <label className="flex items-center gap-2 cursor-pointer select-none">
                       <input
                         type="checkbox"
@@ -1316,6 +1498,17 @@ export const SezioneBacheca: React.FC<SezioneBachecaProps> = ({
                         className="w-4 h-4 rounded text-violet-600 bg-slate-950 border-slate-700 focus:ring-violet-500"
                       />
                       <span className="text-slate-300 font-bold">Fissa in evidenza in cima alla bacheca</span>
+                    </label>
+                    <label className="flex items-center gap-2 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={formRichiedePresaVisione}
+                        onChange={(e) => setFormRichiedePresaVisione(e.target.checked)}
+                        className="w-4 h-4 rounded text-emerald-500 bg-slate-950 border-slate-700 focus:ring-emerald-500"
+                      />
+                      <span className="text-emerald-300 font-bold">
+                        Richiedi &quot;Presa Visione&quot; (traccia letture e sollecita mancanti)
+                      </span>
                     </label>
                   </div>
                 </div>

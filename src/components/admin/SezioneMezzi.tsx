@@ -33,7 +33,8 @@ import {
   Download,
   ClipboardCheck,
   Tags,
-  Lock
+  Lock,
+  CreditCard
 } from 'lucide-react';
 import { MezzoFlotta, InterventoManutenzione, RicambioUtilizzatoManutenzione, DotazioneMagazzinoMezzo, SedeAssociativaCompleta, ArticoloMagazzinoMezzi, ContattoEsterno, TipologiaMezzoItem } from '../../types/adminTypes';
 import { SEDI_ASSOCIATIVE_INIZIALI } from '../../data/adminMockData';
@@ -62,6 +63,8 @@ import { RifornimentoCarburante } from '../../types/consumiTypes';
 import { RIFORNIMENTI_INIZIALI } from '../../data/rifornimentiMockData';
 import { GestioneChecklistMezzi } from './GestioneChecklistMezzi';
 import { SezioneTipologieMezzo } from './SezioneTipologieMezzo';
+import { SezionePagamentiCarburante } from './SezionePagamentiCarburante';
+import { useMetodiPagamentoCarburante } from '../../utils/metodiPagamentoCarburanteStore';
 import { ChecklistTemplate, ChecklistCompilataTurno } from '../../types/checklistTypes';
 import { CHECKLIST_TEMPLATES_INIZIALI, CHECKLIST_COMPILATE_INIZIALI } from '../../data/checklistMockData';
 import { formatDateTimeItaly, formatISODateItaly, formatTimeItaly, getCurrentYearItaly } from '../../utils/italianTime';
@@ -71,6 +74,20 @@ import {
   getIconaTipologiaMezzo,
   TIPOLOGIE_MEZZO_DEFAULT
 } from '../../utils/tipologieMezzo';
+import {
+  RIFORNIMENTI_UPDATED_EVENT,
+  analizzaAnomaliaRifornimento,
+  getRifornimentiMezzi,
+  salvaRifornimentiMezzi
+} from '../../utils/rifornimentiStore';
+import {
+  GUASTI_MEZZI_UPDATED_EVENT,
+  SegnalazioneGuastoMezzo,
+  StatoSegnalazioneGuasto,
+  generaPdfSchedaGuastoSinistro,
+  getSegnalazioniGuastiMezzi,
+  salvaSegnalazioniGuastiMezzi
+} from '../../utils/guastiMezziStore';
 import { realtime } from '../../services/realtime';
 
 export const ARTICOLI_MAGAZZINO_MEZZI_DEFAULT: ArticoloMagazzinoMezzi[] = [];
@@ -107,6 +124,8 @@ interface SezioneMezziProps {
   onAggiornaChecklistsTemplates?: (templates: ChecklistTemplate[]) => void;
   checklistsCompilate?: ChecklistCompilataTurno[];
   onAggiornaChecklistsCompilate?: (compilate: ChecklistCompilataTurno[]) => void;
+  onRegistraRifornimentoInContabilita?: (rifornimento: RifornimentoCarburante) => void;
+  onRimuoviRifornimentoDaContabilita?: (rifornimentoId: string) => void;
   allowedSubtabs?: string[] | null;
 }
 
@@ -133,6 +152,8 @@ export const SezioneMezzi: React.FC<SezioneMezziProps> = ({
   onAggiornaChecklistsTemplates,
   checklistsCompilate,
   onAggiornaChecklistsCompilate,
+  onRegistraRifornimentoInContabilita,
+  onRimuoviRifornimentoDaContabilita,
   allowedSubtabs = null
 }) => {
   const haCaricaDirettivo = Boolean(
@@ -146,17 +167,20 @@ export const SezioneMezzi: React.FC<SezioneMezziProps> = ({
   const listaSedi = (sedi && sedi.length > 0) ? sedi : SEDI_ASSOCIATIVE_INIZIALI;
 
   const nomiSubCustom = useNomiSottosezioniCustom();
-  const [sottoTab, setSottoTab] = useState<'flotta' | 'manutenzione' | 'consumi' | 'dotazione' | 'magazzinoMezzi' | 'monitoraggio' | 'checklist' | 'tipologie'>('flotta');
+  const [sottoTab, setSottoTab] = useState<'flotta' | 'manutenzione' | 'consumi' | 'dotazione' | 'magazzinoMezzi' | 'monitoraggio' | 'checklist' | 'tipologie' | 'guasti' | 'pagamentiCarburante'>('flotta');
 
   const canShowSubtab = (id: string) => !allowedSubtabs || allowedSubtabs.includes(id);
 
   useEffect(() => {
     if (!canShowSubtab(sottoTab)) {
-      const ordine = ['flotta', 'manutenzione', 'dotazione', 'magazzinoMezzi', 'consumi', 'checklist', 'tipologie', 'monitoraggio'] as const;
+      const ordine = ['flotta', 'manutenzione', 'dotazione', 'magazzinoMezzi', 'consumi', 'checklist', 'tipologie', 'guasti', 'pagamentiCarburante', 'monitoraggio'] as const;
       const prima = ordine.find((t) => canShowSubtab(t));
       if (prima) setSottoTab(prima);
     }
   }, [sottoTab, allowedSubtabs]);
+
+  // Catalogo sincronizzato Sistemi di Pagamento Carburante
+  const metodiPagamentoCarburante = useMetodiPagamentoCarburante();
 
   // Catalogo sincronizzato Tipologie Mezzo
   const tipologieMezzo = useTipologieMezzo();
@@ -233,23 +257,102 @@ export const SezioneMezzi: React.FC<SezioneMezziProps> = ({
     setEditRegolaAutoAttiva(regolaNotifica.invioAutomaticoAttivo);
   }, [regolaNotifica]);
 
-  // Registro Rifornimenti Carburante (persiste in localStorage)
+  // Registro Rifornimenti Carburante (sincronizzato con rifornimentiStore + Cloud)
   const [rifornimenti, setRifornimenti] = useState<RifornimentoCarburante[]>(() => {
-    try {
-      const s = localStorage.getItem('CROCE_ORO_RIFORNIMENTI_MEZZI');
-      if (s) return JSON.parse(s);
-    } catch {}
-    return RIFORNIMENTI_INIZIALI;
+    const stored = getRifornimentiMezzi();
+    return stored.length > 0 ? stored : RIFORNIMENTI_INIZIALI;
   });
 
-  const handleAggiungiRifornimento = (nuovo: RifornimentoCarburante) => {
-    setRifornimenti(prev => {
-      const agg = [nuovo, ...prev];
-      try {
-        localStorage.setItem('CROCE_ORO_RIFORNIMENTI_MEZZI', JSON.stringify(agg));
-      } catch {}
-      return agg;
+  // Registro Segnalazioni Guasti, Danni & Sinistri Mezzi (con foto e PDF)
+  const [guastiMezzi, setGuastiMezzi] = useState<SegnalazioneGuastoMezzo[]>(() => getSegnalazioniGuastiMezzi());
+  const [filtroStatoGuasti, setFiltroStatoGuasti] = useState<'tutti' | StatoSegnalazioneGuasto>('tutti');
+  const [fotoGuastoPreview, setFotoGuastoPreview] = useState<{ src: string; titolo: string } | null>(null);
+  const [guastoEditNoteId, setGuastoEditNoteId] = useState<string | null>(null);
+  const [guastoNoteInput, setGuastoNoteInput] = useState('');
+  const [guastoCostoInput, setGuastoCostoInput] = useState('');
+
+  useEffect(() => {
+    const onRifUpdate = () => {
+      const updated = getRifornimentiMezzi();
+      setRifornimenti(updated.length > 0 ? updated : RIFORNIMENTI_INIZIALI);
+    };
+    const onGuastiUpdate = () => setGuastiMezzi(getSegnalazioniGuastiMezzi());
+    window.addEventListener(RIFORNIMENTI_UPDATED_EVENT, onRifUpdate);
+    window.addEventListener(GUASTI_MEZZI_UPDATED_EVENT, onGuastiUpdate);
+    return () => {
+      window.removeEventListener(RIFORNIMENTI_UPDATED_EVENT, onRifUpdate);
+      window.removeEventListener(GUASTI_MEZZI_UPDATED_EVENT, onGuastiUpdate);
+    };
+  }, []);
+
+  const guastiApertiCount = useMemo(
+    () => guastiMezzi.filter((g) => g.stato !== 'Risolta').length,
+    [guastiMezzi]
+  );
+
+  const handleAggiornaStatoGuasto = (
+    id: string,
+    nuovoStato: StatoSegnalazioneGuasto,
+    noteOfficina?: string,
+    costoRiparazione?: number
+  ) => {
+    const nowTs = Date.now();
+    const next = guastiMezzi.map((g) => {
+      if (g.id !== id) return g;
+      return {
+        ...g,
+        stato: nuovoStato,
+        noteOfficina: noteOfficina !== undefined ? noteOfficina : g.noteOfficina,
+        costoRiparazione: costoRiparazione !== undefined ? costoRiparazione : g.costoRiparazione,
+        gestitaDa: operatoreCorrente || g.gestitaDa,
+        dataChiusura: nuovoStato === 'Risolta' ? formatDateTimeItaly() : g.dataChiusura,
+        updatedAt: nowTs,
+      };
     });
+    const saved = salvaSegnalazioniGuastiMezzi(next);
+    setGuastiMezzi(saved.lista);
+    realtime.syncSegnalazioniGuastiMezzi(saved.lista, saved.updatedAt);
+
+    // Se risolta, eventualmente segnala operatore
+    const target = next.find((g) => g.id === id);
+    if (target) {
+      avvisa(`✓ Segnalazione ${target.mezzoSigla} aggiornata a "${nuovoStato}".`);
+      if (nuovoStato === 'Risolta') {
+        const mezzoTarget = mezzi.find((m) => m.sigla === target.mezzoSigla);
+        const altriAperti = next.some((g) => g.mezzoSigla === target.mezzoSigla && g.stato !== 'Risolta' && g.richiestoFermoImmediato);
+        if (mezzoTarget && mezzoTarget.stato === 'Fuori Servizio' && !altriAperti) {
+          onAggiornaMezzi(
+            mezzi.map((m) =>
+              m.sigla === target.mezzoSigla ? { ...m, stato: 'Operativo', motivoFuoriServizio: undefined } : m
+            )
+          );
+          onNotificaRadio?.(`✅ MEZZO ${target.mezzoSigla} RIPRISTINATO OPERATIVO dopo risoluzione guasto.`, 'mezzo');
+        }
+      }
+    }
+  };
+
+  const handleEliminaGuasto = (id: string) => {
+    const next = guastiMezzi.filter((g) => g.id !== id);
+    const saved = salvaSegnalazioniGuastiMezzi(next);
+    setGuastiMezzi(saved.lista);
+    realtime.syncSegnalazioniGuastiMezzi(saved.lista, saved.updatedAt);
+    avvisa('✓ Segnalazione guasto eliminata.');
+  };
+
+  const handleAggiungiRifornimento = (nuovo: RifornimentoCarburante) => {
+    const anomalia = analizzaAnomaliaRifornimento(nuovo, rifornimenti);
+    const arricchito: RifornimentoCarburante = {
+      ...nuovo,
+      consumoAnomalo: anomalia.anomalo || nuovo.consumoAnomalo,
+      consumoAnomaloNota: anomalia.nota || nuovo.consumoAnomaloNota,
+      updatedAt: Date.now(),
+    };
+    const agg = [arricchito, ...rifornimenti];
+    const saved = salvaRifornimentiMezzi(agg);
+    setRifornimenti(saved.lista);
+    realtime.syncRifornimentiMezzi(saved.lista, saved.updatedAt);
+    onRegistraRifornimentoInContabilita?.(arricchito);
     // Aggiorna anche il chilometraggio del mezzo se superiore
     const mezzoTarget = mezzi.find(m => m.sigla === nuovo.mezzoSigla);
     if (mezzoTarget && nuovo.chilometraggio > mezzoTarget.chilometraggioAttuale) {
@@ -261,13 +364,11 @@ export const SezioneMezzi: React.FC<SezioneMezziProps> = ({
   };
 
   const handleEliminaRifornimento = (id: string) => {
-    setRifornimenti(prev => {
-      const agg = prev.filter(r => r.id !== id);
-      try {
-        localStorage.setItem('CROCE_ORO_RIFORNIMENTI_MEZZI', JSON.stringify(agg));
-      } catch {}
-      return agg;
-    });
+    const agg = rifornimenti.filter(r => r.id !== id);
+    const saved = salvaRifornimentiMezzi(agg);
+    setRifornimenti(saved.lista);
+    realtime.syncRifornimentiMezzi(saved.lista, saved.updatedAt);
+    onRimuoviRifornimentoDaContabilita?.(id);
   };
 
   const handleSalvaEmailResponsabile = () => {
@@ -377,7 +478,7 @@ export const SezioneMezzi: React.FC<SezioneMezziProps> = ({
     return avvisiManutenzione.filter(a => a.giorniRimanenti <= regolaNotifica.giorniSogliaNotificaEmail);
   }, [avvisiManutenzione, regolaNotifica.giorniSogliaNotificaEmail]);
 
-  // Registro in memoria delle scadenze dei mezzi già notificate per evitare duplicati ravvicinati
+  // Registro in memoria + storico cloud Firestore delle scadenze dei mezzi già notificate oggi
   const ultimoStatoScadenzeNotificateRef = useRef<Record<string, string>>({});
   const [invioEmailScadenzeInCorso, setInvioEmailScadenzeInCorso] = useState(false);
 
@@ -388,26 +489,36 @@ export const SezioneMezzi: React.FC<SezioneMezziProps> = ({
     force: boolean = false
   ) => {
     if (!scadenze || scadenze.length === 0) return;
+    if (!force && !realtime.isCloudConfigReady()) return;
 
-    // Filtra quelle scadute o entro la soglia configurata
+    const cloudLog = realtime.getPromemoriaScadenzeMezziInviate();
+    const oggiKey = formatISODateItaly();
+
+    // Filtra quelle scadute o entro la soglia configurata, escludendo quelle già notificate oggi su cloud
     const daNotificare = force
       ? scadenze
       : scadenze.filter((s) => {
-          const key = `${s.id}_${s.dataScadenza}`;
-          return !ultimoStatoScadenzeNotificateRef.current[key];
+          const memKey = `${s.id}_${s.dataScadenza}`;
+          const cloudKey = `${s.id}_${s.dataScadenza}_${oggiKey}`;
+          return !ultimoStatoScadenzeNotificateRef.current[memKey] && !cloudLog[cloudKey];
         });
 
     if (daNotificare.length === 0) return;
 
-    // Aggiorna registro in memoria
+    // Lock immediato in memoria e cloud PRIMA della chiamata HTTP
+    const nowIso = new Date().toISOString();
+    const nextCloudLog: Record<string, string> = { ...cloudLog };
     daNotificare.forEach((s) => {
-      const key = `${s.id}_${s.dataScadenza}`;
-      ultimoStatoScadenzeNotificateRef.current[key] = new Date().toISOString();
+      ultimoStatoScadenzeNotificateRef.current[`${s.id}_${s.dataScadenza}`] = nowIso;
+      nextCloudLog[`${s.id}_${s.dataScadenza}_${oggiKey}`] = nowIso;
     });
+    if (!force) {
+      realtime.syncPromemoriaScadenzeMezziInviate(nextCloudLog);
+    }
 
     try {
       setInvioEmailScadenzeInCorso(true);
-      const res = await fetch('/api/notifica-scadenze-mezzi', {
+      const res = await fetch(`${realtime.getApiBaseUrl()}/api/notifica-scadenze-mezzi`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -417,12 +528,16 @@ export const SezioneMezzi: React.FC<SezioneMezziProps> = ({
           sogliaUrgenza: regolaNotifica.giorniSogliaNotificaEmail,
           operatore: operatoreCorrente || 'Ufficio Mezzi & Autoparco',
           dataOra: formatDateTimeItaly(),
+          cloudLog: nextCloudLog,
           force
         })
       });
 
       if (res.ok) {
         const data = await res.json();
+        if (data?.promemoriaScadenzeMezziInviate && typeof data.promemoriaScadenzeMezziInviate === 'object') {
+          realtime.syncPromemoriaScadenzeMezziInviate(data.promemoriaScadenzeMezziInviate);
+        }
         if (data?.success && data?.count > 0) {
           const elenco = daNotificare.map((s) => `${s.mezzoSigla} (${s.tipo}: ${s.dataScadenza})`).join(', ');
           onNotificaRadio?.(
@@ -438,9 +553,9 @@ export const SezioneMezzi: React.FC<SezioneMezziProps> = ({
     }
   };
 
-  // Controllo automatico delle scadenze flotta urgenti secondo la regola configurata
+  // Controllo automatico delle scadenze flotta urgenti secondo la regola configurata (solo dopo sync cloud pronto)
   useEffect(() => {
-    if (regolaNotifica.invioAutomaticoAttivo && avvisiUrgenti15Gg.length > 0) {
+    if (regolaNotifica.invioAutomaticoAttivo && avvisiUrgenti15Gg.length > 0 && realtime.isCloudConfigReady()) {
       inviaEmailScadenzeAutomatico(
         avvisiUrgenti15Gg,
         `Verifica automatica scadenze flotta veicoli urgenti (≤ ${regolaNotifica.giorniSogliaNotificaEmail} giorni o scadute)`
@@ -1253,6 +1368,42 @@ export const SezioneMezzi: React.FC<SezioneMezziProps> = ({
         >
           <Tags className={`w-4 h-4 shrink-0 ${sottoTab === 'tipologie' ? 'text-slate-950' : 'text-amber-400'}`} />
           <span className="break-words">7. {getTitoloSottosezione('mezzi', 'tipologie', 'Tipologia Mezzo', nomiSubCustom)} ({tipologieMezzo.length})</span>
+        </button>
+        )}
+
+        {canShowSubtab('guasti') && (
+        <button
+          type="button"
+          onClick={() => setSottoTab('guasti')}
+          className={`w-full min-w-0 px-2.5 sm:px-3 py-2 rounded-xl text-[10px] sm:text-xs font-black uppercase flex items-center justify-center sm:justify-start gap-1.5 sm:gap-2 text-left leading-tight transition-all cursor-pointer ${
+            sottoTab === 'guasti'
+              ? 'bg-rose-600 text-white shadow-lg shadow-rose-600/30 border border-rose-400 font-black'
+              : guastiApertiCount > 0
+              ? 'bg-rose-950/50 text-rose-200 hover:text-white border border-rose-600/60'
+              : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
+          }`}
+        >
+          <ShieldAlert className={`w-4 h-4 shrink-0 ${sottoTab === 'guasti' ? 'text-white' : 'text-rose-400'}`} />
+          <span className="break-words">
+            8. {getTitoloSottosezione('mezzi', 'guasti', 'Guasti & Sinistri', nomiSubCustom)} ({guastiApertiCount > 0 ? `${guastiApertiCount} aperti` : guastiMezzi.length})
+          </span>
+        </button>
+        )}
+
+        {canShowSubtab('pagamentiCarburante') && (
+        <button
+          type="button"
+          onClick={() => setSottoTab('pagamentiCarburante')}
+          className={`w-full min-w-0 px-2.5 sm:px-3 py-2 rounded-xl text-[10px] sm:text-xs font-black uppercase flex items-center justify-center sm:justify-start gap-1.5 sm:gap-2 text-left leading-tight transition-all cursor-pointer ${
+            sottoTab === 'pagamentiCarburante'
+              ? 'bg-emerald-500 text-slate-950 shadow-lg shadow-emerald-500/30 border border-emerald-400 font-black'
+              : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
+          }`}
+        >
+          <CreditCard className={`w-4 h-4 shrink-0 ${sottoTab === 'pagamentiCarburante' ? 'text-slate-950' : 'text-emerald-400'}`} />
+          <span className="break-words">
+            9. {getTitoloSottosezione('mezzi', 'pagamentiCarburante', 'Pagamenti Carburante', nomiSubCustom)} ({metodiPagamentoCarburante.filter((m) => m.attivo).length})
+          </span>
         </button>
         )}
       </div>
@@ -2401,8 +2552,286 @@ export const SezioneMezzi: React.FC<SezioneMezziProps> = ({
           onEliminaRifornimento={handleEliminaRifornimento}
           operatoreCorrente={operatoreCorrente}
           onNotificaRadio={onNotificaRadio}
+          onApriGestionePagamentiCarburante={
+            canShowSubtab('pagamentiCarburante') ? () => setSottoTab('pagamentiCarburante') : undefined
+          }
         />
       )}
+
+      {/* ===================================================================== */}
+      {/* 8. SOTTO-TAB: SEGNALAZIONI GUASTI, DANNI & SINISTRI MEZZI (CON FOTO)  */}
+      {/* ===================================================================== */}
+      {sottoTab === 'guasti' && (() => {
+        const filtrati = guastiMezzi.filter(
+          (g) => filtroStatoGuasti === 'tutti' || g.stato === filtroStatoGuasti
+        );
+        return (
+          <div className="space-y-4">
+            <div className="bg-slate-900 p-4 rounded-2xl border border-rose-500/40 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div>
+                <h3 className="text-sm sm:text-base font-black text-white uppercase flex items-center gap-2">
+                  <ShieldAlert className="w-5 h-5 text-rose-400" />
+                  <span>Segnalazioni Guasti, Danni &amp; Sinistri Mezzi ({guastiMezzi.length})</span>
+                </h3>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Segnalazioni inviate in tempo reale dai volontari in turno con foto allegate, stato officina e scheda PDF per assicurazione/meccanico.
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center gap-1.5">
+                {(['tutti', 'Aperta', 'In Officina / Presa in Carico', 'Risolta'] as const).map((st) => (
+                  <button
+                    key={st}
+                    type="button"
+                    onClick={() => setFiltroStatoGuasti(st)}
+                    className={`px-2.5 py-1.5 rounded-xl text-[11px] font-black uppercase cursor-pointer border ${
+                      filtroStatoGuasti === st
+                        ? 'bg-rose-600 text-white border-rose-400'
+                        : 'bg-slate-950 text-slate-400 border-slate-800 hover:text-white'
+                    }`}
+                  >
+                    {st === 'tutti' ? `Tutte (${guastiMezzi.length})` : st}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {filtrati.length === 0 ? (
+              <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-8 text-center text-xs text-slate-400">
+                Nessuna segnalazione guasto o sinistro presente per il filtro selezionato.
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {filtrati.map((g) => {
+                  const isCritico = g.gravita === 'Critico / Fuori Servizio';
+                  const isEditing = guastoEditNoteId === g.id;
+                  return (
+                    <div
+                      key={g.id}
+                      className={`p-4 rounded-2xl border-2 space-y-3 ${
+                        g.stato === 'Risolta'
+                          ? 'bg-slate-900/60 border-emerald-500/40'
+                          : isCritico
+                          ? 'bg-rose-950/25 border-rose-500/70'
+                          : 'bg-slate-900 border-amber-500/50'
+                      }`}
+                    >
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2 border-b border-slate-800">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="font-mono font-black text-sm text-amber-300 bg-slate-950 px-2.5 py-0.5 rounded-lg border border-slate-700">
+                            {g.mezzoSigla}
+                          </span>
+                          <span className="px-2 py-0.5 rounded-full bg-slate-800 text-white text-[10.5px] font-black uppercase">
+                            {g.tipo}
+                          </span>
+                          <span
+                            className={`px-2 py-0.5 rounded-full text-[10px] font-black uppercase ${
+                              isCritico
+                                ? 'bg-red-600 text-white'
+                                : g.gravita === 'Attenzione / Con Riserva'
+                                ? 'bg-amber-500 text-slate-950'
+                                : 'bg-emerald-950 text-emerald-300 border border-emerald-600/50'
+                            }`}
+                          >
+                            {g.gravita}
+                          </span>
+                          <span
+                            className={`px-2 py-0.5 rounded-full text-[10px] font-black uppercase ${
+                              g.stato === 'Risolta'
+                                ? 'bg-emerald-600 text-white'
+                                : g.stato === 'In Officina / Presa in Carico'
+                                ? 'bg-cyan-600 text-white'
+                                : 'bg-rose-600 text-white'
+                            }`}
+                          >
+                            {g.stato}
+                          </span>
+                        </div>
+                        <div className="text-[11px] font-mono text-slate-400">
+                          {g.dataOra} • Segnalato da <strong className="text-white">{g.segnalatoDaNome}</strong>
+                        </div>
+                      </div>
+
+                      <div className="text-xs text-slate-200 whitespace-pre-line leading-relaxed">
+                        {g.descrizione}
+                      </div>
+
+                      <div className="flex flex-wrap gap-3 text-[11px] text-slate-400">
+                        {g.mezzoTarga && <span>Targa: <strong className="text-slate-200">{g.mezzoTarga}</strong></span>}
+                        {g.luogo && <span>Luogo: <strong className="text-slate-200">{g.luogo}</strong></span>}
+                        {g.kmMezzo ? <span>Km: <strong className="text-slate-200 font-mono">{g.kmMezzo.toLocaleString('it-IT')}</strong></span> : null}
+                        {g.coinvoltiTerzi && (
+                          <span className="text-rose-300 font-bold">
+                            ⚠️ Coinvolti terzi / CID: {g.datiControparte || 'Vedi scheda'}
+                          </span>
+                        )}
+                        {g.costoRiparazione ? (
+                          <span className="text-amber-300 font-bold font-mono">
+                            Costo Riparazione: € {g.costoRiparazione.toFixed(2)}
+                          </span>
+                        ) : null}
+                      </div>
+
+                      {g.noteOfficina && (
+                        <div className="p-2.5 rounded-xl bg-slate-950 border border-cyan-500/30 text-[11px] text-cyan-200">
+                          <strong>Note Officina / Gestione ({g.gestitaDa || 'Responsabile Mezzi'}):</strong> {g.noteOfficina}
+                        </div>
+                      )}
+
+                      {g.fotoBase64 && g.fotoBase64.length > 0 && (
+                        <div className="flex flex-wrap gap-2">
+                          {g.fotoBase64.map((src, idx) => (
+                            <button
+                              key={idx}
+                              type="button"
+                              onClick={() =>
+                                setFotoGuastoPreview({
+                                  src,
+                                  titolo: `${g.mezzoSigla} • ${g.tipo} (Foto ${idx + 1}/${g.fotoBase64!.length})`,
+                                })
+                              }
+                              className="w-20 h-20 rounded-xl overflow-hidden border border-slate-700 hover:border-amber-400 transition-colors cursor-pointer"
+                            >
+                              <img src={src} alt={`Foto danno ${idx + 1}`} className="w-full h-full object-cover" />
+                            </button>
+                          ))}
+                        </div>
+                      )}
+
+                      {isEditing && (
+                        <div className="p-3 rounded-xl bg-slate-950 border border-slate-700 grid grid-cols-1 sm:grid-cols-3 gap-2">
+                          <input
+                            type="text"
+                            value={guastoNoteInput}
+                            onChange={(e) => setGuastoNoteInput(e.target.value)}
+                            placeholder="Note officina / ricambi / esito riparazione..."
+                            className="sm:col-span-2 px-3 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-xs text-white"
+                          />
+                          <input
+                            type="number"
+                            step="0.01"
+                            value={guastoCostoInput}
+                            onChange={(e) => setGuastoCostoInput(e.target.value)}
+                            placeholder="Costo € (opz.)"
+                            className="px-3 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-xs text-white font-mono"
+                          />
+                          <div className="sm:col-span-3 flex justify-end gap-2">
+                            <button
+                              type="button"
+                              onClick={() => setGuastoEditNoteId(null)}
+                              className="px-3 py-1 rounded-lg bg-slate-800 text-slate-300 text-[11px] font-bold cursor-pointer"
+                            >
+                              Annulla
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const costoNum = parseFloat(guastoCostoInput);
+                                handleAggiornaStatoGuasto(
+                                  g.id,
+                                  g.stato,
+                                  guastoNoteInput.trim(),
+                                  !isNaN(costoNum) && costoNum > 0 ? costoNum : undefined
+                                );
+                                setGuastoEditNoteId(null);
+                              }}
+                              className="px-3 py-1 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white text-[11px] font-black uppercase cursor-pointer"
+                            >
+                              Salva Note Officina
+                            </button>
+                          </div>
+                        </div>
+                      )}
+
+                      <div className="pt-2 border-t border-slate-800 flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          {g.stato !== 'In Officina / Presa in Carico' && g.stato !== 'Risolta' && (
+                            <button
+                              type="button"
+                              onClick={() => handleAggiornaStatoGuasto(g.id, 'In Officina / Presa in Carico')}
+                              className="px-2.5 py-1.5 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white text-[11px] font-black uppercase cursor-pointer"
+                            >
+                              Presa in Carico / Officina
+                            </button>
+                          )}
+                          {g.stato !== 'Risolta' && (
+                            <button
+                              type="button"
+                              onClick={() => handleAggiornaStatoGuasto(g.id, 'Risolta')}
+                              className="px-2.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-black uppercase cursor-pointer"
+                            >
+                              ✓ Segna Risolta
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setGuastoEditNoteId(isEditing ? null : g.id);
+                              setGuastoNoteInput(g.noteOfficina || '');
+                              setGuastoCostoInput(g.costoRiparazione ? String(g.costoRiparazione) : '');
+                            }}
+                            className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-[11px] font-bold cursor-pointer"
+                          >
+                            Note &amp; Costo Officina
+                          </button>
+                        </div>
+
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => generaPdfSchedaGuastoSinistro(g)}
+                            className="px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 text-[11px] font-black uppercase inline-flex items-center gap-1 cursor-pointer"
+                          >
+                            <FileText className="w-3.5 h-3.5" />
+                            <span>Scheda PDF</span>
+                          </button>
+                          {isAdmin && (
+                            <button
+                              type="button"
+                              onClick={() => handleEliminaGuasto(g.id)}
+                              className="p-1.5 rounded-lg bg-slate-800 hover:bg-red-900 text-slate-400 hover:text-white cursor-pointer"
+                              title="Elimina segnalazione"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {fotoGuastoPreview && (
+              <div
+                className="fixed inset-0 z-[80] bg-slate-950/90 backdrop-blur-sm flex items-center justify-center p-4"
+                onClick={() => setFotoGuastoPreview(null)}
+              >
+                <div
+                  className="bg-slate-900 border border-rose-500/50 rounded-2xl max-w-xl w-full p-4 space-y-3"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-black text-white uppercase">{fotoGuastoPreview.titolo}</span>
+                    <button
+                      type="button"
+                      onClick={() => setFotoGuastoPreview(null)}
+                      className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 cursor-pointer"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                  <img
+                    src={fotoGuastoPreview.src}
+                    alt="Foto guasto mezzo"
+                    className="w-full max-h-[75vh] object-contain rounded-xl bg-slate-950"
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })()}
 
       {/* ===================================================================== */}
       {/* 6. SOTTO-TAB: MONITORAGGIO FLOTTA & GRAFICI KM                          */}
@@ -2488,6 +2917,21 @@ export const SezioneMezzi: React.FC<SezioneMezziProps> = ({
           isAdmin={isAdmin}
           onNotificaRadio={onNotificaRadio}
           onAvvisa={avvisa}
+        />
+      )}
+
+      {/* ===================================================================== */}
+      {/* 9. SOTTO-TAB: SISTEMI DI PAGAMENTO CARBURANTE                         */}
+      {/* ===================================================================== */}
+      {sottoTab === 'pagamentiCarburante' && (
+        <SezionePagamentiCarburante
+          metodi={metodiPagamentoCarburante}
+          mezzi={mezzi}
+          rifornimenti={rifornimenti}
+          operatoreCorrente={operatoreCorrente}
+          onAvvisa={avvisa}
+          onNotificaRadio={onNotificaRadio}
+          onVaiAConsumi={canShowSubtab('consumi') ? () => setSottoTab('consumi') : undefined}
         />
       )}
 

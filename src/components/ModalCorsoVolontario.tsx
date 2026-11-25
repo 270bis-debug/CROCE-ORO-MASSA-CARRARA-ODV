@@ -21,6 +21,7 @@ import { CorsoFormazione, PartecipanteCorso, LezioneCorso } from '../types/admin
 import { Volontario } from './DatabaseVolontariModal';
 import { formatISODateItaly } from '../utils/italianTime';
 import { ottieniPosizioneGpsAffidabile } from '../utils/smartGps';
+import { useAuleFormazione, risolviTargetAulaDidattica } from '../utils/auleFormazione';
 
 interface ModalCorsoVolontarioProps {
   corso: CorsoFormazione;
@@ -62,6 +63,7 @@ export const ModalCorsoVolontario: React.FC<ModalCorsoVolontarioProps> = ({
   onIscriviti,
   onTimbraPresenzaGPS
 }) => {
+  const auleFormazione = useAuleFormazione();
   const [gpsLoading, setGpsLoading] = useState(false);
   const [gpsFeedback, setGpsFeedback] = useState<{ tipo: 'success' | 'warning' | 'error'; messaggio: string } | null>(null);
   const [distanzaRilevata, setDistanzaRilevata] = useState<number | null>(null);
@@ -89,10 +91,12 @@ export const ModalCorsoVolontario: React.FC<ModalCorsoVolontarioProps> = ({
   // Dati della lezione selezionata (se presente)
   const lezioneCorrente = lezioni.find(l => l.id === selectedLezioneId);
 
-  // Coordinate di riferimento: DEVE essere il luogo della singola lezione!
-  const coordTarget = lezioneCorrente?.coordinate || corso.coordinate || { lat: 43.99419, lng: 10.12367 };
-  const sedeTargetNome = lezioneCorrente?.sedeNome || corso.sedeCorso;
-  const indirizzoTarget = lezioneCorrente?.indirizzoCompleto || corso.indirizzoCompleto || 'Massa Carrara';
+  // Coordinate e raggio di riferimento: sempre e solo l'Aula Didattica del corso / lezione
+  const aulaTarget = risolviTargetAulaDidattica(corso, lezioneCorrente || null, auleFormazione);
+  const coordTarget = aulaTarget.coordinate;
+  const sedeTargetNome = aulaTarget.nome;
+  const indirizzoTarget = aulaTarget.indirizzo;
+  const raggioAulaMetri = aulaTarget.raggioMetri || 150;
 
   // Verifica timbrature specifiche per la lezione selezionata
   const timbraturaLezione = partecipante?.timbratureLezioni?.find(t => t.lezioneId === selectedLezioneId);
@@ -141,13 +145,14 @@ export const ModalCorsoVolontario: React.FC<ModalCorsoVolontarioProps> = ({
     setDistanzaRilevata(dist);
 
     const tipo = tipoForzato || (!haTimbratoEntrata ? 'entrata' : 'uscita');
-    const RAGGIO_MAX = 500; // metri di tolleranza
+    const accComp = typeof accuratezza === 'number' && Number.isFinite(accuratezza) && accuratezza <= 100 ? Math.min(Math.round(accuratezza), 35) : 0;
+    const RAGGIO_MAX = raggioAulaMetri + accComp;
 
     if (dist <= RAGGIO_MAX) {
       onTimbraPresenzaGPS(corso.id, volontario, tipo, { lat, lng }, dist, selectedLezioneId || undefined);
       setGpsFeedback({
         tipo: 'success',
-        messaggio: `✅ TIMBRATURA ${tipo.toUpperCase()} CONFERMATA CON SUCCESSO! Rilevato a ${dist}m (±${Math.round(accuratezza || 0)}m) dalla sede della lezione (${sedeTargetNome}). Presenza certificata nel registro presenze.`
+        messaggio: `✅ TIMBRATURA ${tipo.toUpperCase()} CONFERMATA CON SUCCESSO! Rilevato a ${dist}m (±${Math.round(accuratezza || 0)}m) dall'Aula Didattica (${sedeTargetNome}). Presenza certificata nel registro presenze.`
       });
     } else {
       const hintIos = esito.isCoarseIos
@@ -155,7 +160,7 @@ export const ModalCorsoVolontario: React.FC<ModalCorsoVolontarioProps> = ({
         : '';
       setGpsFeedback({
         tipo: 'warning',
-        messaggio: `⚠️ ATTENZIONE: Ti trovi a ${dist} metri dalla sede di questa lezione (raggio consentito entro 500m). In conformità con le direttive, la timbratura deve essere effettuata presso "${sedeTargetNome}" (${indirizzoTarget}), luogo effettivo di svolgimento della lezione.${hintIos}`
+        messaggio: `⚠️ ATTENZIONE: Ti trovi a ${dist} metri dall'Aula Didattica (raggio consentito entro ${raggioAulaMetri}m). La timbratura per il corso deve essere effettuata esclusivamente presso "${sedeTargetNome}" (${indirizzoTarget}).${hintIos}`
       });
     }
     setGpsLoading(false);

@@ -40,6 +40,11 @@ import {
   isTimbraturaConUscitaValida,
   isTimbraturaNfcScaduta24h
 } from '../utils/raspberryDisplayConfig';
+import {
+  useAuleFormazione,
+  trovaCorsoIscrittoAttivoOggi,
+  risolviTargetAulaDidattica
+} from '../utils/auleFormazione';
 
 // Formula geodesica di Haversine per calcolare la distanza in metri tra due coordinate GPS
 export function calcolaDistanzaMetri(lat1: number, lon1: number, lat2: number, lon2: number): number {
@@ -263,8 +268,51 @@ export const PannelloTimbraturaVolontario: React.FC<PannelloTimbraturaVolontario
   const [dataInizioFiltro, setDataInizioFiltro] = useState(primoDelMeseStr);
   const [dataFineFiltro, setDataFineFiltro] = useState(oggiStr);
 
+  const auleFormazione = useAuleFormazione();
+
+  // Verifica se il volontario è iscritto a un corso attivo oggi:
+  // REGOLA OBBLIGATORIA: chi è iscritto ad un corso timbra entrata ed uscita SEMPRE E SOLO nell'Aula Didattica
+  // anche se nello stesso edificio/coordinate è presente un altro luogo timbratura.
+  const corsoIscrittoAttivoOggi = useMemo(
+    () => trovaCorsoIscrittoAttivoOggi(corsiFormazione, volontarioId, volontarioNome, oggiStr),
+    [corsiFormazione, volontarioId, volontarioNome, oggiStr]
+  );
+
+  const aulaEsclusivaAttiva = useMemo(() => {
+    if (!corsoIscrittoAttivoOggi) return null;
+    const target = risolviTargetAulaDidattica(
+      corsoIscrittoAttivoOggi.corso,
+      corsoIscrittoAttivoOggi.lezione || null,
+      auleFormazione
+    );
+    return {
+      corso: corsoIscrittoAttivoOggi.corso,
+      lezione: corsoIscrittoAttivoOggi.lezione,
+      target
+    };
+  }, [corsoIscrittoAttivoOggi, auleFormazione]);
+
   // Elenco unificato dei luoghi autorizzati per la timbratura GPS con effetto immediato
   const elencoPuntiValidi = useMemo<LuogoTimbratura[]>(() => {
+    // Se il volontario è iscritto ad un corso attivo oggi, l'UNICO luogo valido per entrata/uscita è l'Aula Didattica del corso!
+    if (aulaEsclusivaAttiva) {
+      const { corso, lezione, target } = aulaEsclusivaAttiva;
+      const puntoId = lezione ? `corso-${corso.id}-lez-${lezione.id}` : `corso-${corso.id}`;
+      return [
+        {
+          id: puntoId,
+          nome: `🎓 Aula Didattica: ${target.nome}${lezione ? ` — Lez. #${lezione.numero}` : ''}`,
+          codice: corso.codiceCorso,
+          indirizzo: target.indirizzo,
+          coordinate: target.coordinate,
+          raggioMetri: target.raggioMetri || 150,
+          tipo: 'corso_formazione',
+          attivo: true,
+          descrizione: `Timbratura esclusiva Aula Formazione per corso "${corso.titolo}"`
+        }
+      ];
+    }
+
     const attivi = getLuoghiTimbraturaServizioAttivi(luoghiTimbratura, sedi);
 
     // Integrazione sedi e lezioni dei Corsi di Formazione a cui l'account volontario è iscritto
@@ -280,17 +328,18 @@ export const PannelloTimbraturaVolontario: React.FC<PannelloTimbraturaVolontario
       corsiIscritto.forEach(c => {
         if (c.lezioni && c.lezioni.length > 0) {
           c.lezioni.forEach(lez => {
-            if (lez.coordinate && typeof lez.coordinate.lat === 'number' && typeof lez.coordinate.lng === 'number') {
+            const target = risolviTargetAulaDidattica(c, lez, auleFormazione);
+            if (target.coordinate && typeof target.coordinate.lat === 'number' && typeof target.coordinate.lng === 'number') {
               const puntoId = `corso-${c.id}-lez-${lez.id}`;
               const giaPresente = attivi.some(p => p.id === puntoId);
               if (!giaPresente) {
                 attivi.push({
                   id: puntoId,
-                  nome: `🎓 ${c.titolo} - Lez. #${lez.numero} (${lez.sedeNome})`,
+                  nome: `🎓 ${c.titolo} - Lez. #${lez.numero} (${target.nome})`,
                   codice: c.codiceCorso,
-                  indirizzo: lez.indirizzoCompleto || c.indirizzoCompleto || 'Sede didattica',
-                  coordinate: lez.coordinate,
-                  raggioMetri: 500, // tolleranza autorizzata per sede didattica corso
+                  indirizzo: target.indirizzo,
+                  coordinate: target.coordinate,
+                  raggioMetri: target.raggioMetri || 150,
                   tipo: 'corso_formazione',
                   attivo: true,
                   descrizione: `Corso Formazione "${c.titolo}" • Lezione #${lez.numero} (${lez.data || ''} ${lez.orarioInizio || ''}-${lez.orarioFine || ''})`
@@ -298,28 +347,31 @@ export const PannelloTimbraturaVolontario: React.FC<PannelloTimbraturaVolontario
               }
             }
           });
-        } else if (c.coordinate && typeof c.coordinate.lat === 'number' && typeof c.coordinate.lng === 'number') {
-          const puntoId = `corso-${c.id}`;
-          const giaPresente = attivi.some(p => p.id === puntoId);
-          if (!giaPresente) {
-            attivi.push({
-              id: puntoId,
-              nome: `🎓 ${c.titolo} (${c.sedeCorso})`,
-              codice: c.codiceCorso,
-              indirizzo: c.indirizzoCompleto || 'Sede didattica',
-              coordinate: c.coordinate,
-              raggioMetri: 500,
-              tipo: 'corso_formazione',
-              attivo: true,
-              descrizione: `Corso Formazione "${c.titolo}"`
-            });
+        } else {
+          const target = risolviTargetAulaDidattica(c, null, auleFormazione);
+          if (target.coordinate && typeof target.coordinate.lat === 'number' && typeof target.coordinate.lng === 'number') {
+            const puntoId = `corso-${c.id}`;
+            const giaPresente = attivi.some(p => p.id === puntoId);
+            if (!giaPresente) {
+              attivi.push({
+                id: puntoId,
+                nome: `🎓 ${c.titolo} (${target.nome})`,
+                codice: c.codiceCorso,
+                indirizzo: target.indirizzo,
+                coordinate: target.coordinate,
+                raggioMetri: target.raggioMetri || 150,
+                tipo: 'corso_formazione',
+                attivo: true,
+                descrizione: `Corso Formazione "${c.titolo}"`
+              });
+            }
           }
         }
       });
     }
 
     return attivi;
-  }, [luoghiTimbratura, sedi, corsiFormazione, volontarioId, volontarioNome]);
+  }, [aulaEsclusivaAttiva, luoghiTimbratura, sedi, corsiFormazione, volontarioId, volontarioNome, auleFormazione]);
 
   const [mostraElencoLuoghi, setMostraElencoLuoghi] = useState(false);
 
@@ -856,6 +908,21 @@ export const PannelloTimbraturaVolontario: React.FC<PannelloTimbraturaVolontario
             </div>
           </div>
         </div>
+
+        {/* Banner Obbligo Esclusivo Aula Didattica quando il volontario è iscritto ad un corso attivo oggi */}
+        {aulaEsclusivaAttiva && (
+          <div className="p-3 rounded-xl bg-purple-950/65 border-2 border-purple-500/70 text-xs text-purple-100 flex items-start gap-2.5 shadow-lg">
+            <GraduationCap className="w-5 h-5 text-purple-300 shrink-0 mt-0.5" />
+            <div className="space-y-0.5">
+              <div className="font-black uppercase text-purple-200">
+                🎓 Corso Attivo Oggi — Timbratura Esclusiva in Aula Didattica
+              </div>
+              <p className="text-[11px] text-purple-200/90 leading-snug">
+                Risulti iscritto a <strong>{aulaEsclusivaAttiva.corso.titolo}</strong>. Entrata e uscita possono essere timbrate <strong>sempre e solo nell'Aula Didattica: {aulaEsclusivaAttiva.target.nome}</strong> (raggio {aulaEsclusivaAttiva.target.raggioMetri}m), anche se nello stesso edificio è presente un altro luogo timbratura.
+              </p>
+            </div>
+          </div>
+        )}
 
         {/* Box Stato Geolocalizzazione GPS e Raggio di Validità Stabilito dall'Operatore */}
         <div className={`p-2.5 rounded-xl border text-xs transition-all ${

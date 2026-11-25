@@ -508,6 +508,26 @@ export interface ServerState {
   luoghiTimbratura?: LuogoTimbratura[];
   promemoriaTurniInviati?: Record<string, string>;
   promemoriaCompleanniInviati?: Record<string, { sentAt: string; recipients: string[] } | string>;
+  promemoriaScadenzeFiscaliInviate?: Record<string, string>;
+  promemoriaScadenzeMezziInviate?: Record<string, string>;
+  promemoriaTurniScopertiInviati?: Record<string, string>;
+  auditLog?: any[];
+  libriSocialiVerbali?: any[];
+  libriSocialiDelibere?: any[];
+  libriSocialiUpdatedAt?: number;
+  richiesteReintegroMagazzino?: any[];
+  richiesteReintegroUpdatedAt?: number;
+  rifornimentiMezzi?: any[];
+  rifornimentiUpdatedAt?: number;
+  metodiPagamentoCarburante?: any[];
+  metodiPagamentoCarburanteUpdatedAt?: number;
+  segnalazioniGuastiMezzi?: any[];
+  segnalazioniGuastiUpdatedAt?: number;
+  documentiAssociativiSop?: any[];
+  documentiSopUpdatedAt?: number;
+  convocazioniAssemblee?: any[];
+  sondaggiRapidi?: any[];
+  assembleeSondaggiUpdatedAt?: number;
   timbrature?: any[];
   bacheca?: any[];
   bachecaEliminatiIds?: string[];
@@ -1018,6 +1038,31 @@ function loadPersistedState(): ServerState {
             : LUOGHI_TIMBRATURA_DEFAULT,
           promemoriaTurniInviati: parsed.promemoriaTurniInviati && typeof parsed.promemoriaTurniInviati === 'object' ? parsed.promemoriaTurniInviati : {},
           promemoriaCompleanniInviati: parsed.promemoriaCompleanniInviati && typeof parsed.promemoriaCompleanniInviati === 'object' ? parsed.promemoriaCompleanniInviati : {},
+          promemoriaScadenzeFiscaliInviate: parsed.promemoriaScadenzeFiscaliInviate && typeof parsed.promemoriaScadenzeFiscaliInviate === 'object' ? parsed.promemoriaScadenzeFiscaliInviate : {},
+          promemoriaScadenzeMezziInviate: parsed.promemoriaScadenzeMezziInviate && typeof parsed.promemoriaScadenzeMezziInviate === 'object' ? parsed.promemoriaScadenzeMezziInviate : {},
+          promemoriaTurniScopertiInviati: parsed.promemoriaTurniScopertiInviati && typeof parsed.promemoriaTurniScopertiInviati === 'object' ? parsed.promemoriaTurniScopertiInviati : {},
+          auditLog: Array.isArray(parsed.auditLog) ? parsed.auditLog.slice(0, 500) : [],
+          libriSocialiVerbali: Array.isArray(parsed.libriSocialiVerbali) ? parsed.libriSocialiVerbali : [],
+          libriSocialiDelibere: Array.isArray(parsed.libriSocialiDelibere) ? parsed.libriSocialiDelibere : [],
+          libriSocialiUpdatedAt: typeof parsed.libriSocialiUpdatedAt === 'number' ? parsed.libriSocialiUpdatedAt : 0,
+          richiesteReintegroMagazzino: Array.isArray(parsed.richiesteReintegroMagazzino) ? parsed.richiesteReintegroMagazzino.slice(0, 250) : [],
+          richiesteReintegroUpdatedAt: typeof parsed.richiesteReintegroUpdatedAt === 'number' ? parsed.richiesteReintegroUpdatedAt : 0,
+          rifornimentiMezzi: Array.isArray(parsed.rifornimentiMezzi) ? parsed.rifornimentiMezzi.slice(0, 180) : [],
+          rifornimentiUpdatedAt: typeof parsed.rifornimentiUpdatedAt === 'number' ? parsed.rifornimentiUpdatedAt : 0,
+          metodiPagamentoCarburante: Array.isArray(parsed.metodiPagamentoCarburante)
+            ? parsed.metodiPagamentoCarburante.slice(0, 60)
+            : [],
+          metodiPagamentoCarburanteUpdatedAt:
+            typeof parsed.metodiPagamentoCarburanteUpdatedAt === 'number'
+              ? parsed.metodiPagamentoCarburanteUpdatedAt
+              : 0,
+          segnalazioniGuastiMezzi: Array.isArray(parsed.segnalazioniGuastiMezzi) ? parsed.segnalazioniGuastiMezzi.slice(0, 80) : [],
+          segnalazioniGuastiUpdatedAt: typeof parsed.segnalazioniGuastiUpdatedAt === 'number' ? parsed.segnalazioniGuastiUpdatedAt : 0,
+          documentiAssociativiSop: Array.isArray(parsed.documentiAssociativiSop) ? parsed.documentiAssociativiSop.slice(0, 60) : [],
+          documentiSopUpdatedAt: typeof parsed.documentiSopUpdatedAt === 'number' ? parsed.documentiSopUpdatedAt : 0,
+          convocazioniAssemblee: Array.isArray(parsed.convocazioniAssemblee) ? parsed.convocazioniAssemblee.slice(0, 50) : [],
+          sondaggiRapidi: Array.isArray(parsed.sondaggiRapidi) ? parsed.sondaggiRapidi.slice(0, 60) : [],
+          assembleeSondaggiUpdatedAt: typeof parsed.assembleeSondaggiUpdatedAt === 'number' ? parsed.assembleeSondaggiUpdatedAt : 0,
           timbrature: Array.isArray(parsed.timbrature) ? parsed.timbrature : [],
           bacheca: Array.isArray(parsed.bacheca) ? normalizzaComunicazioniBacheca(parsed.bacheca) : [],
           bachecaEliminatiIds: normalizeDeletedIds(parsed.bachecaEliminatiIds),
@@ -1190,6 +1235,26 @@ function loadPersistedState(): ServerState {
     luoghiTimbratura: LUOGHI_TIMBRATURA_DEFAULT,
     promemoriaTurniInviati: {},
     promemoriaCompleanniInviati: {},
+    promemoriaScadenzeFiscaliInviate: {},
+    promemoriaScadenzeMezziInviate: {},
+    promemoriaTurniScopertiInviati: {},
+    auditLog: [],
+    libriSocialiVerbali: [],
+    libriSocialiDelibere: [],
+    libriSocialiUpdatedAt: 0,
+    richiesteReintegroMagazzino: [],
+    richiesteReintegroUpdatedAt: 0,
+    rifornimentiMezzi: [],
+    rifornimentiUpdatedAt: 0,
+    metodiPagamentoCarburante: [],
+    metodiPagamentoCarburanteUpdatedAt: 0,
+    segnalazioniGuastiMezzi: [],
+    segnalazioniGuastiUpdatedAt: 0,
+    documentiAssociativiSop: [],
+    documentiSopUpdatedAt: 0,
+    convocazioniAssemblee: [],
+    sondaggiRapidi: [],
+    assembleeSondaggiUpdatedAt: 0,
     timbrature: [],
     bacheca: [],
     bachecaEliminatiIds: [],
@@ -1729,26 +1794,102 @@ async function startServer() {
     }
   };
 
-  const eseguiControlloPromemoriaTurniDomani = (forzaInvio = false): {
+  let cloudTurniReminderLogHydrated = false;
+  const pruneAndMergeStringReminderMap = (
+    targetKey:
+      | 'promemoriaTurniInviati'
+      | 'promemoriaScadenzeFiscaliInviate'
+      | 'promemoriaScadenzeMezziInviate'
+      | 'promemoriaTurniScopertiInviati',
+    incoming?: Record<string, string>,
+    maxAgeDays = 30
+  ): Record<string, string> => {
+    if (!state[targetKey] || typeof state[targetKey] !== 'object') {
+      state[targetKey] = {};
+    }
+    const map = state[targetKey] as Record<string, string>;
+    let changed = false;
+    if (incoming && typeof incoming === 'object') {
+      for (const [k, v] of Object.entries(incoming)) {
+        if (!k || typeof v !== 'string') continue;
+        if (!map[k]) {
+          map[k] = v;
+          changed = true;
+        }
+      }
+    }
+    const cutoffMs = Date.now() - maxAgeDays * 86400000;
+    for (const [k, v] of Object.entries(map)) {
+      const parsedTs = Date.parse(v);
+      if (Number.isFinite(parsedTs) && parsedTs < cutoffMs) {
+        delete map[k];
+        changed = true;
+      }
+    }
+    if (changed) {
+      persistState();
+    }
+    return { ...map };
+  };
+
+  const eseguiControlloPromemoriaTurniDomani = (
+    forzaInvio = false,
+    incomingTurni?: any[],
+    cloudLog?: Record<string, string>,
+    cloudSyncVerified = false
+  ): {
     countInviati: number;
     dettagli: any[];
+    promemoriaTurniInviati: Record<string, string>;
   } => {
+    if (cloudLog && typeof cloudLog === 'object') {
+      pruneAndMergeStringReminderMap('promemoriaTurniInviati', cloudLog, 21);
+    }
+    if (cloudSyncVerified) {
+      cloudTurniReminderLogHydrated = true;
+    }
+
+    if (!forzaInvio && !cloudSyncVerified && !cloudTurniReminderLogHydrated) {
+      return {
+        countInviati: 0,
+        dettagli: [],
+        promemoriaTurniInviati: { ...(state.promemoriaTurniInviati || {}) },
+      };
+    }
+
     const timeInfo = getItalianDateInfo();
     const { todayStr, tomorrowStr, hour } = timeInfo;
 
     // L'avviso deve scattare il giorno prima a partire dalle ore 9:00 di mattina
     if (!forzaInvio && hour < 9) {
-      return { countInviati: 0, dettagli: [] };
+      return {
+        countInviati: 0,
+        dettagli: [],
+        promemoriaTurniInviati: { ...(state.promemoriaTurniInviati || {}) },
+      };
     }
 
-    const turni = Array.isArray(state.turni) ? state.turni : [];
+    const turni =
+      Array.isArray(incomingTurni) && incomingTurni.length > 0
+        ? incomingTurni
+        : Array.isArray(state.turni)
+        ? state.turni
+        : [];
     if (turni.length === 0) {
-      return { countInviati: 0, dettagli: [] };
+      return {
+        countInviati: 0,
+        dettagli: [],
+        promemoriaTurniInviati: { ...(state.promemoriaTurniInviati || {}) },
+      };
     }
 
     const turniDomani = turni.filter((t: any) => t && t.data === tomorrowStr);
     if (turniDomani.length === 0) {
-      return { countInviati: 0, dettagli: [] };
+      return {
+        countInviati: 0,
+        dettagli: [],
+        promemoriaTurniInviati: { ...(state.promemoriaTurniInviati || {}) },
+      };
     }
 
     if (!state.promemoriaTurniInviati) {
@@ -1890,6 +2031,11 @@ async function startServer() {
       };
       state.notifiche.push(notif);
 
+      // Lock anti-duplicazione salvato PRIMA di spedire push/email
+      state.promemoriaTurniInviati[reminderDayKey] = new Date().toISOString();
+      hasStateChanges = true;
+      persistState();
+
       // 4. Broadcast in tempo reale WebSocket per i client attivi (1 solo evento per account/giorno)
       broadcast({
         type: 'PROMEMORIA_TURNO_DOMANI',
@@ -1911,11 +2057,10 @@ async function startServer() {
         titolo,
         testo,
         notification: notif,
+        promemoriaTurniInviati: { ...(state.promemoriaTurniInviati || {}) },
         timestamp: Date.now()
       });
 
-      state.promemoriaTurniInviati[reminderDayKey] = new Date().toISOString();
-      hasStateChanges = true;
       countInviati++;
       dettagli.push({
         volontario: entry.volontarioNome,
@@ -1935,7 +2080,11 @@ async function startServer() {
       console.log(`[Promemoria Turni] Inviati con successo ${countInviati} promemoria unici per i turni di domani (${tomorrowStr}).`);
     }
 
-    return { countInviati, dettagli };
+    return {
+      countInviati,
+      dettagli,
+      promemoriaTurniInviati: { ...(state.promemoriaTurniInviati || {}) },
+    };
   };
 
   // =========================================================================
@@ -2167,16 +2316,86 @@ async function startServer() {
     }
   };
 
-  const eseguiControlloCompleanniOggi = async (
+  let cloudBirthdayLogHydrated = false;
+  let compleanniCheckQueue: Promise<any> = Promise.resolve();
+
+  const normalizzaChiaveNomeCompleanno = (nomeCompleto: string): string =>
+    String(nomeCompleto || '')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '_')
+      .replace(/^_+|_+$/g, '');
+
+  const pruneAndMergePromemoriaCompleanni = (
+    incoming?: Record<string, { sentAt: string; recipients: string[] } | string> | null
+  ): boolean => {
+    if (!state.promemoriaCompleanniInviati || typeof state.promemoriaCompleanniInviati !== 'object') {
+      state.promemoriaCompleanniInviati = {};
+    }
+    let changed = false;
+
+    if (incoming && typeof incoming === 'object' && !Array.isArray(incoming)) {
+      for (const [k, val] of Object.entries(incoming)) {
+        if (!k || (!k.startsWith('compleanno_') && !k.startsWith('compleanno_nome_'))) continue;
+        if (!val) continue;
+        const prev = state.promemoriaCompleanniInviati[k];
+        if (!prev) {
+          state.promemoriaCompleanniInviati[k] = val;
+          changed = true;
+        } else if (typeof val === 'object' && Array.isArray(val.recipients)) {
+          const prevRecs =
+            typeof prev === 'object' && prev && Array.isArray(prev.recipients) ? prev.recipients : [];
+          const mergedRecs = Array.from(new Set([...prevRecs, ...val.recipients]));
+          if (mergedRecs.length !== prevRecs.length || typeof prev === 'string') {
+            state.promemoriaCompleanniInviati[k] = {
+              sentAt: (typeof prev === 'object' && prev?.sentAt) || val.sentAt || new Date().toISOString(),
+              recipients: mergedRecs
+            };
+            changed = true;
+          }
+        }
+      }
+    }
+
+    // Pulizia chiavi più vecchie di 14 giorni per mantenere compatto lo stato su disco e Firestore
+    const cutoffMs = Date.now() - 14 * 24 * 60 * 60 * 1000;
+    for (const k of Object.keys(state.promemoriaCompleanniInviati)) {
+      const m = k.match(/(\d{4}-\d{2}-\d{2})/);
+      if (m) {
+        const dt = Date.parse(`${m[1]}T12:00:00Z`);
+        if (Number.isFinite(dt) && dt < cutoffMs) {
+          delete state.promemoriaCompleanniInviati[k];
+          changed = true;
+        }
+      }
+    }
+
+    if (changed) {
+      persistState();
+    }
+    return changed;
+  };
+
+  const eseguiControlloCompleanniOggiInterno = async (
     forzaInvio = false,
-    clientVolontari?: any[]
+    clientVolontari?: any[],
+    incomingCloudLog?: Record<string, { sentAt: string; recipients: string[] } | string> | null,
+    cloudSyncVerified = false
   ): Promise<{
     countInviati: number;
     festeggiati: Array<{ id: string; nomeCompleto: string; qualifica?: string; sezione?: string; eta?: number }>;
     destinatari: string[];
     speditoViaSmtp: boolean;
     erroreSmtp?: string;
+    skippedAwaitingCloudSync?: boolean;
+    compleanniInviati: Record<string, { sentAt: string; recipients: string[] } | string>;
   }> => {
+    pruneAndMergePromemoriaCompleanni(incomingCloudLog);
+    if (cloudSyncVerified) {
+      cloudBirthdayLogHydrated = true;
+    }
+
     const timeInfo = getItalianDateInfo();
     const { todayStr, hour } = timeInfo;
     const [yearStr, monthStr, dayStr] = todayStr.split('-');
@@ -2187,7 +2406,26 @@ async function startServer() {
 
     // Controllo automatico giornaliero attivo dalle 08:00 italiane (a meno di forzatura esplicita)
     if (!forzaInvio && hour < 8) {
-      return { countInviati: 0, festeggiati: [], destinatari: [], speditoViaSmtp: false };
+      return {
+        countInviati: 0,
+        festeggiati: [],
+        destinatari: [],
+        speditoViaSmtp: false,
+        compleanniInviati: { ...(state.promemoriaCompleanniInviati || {}) }
+      };
+    }
+
+    // Evita invii duplicati al riavvio/cold-start del container finché un client sincronizzato con Firebase
+    // non ha confermato lo storico cloud dei compleanni già notificati oggi
+    if (!forzaInvio && !cloudSyncVerified && !cloudBirthdayLogHydrated) {
+      return {
+        countInviati: 0,
+        festeggiati: [],
+        destinatari: [],
+        speditoViaSmtp: false,
+        skippedAwaitingCloudSync: true,
+        compleanniInviati: { ...(state.promemoriaCompleanniInviati || {}) }
+      };
     }
 
     // Unisci stato server + eventuali record aggiornati inviati dal client (es. da Firebase Firestore)
@@ -2212,11 +2450,13 @@ async function startServer() {
     const festeggiatiOggi: Array<{
       id: string;
       nomeCompleto: string;
+      nomeKey: string;
       qualifica?: string;
       sezione?: string;
       eta?: number;
       dataNascita?: string;
     }> = [];
+    const seenFesteggiatiNome = new Set<string>();
 
     for (const v of listaVolontari) {
       if (!v || v.eliminato || v.approvato === false) continue;
@@ -2224,10 +2464,14 @@ async function startServer() {
       if (!nascita) continue;
       if (nascita.day === dayNow && nascita.month === monthNow) {
         const nomeCompleto = `${v.nome || ''} ${v.cognome || ''}`.trim() || v.matricola || 'Volontario';
+        const nomeKey = normalizzaChiaveNomeCompleanno(nomeCompleto);
+        if (nomeKey && seenFesteggiatiNome.has(nomeKey)) continue;
+        if (nomeKey) seenFesteggiatiNome.add(nomeKey);
         const eta = nascita.year && nascita.year > 1900 && nascita.year <= yearNow ? yearNow - nascita.year : undefined;
         festeggiatiOggi.push({
-          id: String(v.id || nomeCompleto.toLowerCase().replace(/\s+/g, '_')),
+          id: String(v.id || nomeKey || 'volontario'),
           nomeCompleto,
+          nomeKey,
           qualifica: v.qualifica,
           sezione: v.sezioneAppartenenzaNome,
           eta,
@@ -2238,120 +2482,129 @@ async function startServer() {
 
     const tuttiDestinatari = calcolaDestinatariEmailCompleanni(listaVolontari);
     if (festeggiatiOggi.length === 0) {
-      return { countInviati: 0, festeggiati: [], destinatari: tuttiDestinatari, speditoViaSmtp: false };
-    }
-
-    // Calcola chi non ha ancora ricevuto la notifica di compleanno oggi (o tutti se forzaInvio)
-    const emailsDaNotificareSet = new Set<string>();
-    const festeggiatiNuoviPerNotifica: typeof festeggiatiOggi = [];
-    let isPrimaNotificaSistemaOggi = false;
-
-    for (const f of festeggiatiOggi) {
-      const key = `compleanno_${todayStr}_${f.id}`;
-      const existingRec = state.promemoriaCompleanniInviati[key];
-      const giaInviatiEmails = new Set<string>(
-        typeof existingRec === 'object' && existingRec && Array.isArray(existingRec.recipients)
-          ? existingRec.recipients.map(e => String(e).toLowerCase())
-          : []
-      );
-
-      if (!existingRec) {
-        isPrimaNotificaSistemaOggi = true;
-      }
-
-      if (forzaInvio) {
-        tuttiDestinatari.forEach(em => emailsDaNotificareSet.add(em));
-        festeggiatiNuoviPerNotifica.push(f);
-      } else {
-        let missingForThisBirthday = false;
-        for (const em of tuttiDestinatari) {
-          if (typeof existingRec === 'string') {
-            // Vecchio formato stringa senza elenco: considera già inviato solo se non abbiamo lista nuovi
-            continue;
-          }
-          if (!giaInviatiEmails.has(em.toLowerCase())) {
-            emailsDaNotificareSet.add(em);
-            missingForThisBirthday = true;
-          }
-        }
-        if (missingForThisBirthday) {
-          festeggiatiNuoviPerNotifica.push(f);
-        }
-      }
-    }
-
-    const destinatariDaNotificare = Array.from(emailsDaNotificareSet);
-    if (destinatariDaNotificare.length === 0 || festeggiatiNuoviPerNotifica.length === 0) {
       return {
         countInviati: 0,
-        festeggiati: festeggiatiOggi,
+        festeggiati: [],
         destinatari: tuttiDestinatari,
-        speditoViaSmtp: false
+        speditoViaSmtp: false,
+        compleanniInviati: { ...(state.promemoriaCompleanniInviati || {}) }
       };
     }
 
+    const festeggiatiNuoviPerNotifica: typeof festeggiatiOggi = [];
+    for (const f of festeggiatiOggi) {
+      const keyById = `compleanno_${todayStr}_${f.id}`;
+      const keyByName = f.nomeKey ? `compleanno_nome_${todayStr}_${f.nomeKey}` : '';
+      const alreadySent = Boolean(
+        state.promemoriaCompleanniInviati[keyById] ||
+          (keyByName && state.promemoriaCompleanniInviati[keyByName])
+      );
+
+      // Se già inviato oggi (per ID o per nome normalizzato), non reinviare mai automaticamente
+      if (forzaInvio || !alreadySent) {
+        festeggiatiNuoviPerNotifica.push(f);
+      } else if (keyByName && !state.promemoriaCompleanniInviati[keyByName]) {
+        state.promemoriaCompleanniInviati[keyByName] = state.promemoriaCompleanniInviati[keyById];
+        persistState();
+      }
+    }
+
+    if (tuttiDestinatari.length === 0 || festeggiatiNuoviPerNotifica.length === 0) {
+      return {
+        countInviati: 0,
+        festeggiati: festeggiatiOggi.map(({ nomeKey: _nk, ...rest }) => rest),
+        destinatari: tuttiDestinatari,
+        speditoViaSmtp: false,
+        compleanniInviati: { ...(state.promemoriaCompleanniInviati || {}) }
+      };
+    }
+
+    // BLOCCO ANTICIPATO PRIMA DELL'INVIO SMTP: impedisce qualsiasi invio parallelo o duplicato
+    const nowIso = new Date().toISOString();
+    for (const f of festeggiatiNuoviPerNotifica) {
+      const keyById = `compleanno_${todayStr}_${f.id}`;
+      const keyByName = f.nomeKey ? `compleanno_nome_${todayStr}_${f.nomeKey}` : '';
+      const record = {
+        sentAt: nowIso,
+        recipients: tuttiDestinatari
+      };
+      state.promemoriaCompleanniInviati[keyById] = record;
+      if (keyByName) {
+        state.promemoriaCompleanniInviati[keyByName] = record;
+      }
+    }
+    persistState();
+
     const esitoMail = await inviaEmailCompleannoVolontari(
-      destinatariDaNotificare,
+      tuttiDestinatari,
       festeggiatiNuoviPerNotifica,
       oggiFormatted
     );
-
-    // Aggiorna tracciamento destinatari notificati per ogni festeggiato
-    for (const f of festeggiatiNuoviPerNotifica) {
-      const key = `compleanno_${todayStr}_${f.id}`;
-      const prev = state.promemoriaCompleanniInviati[key];
-      const prevRecs =
-        typeof prev === 'object' && prev && Array.isArray(prev.recipients)
-          ? prev.recipients
-          : [];
-      const unionRecipients = Array.from(new Set([...prevRecs, ...destinatariDaNotificare]));
-      state.promemoriaCompleanniInviati[key] = {
-        sentAt: new Date().toISOString(),
-        recipients: unionRecipients
-      };
-    }
 
     const nomiStr = festeggiatiNuoviPerNotifica
       .map(f => `${f.nomeCompleto}${f.eta !== undefined ? ` (${f.eta} anni)` : ''}`)
       .join(', ');
 
-    if (forzaInvio || isPrimaNotificaSistemaOggi) {
-      const notifRadio: RadioNotification = {
-        id: generateUniqueNotifId(),
-        orario: formatTimeItaly(),
-        testo: `🎂 COMPLEANNO VOLONTARIO (${oggiFormatted}): Oggi festeggia ${nomiStr}! Email inviata a Presidenza e a tutti gli account con accesso al database Volontari (${destinatariDaNotificare.join(', ')}).`,
-        tipo: 'sistema'
-      };
-      state.notifiche.push(notifRadio);
-      if (state.notifiche.length > 50) state.notifiche.shift();
+    const notifRadio: RadioNotification = {
+      id: generateUniqueNotifId(),
+      orario: formatTimeItaly(),
+      testo: `🎂 COMPLEANNO VOLONTARIO (${oggiFormatted}): Oggi festeggia ${nomiStr}! Email inviata a Presidenza e a tutti gli account con accesso al database Volontari (${tuttiDestinatari.join(', ')}).`,
+      tipo: 'sistema'
+    };
+    state.notifiche.push(notifRadio);
+    if (state.notifiche.length > 50) state.notifiche.shift();
 
-      broadcast({
-        type: 'NOTIFICA_COMPLEANNO_VOLONTARIO',
-        dataOggi: oggiFormatted,
-        festeggiati: festeggiatiNuoviPerNotifica,
-        destinatariEmail: destinatariDaNotificare,
-        notification: notifRadio,
-        timestamp: Date.now()
-      });
+    const compleanniSnapshot = { ...(state.promemoriaCompleanniInviati || {}) };
 
-      sendPushNotificationToRole('admin', {
-        title: `🎂 Compleanno in Croce Oro (${oggiFormatted})`,
-        body: `Oggi è il compleanno di ${nomiStr}!`,
-        tag: `compleanno-${todayStr}`,
-        urgenza: 'VERDE',
-        url: '/?tab=volontari'
-      });
-    }
+    broadcast({
+      type: 'NOTIFICA_COMPLEANNO_VOLONTARIO',
+      dataOggi: oggiFormatted,
+      festeggiati: festeggiatiNuoviPerNotifica.map(({ nomeKey: _nk, ...rest }) => rest),
+      destinatariEmail: tuttiDestinatari,
+      notification: notifRadio,
+      compleanniInviati: compleanniSnapshot,
+      timestamp: Date.now()
+    });
+
+    sendPushNotificationToRole('admin', {
+      title: `🎂 Compleanno in Croce Oro (${oggiFormatted})`,
+      body: `Oggi è il compleanno di ${nomiStr}!`,
+      tag: `compleanno-${todayStr}`,
+      urgenza: 'VERDE',
+      url: '/?tab=volontari'
+    });
 
     persistState();
 
     return {
       countInviati: festeggiatiNuoviPerNotifica.length,
-      festeggiati: festeggiatiNuoviPerNotifica,
-      destinatari: destinatariDaNotificare,
+      festeggiati: festeggiatiNuoviPerNotifica.map(({ nomeKey: _nk, ...rest }) => rest),
+      destinatari: tuttiDestinatari,
       speditoViaSmtp: esitoMail.ok,
-      erroreSmtp: esitoMail.error
+      erroreSmtp: esitoMail.error,
+      compleanniInviati: compleanniSnapshot
     };
+  };
+
+  // Esecuzione strettamente serializzata (mutex) per eliminare race condition tra richieste simultanee
+  const eseguiControlloCompleanniOggi = (
+    forzaInvio = false,
+    clientVolontari?: any[],
+    incomingCloudLog?: Record<string, { sentAt: string; recipients: string[] } | string> | null,
+    cloudSyncVerified = false
+  ) => {
+    const run = compleanniCheckQueue
+      .catch(() => {})
+      .then(() =>
+        eseguiControlloCompleanniOggiInterno(
+          forzaInvio,
+          clientVolontari,
+          incomingCloudLog,
+          cloudSyncVerified
+        )
+      );
+    compleanniCheckQueue = run.catch(() => {});
+    return run;
   };
 
   // Funzione unificata per elaborare e sincronizzare eventi in tempo reale (da WebSocket o da HTTP POST /api/event)
@@ -2367,12 +2620,14 @@ async function startServer() {
             type: 'TURNI_UPDATED',
             turni: state.turni
           });
-          // Se sono almeno le ore 9:00 e ci sono assegnazioni per domani, invia subito promemoria
-          setTimeout(() => {
-            try {
-              eseguiControlloPromemoriaTurniDomani(false);
-            } catch {}
-          }, 600);
+          // Se lo storico cloud è già idratato e sono almeno le 09:00, verifica promemoria di domani
+          if (cloudTurniReminderLogHydrated) {
+            setTimeout(() => {
+              try {
+                eseguiControlloPromemoriaTurniDomani(false);
+              } catch {}
+            }, 600);
+          }
         }
         break;
       }
@@ -5751,6 +6006,191 @@ async function startServer() {
             break;
           }
 
+          case 'UPDATE_PROMEMORIA_COMPLEANNI': {
+            if (data?.promemoriaCompleanniInviati && typeof data.promemoriaCompleanniInviati === 'object') {
+              pruneAndMergePromemoriaCompleanni(data.promemoriaCompleanniInviati);
+              cloudBirthdayLogHydrated = true;
+            }
+            break;
+          }
+
+          case 'UPDATE_PROMEMORIA_TURNI': {
+            if (data?.promemoriaTurniInviati && typeof data.promemoriaTurniInviati === 'object') {
+              pruneAndMergeStringReminderMap('promemoriaTurniInviati', data.promemoriaTurniInviati, 21);
+              cloudTurniReminderLogHydrated = true;
+            }
+            break;
+          }
+
+          case 'UPDATE_PROMEMORIA_SCADENZE_FISCALI': {
+            if (data?.promemoriaScadenzeFiscaliInviate && typeof data.promemoriaScadenzeFiscaliInviate === 'object') {
+              pruneAndMergeStringReminderMap('promemoriaScadenzeFiscaliInviate', data.promemoriaScadenzeFiscaliInviate, 120);
+            }
+            break;
+          }
+
+          case 'UPDATE_PROMEMORIA_SCADENZE_MEZZI': {
+            if (data?.promemoriaScadenzeMezziInviate && typeof data.promemoriaScadenzeMezziInviate === 'object') {
+              pruneAndMergeStringReminderMap('promemoriaScadenzeMezziInviate', data.promemoriaScadenzeMezziInviate, 45);
+            }
+            break;
+          }
+
+          case 'UPDATE_PROMEMORIA_TURNI_SCOPERTI': {
+            if (data?.promemoriaTurniScopertiInviati && typeof data.promemoriaTurniScopertiInviati === 'object') {
+              pruneAndMergeStringReminderMap('promemoriaTurniScopertiInviati', data.promemoriaTurniScopertiInviati, 14);
+            }
+            break;
+          }
+
+          case 'UPDATE_AUDIT_LOG': {
+            if (Array.isArray(data?.auditLog)) {
+              const byId = new Map<string, any>();
+              for (const item of state.auditLog || []) {
+                if (item?.id) byId.set(item.id, item);
+              }
+              for (const item of data.auditLog) {
+                if (item?.id && !byId.has(item.id)) byId.set(item.id, item);
+              }
+              state.auditLog = Array.from(byId.values())
+                .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0))
+                .slice(0, 500);
+              persistState();
+              broadcast({ type: 'AUDIT_LOG_UPDATED', auditLog: state.auditLog }, excludeClient);
+            }
+            break;
+          }
+
+          case 'UPDATE_LIBRI_SOCIALI': {
+            const incomingTs = typeof data?.updatedAt === 'number' ? data.updatedAt : Date.now();
+            if (incomingTs >= (state.libriSocialiUpdatedAt || 0)) {
+              if (Array.isArray(data?.verbali)) state.libriSocialiVerbali = data.verbali;
+              if (Array.isArray(data?.delibere)) state.libriSocialiDelibere = data.delibere;
+              state.libriSocialiUpdatedAt = incomingTs;
+              persistState();
+              broadcast(
+                {
+                  type: 'LIBRI_SOCIALI_UPDATED',
+                  verbali: state.libriSocialiVerbali || [],
+                  delibere: state.libriSocialiDelibere || [],
+                  updatedAt: state.libriSocialiUpdatedAt,
+                },
+                excludeClient
+              );
+            }
+            break;
+          }
+
+          case 'UPDATE_RICHIESTE_REINTEGRO': {
+            const incomingTs = typeof data?.updatedAt === 'number' ? data.updatedAt : Date.now();
+            if (Array.isArray(data?.richieste) && incomingTs >= (state.richiesteReintegroUpdatedAt || 0)) {
+              state.richiesteReintegroMagazzino = data.richieste.slice(0, 250);
+              state.richiesteReintegroUpdatedAt = incomingTs;
+              persistState();
+              broadcast(
+                {
+                  type: 'RICHIESTE_REINTEGRO_UPDATED',
+                  richieste: state.richiesteReintegroMagazzino,
+                  updatedAt: state.richiesteReintegroUpdatedAt,
+                },
+                excludeClient
+              );
+            }
+            break;
+          }
+
+          case 'UPDATE_RIFORNIMENTI_MEZZI': {
+            const incomingTs = typeof data?.updatedAt === 'number' ? data.updatedAt : Date.now();
+            if (Array.isArray(data?.rifornimenti) && incomingTs >= (state.rifornimentiUpdatedAt || 0)) {
+              state.rifornimentiMezzi = data.rifornimenti.slice(0, 180);
+              state.rifornimentiUpdatedAt = incomingTs;
+              persistState();
+              broadcast(
+                {
+                  type: 'RIFORNIMENTI_MEZZI_UPDATED',
+                  lista: state.rifornimentiMezzi,
+                  updatedAt: state.rifornimentiUpdatedAt,
+                },
+                excludeClient
+              );
+            }
+            break;
+          }
+
+          case 'UPDATE_METODI_PAGAMENTO_CARBURANTE': {
+            const incomingTs = typeof data?.updatedAt === 'number' ? data.updatedAt : Date.now();
+            if (Array.isArray(data?.metodi) && incomingTs >= (state.metodiPagamentoCarburanteUpdatedAt || 0)) {
+              state.metodiPagamentoCarburante = data.metodi.slice(0, 60);
+              state.metodiPagamentoCarburanteUpdatedAt = incomingTs;
+              persistState();
+              broadcast(
+                {
+                  type: 'METODI_PAGAMENTO_CARBURANTE_UPDATED',
+                  lista: state.metodiPagamentoCarburante,
+                  updatedAt: state.metodiPagamentoCarburanteUpdatedAt,
+                },
+                excludeClient
+              );
+            }
+            break;
+          }
+
+          case 'UPDATE_GUASTI_MEZZI': {
+            const incomingTs = typeof data?.updatedAt === 'number' ? data.updatedAt : Date.now();
+            if (Array.isArray(data?.guasti) && incomingTs >= (state.segnalazioniGuastiUpdatedAt || 0)) {
+              state.segnalazioniGuastiMezzi = data.guasti.slice(0, 80);
+              state.segnalazioniGuastiUpdatedAt = incomingTs;
+              persistState();
+              broadcast(
+                {
+                  type: 'GUASTI_MEZZI_UPDATED',
+                  lista: state.segnalazioniGuastiMezzi,
+                  updatedAt: state.segnalazioniGuastiUpdatedAt,
+                },
+                excludeClient
+              );
+            }
+            break;
+          }
+
+          case 'UPDATE_DOCUMENTI_SOP': {
+            const incomingTs = typeof data?.updatedAt === 'number' ? data.updatedAt : Date.now();
+            if (Array.isArray(data?.documenti) && incomingTs >= (state.documentiSopUpdatedAt || 0)) {
+              state.documentiAssociativiSop = data.documenti.slice(0, 60);
+              state.documentiSopUpdatedAt = incomingTs;
+              persistState();
+              broadcast(
+                {
+                  type: 'DOCUMENTI_SOP_UPDATED',
+                  lista: state.documentiAssociativiSop,
+                  updatedAt: state.documentiSopUpdatedAt,
+                },
+                excludeClient
+              );
+            }
+            break;
+          }
+
+          case 'UPDATE_ASSEMBLEE_SONDAGGI': {
+            const incomingTs = typeof data?.updatedAt === 'number' ? data.updatedAt : Date.now();
+            if (incomingTs >= (state.assembleeSondaggiUpdatedAt || 0)) {
+              if (Array.isArray(data?.convocazioni)) state.convocazioniAssemblee = data.convocazioni.slice(0, 50);
+              if (Array.isArray(data?.sondaggi)) state.sondaggiRapidi = data.sondaggi.slice(0, 60);
+              state.assembleeSondaggiUpdatedAt = incomingTs;
+              persistState();
+              broadcast(
+                {
+                  type: 'ASSEMBLEE_SONDAGGI_UPDATED',
+                  convocazioni: state.convocazioniAssemblee,
+                  sondaggi: state.sondaggiRapidi,
+                  updatedAt: state.assembleeSondaggiUpdatedAt,
+                },
+                excludeClient
+              );
+            }
+            break;
+          }
+
           case 'PING': {
             if (excludeClient && excludeClient.readyState === WebSocket.OPEN) {
               try {
@@ -6390,11 +6830,13 @@ async function startServer() {
         type: 'TURNI_UPDATED',
         turni: state.turni
       });
-      setTimeout(() => {
-        try {
-          eseguiControlloPromemoriaTurniDomani(false);
-        } catch {}
-      }, 600);
+      if (cloudTurniReminderLogHydrated) {
+        setTimeout(() => {
+          try {
+            eseguiControlloPromemoriaTurniDomani(false);
+          } catch {}
+        }, 600);
+      }
       return res.json({
         success: true,
         count: turni.length,
@@ -7996,8 +8438,8 @@ async function startServer() {
   // Endpoint per forzare o testare l'invio del promemoria per i turni di domani
   app.post('/api/promemoria-turni/invia-ora', (req, res) => {
     try {
-      const { forzaTutti } = req.body || {};
-      const esito = eseguiControlloPromemoriaTurniDomani(true);
+      const { turni: clientTurni, promemoriaGiaInviati } = req.body || {};
+      const esito = eseguiControlloPromemoriaTurniDomani(true, clientTurni, promemoriaGiaInviati, true);
       res.json({
         success: true,
         messaggio: `Inviati ${esito.countInviati} promemoria per i turni in programma per domani.`,
@@ -8006,6 +8448,41 @@ async function startServer() {
     } catch (err: any) {
       console.error('[Promemoria Turni] Errore invio manuale:', err);
       res.status(500).json({ success: false, error: err?.message || 'Errore elaborazione' });
+    }
+  });
+
+  // Endpoint idratato da cloud Firestore per verifica automatica anti-duplicato promemoria turni domani
+  app.post('/api/promemoria-turni/verifica', (req, res) => {
+    try {
+      const {
+        forzaInvio = false,
+        turni: clientTurni,
+        promemoriaGiaInviati,
+        cloudSyncVerified = false
+      } = req.body || {};
+      const esito = eseguiControlloPromemoriaTurniDomani(
+        Boolean(forzaInvio),
+        clientTurni,
+        promemoriaGiaInviati,
+        Boolean(cloudSyncVerified)
+      );
+      res.json({ success: true, ...esito });
+    } catch (err: any) {
+      console.error('[Promemoria Turni] Errore verifica cloud:', err);
+      res.status(500).json({ success: false, error: err?.message || 'Errore verifica promemoria turni' });
+    }
+  });
+
+  app.post('/api/promemoria-turni/sync-log', (req, res) => {
+    try {
+      const { promemoriaGiaInviati, cloudSyncVerified = false } = req.body || {};
+      const merged = pruneAndMergeStringReminderMap('promemoriaTurniInviati', promemoriaGiaInviati, 21);
+      if (cloudSyncVerified) {
+        cloudTurniReminderLogHydrated = true;
+      }
+      res.json({ success: true, promemoriaTurniInviati: merged });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message || 'Errore sync log promemoria turni' });
     }
   });
 
@@ -8032,12 +8509,494 @@ async function startServer() {
     }
   });
 
+  // ENDPOINT: Avviso automatico & manuale "Turni Scoperti" (24-48 ore prima) con anti-duplicazione cloud
+  app.post('/api/notifica-turni-scoperti', async (req, res) => {
+    try {
+      const {
+        alerts = [],
+        cloudLog,
+        forzaInvio = false,
+        operatore = 'Sistema Automatico Turni'
+      } = req.body || {};
+
+      if (cloudLog && typeof cloudLog === 'object') {
+        pruneAndMergeStringReminderMap('promemoriaTurniScopertiInviati', cloudLog, 14);
+      }
+      if (!state.promemoriaTurniScopertiInviati) {
+        state.promemoriaTurniScopertiInviati = {};
+      }
+
+      const lista = Array.isArray(alerts) ? alerts : [];
+      const inviati: any[] = [];
+      let emailsSent = 0;
+      let pushSent = 0;
+
+      const transporter = await createCroceOroMailTransporter();
+      const MITTENTE_UFFICIALE = 'CROCE ORO MASSA CARRARA OdV - Ufficio Turni';
+      const EMAIL_MITTENTE_UFFICIALE = 'sistemiautomatizzati@croceoro.org';
+
+      for (const alert of lista) {
+        const dedupKey = String(alert?.dedupKey || '').trim();
+        if (!dedupKey) continue;
+        if (!forzaInvio && state.promemoriaTurniScopertiInviati[dedupKey]) {
+          continue;
+        }
+
+        // Lock pre-invio
+        state.promemoriaTurniScopertiInviati[dedupKey] = new Date().toISOString();
+        persistState();
+
+        const ruoliScoperti = Array.isArray(alert.ruoliScoperti) ? alert.ruoliScoperti : [];
+        const ruoliLabelStr = ruoliScoperti.map((r: any) => r.ruoloLabel || r.ruoloKey).join(', ');
+        const destinatariMap = new Map<string, { id?: string; nomeCompleto: string; email?: string; ruoli: string[] }>();
+
+        for (const r of ruoliScoperti) {
+          for (const v of r.volontariIdonei || []) {
+            const key = String(v.id || v.nomeCompleto || '').trim().toLowerCase();
+            if (!key) continue;
+            const existing = destinatariMap.get(key);
+            if (existing) {
+              if (!existing.ruoli.includes(r.ruoloLabel)) existing.ruoli.push(r.ruoloLabel);
+            } else {
+              destinatariMap.set(key, {
+                id: v.id,
+                nomeCompleto: v.nomeCompleto,
+                email: v.email,
+                ruoli: [r.ruoloLabel || r.ruoloKey]
+              });
+            }
+          }
+        }
+
+        const titolo = `⚠️ TURNO SCOPERTO (${alert.finestra === '24h' ? 'ENTRO 24h' : 'ENTRO 48h'}) — ${alert.sedeNome}`;
+        const testo = `Turno del ${alert.dataFormatted} (${alert.fasciaOraria}) presso ${alert.sedeNome}: ruoli scoperti [${ruoliLabelStr}]. Se sei disponibile, segnati dal Calendario Turni!`;
+
+        for (const dest of destinatariMap.values()) {
+          if (dest.id) {
+            sendPushNotificationToVolunteer(dest.id, {
+              title: titolo,
+              body: testo,
+              tag: `turno-scoperto-${dedupKey}-${dest.id}`,
+              urgenza: alert.finestra === '24h' ? 'ROSSO' : 'GIALLO',
+              soundType: 'chiamata',
+              url: '/?tab=turni',
+              targetVolontarioId: dest.id,
+              targetVolontarioNome: dest.nomeCompleto,
+              timestamp: Date.now()
+            });
+            pushSent++;
+          }
+        }
+
+        // Email di avviso cumulativa BCC ai volontari idonei + in copia a turni/presidenza se disponibile
+        const emailList = Array.from(
+          new Set(
+            Array.from(destinatariMap.values())
+              .map((d) => String(d.email || '').trim().toLowerCase())
+              .filter((e) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e))
+          )
+        );
+        if (transporter && emailList.length > 0) {
+          try {
+            await transporter.sendMail({
+              from: { name: MITTENTE_UFFICIALE, address: EMAIL_MITTENTE_UFFICIALE },
+              sender: EMAIL_MITTENTE_UFFICIALE,
+              replyTo: EMAIL_MITTENTE_UFFICIALE,
+              to: EMAIL_MITTENTE_UFFICIALE,
+              bcc: emailList,
+              subject: `[TURNO SCOPERTO ${alert.dataFormatted}] ${alert.sedeNome} (${alert.fasciaOraria}) - Cercasi ${ruoliLabelStr}`,
+              text:
+                `Ciao Volontario,\n\n` +
+                `Ti segnaliamo che manca personale per il seguente turno in partenza tra circa ${alert.oreMancanti} ore:\n\n` +
+                `• Data: ${alert.dataFormatted}\n` +
+                `• Fascia Oraria: ${alert.fasciaOraria}\n` +
+                `• Sede: ${alert.sedeNome}\n` +
+                `• Ruoli scoperti: ${ruoliLabelStr}\n\n` +
+                `Apri l'App Croce Oro -> Calendario Turni per dare la tua disponibilità.\n\n` +
+                `Grazie per la collaborazione!\nCroce Oro Massa Carrara OdV`,
+              html: `
+                <div style="font-family: Arial, sans-serif; color: #1e293b; max-width: 620px; margin: 0 auto; border: 1px solid #e2e8f0; border-radius: 12px; overflow: hidden;">
+                  <div style="background: ${alert.finestra === '24h' ? '#991b1b' : '#b45309'}; color: #ffffff; padding: 18px; text-align: center;">
+                    <h2 style="margin: 0; font-size: 18px;">⚠️ RICHIESTA COPERTURA TURNO (${alert.finestra === '24h' ? 'URGENTE < 24h' : 'ENTRO 48h'})</h2>
+                    <p style="margin: 4px 0 0; font-size: 12px; opacity: 0.9;">Croce Oro Massa Carrara OdV</p>
+                  </div>
+                  <div style="padding: 20px; background: #ffffff;">
+                    <p style="margin-top: 0;">Ciao Volontario, serve una mano per coprire il seguente turno in partenza tra circa <strong>${alert.oreMancanti} ore</strong>:</p>
+                    <div style="background: #f8fafc; border-left: 4px solid #f59e0b; padding: 12px 14px; border-radius: 6px; margin: 14px 0;">
+                      <p style="margin: 4px 0;"><strong>📆 Data:</strong> ${alert.dataFormatted}</p>
+                      <p style="margin: 4px 0;"><strong>⏰ Orario:</strong> ${alert.fasciaOraria}</p>
+                      <p style="margin: 4px 0;"><strong>📍 Sede:</strong> ${alert.sedeNome}</p>
+                      <p style="margin: 4px 0;"><strong>🦺 Ruoli scoperti:</strong> <span style="color: #b91c1c; font-weight: bold;">${ruoliLabelStr}</span></p>
+                    </div>
+                    <p style="font-size: 13px; color: #475569;">Apri l'app Croce Oro &rarr; <strong>Calendario Turni</strong> per candidarti o metterti in turno.</p>
+                  </div>
+                </div>
+              `
+            });
+            emailsSent += emailList.length;
+          } catch (mailErr) {
+            console.error('[Turni Scoperti] Errore invio email:', mailErr);
+          }
+        }
+
+        const notifRadio: RadioNotification = {
+          id: generateUniqueNotifId(),
+          orario: formatTimeItaly(),
+          testo: `⚠️ TURNO SCOPERTO (${alert.dataFormatted} ${alert.fasciaOraria} - ${alert.sedeNome}): mancanti [${ruoliLabelStr}]. Avvisati ${destinatariMap.size} volontari idonei (${operatore}).`,
+          tipo: 'allarme'
+        };
+        state.notifiche.push(notifRadio);
+        if (state.notifiche.length > 50) state.notifiche.shift();
+
+        broadcast({
+          type: 'AVVISO_TURNO_SCOPERTO',
+          dedupKey,
+          alert,
+          titolo,
+          testo,
+          destinatariIds: Array.from(destinatariMap.values()).map((d) => d.id).filter(Boolean),
+          notification: notifRadio,
+          promemoriaTurniScopertiInviati: { ...(state.promemoriaTurniScopertiInviati || {}) },
+          timestamp: Date.now()
+        });
+
+        inviati.push({
+          turnoId: alert.turnoId,
+          dedupKey,
+          sedeNome: alert.sedeNome,
+          dataFormatted: alert.dataFormatted,
+          ruoliLabelStr,
+          volontariAvvisati: destinatariMap.size
+        });
+      }
+
+      return res.json({
+        success: true,
+        countInviati: inviati.length,
+        pushSent,
+        emailsSent,
+        inviati,
+        promemoriaTurniScopertiInviati: { ...(state.promemoriaTurniScopertiInviati || {}) }
+      });
+    } catch (err: any) {
+      console.error('[Turni Scoperti] Errore endpoint:', err);
+      return res.status(500).json({ success: false, error: err?.message || 'Errore avviso turni scoperti' });
+    }
+  });
+
+  // ENDPOINT: Notifica automatica Checklist Mezzo -> Magazzino per voci non conformi / reintegro
+  app.post('/api/notifica-reintegro-magazzino', async (req, res) => {
+    try {
+      const { richiesta, destinatariEmails = [] } = req.body || {};
+      if (!richiesta || !richiesta.mezzoSigla) {
+        return res.status(400).json({ success: false, error: 'Dati richiesta reintegro mancanti' });
+      }
+
+      const voci = Array.isArray(richiesta.vociSegnalate) ? richiesta.vociSegnalate : [];
+      const listaVociStr = voci.map((v: any) => `${v.titolo}${v.noteKo ? ` (${v.noteKo})` : ''}`).join(', ');
+      const titolo = `${richiesta.priorita === 'Urgente' ? '🚨 REINTEGRO URGENTE' : '📦 REINTEGRO MAGAZZINO'} — ${richiesta.mezzoSigla}`;
+      const testo = `Checklist compilata da ${richiesta.volontarioNome || 'Equipaggio'} su ${richiesta.mezzoSigla}: ${voci.length} voci non conformi (${listaVociStr.slice(0, 180)}).`;
+
+      // Notifica push ai volontari con accesso magazzino o ruolo admin/presidente
+      const destinatariVol = (state.volontari || []).filter((v: any) => {
+        if (!v || v.eliminato) return false;
+        const ruolo = String(v.ruolo || '').toLowerCase();
+        const perm = v.permessiDatabase || {};
+        return (
+          ruolo.includes('admin') ||
+          ruolo.includes('president') ||
+          ruolo.includes('magazzin') ||
+          perm.magazzino === true
+        );
+      });
+
+      const emailSet = new Set<string>(['presidenza@croceoro.org']);
+      for (const e of Array.isArray(destinatariEmails) ? destinatariEmails : []) {
+        const clean = String(e || '').trim().toLowerCase();
+        if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(clean)) emailSet.add(clean);
+      }
+      for (const v of destinatariVol) {
+        const em = String(v.emailNotifiche || v.email || '').trim().toLowerCase();
+        if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(em)) emailSet.add(em);
+        if (v.id) {
+          sendPushNotificationToVolunteer(v.id, {
+            title: titolo,
+            body: testo,
+            tag: `reintegro-magazzino-${richiesta.id}`,
+            urgenza: richiesta.priorita === 'Urgente' ? 'ROSSO' : 'GIALLO',
+            soundType: 'chiamata',
+            url: '/?tab=magazzino',
+            targetVolontarioId: v.id,
+            targetVolontarioNome: `${v.nome || ''} ${v.cognome || ''}`.trim(),
+            timestamp: Date.now()
+          });
+        }
+      }
+
+      let speditoViaSmtp = false;
+      const transporter = await createCroceOroMailTransporter();
+      if (transporter && emailSet.size > 0) {
+        try {
+          const righeHtml = voci
+            .map(
+              (v: any) =>
+                `<li style="margin: 4px 0;"><strong>${v.titolo}</strong> <span style="color:#64748b;">[${v.categoria}]</span>${v.noteKo ? ` — <em>${v.noteKo}</em>` : ''}${v.critica ? ' <span style="color:#dc2626;font-weight:bold;">(CRITICA)</span>' : ''}</li>`
+            )
+            .join('');
+          await transporter.sendMail({
+            from: {
+              name: 'CROCE ORO MASSA CARRARA OdV - Magazzino & Mezzi',
+              address: 'sistemiautomatizzati@croceoro.org'
+            },
+            sender: 'sistemiautomatizzati@croceoro.org',
+            replyTo: 'sistemiautomatizzati@croceoro.org',
+            to: Array.from(emailSet),
+            subject: `[${richiesta.priorita === 'Urgente' ? 'URGENTE ' : ''}REINTEGRO MAGAZZINO] Mezzo ${richiesta.mezzoSigla} (${voci.length} voci non conformi)`,
+            text:
+              `Segnalazione automatica da Checklist Inizio Turno:\n\n` +
+              `• Mezzo: ${richiesta.mezzoSigla}${richiesta.mezzoModello ? ` (${richiesta.mezzoModello})` : ''}\n` +
+              `• Segnalato da: ${richiesta.volontarioNome} il ${richiesta.dataOraSegnalazione}\n` +
+              `• Priorità: ${richiesta.priorita}\n\n` +
+              `Materiale / voci non conformi:\n` +
+              voci.map((v: any) => `- ${v.titolo} [${v.categoria}]${v.noteKo ? `: ${v.noteKo}` : ''}`).join('\n') +
+              (richiesta.noteGenerali ? `\n\nNote equipaggio: ${richiesta.noteGenerali}` : '') +
+              `\n\nAccedi al Database Magazzino per gestire e chiudere la richiesta di reintegro.`,
+            html: `
+              <div style="font-family: Arial, sans-serif; color: #1e293b; max-width: 640px; margin: 0 auto; border: 1px solid #e2e8f0; border-radius: 12px; overflow: hidden;">
+                <div style="background: ${richiesta.priorita === 'Urgente' ? '#991b1b' : '#1d1a60'}; color: #fbbf24; padding: 18px; text-align: center;">
+                  <h2 style="margin: 0; font-size: 18px;">${titolo}</h2>
+                  <p style="margin: 4px 0 0; font-size: 12px; color: #e2e8f0;">Collegamento Automatico Checklist Mezzo &rarr; Magazzino</p>
+                </div>
+                <div style="padding: 20px; background: #ffffff;">
+                  <p style="margin: 0 0 12px;"><strong>Mezzo:</strong> ${richiesta.mezzoSigla}${richiesta.mezzoModello ? ` (${richiesta.mezzoModello})` : ''} &bull; <strong>Operatore:</strong> ${richiesta.volontarioNome} &bull; <strong>Data:</strong> ${richiesta.dataOraSegnalazione}</p>
+                  <div style="background: #fff7ed; border-left: 4px solid #f97316; padding: 12px 16px; border-radius: 6px;">
+                    <p style="margin: 0 0 6px; font-weight: bold; color: #9a3412;">Voci segnalate come mancanti / guaste (${voci.length}):</p>
+                    <ul style="margin: 0; padding-left: 18px; font-size: 13px;">${righeHtml}</ul>
+                  </div>
+                  ${richiesta.noteGenerali ? `<p style="margin: 12px 0 0; font-size: 13px;"><strong>Note equipaggio:</strong> ${richiesta.noteGenerali}</p>` : ''}
+                  <p style="margin: 16px 0 0; font-size: 12px; color: #64748b;">Apri il Database <strong>Magazzino & Dotazioni</strong> &rarr; pannello <em>Richieste Reintegro da Checklist</em> per prendere in carico e chiudere il reintegro.</p>
+                </div>
+              </div>
+            `
+          });
+          speditoViaSmtp = true;
+        } catch (mailErr) {
+          console.error('[Reintegro Magazzino] Errore SMTP:', mailErr);
+        }
+      }
+
+      const notifRadio: RadioNotification = {
+        id: generateUniqueNotifId(),
+        orario: formatTimeItaly(),
+        testo: `📦 REINTEGRO MAGAZZINO DA CHECKLIST (${richiesta.mezzoSigla}): ${voci.length} voci non conformi segnalate da ${richiesta.volontarioNome}.`,
+        tipo: richiesta.priorita === 'Urgente' ? 'allarme' : 'sistema'
+      };
+      state.notifiche.push(notifRadio);
+      if (state.notifiche.length > 50) state.notifiche.shift();
+
+      broadcast({
+        type: 'NUOVA_RICHIESTA_REINTEGRO_MAGAZZINO',
+        richiesta,
+        notification: notifRadio,
+        timestamp: Date.now()
+      });
+
+      return res.json({ success: true, speditoViaSmtp, destinatari: Array.from(emailSet) });
+    } catch (err: any) {
+      console.error('[Reintegro Magazzino] Errore endpoint:', err);
+      return res.status(500).json({ success: false, error: err?.message || 'Errore notifica reintegro magazzino' });
+    }
+  });
+
+  // ENDPOINT: Sollecito mirato "Presa Visione" Comunicazioni Importanti solo ai volontari mancanti
+  app.post('/api/notifica-presa-visione', async (req, res) => {
+    try {
+      const { postId, titolo, sezioneTargetNome, destinatari = [] } = req.body || {};
+      if (!titolo || !Array.isArray(destinatari) || destinatari.length === 0) {
+        return res.status(400).json({ success: false, error: 'Destinatari mancanti' });
+      }
+      const emails: string[] = [];
+      const ids: string[] = [];
+      for (const d of destinatari) {
+        if (d?.id) ids.push(String(d.id));
+        const em = String(d?.email || '').trim().toLowerCase();
+        if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(em)) emails.push(em);
+        if (d?.id) {
+          sendPushNotificationToVolunteer(String(d.id), {
+            title: '📌 Conferma Presa Visione Richiesta',
+            body: `Leggi e conferma in Bacheca: "${titolo}"`,
+            tag: `presa-visione-${postId || Date.now()}`,
+            urgenza: 'GIALLO',
+            soundType: 'chiamata',
+            url: '/?tab=bacheca',
+            targetVolontarioId: String(d.id),
+            targetVolontarioNome: String(d.nome || ''),
+            timestamp: Date.now(),
+          });
+        }
+      }
+      let speditoViaSmtp = false;
+      const uniqueEmails = Array.from(new Set(emails));
+      const transporter = await createCroceOroMailTransporter();
+      if (transporter && uniqueEmails.length > 0) {
+        try {
+          await transporter.sendMail({
+            from: { name: 'CROCE ORO MASSA CARRARA OdV - Bacheca Ufficiale', address: 'sistemiautomatizzati@croceoro.org' },
+            sender: 'sistemiautomatizzati@croceoro.org',
+            replyTo: 'sistemiautomatizzati@croceoro.org',
+            bcc: uniqueEmails,
+            to: 'sistemiautomatizzati@croceoro.org',
+            subject: `[PRESA VISIONE RICHIESTA] ${titolo}`,
+            text:
+              `Gentile Volontario,\n\n` +
+              `ti invitiamo ad accedere alla Bacheca dell'App Croce Oro Massa Carrara OdV per leggere e cliccare su "Conferma Presa Visione" sulla seguente comunicazione importante:\n\n` +
+              `• Titolo: ${titolo}\n` +
+              `• Destinatari: ${sezioneTargetNome || 'Tutte le Sezioni'}\n\n` +
+              `Grazie per la collaborazione.\nCroce Oro Massa Carrara OdV`,
+          });
+          speditoViaSmtp = true;
+        } catch (mailErr) {
+          console.error('[Presa Visione] Errore SMTP:', mailErr);
+        }
+      }
+      broadcast({
+        type: 'PROMEMORIA_PRESA_VISION_BACHECA',
+        postId,
+        titolo,
+        destinatariIds: ids,
+        timestamp: Date.now(),
+      });
+      return res.json({ success: true, speditoViaSmtp, count: destinatari.length });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err?.message || 'Errore invio promemoria presa visione' });
+    }
+  });
+
+  // ENDPOINT: Notifica immediata Segnalazione Guasto / Danno / Sinistro Mezzo
+  app.post('/api/notifica-guasto-mezzo', async (req, res) => {
+    try {
+      const { guasto, destinatariEmails = [] } = req.body || {};
+      if (!guasto || !guasto.mezzoSigla) {
+        return res.status(400).json({ success: false, error: 'Dati segnalazione guasto mancanti' });
+      }
+      const isCritico = guasto.gravita === 'Critico / Fuori Servizio' || guasto.richiestoFermoImmediato;
+      const emailSet = new Set<string>(['presidenza@croceoro.org']);
+      for (const e of Array.isArray(destinatariEmails) ? destinatariEmails : []) {
+        const clean = String(e || '').trim().toLowerCase();
+        if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(clean)) emailSet.add(clean);
+      }
+
+      let speditoViaSmtp = false;
+      const transporter = await createCroceOroMailTransporter();
+      if (transporter && emailSet.size > 0) {
+        try {
+          await transporter.sendMail({
+            from: { name: 'CROCE ORO MASSA CARRARA OdV - Parco Mezzi', address: 'sistemiautomatizzati@croceoro.org' },
+            sender: 'sistemiautomatizzati@croceoro.org',
+            replyTo: 'sistemiautomatizzati@croceoro.org',
+            to: Array.from(emailSet),
+            subject: `[${isCritico ? 'CRITICO / FUORI SERVIZIO - ' : ''}${guasto.tipo}] Mezzo ${guasto.mezzoSigla}`,
+            text:
+              `Segnalazione ${guasto.tipo} sul mezzo ${guasto.mezzoSigla}${guasto.mezzoTarga ? ` (${guasto.mezzoTarga})` : ''}:\n\n` +
+              `• Gravità: ${guasto.gravita}\n` +
+              `• Segnalato da: ${guasto.segnalatoDaNome} il ${guasto.dataOra}\n` +
+              `• Km: ${guasto.kmMezzo || 'N/D'} • Luogo: ${guasto.luogo || 'N/D'}\n` +
+              `• Descrizione: ${guasto.descrizione}\n` +
+              `${guasto.datiControparte ? `• Controparte / Terzi: ${guasto.datiControparte}\n` : ''}\n` +
+              `Foto allegate in App: ${(guasto.fotoBase64 || []).length}.\n` +
+              `Accedi al Database Parco Mezzi o Centro Direttivo per visualizzare le foto e scaricare la scheda PDF per officina/assicurazione.`,
+          });
+          speditoViaSmtp = true;
+        } catch (mailErr) {
+          console.error('[Guasto Mezzo] Errore SMTP:', mailErr);
+        }
+      }
+
+      const notifRadio: RadioNotification = {
+        id: generateUniqueNotifId(),
+        orario: formatTimeItaly(),
+        testo: `${isCritico ? '🚨' : '🔧'} ${guasto.tipo.toUpperCase()} SU ${guasto.mezzoSigla} (${guasto.gravita}): ${String(guasto.descrizione || '').slice(0, 120)} — Segnalato da ${guasto.segnalatoDaNome}.`,
+        tipo: isCritico ? 'allarme' : 'mezzo',
+      };
+      state.notifiche.push(notifRadio);
+      if (state.notifiche.length > 50) state.notifiche.shift();
+      broadcast({
+        type: 'NUOVA_SEGNALAZIONE_GUASTO_MEZZO',
+        guasto,
+        notification: notifRadio,
+        timestamp: Date.now(),
+      });
+      return res.json({ success: true, speditoViaSmtp, destinatari: Array.from(emailSet) });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err?.message || 'Errore notifica guasto mezzo' });
+    }
+  });
+
+  // ENDPOINT: Notifica nuova Convocazione Assemblea o Sondaggio Rapido del Direttivo
+  app.post('/api/notifica-convocazione-sondaggio', async (req, res) => {
+    try {
+      const { kind, titolo, dettagli, destinatariEmails = [] } = req.body || {};
+      if (!titolo) return res.status(400).json({ success: false, error: 'Titolo mancante' });
+      const uniqueEmails = Array.from(
+        new Set<string>(
+          (Array.isArray(destinatariEmails) ? destinatariEmails : [])
+            .map((e: any) => String(e || '').trim().toLowerCase())
+            .filter((e: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e))
+        )
+      );
+      let speditoViaSmtp = false;
+      const transporter = await createCroceOroMailTransporter();
+      if (transporter && uniqueEmails.length > 0) {
+        try {
+          await transporter.sendMail({
+            from: { name: 'CROCE ORO MASSA CARRARA OdV - Direttivo', address: 'sistemiautomatizzati@croceoro.org' },
+            sender: 'sistemiautomatizzati@croceoro.org',
+            replyTo: 'sistemiautomatizzati@croceoro.org',
+            bcc: uniqueEmails,
+            to: 'sistemiautomatizzati@croceoro.org',
+            subject: kind === 'convocazione' ? `[CONVOCAZIONE ASSEMBLEA] ${titolo}` : `[SONDAGGIO VOLONTARI] ${titolo}`,
+            text:
+              `Gentile Volontario/Socio,\n\n` +
+              `${kind === 'convocazione' ? 'Il Consiglio Direttivo ha pubblicato una nuova Convocazione Ufficiale:' : 'Il Consiglio Direttivo ha aperto un nuovo Sondaggio Rapido:'}\n\n` +
+              `• ${titolo}\n` +
+              `${dettagli ? `• Dettagli: ${dettagli}\n` : ''}\n` +
+              `Accedi all'App Croce Oro nella sezione "Assemblee & Sondaggi" per confermare la presenza, delegare un socio o esprimere la tua preferenza.\n\n` +
+              `Croce Oro Massa Carrara OdV`,
+          });
+          speditoViaSmtp = true;
+        } catch (mailErr) {
+          console.error('[Assemblee/Sondaggi] Errore SMTP:', mailErr);
+        }
+      }
+      broadcast({
+        type: 'NUOVA_CONVOCAZIONE_O_SONDAGGIO',
+        kind,
+        titolo,
+        dettagli,
+        timestamp: Date.now(),
+      });
+      return res.json({ success: true, speditoViaSmtp, destinatariCount: uniqueEmails.length });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err?.message || 'Errore invio notifica convocazione/sondaggio' });
+    }
+  });
+
   // Endpoint per verificare o inviare immediatamente le notifiche email dei compleanni
   // a Presidenza e a tutti gli account che hanno accesso al database Volontari
   app.post('/api/notifica-compleanni', async (req, res) => {
     try {
-      const { forzaInvio = false, volontari: clientVolontari } = req.body || {};
-      const esito = await eseguiControlloCompleanniOggi(Boolean(forzaInvio), clientVolontari);
+      const {
+        forzaInvio = false,
+        volontari: clientVolontari,
+        compleanniGiaInviati,
+        cloudSyncVerified = false
+      } = req.body || {};
+      const esito = await eseguiControlloCompleanniOggi(
+        Boolean(forzaInvio),
+        clientVolontari,
+        compleanniGiaInviati,
+        Boolean(cloudSyncVerified)
+      );
       res.json({
         success: true,
         ...esito
@@ -8045,6 +9004,23 @@ async function startServer() {
     } catch (err: any) {
       console.error('[Compleanni] Errore endpoint /api/notifica-compleanni:', err);
       res.status(500).json({ success: false, error: err?.message || 'Errore elaborazione compleanni' });
+    }
+  });
+
+  // Endpoint leggero per sincronizzare sul server lo storico cloud dei compleanni già inviati senza forzare invii
+  app.post('/api/notifica-compleanni/sync-log', (req, res) => {
+    try {
+      const { compleanniGiaInviati, cloudSyncVerified = false } = req.body || {};
+      pruneAndMergePromemoriaCompleanni(compleanniGiaInviati);
+      if (cloudSyncVerified) {
+        cloudBirthdayLogHydrated = true;
+      }
+      res.json({
+        success: true,
+        compleanniInviati: state.promemoriaCompleanniInviati || {}
+      });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message || 'Errore sync log compleanni' });
     }
   });
 
@@ -8150,25 +9126,21 @@ async function startServer() {
   }, 5000);
 
   // Controllo automatico promemoria turni di domani (avviso alle ore 09:00 del giorno prima)
-  // + controllo automatico compleanni volontari (avviso dalle ore 08:00 a Presidenza e a tutti gli account con accesso al database Volontari)
+  // + controllo automatico compleanni volontari (entrambi attivi solo dopo idratazione dello storico cloud da Firestore)
   setInterval(() => {
-    try {
-      eseguiControlloPromemoriaTurniDomani(false);
-    } catch (err) {
-      console.error('[Promemoria Turni] Errore esecuzione periodica:', err);
+    if (cloudTurniReminderLogHydrated) {
+      try {
+        eseguiControlloPromemoriaTurniDomani(false);
+      } catch (err) {
+        console.error('[Promemoria Turni] Errore esecuzione periodica:', err);
+      }
     }
-    eseguiControlloCompleanniOggi(false).catch((err) => {
-      console.error('[Compleanni] Errore esecuzione periodica:', err);
-    });
+    if (cloudBirthdayLogHydrated) {
+      eseguiControlloCompleanniOggi(false).catch((err) => {
+        console.error('[Compleanni] Errore esecuzione periodica:', err);
+      });
+    }
   }, 60000);
-
-  // Esecuzione rapida iniziale all'avvio del server
-  setTimeout(() => {
-    try {
-      eseguiControlloPromemoriaTurniDomani(false);
-    } catch {}
-    eseguiControlloCompleanniOggi(false).catch(() => {});
-  }, 3000);
 
   // Cartella persistente per i file PDF prestampati caricati per categoria di corso
   const MODELLI_ATTESTATI_DIR = path.join(path.dirname(DB_PATH), 'modelli_attestati');
@@ -9997,6 +10969,316 @@ async function startServer() {
     }
   });
 
+  // Helper interno SMTP riusabile per notifiche automatiche (Scadenze Fiscali ODV & Strumenti Turni)
+  const createCroceOroMailTransporter = async () => {
+    const smtpHost = process.env.SMTP_HOST || 'mail.tophost.it';
+    const smtpPass = process.env.SMTP_PASS || 'Applicazione26!';
+    const smtpPort = Number(process.env.SMTP_PORT) || 587;
+    const isSecure = smtpPort === 465;
+    const candidateUsers = Array.from(new Set([
+      'croceoro.org10175',
+      'croceoro.org',
+      'sistemiautomatizzati@croceoro.org',
+      process.env.SMTP_USER
+    ].filter(Boolean) as string[]));
+
+    for (const candidate of candidateUsers) {
+      try {
+        const t = nodemailer.createTransport({
+          host: smtpHost,
+          port: smtpPort,
+          secure: isSecure,
+          auth: { user: candidate, pass: smtpPass },
+          tls: { rejectUnauthorized: false }
+        });
+        await t.verify();
+        return t;
+      } catch {}
+    }
+    return null;
+  };
+
+  // ENDPOINT: Notifica email scadenza fiscale ODV (Presidente, Tesoriere, Segretario) con anti-duplicazione cloud
+  app.post('/api/notifica-scadenza-fiscale-odv', async (req, res) => {
+    try {
+      const body = req.body || {};
+      const scadObj = body.scadenza && typeof body.scadenza === 'object' ? body.scadenza : {};
+      const scadenzaId = String(scadObj.id || body.scadenzaId || '').trim();
+      const scadenzaTitolo = String(scadObj.titolo || body.scadenzaTitolo || 'Scadenza Fiscale ODV');
+      const scadenzaData = String(scadObj.dataScadenza || body.scadenzaData || '');
+      const giorniMancanti = Number(body.giorniMancanti ?? 0);
+      const sogliaGiorni = Number(body.sogliaGiorni ?? 0);
+      const categoria = String(scadObj.categoria || body.categoria || 'Fiscale & Tributi');
+      const descrizione = String(scadObj.descrizione || body.descrizione || '');
+      const riferimentoNormativo = String(scadObj.riferimentoNormativo || body.riferimentoNormativo || '');
+      const stato = String(scadObj.stato || body.stato || 'Aperta');
+      const destinatariEmails = Array.isArray(body.destinatariEmails) ? body.destinatariEmails : [];
+      const destinatariNomi = Array.isArray(body.destinatariNomi)
+        ? body.destinatariNomi
+        : Array.isArray(body.destinatari)
+        ? body.destinatari
+        : [];
+      const force = Boolean(body.force);
+      const cloudLog = body.cloudLog && typeof body.cloudLog === 'object' ? body.cloudLog : undefined;
+
+      if (cloudLog) {
+        pruneAndMergeStringReminderMap('promemoriaScadenzeFiscaliInviate', cloudLog, 120);
+      }
+      if (!state.promemoriaScadenzeFiscaliInviate) {
+        state.promemoriaScadenzeFiscaliInviate = {};
+      }
+
+      const dedupKey = scadenzaId
+        ? `${scadenzaId}_${scadenzaData}_${sogliaGiorni}`
+        : `fiscale_${scadenzaTitolo.toLowerCase().slice(0, 40)}_${scadenzaData}_${sogliaGiorni}`;
+
+      if (!force && state.promemoriaScadenzeFiscaliInviate[dedupKey]) {
+        return res.json({
+          success: true,
+          alreadySent: true,
+          speditoViaSmtp: false,
+          promemoriaScadenzeFiscaliInviate: { ...(state.promemoriaScadenzeFiscaliInviate || {}) }
+        });
+      }
+
+      // Lock immediato prima di spedire SMTP/notifica
+      state.promemoriaScadenzeFiscaliInviate[dedupKey] = new Date().toISOString();
+      persistState();
+
+      const destinatari: string[] = Array.from(
+        new Set<string>(
+          destinatariEmails
+            .map((e: any) => String(e || '').trim().toLowerCase())
+            .filter((e: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e))
+        )
+      );
+      if (destinatari.length === 0) {
+        destinatari.push('presidenza@croceoro.org');
+      }
+
+      const MITTENTE_UFFICIALE = 'CROCE ORO MASSA CARRARA OdV - Scadenziario Fiscale';
+      const EMAIL_MITTENTE_UFFICIALE = 'sistemiautomatizzati@croceoro.org';
+      const oggetto = `[SCADENZA FISCALE ODV - ${sogliaGiorni}gg] ${scadenzaTitolo} (${scadenzaData})`;
+
+      const testoEmail =
+        `Gentili Presidente, Tesoriere e Segretario di Croce Oro Massa Carrara OdV,\n\n` +
+        `Promemoria automatico dello Scadenziario Fiscale & Economico ODV:\n\n` +
+        `• Adempimento: ${scadenzaTitolo}\n` +
+        `• Categoria: ${categoria}\n` +
+        `• Data Scadenza: ${scadenzaData} (mancano ${giorniMancanti} giorni — avviso ${sogliaGiorni}gg)\n` +
+        `• Stato attuale: ${stato}\n` +
+        (riferimentoNormativo ? `• Riferimento normativo: ${riferimentoNormativo}\n` : '') +
+        (descrizione ? `• Dettagli: ${descrizione}\n` : '') +
+        (destinatariNomi.length > 0
+          ? `• Destinatari configurati: ${destinatariNomi.join(', ')}\n`
+          : '') +
+        `\nAccedi alla sezione Contabilità -> Scadenze Fiscali ODV per aggiornare lo stato (Aperta / Chiusa / Annullata).\n\n` +
+        `Croce Oro Massa Carrara OdV - Sistemi Automatizzati`;
+
+      const htmlEmail = `
+        <div style="font-family: Arial, sans-serif; color: #1e293b; max-width: 650px; margin: 0 auto; border: 1px solid #e2e8f0; border-radius: 12px; overflow: hidden; background: #ffffff;">
+          <div style="background: #1d1a60; color: #fbbf24; padding: 20px; text-align: center;">
+            <h1 style="margin: 0; font-size: 19px; font-weight: 800;">CROCE ORO MASSA CARRARA OdV</h1>
+            <p style="margin: 4px 0 0; font-size: 12px; color: #e2e8f0;">Scadenziario Economico &amp; Fiscale ODV (Preavviso ${sogliaGiorni} giorni)</p>
+          </div>
+          <div style="padding: 24px;">
+            <div style="display: inline-block; background: #fef3c7; border: 1px solid #f59e0b; border-radius: 6px; padding: 4px 10px; font-size: 12px; font-weight: bold; color: #92400e; margin-bottom: 12px;">
+              📅 PROMEMORIA SCADENZA FISCALE (-${giorniMancanti} GIORNI)
+            </div>
+            <h2 style="margin: 0 0 12px; font-size: 18px; color: #0f172a;">${scadenzaTitolo}</h2>
+            <div style="background: #f8fafc; border-left: 4px solid #f59e0b; border-radius: 8px; padding: 14px; font-size: 13px; line-height: 1.6;">
+              <p style="margin: 4px 0;"><strong>📆 Data Scadenza:</strong> <span style="color: #b91c1c; font-weight: 800;">${scadenzaData}</span> (mancano <strong>${giorniMancanti} gg</strong>)</p>
+              <p style="margin: 4px 0;"><strong>📂 Categoria:</strong> ${categoria}</p>
+              <p style="margin: 4px 0;"><strong>🔖 Stato:</strong> ${stato}</p>
+              ${riferimentoNormativo ? `<p style="margin: 4px 0;"><strong>⚖️ Normativa:</strong> ${riferimentoNormativo}</p>` : ''}
+              ${descrizione ? `<p style="margin: 8px 0 0; color: #334155;">${descrizione}</p>` : ''}
+            </div>
+            <p style="margin: 16px 0 0; font-size: 12px; color: #64748b;">
+              Accedi al Gestionale &rarr; Database Contabilità &rarr; Scadenze Fiscali ODV per segnare l'adempimento come Chiuso o Annullato.
+            </p>
+          </div>
+        </div>
+      `;
+
+      let speditoViaSmtp = false;
+      const transporter = await createCroceOroMailTransporter();
+      if (transporter) {
+        try {
+          await transporter.sendMail({
+            from: { name: MITTENTE_UFFICIALE, address: EMAIL_MITTENTE_UFFICIALE },
+            sender: EMAIL_MITTENTE_UFFICIALE,
+            replyTo: EMAIL_MITTENTE_UFFICIALE,
+            to: destinatari,
+            subject: oggetto,
+            text: testoEmail,
+            html: htmlEmail
+          });
+          speditoViaSmtp = true;
+        } catch (err) {
+          console.error('[Notifica Scadenza Fiscale] Errore SMTP:', err);
+        }
+      }
+
+      const notificaRadio: RadioNotification = {
+        id: generateUniqueNotifId(),
+        orario: formatTimeItaly(),
+        testo: `📅 SCADENZA FISCALE ODV (-${giorniMancanti}gg): "${scadenzaTitolo}" scade il ${scadenzaData}.`,
+        tipo: 'sistema'
+      };
+      state.notifiche.push(notificaRadio);
+      if (state.notifiche.length > 50) state.notifiche.shift();
+      broadcast({ type: 'NOTIFICATION_BROADCAST', notification: notificaRadio });
+
+      return res.json({
+        success: true,
+        alreadySent: false,
+        speditoViaSmtp,
+        destinatari,
+        promemoriaScadenzeFiscaliInviate: { ...(state.promemoriaScadenzeFiscaliInviate || {}) }
+      });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err?.message || 'Errore notifica scadenza fiscale' });
+    }
+  });
+
+  // ENDPOINT: Notifiche email da Strumenti Calendario Turni (richieste, foglio di servizio, cancellazioni, scambi, cambio orario)
+  app.post('/api/notifica-strumenti-turni', async (req, res) => {
+    try {
+      const {
+        evento = 'richiesta_turno',
+        titolo = 'Aggiornamento Calendario Turni',
+        messaggio = '',
+        tipoTurnoNome = '',
+        turnoRiepilogo = '',
+        destinatariEmails = []
+      } = req.body || {};
+
+      const destinatari = Array.from(
+        new Set(
+          (Array.isArray(destinatariEmails) ? destinatariEmails : [])
+            .map((e: any) => String(e || '').trim().toLowerCase())
+            .filter((e: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e))
+        )
+      );
+
+      let speditoViaSmtp = false;
+      if (destinatari.length > 0) {
+        const transporter = await createCroceOroMailTransporter();
+        if (transporter) {
+          try {
+            const MITTENTE_UFFICIALE = 'CROCE ORO MASSA CARRARA OdV - Calendario Turni';
+            const EMAIL_MITTENTE_UFFICIALE = 'sistemiautomatizzati@croceoro.org';
+            await transporter.sendMail({
+              from: { name: MITTENTE_UFFICIALE, address: EMAIL_MITTENTE_UFFICIALE },
+              sender: EMAIL_MITTENTE_UFFICIALE,
+              replyTo: EMAIL_MITTENTE_UFFICIALE,
+              to: destinatari,
+              subject: `[TURNI${tipoTurnoNome ? ` - ${tipoTurnoNome}` : ''}] ${titolo}`,
+              text: `${titolo}\n\n${messaggio}${turnoRiepilogo ? `\n\nTurno: ${turnoRiepilogo}` : ''}\n\nCroce Oro Massa Carrara OdV`,
+              html: `
+                <div style="font-family: Arial, sans-serif; color: #1e293b; max-width: 640px; margin: 0 auto; border: 1px solid #e2e8f0; border-radius: 12px; overflow: hidden; background: #ffffff;">
+                  <div style="background: #1d1a60; color: #fbbf24; padding: 18px 20px; text-align: center;">
+                    <h1 style="margin: 0; font-size: 18px; font-weight: 800;">CROCE ORO MASSA CARRARA OdV</h1>
+                    <p style="margin: 4px 0 0; font-size: 12px; color: #e2e8f0;">Notifica Automatica Calendario Turni${tipoTurnoNome ? ` &bull; ${tipoTurnoNome}` : ''}</p>
+                  </div>
+                  <div style="padding: 22px;">
+                    <h2 style="margin: 0 0 10px; font-size: 17px; color: #0f172a;">${titolo}</h2>
+                    <div style="background: #f8fafc; border-left: 4px solid #3b82f6; border-radius: 8px; padding: 14px; font-size: 13px; white-space: pre-wrap;">${messaggio}</div>
+                    ${turnoRiepilogo ? `<p style="margin: 12px 0 0; font-size: 12px; color: #475569;"><strong>Turno di riferimento:</strong> ${turnoRiepilogo}</p>` : ''}
+                    <p style="margin: 14px 0 0; font-size: 11px; color: #94a3b8;">Evento: ${evento} &bull; ${formatDateTimeItaly()}</p>
+                  </div>
+                </div>
+              `
+            });
+            speditoViaSmtp = true;
+          } catch (err) {
+            console.error('[Notifica Strumenti Turni] Errore SMTP:', err);
+          }
+        }
+      }
+
+      const notificaRadio: RadioNotification = {
+        id: generateUniqueNotifId(),
+        orario: formatTimeItaly(),
+        testo: `📆 TURNI: ${titolo} — ${messaggio}`,
+        tipo: 'sistema'
+      };
+      state.notifiche.push(notificaRadio);
+      if (state.notifiche.length > 50) state.notifiche.shift();
+      broadcast({ type: 'NOTIFICATION_BROADCAST', notification: notificaRadio });
+
+      return res.json({ success: true, speditoViaSmtp, destinatari });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err?.message || 'Errore notifica strumenti turni' });
+    }
+  });
+
+  // Fallback Express in memoria per Link Timbratura Esterni Corsi Formazione (in aggiunta a Firestore)
+  const publicCoursesMemory = new Map<string, any>();
+  const pendingGuestCheckinsMemory = new Map<string, any>();
+
+  app.post('/api/public-course', (req, res) => {
+    const body = req.body || {};
+    const tokenId = String(body.tokenId || '').trim();
+    if (!/^crs-[a-zA-Z0-9_\-]{6,92}$/.test(tokenId)) {
+      return res.status(400).json({ ok: false, error: 'Token corso non valido' });
+    }
+    publicCoursesMemory.set(tokenId, { ...body, tokenId, updatedAt: Date.now() });
+    return res.json({ ok: true, tokenId });
+  });
+
+  app.get('/api/public-course/:token', (req, res) => {
+    const token = String(req.params.token || '').trim();
+    const course = publicCoursesMemory.get(token);
+    if (!course) {
+      return res.status(404).json({ ok: false, error: 'Corso non trovato' });
+    }
+    return res.json({ ok: true, course });
+  });
+
+  app.post('/api/public-course-checkin', (req, res) => {
+    const body = req.body || {};
+    const tokenId = String(body.tokenId || '').trim();
+    const corsoId = String(body.corsoId || '').trim();
+    const nome = String(body.nome || '').trim();
+    const cognome = String(body.cognome || '').trim();
+    const telefono = String(body.telefono || '').trim();
+    if (!tokenId || !corsoId || !nome || !cognome || telefono.length < 5) {
+      return res.status(400).json({ ok: false, error: 'Dati incompleti' });
+    }
+    const checkinId = `chk-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const record = {
+      checkinId,
+      scope: 'croce_oro_course_guest',
+      tokenId,
+      corsoId,
+      lezioneId: String(body.lezioneId || ''),
+      nome,
+      cognome,
+      telefono,
+      tipo: body.tipo === 'uscita' ? 'uscita' : 'entrata',
+      dataOra: String(body.dataOra || formatDateTimeItaly()),
+      aulaNome: String(body.aulaNome || 'Aula Didattica'),
+      distanzaMetri: Number(body.distanzaMetri) || 0,
+      status: 'pending'
+    };
+    pendingGuestCheckinsMemory.set(checkinId, record);
+    return res.json({ ok: true, checkinId });
+  });
+
+  app.get('/api/public-course-checkins', (_req, res) => {
+    const items = Array.from(pendingGuestCheckinsMemory.values()).filter((i) => i.status === 'pending');
+    return res.json({ ok: true, items });
+  });
+
+  app.post('/api/public-course-checkins/ack', (req, res) => {
+    const checkinId = String(req.body?.checkinId || '').trim();
+    if (checkinId && pendingGuestCheckinsMemory.has(checkinId)) {
+      pendingGuestCheckinsMemory.delete(checkinId);
+    }
+    return res.json({ ok: true });
+  });
+
   // Tracciamento in memoria dell'ultimo livello di scorta notificato per ciascun articolo per evitare spam continuo
   const ultimoStatoNotificaSottoscorta = new Map<string, { giacenza: number; timestamp: number }>();
 
@@ -10255,9 +11537,18 @@ async function startServer() {
         return res.status(400).json({ success: false, error: 'Nessuna scadenza mezzo fornita per la notifica' });
       }
 
+      const cloudLog = req.body?.cloudLog && typeof req.body.cloudLog === 'object' ? req.body.cloudLog : undefined;
+      if (cloudLog) {
+        pruneAndMergeStringReminderMap('promemoriaScadenzeMezziInviate', cloudLog, 45);
+      }
+      if (!state.promemoriaScadenzeMezziInviate) {
+        state.promemoriaScadenzeMezziInviate = {};
+      }
+
       // Filtra le scadenze: devono essere scadute (giorniRimanenti <= 0 o scaduta = true) o in scadenza entro la soglia configurata (default 30 giorni)
       const sogliaScadServer = Number(req.body?.sogliaGiorni) || Number(state.regolaScadenzeMezzi?.giorniPreavvisoScadenzario) || 30;
       const ora = Date.now();
+      const todayKey = getItalianDateInfo().todayStr;
       const scadenzeFiltrate = rawAlerts.filter((a: any) => {
         const giorni = Number(a.giorniRimanenti);
         const isScaduta = a.scaduta === true || (!isNaN(giorni) && giorni <= 0);
@@ -10266,6 +11557,10 @@ async function startServer() {
         if (!isScaduta && !isInScadenza && !force) return false;
 
         if (!force && a.id) {
+          const cloudKey = `${a.id}_${String(a.dataScadenza)}_${todayKey}`;
+          if (state.promemoriaScadenzeMezziInviate?.[cloudKey]) {
+            return false;
+          }
           const prev = ultimoStatoNotificaScadenze.get(a.id);
           // Se già notificato per la stessa identica data di scadenza nelle ultime 12 ore, evita duplicati
           if (prev && prev.dataScadenza === String(a.dataScadenza) && (ora - prev.timestamp) < 12 * 60 * 60 * 1000) {
@@ -10278,17 +11573,21 @@ async function startServer() {
       if (scadenzeFiltrate.length === 0) {
         return res.json({
           success: true,
-          message: 'Nessuna nuova scadenza mezzo da notificare o già notificata nelle ultime 12 ore.',
-          count: 0
+          message: 'Nessuna nuova scadenza mezzo da notificare o già notificata oggi.',
+          count: 0,
+          promemoriaScadenzeMezziInviate: { ...(state.promemoriaScadenzeMezziInviate || {}) }
         });
       }
 
-      // Aggiorna registro in memoria
+      // Lock immediato in memoria + persistente su stato/cloud PRIMA di inviare SMTP
       scadenzeFiltrate.forEach((a: any) => {
         if (a.id) {
           ultimoStatoNotificaScadenze.set(a.id, { dataScadenza: String(a.dataScadenza), timestamp: ora });
+          const cloudKey = `${a.id}_${String(a.dataScadenza)}_${todayKey}`;
+          state.promemoriaScadenzeMezziInviate![cloudKey] = new Date(ora).toISOString();
         }
       });
+      persistState();
 
       // Destinatari tassativi: mezzi@croceoro.org e presidenza@croceoro.org (+ eventuali extra)
       const destinatari = Array.from(new Set([
@@ -10495,6 +11794,7 @@ async function startServer() {
         scadenze: scadenzeFiltrate,
         speditoViaSmtp,
         erroreSmtp,
+        promemoriaScadenzeMezziInviate: { ...(state.promemoriaScadenzeMezziInviate || {}) },
         message: `Email scadenze inviata a ${destinatari.join(' e ')}`
       });
     } catch (err: any) {

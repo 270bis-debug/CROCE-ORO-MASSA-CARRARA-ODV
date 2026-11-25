@@ -39,7 +39,11 @@ import {
   Send,
   FileUp,
   Hash,
-  Printer
+  Printer,
+  Link2,
+  Copy,
+  Phone,
+  Power
 } from 'lucide-react';
 import { useTitoloDatabase, useNomiSottosezioniCustom } from '../../hooks/useNomiDatabase';
 import { getTitoloSottosezione } from '../../constants/macroCategorie';
@@ -80,6 +84,13 @@ import {
 } from '../../utils/modelliAttestatiStore';
 import { realtime } from '../../services/realtime';
 import { PannelloModelliAttestatiPdf } from './PannelloModelliAttestatiPdf';
+import { PannelloAuleFormazione } from './PannelloAuleFormazione';
+import {
+  useAuleFormazione,
+  generaTokenLinkTimbraturaEsterni,
+  buildLinkTimbraturaCorsoEsterno,
+  risolviTargetAulaDidattica
+} from '../../utils/auleFormazione';
 import { PdfAnteprimaWorkflowModal } from './PdfAnteprimaWorkflowModal';
 import { scaricaOStampaMultipliPDF, PdfBatchItem } from '../../utils/pdfWorkflowUtils';
 import { addDaysISODate, formatDateTimeItaly, formatISODateItaly, getCurrentYearItaly } from '../../utils/italianTime';
@@ -160,11 +171,13 @@ export const SezioneFormazione: React.FC<SezioneFormazioneProps> = ({
   allowedSubtabs = null
 }) => {
   const nomiSubCustom = useNomiSottosezioniCustom();
-  const [sottoTab, setSottoTab] = useState<'corsi' | 'iscritti' | 'scadenziario' | 'modelli_pdf'>('corsi');
-  // Chiunque abbia accesso al database Corsi & Formazione può gestire i PDF prestampati e le matricole progressive
+  const auleFormazione = useAuleFormazione();
+  const auleFormazioneAttive = auleFormazione.filter((a) => a.attiva);
+  const [sottoTab, setSottoTab] = useState<'corsi' | 'iscritti' | 'scadenziario' | 'modelli_pdf' | 'aule'>('corsi');
+  // Chiunque abbia accesso al database Corsi & Formazione può gestire PDF prestampati, matricole e Aule Formazione
   const canShowSubtab = (id: string) => {
     if (!allowedSubtabs) return true;
-    if (id === 'modelli_pdf') return allowedSubtabs.includes('modelli_pdf') || allowedSubtabs.length > 0;
+    if (id === 'modelli_pdf' || id === 'aule') return allowedSubtabs.includes(id) || allowedSubtabs.length > 0;
     return allowedSubtabs.includes(id);
   };
   const [, setModelliVersionTick] = useState(0);
@@ -177,7 +190,7 @@ export const SezioneFormazione: React.FC<SezioneFormazioneProps> = ({
 
   useEffect(() => {
     if (!canShowSubtab(sottoTab)) {
-      const ordine = ['corsi', 'iscritti', 'scadenziario', 'modelli_pdf'] as const;
+      const ordine = ['corsi', 'iscritti', 'scadenziario', 'modelli_pdf', 'aule'] as const;
       const prima = ordine.find((t) => canShowSubtab(t));
       if (prima) setSottoTab(prima);
     }
@@ -218,11 +231,23 @@ export const SezioneFormazione: React.FC<SezioneFormazioneProps> = ({
   // Destinatari per Sezione Territoriale Operativa (NO singoli volontari)
   const [formSezioniDestinatarieIds, setFormSezioniDestinatarieIds] = useState<string[]>(['TUTTE']);
 
-  // Sede di svolgimento & GPS (Sezione salvata o ALTRO con pin regolabile)
+  // Sede di svolgimento & GPS (Sezione salvata, Aula Formazione o ALTRO con pin regolabile)
   const [formSedeTipo, setFormSedeTipo] = useState<string>('sede-massa-ronchi');
+  const [formAulaFormazioneId, setFormAulaFormazioneId] = useState<string>('');
+  const [formRaggioMetriTimbratura, setFormRaggioMetriTimbratura] = useState<number>(150);
   const [formNomePosizioneAltro, setFormNomePosizioneAltro] = useState('');
   const [formIndirizzoAltro, setFormIndirizzoAltro] = useState('');
   const [formCoordinate, setFormCoordinate] = useState<{ lat: number; lng: number }>({ lat: 43.99419, lng: 10.12367 });
+
+  // Link Timbratura Esterni (senza account) segnalato all'operatore
+  const [linkEsternoSegnalato, setLinkEsternoSegnalato] = useState<{
+    corsoId: string;
+    corsoTitolo: string;
+    aulaNome: string;
+    url: string;
+    attivo: boolean;
+  } | null>(null);
+  const [linkCopiatoToast, setLinkCopiatoToast] = useState(false);
 
   // Percentuale Minima Presenza e Orari
   const [formPercentualeMinima, setFormPercentualeMinima] = useState<number>(80);
@@ -437,9 +462,12 @@ export const SezioneFormazione: React.FC<SezioneFormazioneProps> = ({
     setFormDocente('Dott.ssa Valentina Moriconi (Formatore IRC / Veterinario)');
     setFormEnte('Regione Toscana — Centrale 118 Alta Toscana');
     setFormSedeTipo('sede-massa-ronchi');
+    const primaAula = auleFormazioneAttive[0];
+    setFormAulaFormazioneId(primaAula ? primaAula.id : '');
+    setFormRaggioMetriTimbratura(primaAula ? primaAula.raggioMetri : 150);
     const primaSede = SEDI_TERRITORIALI_GPS[0];
-    setFormSede(primaSede.nome);
-    setFormCoordinate({ lat: primaSede.lat, lng: primaSede.lng });
+    setFormSede(primaAula ? primaAula.nome : primaSede.nome);
+    setFormCoordinate(primaAula ? primaAula.coordinate : { lat: primaSede.lat, lng: primaSede.lng });
     setFormNomePosizioneAltro('');
     setFormIndirizzoAltro('');
     setFormSezioniDestinatarieIds(['TUTTE']);
@@ -524,6 +552,8 @@ export const SezioneFormazione: React.FC<SezioneFormazioneProps> = ({
     setFormMansionePrerequisito(c.mansionePrerequisito || '');
     setFormLezioni(c.lezioni && c.lezioni.length > 0 ? [...c.lezioni] : []);
     setFormSezioniDestinatarieIds(c.sezioniDestinatarieIds && c.sezioniDestinatarieIds.length > 0 ? c.sezioniDestinatarieIds : ['TUTTE']);
+    setFormAulaFormazioneId(c.aulaFormazioneId || '');
+    setFormRaggioMetriTimbratura(c.raggioMetriTimbratura || 150);
     if (c.sedeSvolgimentoTipo === 'altro') {
       setFormSedeTipo('ALTRO');
       setFormNomePosizioneAltro(c.sedeCorso || '');
@@ -541,15 +571,88 @@ export const SezioneFormazione: React.FC<SezioneFormazioneProps> = ({
     setModaleCorsoAperta(true);
   };
 
-  // Salva Corso con destinatari a sezioni, fino a 20 lezioni geolocalizzate
+  // Genera / attiva / mostra il link di timbratura per partecipanti esterni senza account
+  const handleGeneraOCondividiLinkEsterni = async (corsoTarget: CorsoFormazione, rigeneraToken = false) => {
+    const token =
+      !rigeneraToken && corsoTarget.linkTimbraturaEsterniToken
+        ? corsoTarget.linkTimbraturaEsterniToken
+        : generaTokenLinkTimbraturaEsterni(corsoTarget.id);
+
+    const corsoAggiornato: CorsoFormazione = {
+      ...corsoTarget,
+      linkTimbraturaEsterniToken: token,
+      linkTimbraturaEsterniAttivo: true
+    };
+    const aggiornati = corsi.map((c) => (c.id === corsoTarget.id ? corsoAggiornato : c));
+    onAggiornaCorsi(aggiornati);
+    if (corsoPerIscrizioni && corsoPerIscrizioni.id === corsoTarget.id) {
+      setCorsoPerIscrizioni(corsoAggiornato);
+    }
+    const targetAula = risolviTargetAulaDidattica(corsoAggiornato, corsoAggiornato.lezioni?.[0] || null, auleFormazione);
+    const url = buildLinkTimbraturaCorsoEsterno(token);
+    await realtime.publishPublicCourse(corsoAggiornato, auleFormazione).catch(() => false);
+    setLinkEsternoSegnalato({
+      corsoId: corsoAggiornato.id,
+      corsoTitolo: corsoAggiornato.titolo,
+      aulaNome: targetAula.nome,
+      url,
+      attivo: true
+    });
+    mostraAvviso(`Link timbratura esterni pronto per "${corsoAggiornato.titolo}": condividilo con i partecipanti senza account.`);
+  };
+
+  const handleToggleAttivoLinkEsterni = async (corsoTarget: CorsoFormazione) => {
+    if (!corsoTarget.linkTimbraturaEsterniToken) return;
+    const nuovoStato = corsoTarget.linkTimbraturaEsterniAttivo === false;
+    const corsoAggiornato: CorsoFormazione = {
+      ...corsoTarget,
+      linkTimbraturaEsterniAttivo: nuovoStato
+    };
+    const aggiornati = corsi.map((c) => (c.id === corsoTarget.id ? corsoAggiornato : c));
+    onAggiornaCorsi(aggiornati);
+    if (corsoPerIscrizioni && corsoPerIscrizioni.id === corsoTarget.id) {
+      setCorsoPerIscrizioni(corsoAggiornato);
+    }
+    await realtime.publishPublicCourse(corsoAggiornato, auleFormazione).catch(() => false);
+    setLinkEsternoSegnalato((prev) =>
+      prev && prev.corsoId === corsoTarget.id ? { ...prev, attivo: nuovoStato } : prev
+    );
+    mostraAvviso(
+      nuovoStato
+        ? `Link timbratura esterni RIATTIVATO per "${corsoTarget.titolo}".`
+        : `Link timbratura esterni DISATTIVATO per "${corsoTarget.titolo}".`
+    );
+  };
+
+  const handleCopiaLinkEsterno = (url: string) => {
+    try {
+      navigator.clipboard.writeText(url);
+      setLinkCopiatoToast(true);
+      setTimeout(() => setLinkCopiatoToast(false), 2500);
+    } catch {
+      mostraAvviso('Copia manualmente il link dal riquadro viola.');
+    }
+  };
+
+  // Salva Corso con destinatari a sezioni, Aula Formazione geolocalizzata e fino a 20 lezioni
   const handleSalvaCorso = (e: React.FormEvent) => {
     e.preventDefault();
+
+    const aulaSelezionata = formAulaFormazioneId
+      ? auleFormazione.find((a) => a.id === formAulaFormazioneId)
+      : undefined;
 
     let sedeNome = formSede;
     let indirizzo = '';
     let coordinate = formCoordinate;
+    let raggioMetri = formRaggioMetriTimbratura || 150;
 
-    if (formSedeTipo === 'ALTRO') {
+    if (aulaSelezionata) {
+      sedeNome = aulaSelezionata.nome;
+      indirizzo = aulaSelezionata.indirizzo;
+      coordinate = { lat: aulaSelezionata.coordinate.lat, lng: aulaSelezionata.coordinate.lng };
+      raggioMetri = aulaSelezionata.raggioMetri || 150;
+    } else if (formSedeTipo === 'ALTRO') {
       sedeNome = formNomePosizioneAltro.trim() || 'Sede Esterna Formativa';
       indirizzo = formIndirizzoAltro.trim();
     } else {
@@ -594,8 +697,11 @@ export const SezioneFormazione: React.FC<SezioneFormazioneProps> = ({
       docenteFormatore: formDocente.trim(),
       enteAccreditato: formEnte.trim(),
       sedeCorso: sedeNome,
-      sedeSvolgimentoTipo: formSedeTipo === 'ALTRO' ? 'altro' : 'sezione_salvata',
-      sedeSvolgimentoSedeId: formSedeTipo === 'ALTRO' ? undefined : formSedeTipo,
+      sedeSvolgimentoTipo: formSedeTipo === 'ALTRO' && !aulaSelezionata ? 'altro' : 'sezione_salvata',
+      sedeSvolgimentoSedeId: aulaSelezionata?.sedeRiferimentoId || (formSedeTipo === 'ALTRO' ? undefined : formSedeTipo),
+      aulaFormazioneId: aulaSelezionata?.id || undefined,
+      aulaFormazioneNome: aulaSelezionata?.nome || undefined,
+      raggioMetriTimbratura: raggioMetri,
       indirizzoCompleto: indirizzo,
       coordinate: coordinate,
       orarioInizioLezione: formOrarioInizioLezione,
@@ -621,6 +727,9 @@ export const SezioneFormazione: React.FC<SezioneFormazioneProps> = ({
         c.id === corsoInModifica.id ? corsoAggiornato : c
       );
       onAggiornaCorsi(aggiornati);
+      if (corsoAggiornato.linkTimbraturaEsterniToken) {
+        realtime.publishPublicCourse(corsoAggiornato, auleFormazione).catch(() => {});
+      }
 
       // Se il corso non era in bacheca (es. era annullato/concluso o data passata) ed ora entra in bacheca, invia notifica solo in-app a tutti gli account
       if (!isCorsoVisibileInBacheca(corsoInModifica) && isCorsoVisibileInBacheca(corsoAggiornato)) {
@@ -1035,8 +1144,72 @@ export const SezioneFormazione: React.FC<SezioneFormazioneProps> = ({
         </div>
       )}
 
+      {/* Banner Link Timbratura Esterni (Segnalato all'operatore per condivisione immediata) */}
+      {linkEsternoSegnalato && (
+        <div className="bg-purple-950/80 border-2 border-purple-500/70 rounded-2xl p-4 space-y-2.5 shadow-xl animate-in fade-in">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="px-2 py-0.5 rounded-md bg-purple-600 text-white text-[10px] font-black uppercase">
+                  🔗 Link Timbratura Esterni (Senza Account)
+                </span>
+                <span className={`px-2 py-0.5 rounded-md text-[10px] font-black uppercase border ${
+                  linkEsternoSegnalato.attivo
+                    ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                    : 'bg-slate-800 text-slate-400 border-slate-700'
+                }`}>
+                  {linkEsternoSegnalato.attivo ? 'Attivo' : 'Disattivato'}
+                </span>
+              </div>
+              <h4 className="text-sm font-black text-white mt-1">{linkEsternoSegnalato.corsoTitolo}</h4>
+              <p className="text-[11px] text-purple-200/90 mt-0.5">
+                Aula Didattica: <strong>{linkEsternoSegnalato.aulaNome}</strong> • I partecipanti esterni potranno inserire <strong>Nome, Cognome e Telefono</strong> e timbrare entrata/uscita senza registrarsi. Le presenze appariranno evidenziate in <strong>viola</strong> nel Registro Presenze.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setLinkEsternoSegnalato(null)}
+              className="p-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-400 hover:text-white cursor-pointer"
+              title="Chiudi riquadro link"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+            <input
+              type="text"
+              readOnly
+              value={linkEsternoSegnalato.url}
+              onFocus={(e) => e.currentTarget.select()}
+              className="flex-1 px-3 py-2 rounded-xl bg-slate-950 border border-purple-500/50 text-purple-200 font-mono text-[11px]"
+            />
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <button
+                type="button"
+                onClick={() => handleCopiaLinkEsterno(linkEsternoSegnalato.url)}
+                className="px-3 py-2 rounded-xl bg-purple-600 hover:bg-purple-500 text-white text-xs font-black uppercase flex items-center gap-1.5 cursor-pointer"
+              >
+                <Copy className="w-3.5 h-3.5" />
+                <span>{linkCopiatoToast ? 'Copiato!' : 'Copia Link'}</span>
+              </button>
+              <a
+                href={`https://wa.me/?text=${encodeURIComponent(
+                  `Timbratura presenze corso "${linkEsternoSegnalato.corsoTitolo}" (${linkEsternoSegnalato.aulaNome}) — Croce Oro Massa Carrara OdV. Apri il link (nessun account richiesto): ${linkEsternoSegnalato.url}`
+                )}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="px-3 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-black uppercase flex items-center gap-1.5"
+              >
+                <Share2 className="w-3.5 h-3.5" />
+                <span>WhatsApp</span>
+              </a>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Barra Navigazione Sotto-Categorie (a griglia adattiva, senza scroll orizzontale) */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-1.5 sm:gap-2 pb-2 border-b border-slate-800">
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-1.5 sm:gap-2 pb-2 border-b border-slate-800">
         {canShowSubtab('corsi') && (
         <button
           type="button"
@@ -1094,6 +1267,21 @@ export const SezioneFormazione: React.FC<SezioneFormazioneProps> = ({
         >
           <FileUp className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0" />
           <span className="break-words">4. {getTitoloSottosezione('formazione', 'modelli_pdf', 'Modelli PDF Prestampati & Matricole', nomiSubCustom)}</span>
+        </button>
+        )}
+
+        {canShowSubtab('aule') && (
+        <button
+          type="button"
+          onClick={() => setSottoTab('aule')}
+          className={`w-full px-2.5 sm:px-3 py-2 rounded-xl text-[10px] sm:text-xs font-black uppercase flex items-center justify-center gap-1.5 text-center leading-tight transition-all cursor-pointer ${
+            sottoTab === 'aule'
+              ? 'bg-purple-600 text-white shadow-lg shadow-purple-600/30 border border-purple-400'
+              : 'bg-slate-900 text-purple-300 hover:text-purple-200 border border-purple-500/30'
+          }`}
+        >
+          <MapPin className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0" />
+          <span className="break-words">5. {getTitoloSottosezione('formazione', 'aule', 'Aule Formazione', nomiSubCustom)} ({auleFormazioneAttive.length})</span>
         </button>
         )}
       </div>
@@ -1251,6 +1439,15 @@ export const SezioneFormazione: React.FC<SezioneFormazioneProps> = ({
                     </button>
                     <button
                       type="button"
+                      onClick={() => handleGeneraOCondividiLinkEsterni(c)}
+                      className="py-1.5 px-2 rounded-xl bg-purple-600/20 hover:bg-purple-600/35 text-purple-200 border border-purple-500/40 font-bold text-[11px] flex items-center gap-1 transition-colors cursor-pointer"
+                      title="Genera o condividi il link di timbratura per partecipanti esterni senza account"
+                    >
+                      <Link2 className="w-3.5 h-3.5" />
+                      <span className="hidden sm:inline">Link Esterni</span>
+                    </button>
+                    <button
+                      type="button"
                       onClick={() => apriModificaCorso(c)}
                       className="p-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition-colors cursor-pointer"
                       title="Modifica Corso"
@@ -1354,6 +1551,67 @@ export const SezioneFormazione: React.FC<SezioneFormazioneProps> = ({
                 </form>
               </div>
 
+              {/* Box Link Timbratura Esterni Senza Account per il Corso Selezionato */}
+              <div className="bg-purple-950/35 border border-purple-500/40 rounded-2xl p-3.5 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+                <div className="space-y-0.5 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-xs font-black text-purple-200 uppercase flex items-center gap-1.5">
+                      <Link2 className="w-4 h-4 text-purple-400" />
+                      <span>Link Timbratura Esterni (Senza Account)</span>
+                    </span>
+                    {corsoPerIscrizioni.linkTimbraturaEsterniToken && (
+                      <span className={`px-2 py-0.5 rounded-md text-[10px] font-black uppercase border ${
+                        corsoPerIscrizioni.linkTimbraturaEsterniAttivo !== false
+                          ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                          : 'bg-slate-800 text-slate-400 border-slate-700'
+                      }`}>
+                        {corsoPerIscrizioni.linkTimbraturaEsterniAttivo !== false ? 'Link Attivo' : 'Link Disattivato'}
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-[11px] text-purple-200/80">
+                    Condividi un link dedicato per far timbrare in Aula Didattica persone non registrate (inserendo Nome, Cognome e Telefono). Le loro presenze e ore compaiono qui sotto evidenziate in <strong className="text-purple-300">viola</strong>.
+                  </p>
+                  {corsoPerIscrizioni.linkTimbraturaEsterniToken && (
+                    <div className="pt-1 font-mono text-[11px] text-purple-300 break-all">
+                      {buildLinkTimbraturaCorsoEsterno(corsoPerIscrizioni.linkTimbraturaEsterniToken)}
+                    </div>
+                  )}
+                </div>
+
+                <div className="flex items-center gap-1.5 flex-wrap shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => handleGeneraOCondividiLinkEsterni(corsoPerIscrizioni, false)}
+                    className="px-3 py-2 rounded-xl bg-purple-600 hover:bg-purple-500 text-white text-xs font-black uppercase flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <Link2 className="w-3.5 h-3.5" />
+                    <span>{corsoPerIscrizioni.linkTimbraturaEsterniToken ? 'Mostra / Condividi Link' : 'Genera Link Esterni'}</span>
+                  </button>
+                  {corsoPerIscrizioni.linkTimbraturaEsterniToken && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => handleCopiaLinkEsterno(buildLinkTimbraturaCorsoEsterno(corsoPerIscrizioni.linkTimbraturaEsterniToken!))}
+                        className="px-2.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-purple-200 border border-purple-500/40 text-xs font-bold flex items-center gap-1 cursor-pointer"
+                      >
+                        <Copy className="w-3.5 h-3.5" />
+                        <span>Copia</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleToggleAttivoLinkEsterni(corsoPerIscrizioni)}
+                        className="px-2.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-700 text-xs font-bold flex items-center gap-1 cursor-pointer"
+                        title="Attiva o disattiva questo link esterno"
+                      >
+                        <Power className="w-3.5 h-3.5" />
+                        <span>{corsoPerIscrizioni.linkTimbraturaEsterniAttivo !== false ? 'Disattiva' : 'Riattiva'}</span>
+                      </button>
+                    </>
+                  )}
+                </div>
+              </div>
+
               {/* Barra Selezione Multipla PDF Attestati Iscritti */}
               {selectedIscrittiPdfIds.length > 0 && (() => {
                 const idoneiSelezionati = corsoPerIscrizioni.iscritti
@@ -1454,6 +1712,7 @@ export const SezioneFormazione: React.FC<SezioneFormazioneProps> = ({
                         </tr>
                       ) : (
                         corsoPerIscrizioni.iscritti.map((p) => {
+                          const isEsterno = Boolean(p.isEsterno || p.volontarioId?.startsWith('ext-'));
                           const isIdoneo = p.esito === 'Idoneo / Superato';
                           const isSelPdf = isIdoneo && selectedIscrittiPdfIds.includes(p.volontarioId);
                           const oreMinime = corsoPerIscrizioni.oreMinimeFrequenza || Math.round((corsoPerIscrizioni.oreTotali * (corsoPerIscrizioni.percentualeMinimaPresenza || 75)) / 100);
@@ -1461,7 +1720,16 @@ export const SezioneFormazione: React.FC<SezioneFormazioneProps> = ({
                           const percentualeEffettiva = Math.round((p.oreFrequentate / corsoPerIscrizioni.oreTotali) * 100);
 
                           return (
-                            <tr key={p.volontarioId} className={`transition-colors ${isSelPdf ? 'bg-indigo-950/25' : 'hover:bg-slate-900/50'}`}>
+                            <tr
+                              key={p.volontarioId}
+                              className={`transition-colors ${
+                                isEsterno
+                                  ? 'bg-purple-950/60 hover:bg-purple-900/50 border-l-4 border-l-purple-500'
+                                  : isSelPdf
+                                  ? 'bg-indigo-950/25'
+                                  : 'hover:bg-slate-900/50'
+                              }`}
+                            >
                               <td className="py-3 px-3 text-center">
                                 {isIdoneo ? (
                                   <button
@@ -1480,11 +1748,24 @@ export const SezioneFormazione: React.FC<SezioneFormazioneProps> = ({
                                   <span className="text-slate-700">—</span>
                                 )}
                               </td>
-                              <td className="py-3 px-4 font-bold text-white text-sm">
-                                {p.volontarioNome}
+                              <td className={`py-3 px-4 font-bold text-sm ${isEsterno ? 'text-purple-100' : 'text-white'}`}>
+                                <div className="flex items-center gap-1.5 flex-wrap">
+                                  <span>{p.volontarioNome}</span>
+                                  {isEsterno && (
+                                    <span className="px-1.5 py-0.5 rounded-md bg-purple-600 text-white text-[9.5px] font-black uppercase">
+                                      Esterno (Link)
+                                    </span>
+                                  )}
+                                </div>
+                                {isEsterno && p.telefonoEsterno && (
+                                  <div className="text-[11px] font-mono text-purple-300 flex items-center gap-1 mt-0.5">
+                                    <Phone className="w-3 h-3" />
+                                    <span>{p.telefonoEsterno}</span>
+                                  </div>
+                                )}
                               </td>
-                              <td className="py-3 px-4 text-slate-300">
-                                {p.qualifica}
+                              <td className={`py-3 px-4 ${isEsterno ? 'text-purple-200 font-semibold' : 'text-slate-300'}`}>
+                                {isEsterno ? 'Partecipante Esterno (Senza Account)' : p.qualifica}
                               </td>
 
                               {/* Timbratura GPS Entrata / Uscita */}
@@ -1980,6 +2261,17 @@ export const SezioneFormazione: React.FC<SezioneFormazioneProps> = ({
         />
       )}
 
+      {/* ===================================================================== */}
+      {/* 5. SOTTO-TAB: AULE FORMAZIONE GEOLOCALIZZATE                          */}
+      {/* ===================================================================== */}
+      {sottoTab === 'aule' && canShowSubtab('aule') && (
+        <PannelloAuleFormazione
+          sedi={sedi}
+          isAdmin={isAdmin}
+          operatoreNome={operatoreCorrente}
+        />
+      )}
+
       {/* MODALE NUOVO / MODIFICA CORSO */}
       {modaleCorsoAperta && (
         <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in">
@@ -2280,6 +2572,46 @@ export const SezioneFormazione: React.FC<SezioneFormazioneProps> = ({
                   </span>
                 </div>
 
+                <div className="p-2.5 rounded-xl bg-purple-950/35 border border-purple-500/40 space-y-1.5">
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
+                    <label className="block text-purple-200 font-black text-[11px] uppercase">
+                      🎓 Aula Formazione Didattica (Timbratura Esclusiva GPS)
+                    </label>
+                    <span className="text-[10px] text-purple-300 font-mono">
+                      Raggio: {formRaggioMetriTimbratura}m
+                    </span>
+                  </div>
+                  <select
+                    value={formAulaFormazioneId}
+                    onChange={(e) => {
+                      const aulaId = e.target.value;
+                      setFormAulaFormazioneId(aulaId);
+                      if (aulaId) {
+                        const aula = auleFormazione.find((a) => a.id === aulaId);
+                        if (aula) {
+                          setFormSede(aula.nome);
+                          setFormCoordinate({ lat: aula.coordinate.lat, lng: aula.coordinate.lng });
+                          setFormRaggioMetriTimbratura(aula.raggioMetri || 150);
+                          if (aula.sedeRiferimentoId) {
+                            setFormSedeTipo(aula.sedeRiferimentoId);
+                          }
+                        }
+                      }
+                    }}
+                    className="w-full p-2.5 rounded-xl bg-slate-900 border border-purple-500/50 text-purple-200 font-bold text-xs focus:ring-1 focus:ring-purple-400"
+                  >
+                    <option value="">-- Nessuna aula dedicata (usa la sede/coordinate sotto) --</option>
+                    {auleFormazioneAttive.map((aula) => (
+                      <option key={aula.id} value={aula.id}>
+                        🎓 {aula.codice ? `[${aula.codice}] ` : ''}{aula.nome} — {aula.indirizzo} (raggio {aula.raggioMetri}m)
+                      </option>
+                    ))}
+                  </select>
+                  <p className="text-[10px] text-purple-200/80 leading-snug">
+                    Chi è iscritto al corso timbrerà entrata e uscita sempre e solo nell'Aula Didattica indicata, anche se nello stesso edificio è presente un altro luogo timbratura. Gestisci le aule dalla scheda <strong>5. Aule Formazione</strong>.
+                  </p>
+                </div>
+
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
                     <label className="block text-slate-400 font-bold mb-1">Seleziona Sede / Sezione</label>
@@ -2288,6 +2620,7 @@ export const SezioneFormazione: React.FC<SezioneFormazioneProps> = ({
                       onChange={(e) => {
                         const val = e.target.value;
                         setFormSedeTipo(val);
+                        setFormAulaFormazioneId('');
                         if (val !== 'ALTRO') {
                           const s = SEDI_TERRITORIALI_GPS.find(item => item.id === val);
                           if (s) {
@@ -2713,32 +3046,70 @@ export const SezioneFormazione: React.FC<SezioneFormazioneProps> = ({
                           </div>
                         </div>
 
-                        {/* Sede specifica per questa lezione con coordinate GPS per timbratura */}
-                        <div>
-                          <label className="block text-[10px] text-slate-400 font-bold mb-0.5">
-                            📍 Sede di Svolgimento di QUESTA Lezione (Punto GPS per Timbratura Volontari)
-                          </label>
-                          <select
-                            value={lez.sedeNome}
-                            onChange={(e) => {
-                              const sel = SEDI_TERRITORIALI_GPS.find(s => s.nome === e.target.value);
-                              if (sel) {
+                        {/* Sede / Aula specifica per questa lezione con coordinate GPS per timbratura */}
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                          <div>
+                            <label className="block text-[10px] text-purple-300 font-bold mb-0.5">
+                              🎓 Aula Formazione di QUESTA Lezione
+                            </label>
+                            <select
+                              value={lez.aulaFormazioneId || ''}
+                              onChange={(e) => {
+                                const aulaId = e.target.value;
+                                const aula = auleFormazione.find((a) => a.id === aulaId);
                                 setFormLezioni(prev => prev.map((item, i) => i === idx ? {
                                   ...item,
-                                  sedeNome: sel.nome,
-                                  indirizzoCompleto: sel.indirizzo,
-                                  coordinate: { lat: sel.lat, lng: sel.lng }
+                                  aulaFormazioneId: aula?.id || undefined,
+                                  aulaFormazioneNome: aula?.nome || undefined,
+                                  raggioMetriTimbratura: aula?.raggioMetri || item.raggioMetriTimbratura,
+                                  ...(aula ? {
+                                    sedeNome: aula.nome,
+                                    indirizzoCompleto: aula.indirizzo,
+                                    coordinate: { lat: aula.coordinate.lat, lng: aula.coordinate.lng }
+                                  } : {})
                                 } : item));
-                              }
-                            }}
-                            className="w-full p-1.5 rounded-lg bg-slate-950 border border-slate-700 text-amber-200 text-xs font-bold"
-                          >
-                            {SEDI_TERRITORIALI_GPS.map((s) => (
-                              <option key={s.id} value={s.nome}>
-                                {s.nome} ({s.indirizzo})
-                              </option>
-                            ))}
-                          </select>
+                              }}
+                              className="w-full p-1.5 rounded-lg bg-slate-950 border border-purple-500/40 text-purple-200 text-xs font-bold"
+                            >
+                              <option value="">-- Usa aula del corso / sede sotto --</option>
+                              {auleFormazioneAttive.map((a) => (
+                                <option key={a.id} value={a.id}>
+                                  {a.nome} ({a.raggioMetri}m)
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                          <div>
+                            <label className="block text-[10px] text-slate-400 font-bold mb-0.5">
+                              📍 Sede di Svolgimento di QUESTA Lezione
+                            </label>
+                            <select
+                              value={lez.sedeNome}
+                              onChange={(e) => {
+                                const sel = SEDI_TERRITORIALI_GPS.find(s => s.nome === e.target.value);
+                                if (sel) {
+                                  setFormLezioni(prev => prev.map((item, i) => i === idx ? {
+                                    ...item,
+                                    aulaFormazioneId: undefined,
+                                    aulaFormazioneNome: undefined,
+                                    sedeNome: sel.nome,
+                                    indirizzoCompleto: sel.indirizzo,
+                                    coordinate: { lat: sel.lat, lng: sel.lng }
+                                  } : item));
+                                }
+                              }}
+                              className="w-full p-1.5 rounded-lg bg-slate-950 border border-slate-700 text-amber-200 text-xs font-bold"
+                            >
+                              {!SEDI_TERRITORIALI_GPS.some(s => s.nome === lez.sedeNome) && (
+                                <option value={lez.sedeNome}>{lez.sedeNome}</option>
+                              )}
+                              {SEDI_TERRITORIALI_GPS.map((s) => (
+                                <option key={s.id} value={s.nome}>
+                                  {s.nome} ({s.indirizzo})
+                                </option>
+                              ))}
+                            </select>
+                          </div>
                         </div>
                       </div>
                     ))

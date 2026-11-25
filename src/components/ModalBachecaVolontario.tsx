@@ -37,6 +37,7 @@ import {
   formatDataItalianaCorso,
   calcolaGiorniAlCorso
 } from '../utils/bachecaCorsi';
+import { formatDateTimeItaly } from '../utils/italianTime';
 
 interface ModalBachecaVolontarioProps {
   aperta: boolean;
@@ -141,6 +142,46 @@ export const ModalBachecaVolontario: React.FC<ModalBachecaVolontarioProps> = ({
 
   const comunicazioniUrgenti = comunicazioniAttive.filter((c) => c.priorita === 'Urgente');
 
+  const haConfermatoPresaVisione = (com: ComunicazioneBacheca) => {
+    const lista = com.preseVisione || [];
+    const nomeNorm = (volontarioNome || '').trim().toLowerCase();
+    return lista.find(
+      (p) =>
+        (volontarioId && p.volontarioId && p.volontarioId === volontarioId) ||
+        (nomeNorm && (p.volontarioNome || '').trim().toLowerCase() === nomeNorm)
+    );
+  };
+
+  const comunicazioniDaConfermare = useMemo(
+    () =>
+      comunicazioniAttive.filter((c) => c.richiedePresaVisione && !haConfermatoPresaVisione(c)),
+    [comunicazioniAttive, volontarioId, volontarioNome]
+  );
+
+  const handleConfermaPresaVisione = (com: ComunicazioneBacheca) => {
+    if (haConfermatoPresaVisione(com)) return;
+    const nowTs = Date.now();
+    const nuovaConferma = {
+      volontarioId: volontarioId || `vol-${nowTs}`,
+      volontarioNome: volontarioNome || 'Volontario',
+      sezione: sezioneVolontarioNome,
+      dataOra: formatDateTimeItaly(),
+      timestamp: nowTs,
+    };
+    const aggiornate = comunicazioni.map((c) =>
+      c.id === com.id
+        ? {
+            ...c,
+            preseVisione: [...(c.preseVisione || []), nuovaConferma],
+            updatedAt: nowTs,
+          }
+        : c
+    );
+    onAggiornaComunicazioni?.(aggiornate);
+    setAvvisoBacheca(`✓ Presa visione registrata per "${com.titolo}".`);
+    setTimeout(() => setAvvisoBacheca(null), 3500);
+  };
+
   // Aggiornamento singolo post (likes, commenti, risposte) con notifica mirata e deduplicata
   const handleAggiornaSingoloPost = (
     postAggiornato: ComunicazioneBacheca,
@@ -216,6 +257,12 @@ export const ModalBachecaVolontario: React.FC<ModalBachecaVolontarioProps> = ({
                   <CheckCircle2 className="w-3 h-3 text-emerald-400" />
                   <span>{comunicazioniAttive.length} Avvisi Attivi</span>
                 </span>
+                {comunicazioniDaConfermare.length > 0 && (
+                  <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-full bg-rose-950 text-rose-200 border border-rose-500/70 flex items-center gap-1 animate-pulse">
+                    <AlertTriangle className="w-3 h-3 text-rose-400" />
+                    <span>{comunicazioniDaConfermare.length} Presa Visione Richiesta</span>
+                  </span>
+                )}
                 {corsiInBacheca.length > 0 && (
                   <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-full bg-amber-950 text-amber-300 border border-amber-700/60 flex items-center gap-1">
                     <GraduationCap className="w-3 h-3 text-amber-400" />
@@ -574,6 +621,60 @@ export const ModalBachecaVolontario: React.FC<ModalBachecaVolontarioProps> = ({
                       </div>
                     )}
                   </div>
+
+                  {/* Box Presa Visione Obbligatoria */}
+                  {com.richiedePresaVisione && (() => {
+                    const miaConferma = haConfermatoPresaVisione(com);
+                    return (
+                      <div
+                        className={`mb-2.5 p-3 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 ${
+                          miaConferma
+                            ? 'bg-emerald-950/35 border-emerald-500/50'
+                            : 'bg-amber-950/40 border-amber-500/70'
+                        }`}
+                      >
+                        <div className="flex items-start gap-2 text-xs">
+                          {miaConferma ? (
+                            <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                          ) : (
+                            <ShieldCheck className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                          )}
+                          <div>
+                            {miaConferma ? (
+                              <>
+                                <div className="font-black text-emerald-300 uppercase text-[11px]">
+                                  Presa Visione Confermata
+                                </div>
+                                <div className="text-[11px] text-emerald-200/80">
+                                  Registrata il {miaConferma.dataOra}
+                                </div>
+                              </>
+                            ) : (
+                              <>
+                                <div className="font-black text-amber-300 uppercase text-[11px]">
+                                  Richiesta Conferma di Lettura (Presa Visione)
+                                </div>
+                                <div className="text-[11px] text-slate-300">
+                                  Conferma di aver letto e compreso questa comunicazione importante.
+                                </div>
+                              </>
+                            )}
+                          </div>
+                        </div>
+
+                        {!miaConferma && (
+                          <button
+                            type="button"
+                            onClick={() => handleConfermaPresaVisione(com)}
+                            className="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-[11px] uppercase inline-flex items-center justify-center gap-1.5 shadow-md active:scale-95 transition-all cursor-pointer shrink-0"
+                          >
+                            <CheckCircle2 className="w-3.5 h-3.5" />
+                            <span>Conferma Presa Visione</span>
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })()}
 
                   {/* Firma Autore & Azioni Post Autore/Admin */}
                   <div className="pt-2 border-t border-slate-800/80 flex items-center justify-between text-[11px] text-slate-400 gap-2 flex-wrap">

@@ -7,7 +7,7 @@
 import { formatDateTimeItaly } from './italianTime';
 
 export interface DatiNotificaModifica {
-  operatoreNome: string;
+  operatoreNome?: string;
   operatoreRuolo?: string;
   macroCategoria: string;
   azione: 'Modifica Scheda' | 'Nuovo Inserimento' | 'Aggiornamento Dati' | string;
@@ -32,7 +32,10 @@ export async function inviaNotificaModificaAdmin(
 ): Promise<boolean> {
   let payload: DatiNotificaModifica;
   if (typeof arg1 === 'object') {
-    payload = arg1;
+    payload = {
+      ...arg1,
+      operatoreNome: arg1.operatoreNome || 'Operatore Delegato'
+    };
   } else {
     payload = {
       macroCategoria: arg1,
@@ -61,3 +64,5 @@ export async function inviaNotificaModificaAdmin(
     return false;
   }
 }
+
+export const notificaModificaGestionale = inviaNotificaModificaAdmin;

@@ -135,7 +135,9 @@ export const SOTTOSEZIONI_PER_DATABASE: Record<MacroCategoriaId, InfoSottosezion
     { id: 'consumi', numero: '5', titoloDefault: 'Consumi & Costo KM' },
     { id: 'checklist', numero: '6', titoloDefault: 'Checklist Inizio Turno' },
     { id: 'tipologie', numero: '7', titoloDefault: 'Tipologia Mezzo' },
-    { id: 'monitoraggio', numero: '8', titoloDefault: 'Monitoraggio Flotta & Grafici' },
+    { id: 'guasti', numero: '8', titoloDefault: 'Guasti & Sinistri' },
+    { id: 'pagamentiCarburante', numero: '9', titoloDefault: 'Pagamenti Carburante' },
+    { id: 'monitoraggio', numero: '10', titoloDefault: 'Monitoraggio Flotta & Grafici' },
   ],
   contabilita: [
     { id: 'donazioni', numero: '1', titoloDefault: 'Servizi con Donazioni' },
@@ -147,12 +149,14 @@ export const SOTTOSEZIONI_PER_DATABASE: Record<MacroCategoriaId, InfoSottosezion
     { id: 'altreEntrateUscite', numero: '7', titoloDefault: 'Altre Entrate / Uscite' },
     { id: 'costiGestione', numero: '8', titoloDefault: 'Costi di Gestione' },
     { id: 'ricevute', numero: '9', titoloDefault: 'Emissione Ricevute' },
+    { id: 'scadenzeFiscali', numero: '10', titoloDefault: 'Scadenze Fiscali ODV' },
   ],
   formazione: [
     { id: 'corsi', numero: '1', titoloDefault: 'Catalogo Corsi & Piano Formativo' },
     { id: 'iscritti', numero: '2', titoloDefault: 'Iscrizioni & Registro Presenze' },
     { id: 'scadenziario', numero: '3', titoloDefault: 'Scadenziario Brevetti & Attestati' },
     { id: 'modelli_pdf', numero: '4', titoloDefault: 'Modelli PDF Prestampati & Matricole' },
+    { id: 'aule', numero: '5', titoloDefault: 'Aule Formazione' },
   ],
   magazzino: [
     { id: 'vestiario', numero: '1', titoloDefault: 'Magazzino Vestiario & DPI' },
@@ -170,6 +174,7 @@ export const SOTTOSEZIONI_PER_DATABASE: Record<MacroCategoriaId, InfoSottosezion
     { id: 'calendario', numero: '1', titoloDefault: 'Calendario Turni & Equipaggi' },
     { id: 'candidature', numero: '2', titoloDefault: 'Gestione Candidature Turni' },
     { id: 'tipi_turno', numero: '3', titoloDefault: 'Tipi di Turni' },
+    { id: 'strumenti', numero: '4', titoloDefault: 'Strumenti', adminOnly: true },
   ],
   bacheca: [
     { id: 'elenco', numero: '1', titoloDefault: 'Consultazione Bacheca & Avvisi' },
@@ -188,7 +193,9 @@ export const SOTTOSEZIONI_PER_DATABASE: Record<MacroCategoriaId, InfoSottosezion
  * Restituisce le sottosezioni delegabili (esclude quelle strettamente riservate all'Admin).
  */
 export function getSottosezioniDelegabili(dbId: MacroCategoriaId): InfoSottosezioneDatabase[] {
-  return (SOTTOSEZIONI_PER_DATABASE[dbId] || []).filter((s) => s.id !== 'permessi_database');
+  return (SOTTOSEZIONI_PER_DATABASE[dbId] || []).filter(
+    (s) => s.id !== 'permessi_database' && !(dbId === 'turni' && s.id === 'strumenti')
+  );
 }
 
 /**

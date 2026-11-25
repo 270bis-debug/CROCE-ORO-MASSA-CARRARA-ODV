@@ -5056,12 +5056,20 @@ export const SezioneVolontari: React.FC<SezioneVolontariProps> = ({
                   type="button"
                   onClick={async () => {
                     try {
-                      const res = await fetch('/api/notifica-compleanni', {
+                      const res = await fetch(`${realtime.getApiBaseUrl()}/api/notifica-compleanni`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ forzaInvio: true, volontari })
+                        body: JSON.stringify({
+                          forzaInvio: true,
+                          volontari,
+                          compleanniGiaInviati: realtime.getPromemoriaCompleanniInviati(),
+                          cloudSyncVerified: realtime.isCloudConfigReady()
+                        })
                       });
                       const data = await res.json();
+                      if (data?.compleanniInviati && typeof data.compleanniInviati === 'object') {
+                        realtime.syncPromemoriaCompleanniInviati(data.compleanniInviati);
+                      }
                       if (data.festeggiati && data.festeggiati.length > 0) {
                         mostraAvviso(
                           `🎂 Email compleanni inviata a ${data.destinatari?.length || 0} destinatari (${data.destinatari?.join(', ')}) per: ${data.festeggiati.map((f: any) => f.nomeCompleto).join(', ')}.`

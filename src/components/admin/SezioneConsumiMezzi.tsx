@@ -18,12 +18,19 @@ import {
   Building2,
   X,
   CreditCard,
-  Droplet
+  Droplet,
+  Camera
 } from 'lucide-react';
 import { MezzoFlotta, InterventoManutenzione } from '../../types/adminTypes';
 import { RifornimentoCarburante, StatisticheConsumoMezzo } from '../../types/consumiTypes';
 import { calcolaStatisticheFlottaGlobale } from '../../utils/calcoloConsumiFlotta';
 import { formatISODateItaly, formatTimeItaly } from '../../utils/italianTime';
+import {
+  useMetodiPagamentoCarburante,
+  getMetodiPagamentoCarburanteAttivi,
+  getMetodoPagamentoCarburantePerMezzo,
+  getMetodoOggettoPerMezzo,
+} from '../../utils/metodiPagamentoCarburanteStore';
 
 interface SezioneConsumiMezziProps {
   mezzi: MezzoFlotta[];
@@ -34,6 +41,7 @@ interface SezioneConsumiMezziProps {
   onEliminaRifornimento?: (id: string) => void;
   operatoreCorrente?: string;
   onNotificaRadio?: (testo: string, tipo?: 'centrale' | 'mezzo' | 'sistema' | 'allarme') => void;
+  onApriGestionePagamentiCarburante?: () => void;
 }
 
 export const SezioneConsumiMezzi: React.FC<SezioneConsumiMezziProps> = ({
@@ -44,8 +52,15 @@ export const SezioneConsumiMezzi: React.FC<SezioneConsumiMezziProps> = ({
   onAggiungiRifornimento,
   onEliminaRifornimento,
   operatoreCorrente = 'Amministratore',
-  onNotificaRadio
+  onNotificaRadio,
+  onApriGestionePagamentiCarburante,
 }) => {
+  const tuttiMetodiPagamento = useMetodiPagamentoCarburante();
+  const metodiPagamentoAttivi = useMemo(
+    () => getMetodiPagamentoCarburanteAttivi(tuttiMetodiPagamento),
+    [tuttiMetodiPagamento]
+  );
+
   const [ricerca, setRicerca] = useState('');
   const [filtroFlotta, setFiltroFlotta] = useState<'tutte' | 'vet' | 'pc'>('tutte');
   const [ordinamento, setOrdinamento] = useState<'consumo' | 'costoKm' | 'spesa' | 'km'>('consumo');
@@ -59,10 +74,23 @@ export const SezioneConsumiMezzi: React.FC<SezioneConsumiMezziProps> = ({
   const [formCostoTotale, setFormCostoTotale] = useState<number | string>(116.35);
   const [formKm, setFormKm] = useState<number | string>(mezzi[0]?.chilometraggioAttuale || 114500);
   const [formDistributore, setFormDistributore] = useState('Eni Station Massa Aurelia');
-  const [formMetodo, setFormMetodo] = useState<RifornimentoCarburante['metodoPagamento']>('Carta Carburante Eni');
+  const [formMetodo, setFormMetodo] = useState<string>(() =>
+    getMetodoPagamentoCarburantePerMezzo(mezzi[0]?.sigla || 'T4606')
+  );
   const [formTipoCarburante, setFormTipoCarburante] = useState<RifornimentoCarburante['tipoCarburante']>('Gasolio / Diesel');
   const [formNote, setFormNote] = useState('');
   const [erroreForm, setErroreForm] = useState<string | null>(null);
+  const [fotoScontrinoAperta, setFotoScontrinoAperta] = useState<{ src: string; titolo: string } | null>(null);
+
+  const metodoAssegnatoAlMezzoCorrente = useMemo(
+    () => getMetodoOggettoPerMezzo(formMezzoSigla, tuttiMetodiPagamento),
+    [formMezzoSigla, tuttiMetodiPagamento]
+  );
+
+  React.useEffect(() => {
+    if (!modaleRifornimentoAperta) return;
+    setFormMetodo(getMetodoPagamentoCarburantePerMezzo(formMezzoSigla, tuttiMetodiPagamento));
+  }, [modaleRifornimentoAperta, formMezzoSigla, tuttiMetodiPagamento]);
 
   // Calcola statistiche flotta e per singolo mezzo
   const { statisticheMezzi, globale } = useMemo(() => {
@@ -481,17 +509,54 @@ export const SezioneConsumiMezzi: React.FC<SezioneConsumiMezziProps> = ({
                   {r.mezzoSigla}
                 </span>
                 <div>
-                  <div className="font-bold text-white flex items-center gap-2">
+                  <div className="font-bold text-white flex items-center gap-2 flex-wrap">
                     <span>{r.litri} L ({r.tipoCarburante || 'Diesel'})</span>
                     <span className="text-slate-400 font-mono">• € {(r.prezzoAlLitro || 0).toFixed(3)}/L</span>
+                    {r.creatoDaTurno && (
+                      <span className="px-1.5 py-0.5 rounded bg-cyan-950 text-cyan-300 border border-cyan-600/40 text-[9.5px] font-black uppercase">
+                        Da Turno
+                      </span>
+                    )}
+                    {r.consumoAnomalo && (
+                      <span
+                        className="px-1.5 py-0.5 rounded bg-rose-950 text-rose-300 border border-rose-500/50 text-[9.5px] font-black uppercase inline-flex items-center gap-1"
+                        title={r.consumoAnomaloNota || 'Consumo anomalo rilevato'}
+                      >
+                        <AlertTriangle className="w-3 h-3" />
+                        <span>Consumo Anomalo</span>
+                      </span>
+                    )}
                   </div>
                   <div className="text-[11px] text-slate-400">
                     {r.data} {r.orario ? `ore ${r.orario}` : ''} • Distributore: <span className="text-slate-300 font-semibold">{r.distributore || 'N.D.'}</span> • Pagamento: <span className="text-slate-300">{r.metodoPagamento || 'Carta'}</span>
+                    {r.volontarioNome ? <> • Op: <span className="text-slate-300">{r.volontarioNome}</span></> : null}
                   </div>
+                  {r.consumoAnomalo && r.consumoAnomaloNota && (
+                    <div className="text-[10.5px] text-rose-300 mt-0.5 font-semibold">
+                      ⚠️ {r.consumoAnomaloNota}
+                    </div>
+                  )}
                 </div>
               </div>
 
-              <div className="flex items-center gap-3 self-end sm:self-center">
+              <div className="flex items-center gap-2.5 self-end sm:self-center">
+                {r.fotoScontrinoBase64 && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setFotoScontrinoAperta({
+                        src: r.fotoScontrinoBase64!,
+                        titolo: `Scontrino ${r.mezzoSigla} — ${r.data} (€ ${r.costoTotale.toFixed(2)})`,
+                      })
+                    }
+                    className="px-2 py-1 rounded-lg bg-amber-500/15 hover:bg-amber-500/30 border border-amber-500/40 text-amber-300 text-[10.5px] font-bold inline-flex items-center gap-1 cursor-pointer"
+                    title="Visualizza foto scontrino allegata"
+                  >
+                    <Camera className="w-3.5 h-3.5" />
+                    <span>Scontrino</span>
+                  </button>
+                )}
+
                 <div className="text-right font-mono">
                   <div className="font-black text-amber-400 text-sm">€ {r.costoTotale.toFixed(2)}</div>
                   <div className="text-[10px] text-slate-500">Km: {r.chilometraggio.toLocaleString('it-IT')}</div>
@@ -512,6 +577,35 @@ export const SezioneConsumiMezzi: React.FC<SezioneConsumiMezziProps> = ({
           ))}
         </div>
       </div>
+
+      {/* LIGHTBOX FOTO SCONTRINO */}
+      {fotoScontrinoAperta && (
+        <div
+          className="fixed inset-0 z-[70] bg-slate-950/90 backdrop-blur-sm flex items-center justify-center p-4"
+          onClick={() => setFotoScontrinoAperta(null)}
+        >
+          <div
+            className="bg-slate-900 border border-amber-500/50 rounded-2xl max-w-lg w-full p-4 space-y-3 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs font-black text-white uppercase">{fotoScontrinoAperta.titolo}</span>
+              <button
+                type="button"
+                onClick={() => setFotoScontrinoAperta(null)}
+                className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <img
+              src={fotoScontrinoAperta.src}
+              alt="Foto scontrino rifornimento"
+              className="w-full max-h-[70vh] object-contain rounded-xl bg-slate-950 border border-slate-800"
+            />
+          </div>
+        </div>
+      )}
 
       {/* MODALE NUOVO RIFORNIMENTO CARBURANTE */}
       {modaleRifornimentoAperta && (
@@ -551,9 +645,11 @@ export const SezioneConsumiMezzi: React.FC<SezioneConsumiMezziProps> = ({
                   <select
                     value={formMezzoSigla}
                     onChange={(e) => {
-                      setFormMezzoSigla(e.target.value);
-                      const m = mezzi.find(v => v.sigla === e.target.value);
+                      const nuovaSigla = e.target.value;
+                      setFormMezzoSigla(nuovaSigla);
+                      const m = mezzi.find(v => v.sigla === nuovaSigla);
                       if (m?.chilometraggioAttuale) setFormKm(m.chilometraggioAttuale);
+                      setFormMetodo(getMetodoPagamentoCarburantePerMezzo(nuovaSigla, tuttiMetodiPagamento));
                     }}
                     className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-xs font-mono font-bold text-white focus:outline-none focus:border-amber-400"
                   >
@@ -641,18 +737,40 @@ export const SezioneConsumiMezzi: React.FC<SezioneConsumiMezziProps> = ({
 
                 {/* Metodo di Pagamento */}
                 <div>
-                  <label className="block text-[10px] uppercase font-bold text-slate-400 mb-1">Metodo di Pagamento</label>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="block text-[10px] uppercase font-bold text-slate-400">Metodo di Pagamento</label>
+                    {onApriGestionePagamentiCarburante && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setModaleRifornimentoAperta(false);
+                          onApriGestionePagamentiCarburante();
+                        }}
+                        className="text-[10px] font-black text-emerald-400 hover:text-emerald-300 underline cursor-pointer"
+                      >
+                        Gestisci Metodi
+                      </button>
+                    )}
+                  </div>
                   <select
                     value={formMetodo}
-                    onChange={(e) => setFormMetodo(e.target.value as any)}
+                    onChange={(e) => setFormMetodo(e.target.value)}
                     className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-xs text-white focus:outline-none focus:border-amber-400"
                   >
-                    <option value="Carta Carburante Eni">Carta Carburante Eni</option>
-                    <option value="Carta Carburante Q8">Carta Carburante Q8</option>
-                    <option value="Bancomat">Carta di Debito / Bancomat</option>
-                    <option value="Cassa Contanti">Cassa Contanti Sede</option>
-                    <option value="Altro">Altro</option>
+                    {metodiPagamentoAttivi.map((m) => (
+                      <option key={m.id} value={m.nome}>
+                        {m.nome}{m.codiceCarta ? ` (${m.codiceCarta})` : ''}{m.mezzoSiglaAssegnato ? ` — ${m.mezzoSiglaAssegnato}` : ''}
+                      </option>
+                    ))}
+                    {formMetodo && !metodiPagamentoAttivi.some((m) => m.nome === formMetodo) && (
+                      <option value={formMetodo}>{formMetodo}</option>
+                    )}
                   </select>
+                  {metodoAssegnatoAlMezzoCorrente && metodoAssegnatoAlMezzoCorrente.nome === formMetodo && (
+                    <p className="text-[10px] text-emerald-400 font-semibold mt-1">
+                      ✓ Carta assegnata automaticamente al mezzo {formMezzoSigla}
+                    </p>
+                  )}
                 </div>
               </div>
 

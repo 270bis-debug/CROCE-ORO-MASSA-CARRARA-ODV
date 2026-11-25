@@ -29,9 +29,11 @@ import {
   Check,
   Send,
   AlertCircle,
-  Monitor
+  Monitor,
+  UserMinus,
+  ArrowLeftRight
 } from 'lucide-react';
-import { TurnoSedeOperativa, SedeAssociativaCompleta, MezzoFlotta, RuoloTurno, CandidaturaTurno } from '../types/adminTypes';
+import { TurnoSedeOperativa, SedeAssociativaCompleta, MezzoFlotta, RuoloTurno, CandidaturaTurno, PropostaScambioTurno } from '../types/adminTypes';
 import { Volontario } from './DatabaseVolontariModal';
 import { CroceOroLogo } from './CroceOroLogo';
 import { realtime } from '../services/realtime';
@@ -41,7 +43,15 @@ import {
   getMansioniCatalogo,
   getLabelRuoloEquipaggioLive
 } from '../utils/mansioniVolontari';
-import { calcolaCoperturaTurno, getCapoServizioTurno } from '../utils/tipiTurno';
+import {
+  calcolaCoperturaTurno,
+  getCapoServizioTurno,
+  useTipiTurno,
+  getRegoleStrumentiPerTurno,
+  isVolontarioDipendente,
+  verificaAutoCancellazioneTurno,
+  inviaNotificaStrumentiTurniEmail
+} from '../utils/tipiTurno';
 import { IconaEmoji } from './IconaEmoji';
 import { formatIconaPerTesto } from '../utils/emojiIconsArchive';
 import { addDaysISODate, formatDateItaly, formatISODateItaly, formatTimeItaly, getItalianDateParts } from '../utils/italianTime';
@@ -108,6 +118,17 @@ export const TabelloneTurniSettimanale: React.FC<TabelloneTurniSettimanaleProps>
   const [filtroFascia, setFiltroFascia] = useState<string>('tutte');
   const [ricercaVolontario, setRicercaVolontario] = useState<string>('');
   const [catalogoMansioni, setCatalogoMansioni] = useState(() => getMansioniCatalogo());
+  const tipiTurno = useTipiTurno();
+  const [candUsaDurataParziale, setCandUsaDurataParziale] = useState(false);
+  const [candInizioParziale, setCandInizioParziale] = useState('');
+  const [candFineParziale, setCandFineParziale] = useState('');
+
+  // Modale Cessione / Scambio turno con collega
+  const [modalScambioTurno, setModalScambioTurno] = useState<{ turno: TurnoSedeOperativa; ruoloProponente: RuoloTurno } | null>(null);
+  const [scambioModalita, setScambioModalita] = useState<'cessione' | 'scambio'>('cessione');
+  const [scambioDestinatarioId, setScambioDestinatarioId] = useState('');
+  const [scambioTurnoDestId, setScambioTurnoDestId] = useState('');
+  const [scambioNote, setScambioNote] = useState('');
 
   useEffect(() => {
     const syncMansioni = () => setCatalogoMansioni(getMansioniCatalogo());
@@ -255,8 +276,207 @@ export const TabelloneTurniSettimanale: React.FC<TabelloneTurniSettimanaleProps>
 
     setCandRuolo(getMigliorRuoloIdoneo(volSelezionato, t, ruoloDefault));
     setCandNote('');
+    setCandUsaDurataParziale(false);
+    setCandInizioParziale(t.orarioInizio || '08:00');
+    setCandFineParziale(t.orarioFine || '14:00');
     setModaleCandidaturaAperta(true);
   };
+
+  const getRuoloAssegnatoAVolontario = (t: TurnoSedeOperativa, volId?: string, volNome?: string): RuoloTurno | null => {
+    const nomeNorm = (volNome || '').trim().toLowerCase();
+    const match = (slot?: { id?: string; nome?: string }) =>
+      Boolean(
+        slot &&
+          ((volId && slot.id === volId) ||
+            (nomeNorm && slot.nome && slot.nome.trim().toLowerCase().includes(nomeNorm)))
+      );
+    if (match(t.autista)) return 'autista';
+    if (match(t.soccorritore2)) return 'soccorritore2';
+    if (match(t.terzoSoccorritore)) return 'terzoSoccorritore';
+    if (match(t.operatoreCentrale)) return 'operatoreCentrale';
+    if (match(t.centralinista)) return 'centralinista';
+    if (match(t.osservatore)) return 'osservatore';
+    return null;
+  };
+
+  const handleAutoCancellazioneTurno = (turno: TurnoSedeOperativa) => {
+    const volId = volontarioAttivo?.id || volontarioLoggatoId || '';
+    const volNome = volontarioAttivo ? `${volontarioAttivo.nome} ${volontarioAttivo.cognome}` : (volontarioLoggatoNome || '');
+    const regole = getRegoleStrumentiPerTurno(turno, tipiTurno);
+    const check = verificaAutoCancellazioneTurno(turno, regole);
+    if (!check.consentito) {
+      mostraAvviso(`⛔ ${check.motivo || 'Auto-cancellazione non consentita per questo turno.'}`);
+      return;
+    }
+
+    const nomeNorm = volNome.trim().toLowerCase();
+    const isMe = (slot?: { id?: string; nome?: string }) =>
+      Boolean(
+        slot &&
+          ((volId && slot.id === volId) ||
+            (nomeNorm && slot.nome && slot.nome.trim().toLowerCase().includes(nomeNorm)))
+      );
+
+    const aggiornati = turni.map((t) => {
+      if (t.id !== turno.id) return t;
+      const next: TurnoSedeOperativa = {
+        ...t,
+        autista: isMe(t.autista) ? undefined : t.autista,
+        soccorritore2: isMe(t.soccorritore2) ? undefined : t.soccorritore2,
+        terzoSoccorritore: isMe(t.terzoSoccorritore) ? undefined : t.terzoSoccorritore,
+        operatoreCentrale: isMe(t.operatoreCentrale) ? undefined : t.operatoreCentrale,
+        centralinista: isMe(t.centralinista) ? undefined : t.centralinista,
+        osservatore: isMe(t.osservatore) ? undefined : t.osservatore,
+        capoServizioBadge: isMe(t.capoServizioBadge) ? undefined : t.capoServizioBadge,
+      };
+      next.statoCopertura = calcolaCoperturaTurno(next);
+      return next;
+    });
+
+    if (onAggiornaTurni) onAggiornaTurni(aggiornati);
+    else realtime.syncTurni(aggiornati);
+
+    if (regole.notificheAbilitate) {
+      const destinatariEmails = regole.notifichePerUtente
+        .filter((n) => n.suCancellazioneTurno)
+        .map((n) => volontari.find((v) => v.id === n.volontarioId)?.email)
+        .filter(Boolean) as string[];
+      inviaNotificaStrumentiTurniEmail({
+        evento: 'cancellazione_turno',
+        titolo: `${volNome} si è cancellato dal turno`,
+        messaggio: `Il volontario ${volNome} ha rimosso autonomamente la propria presenza dal turno "${turno.nomeTurno || turno.fasciaOraria}" del ${turno.data} (${turno.orarioInizio}-${turno.orarioFine}) presso ${turno.sedeNome}.`,
+        tipoTurnoNome: turno.tipoTurnoNome,
+        turnoRiepilogo: `${turno.data} ${turno.orarioInizio}-${turno.orarioFine} • ${turno.sedeNome}`,
+        destinatariEmails,
+      });
+    }
+    onNotificaRadio?.(
+      `⚠️ CANCELLAZIONE TURNO: ${volNome} si è tolto dal turno del ${turno.data} (${turno.orarioInizio}-${turno.orarioFine}, ${turno.sedeNome}).`,
+      'centrale'
+    );
+    mostraAvviso('✓ Ti sei tolto dal turno con successo.');
+  };
+
+  const handleInviaPropostaScambio = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!modalScambioTurno || !volontarioAttivo || !scambioDestinatarioId) return;
+    const dest = volontari.find((v) => v.id === scambioDestinatarioId);
+    if (!dest) return;
+
+    let turnoDest: TurnoSedeOperativa | undefined;
+    let ruoloDest: RuoloTurno | undefined;
+    if (scambioModalita === 'scambio') {
+      turnoDest = turni.find((t) => t.id === scambioTurnoDestId);
+      if (!turnoDest) {
+        mostraAvviso('⚠️ Seleziona il turno del collega con cui proporre lo scambio.');
+        return;
+      }
+      ruoloDest = getRuoloAssegnatoAVolontario(turnoDest, dest.id, `${dest.nome} ${dest.cognome}`) || undefined;
+    }
+
+    const proposta: PropostaScambioTurno = {
+      id: `scb-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      turnoId: modalScambioTurno.turno.id,
+      modalita: scambioModalita,
+      proponenteId: volontarioAttivo.id,
+      proponenteNome: `${volontarioAttivo.nome} ${volontarioAttivo.cognome}`,
+      ruoloProponente: modalScambioTurno.ruoloProponente,
+      destinatarioId: dest.id,
+      destinatarioNome: `${dest.nome} ${dest.cognome}`,
+      turnoDestinatarioId: turnoDest?.id,
+      turnoDestinatarioDescrizione: turnoDest
+        ? `${turnoDest.data} (${turnoDest.orarioInizio}-${turnoDest.orarioFine}) • ${turnoDest.sedeNome}`
+        : undefined,
+      ruoloDestinatario: ruoloDest,
+      stato: 'In Attesa Collega',
+      dataRichiesta: formatTimeItaly(undefined, false) + ' del ' + formatDateItaly(),
+      note: scambioNote.trim() || undefined,
+    };
+
+    const aggiornati = turni.map((t) =>
+      t.id === modalScambioTurno.turno.id
+        ? { ...t, proposteScambio: [...(t.proposteScambio || []), proposta] }
+        : t
+    );
+    if (onAggiornaTurni) onAggiornaTurni(aggiornati);
+    else realtime.syncTurni(aggiornati);
+
+    inviaNotificaStrumentiTurniEmail({
+      evento: 'proposta_scambio',
+      titolo: `${proposta.proponenteNome} ti propone ${scambioModalita === 'scambio' ? 'uno scambio' : 'una cessione'} di turno`,
+      messaggio: `${proposta.proponenteNome} ti ha proposto ${scambioModalita === 'scambio' ? 'di scambiare' : 'di rilevare'} il turno del ${modalScambioTurno.turno.data} (${modalScambioTurno.turno.orarioInizio}-${modalScambioTurno.turno.orarioFine}) presso ${modalScambioTurno.turno.sedeNome}. Accedi al Calendario Turni per accettare o rifiutare. Se accetterai, la modifica diventerà effettiva dopo l'approvazione del responsabile calendario.`,
+      tipoTurnoNome: modalScambioTurno.turno.tipoTurnoNome,
+      turnoRiepilogo: `${modalScambioTurno.turno.data} ${modalScambioTurno.turno.orarioInizio}-${modalScambioTurno.turno.orarioFine}`,
+      destinatariEmails: dest.email ? [dest.email] : [],
+    });
+    onNotificaRadio?.(
+      `🔄 PROPOSTA ${scambioModalita === 'scambio' ? 'SCAMBIO' : 'CESSIONE'} TURNO: ${proposta.proponenteNome} → ${proposta.destinatarioNome} per il ${modalScambioTurno.turno.data}.`,
+      'sistema'
+    );
+    mostraAvviso(`✓ Proposta inviata a ${proposta.destinatarioNome}! Riceverà una notifica per decidere.`);
+    setModalScambioTurno(null);
+    setScambioDestinatarioId('');
+    setScambioTurnoDestId('');
+    setScambioNote('');
+  };
+
+  const handleRispondiPropostaScambio = (
+    turno: TurnoSedeOperativa,
+    proposta: PropostaScambioTurno,
+    accetta: boolean
+  ) => {
+    const aggiornati = turni.map((t) => {
+      if (t.id !== turno.id) return t;
+      return {
+        ...t,
+        proposteScambio: (t.proposteScambio || []).map((p) =>
+          p.id === proposta.id
+            ? {
+                ...p,
+                stato: accetta
+                  ? ('In Attesa Approvazione Responsabile' as const)
+                  : ('Rifiutata Collega' as const),
+                dataRispostaCollega: formatTimeItaly(undefined, false) + ' del ' + formatDateItaly(),
+              }
+            : p
+        ),
+      };
+    });
+    if (onAggiornaTurni) onAggiornaTurni(aggiornati);
+    else realtime.syncTurni(aggiornati);
+
+    if (accetta) {
+      const regole = getRegoleStrumentiPerTurno(turno, tipiTurno);
+      const responsabiliEmails = regole.notifichePerUtente
+        .filter((n) => n.suRichiestaTurno || n.suCancellazioneTurno)
+        .map((n) => volontari.find((v) => v.id === n.volontarioId)?.email)
+        .filter(Boolean) as string[];
+      inviaNotificaStrumentiTurniEmail({
+        evento: 'scambio_accettato_collega',
+        titolo: `Scambio turno accettato da ${proposta.destinatarioNome} — Richiede approvazione responsabile`,
+        messaggio: `${proposta.destinatarioNome} ha accettato ${proposta.modalita === 'scambio' ? 'lo scambio' : 'la cessione'} proposto da ${proposta.proponenteNome} per il turno del ${turno.data} (${turno.sedeNome}). Accedi a Gestione Candidature Turni per l'approvazione finale.`,
+        tipoTurnoNome: turno.tipoTurnoNome,
+        destinatariEmails: responsabiliEmails,
+      });
+      onNotificaRadio?.(
+        `✅ PROPOSTA ACCETTATA DAL COLLEGA: ${proposta.destinatarioNome} ha accettato il turno di ${proposta.proponenteNome} (${turno.data}). In attesa approvazione del responsabile calendario.`,
+        'centrale'
+      );
+      mostraAvviso('✓ Proposta accettata! Ora è in attesa di approvazione finale da un responsabile del calendario.');
+    } else {
+      mostraAvviso('Proposta rifiutata.');
+    }
+  };
+
+  // Proposte di cessione/scambio indirizzate al volontario attualmente loggato
+  const proposteRicevuteInAttesa = useMemo(() => {
+    if (isMonitorMode || !volontarioAttivo) return [];
+    return turni.flatMap((t) =>
+      (t.proposteScambio || [])
+        .filter((p) => p.stato === 'In Attesa Collega' && p.destinatarioId === volontarioAttivo.id)
+        .map((p) => ({ turno: t, proposta: p }))
+    );
+  }, [turni, volontarioAttivo, isMonitorMode]);
 
   const handleInviaCandidatura = (e: React.FormEvent) => {
     e.preventDefault();
@@ -298,24 +518,62 @@ export const TabelloneTurniSettimanale: React.FC<TabelloneTurniSettimanaleProps>
       return;
     }
 
+    const regoleTurno = getRegoleStrumentiPerTurno(turnoPerCandidatura, tipiTurno);
+    const durataParzialeValida = Boolean(
+      regoleTurno.consentiDisponibilitaDurataInferiore &&
+        candUsaDurataParziale &&
+        candInizioParziale &&
+        candFineParziale
+    );
+    const notaConOrario = [
+      durataParzialeValida ? `Disponibilità parziale: ${candInizioParziale}-${candFineParziale}` : '',
+      candNote.trim(),
+    ]
+      .filter(Boolean)
+      .join(' • ');
+
+    const slotLibero =
+      (candRuolo === 'autista' && !turnoPerCandidatura.autista) ||
+      (candRuolo === 'soccorritore2' && !turnoPerCandidatura.soccorritore2) ||
+      (candRuolo === 'terzoSoccorritore' && !turnoPerCandidatura.terzoSoccorritore) ||
+      (candRuolo === 'operatoreCentrale' && !turnoPerCandidatura.operatoreCentrale) ||
+      (candRuolo === 'centralinista' && !turnoPerCandidatura.centralinista) ||
+      (candRuolo === 'osservatore' && !turnoPerCandidatura.osservatore);
+
+    const approvazioneAutomatica = !regoleTurno.richiedeApprovazioneStaffODirettivo && slotLibero;
+
     const nuovaCandidatura: CandidaturaTurno = {
       id: `cand-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
       volontarioId: candVolontarioId || (volTrovato ? volTrovato.id : `vol-est-${Date.now()}`),
       volontarioNome: nomeFinale,
       qualificaVolontario: candQualifica || volTrovato?.qualifica || 'Volontario',
       ruoloRichiesto: candRuolo,
-      stato: 'In Attesa',
+      stato: approvazioneAutomatica ? 'Approvato' : 'In Attesa',
       dataRichiesta: formatTimeItaly(undefined, false) + ' del ' + formatDateItaly(),
-      note: candNote.trim() || undefined
+      note: notaConOrario || undefined,
+      orarioInizioParziale: durataParzialeValida ? candInizioParziale : undefined,
+      orarioFineParziale: durataParzialeValida ? candFineParziale : undefined,
+      ...(approvazioneAutomatica ? { approvatoDa: 'Assegnazione Diretta (Regola Turno)' } : {})
     };
 
     const aggiornati = turni.map((t) => {
       if (t.id === turnoPerCandidatura.id) {
         const esistenti = t.richiesteIscrizione || [];
-        return {
+        let updated: TurnoSedeOperativa = {
           ...t,
           richiesteIscrizione: [...esistenti, nuovaCandidatura]
         };
+        if (approvazioneAutomatica) {
+          const slotObj = { id: nuovaCandidatura.volontarioId, nome: nuovaCandidatura.volontarioNome };
+          if (candRuolo === 'autista') updated.autista = slotObj;
+          else if (candRuolo === 'soccorritore2') updated.soccorritore2 = slotObj;
+          else if (candRuolo === 'terzoSoccorritore') updated.terzoSoccorritore = slotObj;
+          else if (candRuolo === 'operatoreCentrale') updated.operatoreCentrale = slotObj;
+          else if (candRuolo === 'centralinista') updated.centralinista = slotObj;
+          else if (candRuolo === 'osservatore') updated.osservatore = slotObj;
+          updated.statoCopertura = calcolaCoperturaTurno(updated);
+        }
+        return updated;
       }
       return t;
     });
@@ -327,13 +585,35 @@ export const TabelloneTurniSettimanale: React.FC<TabelloneTurniSettimanaleProps>
     }
 
     // Invio diretto anche sul canale dedicato (server WebSocket + Cloud Firestore shift_signups) per persistenza senza auth
-    try {
-      realtime.submitCandidaturaTurno(turnoPerCandidatura, nuovaCandidatura);
-    } catch {}
+    if (!approvazioneAutomatica) {
+      try {
+        realtime.submitCandidaturaTurno(turnoPerCandidatura, nuovaCandidatura);
+      } catch {}
+    }
+
+    // Notifiche configurate negli Strumenti Turni per questo tipo di turno
+    if (regoleTurno.notificheAbilitate) {
+      const destinatariEmails = regoleTurno.notifichePerUtente
+        .filter((n) => n.suRichiestaTurno)
+        .map((n) => volontari.find((v) => v.id === n.volontarioId)?.email)
+        .filter(Boolean) as string[];
+      inviaNotificaStrumentiTurniEmail({
+        evento: 'richiesta_turno',
+        titolo: approvazioneAutomatica
+          ? `${nuovaCandidatura.volontarioNome} inserito in turno`
+          : `Richiesta disponibilità turno da ${nuovaCandidatura.volontarioNome}`,
+        messaggio: `${nuovaCandidatura.volontarioNome} (${nuovaCandidatura.qualificaVolontario || 'Volontario'}) ha richiesto il ruolo ${getEtichettaRuolo(nuovaCandidatura.ruoloRichiesto)} per il turno del ${turnoPerCandidatura.data} (${turnoPerCandidatura.orarioInizio}-${turnoPerCandidatura.orarioFine}, ${turnoPerCandidatura.sedeNome}).${notaConOrario ? `\nNote: ${notaConOrario}` : ''}`,
+        tipoTurnoNome: turnoPerCandidatura.tipoTurnoNome,
+        turnoRiepilogo: `${turnoPerCandidatura.data} • ${turnoPerCandidatura.orarioInizio}-${turnoPerCandidatura.orarioFine} • ${turnoPerCandidatura.sedeNome}`,
+        destinatariEmails,
+      });
+    }
 
     // Notifica immediata a chi ha accesso al database turni
     onNotificaRadio?.(
-      `📅 DISPONIBILITÀ TURNO: Il volontario ${nuovaCandidatura.volontarioNome} (${nuovaCandidatura.qualificaVolontario || 'Volontario'}) si è reso disponibile per il ruolo di ${getEtichettaRuolo(nuovaCandidatura.ruoloRichiesto)} per il turno del ${turnoPerCandidatura.data} (${turnoPerCandidatura.sedeNome}). Richiesta in attesa di approvazione da chi ha accesso al database turni.`,
+      approvazioneAutomatica
+        ? `✅ INSERIMENTO DIRETTO TURNO: ${nuovaCandidatura.volontarioNome} si è segnato come ${getEtichettaRuolo(nuovaCandidatura.ruoloRichiesto)} per il ${turnoPerCandidatura.data} (${turnoPerCandidatura.sedeNome}).`
+        : `📅 DISPONIBILITÀ TURNO: Il volontario ${nuovaCandidatura.volontarioNome} (${nuovaCandidatura.qualificaVolontario || 'Volontario'}) si è reso disponibile per il ruolo di ${getEtichettaRuolo(nuovaCandidatura.ruoloRichiesto)} per il turno del ${turnoPerCandidatura.data} (${turnoPerCandidatura.sedeNome}). Richiesta in attesa di approvazione da chi ha accesso al database turni.`,
       'centrale'
     );
 
@@ -349,7 +629,11 @@ export const TabelloneTurniSettimanale: React.FC<TabelloneTurniSettimanaleProps>
       });
     } catch {}
 
-    mostraAvviso(`✓ Disponibilità inviata con successo per ${getEtichettaRuolo(candRuolo)}! In attesa di approvazione.`);
+    mostraAvviso(
+      approvazioneAutomatica
+        ? `✓ Sei stato inserito direttamente nel turno come ${getEtichettaRuolo(candRuolo)}!`
+        : `✓ Disponibilità inviata con successo per ${getEtichettaRuolo(candRuolo)}! In attesa di approvazione.`
+    );
     setModaleCandidaturaAperta(false);
     setTurnoPerCandidatura(null);
     setCandErrore(null);
@@ -559,6 +843,14 @@ export const TabelloneTurniSettimanale: React.FC<TabelloneTurniSettimanaleProps>
       // Filtro data compresa nei 7 giorni visualizzati
       if (t.data < primoGiornoStr || t.data > ultimoGiornoStr) return false;
 
+      // Regola Strumenti Turni: in Modalità Monitor nasconde i turni il cui Tipo Turno ha visibileInModalitaMonitor === false
+      if (isMonitorMode) {
+        const regoleMonitor = getRegoleStrumentiPerTurno(t, tipiTurno);
+        if (t.visibileInModalitaMonitor === false || !regoleMonitor.visibileInModalitaMonitor) {
+          return false;
+        }
+      }
+
       // Filtro autorizzazioni sede: in Modalità Monitor mostra TUTTI i turni pubblicati senza alcuna esclusione
       if (!isMonitorMode && !isOperatoreCentraleOAdmin && volontarioAttivo && sediAutorizzate.length > 0) {
         const sedeConsentita = sediAutorizzate.some((s) => s.id === t.sedeId);
@@ -601,7 +893,7 @@ export const TabelloneTurniSettimanale: React.FC<TabelloneTurniSettimanaleProps>
 
       return true;
     });
-  }, [turni, primoGiornoStr, ultimoGiornoStr, filtroSedeId, filtroFascia, filtroSoloMieiTurni, volontarioLoggatoNome, ricercaVolontario, isOperatoreCentraleOAdmin, isMonitorMode, volontarioAttivo, sediAutorizzate]);
+  }, [turni, primoGiornoStr, ultimoGiornoStr, filtroSedeId, filtroFascia, filtroSoloMieiTurni, volontarioLoggatoNome, ricercaVolontario, isOperatoreCentraleOAdmin, isMonitorMode, volontarioAttivo, sediAutorizzate, tipiTurno]);
 
   // Raggruppa i turni per giorno
   const turniPerGiorno = useMemo(() => {
@@ -1224,7 +1516,31 @@ export const TabelloneTurniSettimanale: React.FC<TabelloneTurniSettimanaleProps>
 
                         {/* Equipaggio del Turno */}
                         {(() => {
-                          const capoTurno = getCapoServizioTurno(turno);
+                          const regoleTurnoCard = getRegoleStrumentiPerTurno(turno, tipiTurno);
+                          const nascondiDipendenti = Boolean(
+                            !isMonitorMode && !isOperatoreCentraleOAdmin && regoleTurnoCard.nascondiDipendentiAiVolontari
+                          );
+                          const isSlotDipendenteNascosto = (slot?: { id?: string; nome?: string }) => {
+                            if (!nascondiDipendenti || !slot) return false;
+                            const vol = volontari.find(
+                              (v) =>
+                                (slot.id && v.id === slot.id) ||
+                                (slot.nome && `${v.nome} ${v.cognome}`.trim().toLowerCase() === slot.nome.trim().toLowerCase())
+                            );
+                            return Boolean(vol && isVolontarioDipendente(vol));
+                          };
+                          const visibleSlot = (slot?: { id?: string; nome?: string }) =>
+                            slot && !isSlotDipendenteNascosto(slot) ? slot : undefined;
+
+                          const autistaVis = visibleSlot(turno.autista);
+                          const socc2Vis = visibleSlot(turno.soccorritore2);
+                          const terzoVis = visibleSlot(turno.terzoSoccorritore);
+                          const operatoreVis = visibleSlot(turno.operatoreCentrale);
+                          const centralinistaVis = visibleSlot(turno.centralinista);
+                          const osservatoreVis = visibleSlot(turno.osservatore);
+
+                          const capoTurnoRaw = getCapoServizioTurno(turno);
+                          const capoTurno = visibleSlot(capoTurnoRaw);
                           const isCs = (slot?: { id?: string; nome?: string }) =>
                             Boolean(
                               slot &&
@@ -1244,6 +1560,13 @@ export const TabelloneTurniSettimanale: React.FC<TabelloneTurniSettimanaleProps>
 
                           return (
                             <div className="space-y-1 text-[10.5px]">
+                              {turno.orarioModificatoAvviso && (
+                                <div className="px-1.5 py-1 rounded bg-amber-950/70 border border-amber-500/40 text-[9px] text-amber-200 leading-snug">
+                                  {typeof turno.orarioModificatoAvviso === 'string'
+                                    ? `⏰ ${turno.orarioModificatoAvviso}`
+                                    : `⏰ Orario modificato (${turno.orarioModificatoAvviso.vecchioOrario} → ${turno.orarioModificatoAvviso.nuovoOrario}): riconferma disponibilità.`}
+                                </div>
+                              )}
                               {/* Badge Capo Servizio del Turno */}
                               {capoTurno && (
                                 <div className="flex items-center justify-between gap-1 px-1.5 py-0.5 rounded bg-amber-500/10 border border-amber-500/30 text-[9.5px]">
@@ -1259,100 +1582,102 @@ export const TabelloneTurniSettimanale: React.FC<TabelloneTurniSettimanaleProps>
                                 <span className="text-slate-400 text-[9.5px] truncate min-w-0" title={getLabelRuoloEquipaggioLive('autista', catalogoMansioni).nome}>
                                   {getLabelRuoloEquipaggioLive('autista', catalogoMansioni).nome}:
                                 </span>
-                                {turno.autista ? (
-                                  <span className={`font-bold truncate text-right inline-flex items-center justify-end gap-1 shrink-0 max-w-[58%] ${turno.autista.nome.toLowerCase().includes(volontarioLoggatoNome?.toLowerCase() || '---') ? 'text-amber-400 font-black' : 'text-slate-100'}`} title={turno.autista.nome}>
+                                {autistaVis ? (
+                                  <span className={`font-bold truncate text-right inline-flex items-center justify-end gap-1 shrink-0 max-w-[58%] ${(autistaVis.nome || '').toLowerCase().includes(volontarioLoggatoNome?.toLowerCase() || '---') ? 'text-amber-400 font-black' : 'text-slate-100'}`} title={autistaVis.nome}>
                                     <IconaEmoji icona={getLabelRuoloEquipaggioLive('autista', catalogoMansioni).emoji} fallback="🚑" size="xs" />
-                                    <span className="truncate">{turno.autista.nome}</span>
-                                    {renderCsTag(turno.autista)}
+                                    <span className="truncate">{autistaVis.nome}</span>
+                                    {renderCsTag(autistaVis)}
                                   </span>
+                                ) : turno.autista && isSlotDipendenteNascosto(turno.autista) ? (
+                                  <span className="text-slate-500 italic text-[9px] shrink-0">Coperto</span>
                                 ) : (
                                   <span className="text-red-400 font-bold italic text-[9.5px] shrink-0 whitespace-nowrap">Da Assegnare</span>
                                 )}
                               </div>
 
                               {/* 2° Soccorritore */}
-                              {turno.soccorritore2 && (
+                              {socc2Vis && (
                                 <div className="flex items-center justify-between gap-1 min-w-0">
                                   <span className="text-slate-400 text-[9.5px] truncate min-w-0" title={getLabelRuoloEquipaggioLive('soccorritore2', catalogoMansioni).nome}>
                                     {getLabelRuoloEquipaggioLive('soccorritore2', catalogoMansioni).nome}:
                                   </span>
-                                  <span className={`truncate text-right inline-flex items-center justify-end gap-1 shrink-0 max-w-[58%] ${turno.soccorritore2.nome.toLowerCase().includes(volontarioLoggatoNome?.toLowerCase() || '---') ? 'text-amber-400 font-black' : 'text-slate-200'}`} title={turno.soccorritore2.nome}>
+                                  <span className={`truncate text-right inline-flex items-center justify-end gap-1 shrink-0 max-w-[58%] ${(socc2Vis.nome || '').toLowerCase().includes(volontarioLoggatoNome?.toLowerCase() || '---') ? 'text-amber-400 font-black' : 'text-slate-200'}`} title={socc2Vis.nome}>
                                     <IconaEmoji icona={getLabelRuoloEquipaggioLive('soccorritore2', catalogoMansioni).emoji} fallback="🧑‍⚕️" size="xs" />
-                                    <span className="truncate">{turno.soccorritore2.nome}</span>
-                                    {renderCsTag(turno.soccorritore2)}
+                                    <span className="truncate">{socc2Vis.nome}</span>
+                                    {renderCsTag(socc2Vis)}
                                   </span>
                                 </div>
                               )}
 
                               {/* 3° Soccorritore */}
-                              {turno.terzoSoccorritore && (
+                              {terzoVis && (
                                 <div className="flex items-center justify-between gap-1 min-w-0">
                                   <span className="text-slate-400 text-[9.5px] truncate min-w-0" title={getLabelRuoloEquipaggioLive('terzoSoccorritore', catalogoMansioni).nome}>
                                     {getLabelRuoloEquipaggioLive('terzoSoccorritore', catalogoMansioni).nome}:
                                   </span>
-                                  <span className={`truncate text-right inline-flex items-center justify-end gap-1 shrink-0 max-w-[58%] ${turno.terzoSoccorritore.nome.toLowerCase().includes(volontarioLoggatoNome?.toLowerCase() || '---') ? 'text-amber-400 font-black' : 'text-slate-200'}`} title={turno.terzoSoccorritore.nome}>
+                                  <span className={`truncate text-right inline-flex items-center justify-end gap-1 shrink-0 max-w-[58%] ${(terzoVis.nome || '').toLowerCase().includes(volontarioLoggatoNome?.toLowerCase() || '---') ? 'text-amber-400 font-black' : 'text-slate-200'}`} title={terzoVis.nome}>
                                     <IconaEmoji icona={getLabelRuoloEquipaggioLive('terzoSoccorritore', catalogoMansioni).emoji} fallback="🧑‍⚕️" size="xs" />
-                                    <span className="truncate">{turno.terzoSoccorritore.nome}</span>
-                                    {renderCsTag(turno.terzoSoccorritore)}
+                                    <span className="truncate">{terzoVis.nome}</span>
+                                    {renderCsTag(terzoVis)}
                                   </span>
                                 </div>
                               )}
 
                               {/* Operatore Centrale */}
-                              {turno.operatoreCentrale && (
+                              {operatoreVis && (
                                 <div className="flex items-center justify-between gap-1 pt-0.5 border-t border-slate-800/80 min-w-0">
                                   <span className="text-slate-400 text-[9.5px] truncate min-w-0" title={getLabelRuoloEquipaggioLive('operatoreCentrale', catalogoMansioni).nome}>
                                     {getLabelRuoloEquipaggioLive('operatoreCentrale', catalogoMansioni).nome}:
                                   </span>
-                                  <span className="text-slate-300 text-[9.5px] truncate text-right inline-flex items-center justify-end gap-1 shrink-0 max-w-[58%]" title={turno.operatoreCentrale.nome}>
+                                  <span className="text-slate-300 text-[9.5px] truncate text-right inline-flex items-center justify-end gap-1 shrink-0 max-w-[58%]" title={operatoreVis.nome}>
                                     <IconaEmoji icona={getLabelRuoloEquipaggioLive('operatoreCentrale', catalogoMansioni).emoji} fallback="🎧" size="xs" />
-                                    <span className="truncate">{turno.operatoreCentrale.nome}</span>
-                                    {renderCsTag(turno.operatoreCentrale)}
+                                    <span className="truncate">{operatoreVis.nome}</span>
+                                    {renderCsTag(operatoreVis)}
                                   </span>
                                 </div>
                               )}
 
                               {/* Centralinista */}
-                              {turno.centralinista ? (
+                              {centralinistaVis ? (
                                 <div className="flex items-center justify-between gap-1 pt-0.5 border-t border-slate-800/80 min-w-0">
                                   <span className="text-slate-400 text-[9.5px] truncate min-w-0" title={getLabelRuoloEquipaggioLive('centralinista', catalogoMansioni).nome}>
                                     {getLabelRuoloEquipaggioLive('centralinista', catalogoMansioni).nome}:
                                   </span>
-                                  <span className={`font-bold truncate text-right inline-flex items-center justify-end gap-1 shrink-0 max-w-[58%] ${turno.centralinista.nome.toLowerCase().includes(volontarioLoggatoNome?.toLowerCase() || '---') ? 'text-amber-400 font-black' : 'text-slate-200'}`} title={turno.centralinista.nome}>
+                                  <span className={`font-bold truncate text-right inline-flex items-center justify-end gap-1 shrink-0 max-w-[58%] ${(centralinistaVis.nome || '').toLowerCase().includes(volontarioLoggatoNome?.toLowerCase() || '---') ? 'text-amber-400 font-black' : 'text-slate-200'}`} title={centralinistaVis.nome}>
                                     <IconaEmoji icona={getLabelRuoloEquipaggioLive('centralinista', catalogoMansioni).emoji} fallback="📞" size="xs" />
-                                    <span className="truncate">{turno.centralinista.nome}</span>
-                                    {renderCsTag(turno.centralinista)}
+                                    <span className="truncate">{centralinistaVis.nome}</span>
+                                    {renderCsTag(centralinistaVis)}
                                   </span>
                                 </div>
-                              ) : (
+                              ) : !(turno.centralinista && isSlotDipendenteNascosto(turno.centralinista)) ? (
                                 <div className="flex items-center justify-between gap-1 text-[9.5px] text-slate-500 pt-0.5 border-t border-slate-800/40 min-w-0">
                                   <span className="text-slate-400 truncate min-w-0" title={getLabelRuoloEquipaggioLive('centralinista', catalogoMansioni).nome}>
                                     {getLabelRuoloEquipaggioLive('centralinista', catalogoMansioni).nome}:
                                   </span>
                                   <span className="italic text-slate-500 text-[9px] shrink-0 whitespace-nowrap">Disponibile</span>
                                 </div>
-                              )}
+                              ) : null}
 
                               {/* Osservatore */}
-                              {turno.osservatore ? (
+                              {osservatoreVis ? (
                                 <div className="flex items-center justify-between gap-1 min-w-0">
                                   <span className="text-slate-400 text-[9.5px] truncate min-w-0" title={getLabelRuoloEquipaggioLive('osservatore', catalogoMansioni).nome}>
                                     {getLabelRuoloEquipaggioLive('osservatore', catalogoMansioni).nome}:
                                   </span>
-                                  <span className={`font-bold truncate text-right inline-flex items-center justify-end gap-1 shrink-0 max-w-[58%] ${turno.osservatore.nome.toLowerCase().includes(volontarioLoggatoNome?.toLowerCase() || '---') ? 'text-amber-400 font-black' : 'text-slate-200'}`} title={turno.osservatore.nome}>
+                                  <span className={`font-bold truncate text-right inline-flex items-center justify-end gap-1 shrink-0 max-w-[58%] ${(osservatoreVis.nome || '').toLowerCase().includes(volontarioLoggatoNome?.toLowerCase() || '---') ? 'text-amber-400 font-black' : 'text-slate-200'}`} title={osservatoreVis.nome}>
                                     <IconaEmoji icona={getLabelRuoloEquipaggioLive('osservatore', catalogoMansioni).emoji} fallback="👁️" size="xs" />
-                                    <span className="truncate">{turno.osservatore.nome}</span>
-                                    {renderCsTag(turno.osservatore)}
+                                    <span className="truncate">{osservatoreVis.nome}</span>
+                                    {renderCsTag(osservatoreVis)}
                                   </span>
                                 </div>
-                              ) : (
+                              ) : !(turno.osservatore && isSlotDipendenteNascosto(turno.osservatore)) ? (
                                 <div className="flex items-center justify-between gap-1 text-[9.5px] text-slate-500 min-w-0">
                                   <span className="text-slate-400 truncate min-w-0" title={getLabelRuoloEquipaggioLive('osservatore', catalogoMansioni).nome}>
                                     {getLabelRuoloEquipaggioLive('osservatore', catalogoMansioni).nome}:
                                   </span>
                                   <span className="italic text-slate-500 text-[9px] shrink-0 whitespace-nowrap">Disponibile</span>
                                 </div>
-                              )}
+                              ) : null}
                             </div>
                           );
                         })()}
@@ -1471,6 +1796,56 @@ export const TabelloneTurniSettimanale: React.FC<TabelloneTurniSettimanaleProps>
                                   ))}
                                 </div>
                               )}
+
+                              {/* Pulsanti Self-Service Volontario (Togliti dal turno & Cedi/Scambia con Collega) */}
+                              {(() => {
+                                const regoleCard = getRegoleStrumentiPerTurno(turno, tipiTurno);
+                                const mioRuolo = getRuoloAssegnatoAVolontario(
+                                  turno,
+                                  volontarioAttivo?.id || volontarioLoggatoId,
+                                  volontarioAttivo ? `${volontarioAttivo.nome} ${volontarioAttivo.cognome}` : volontarioLoggatoNome
+                                );
+                                if (!mioRuolo) return null;
+                                const mostraAutoCanc = regoleCard.consentiAutoCancellazioneVolontario;
+                                const mostraScambio = regoleCard.consentiPropostaCessioneOScambio;
+                                if (!mostraAutoCanc && !mostraScambio) return null;
+                                return (
+                                  <div className="flex flex-wrap gap-1 pt-0.5">
+                                    {mostraAutoCanc && (
+                                      <button
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          handleAutoCancellazioneTurno(turno);
+                                        }}
+                                        className="flex-1 py-1 px-1.5 rounded-lg bg-rose-950/70 hover:bg-rose-900 text-rose-200 border border-rose-500/40 font-bold text-[9px] flex items-center justify-center gap-1 cursor-pointer"
+                                        title={`Togliti autonomamente (preavviso minimo: ${regoleCard.orePreavvisoCancellazione} ore)`}
+                                      >
+                                        <UserMinus className="w-3 h-3 shrink-0" />
+                                        <span className="truncate">Togliti</span>
+                                      </button>
+                                    )}
+                                    {mostraScambio && (
+                                      <button
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setModalScambioTurno({ turno, ruoloProponente: mioRuolo });
+                                          setScambioModalita('cessione');
+                                          setScambioDestinatarioId('');
+                                          setScambioTurnoDestId('');
+                                          setScambioNote('');
+                                        }}
+                                        className="flex-1 py-1 px-1.5 rounded-lg bg-violet-950/70 hover:bg-violet-900 text-violet-200 border border-violet-500/40 font-bold text-[9px] flex items-center justify-center gap-1 cursor-pointer"
+                                        title="Proponi questo turno a un collega (cessione o scambio)"
+                                      >
+                                        <ArrowLeftRight className="w-3 h-3 shrink-0" />
+                                        <span className="truncate">Cedi/Scambia</span>
+                                      </button>
+                                    )}
+                                  </div>
+                                );
+                              })()}
 
                               {/* Pulsante compatto e proporzionato per candidarsi al turno */}
                               <button
@@ -1763,6 +2138,43 @@ export const TabelloneTurniSettimanale: React.FC<TabelloneTurniSettimanaleProps>
                 </div>
               </div>
 
+              {/* Disponibilità con durata inferiore al turno (se abilitata in Strumenti Turni) */}
+              {turnoPerCandidatura && getRegoleStrumentiPerTurno(turnoPerCandidatura, tipiTurno).consentiDisponibilitaDurataInferiore && (
+                <div className="p-3 rounded-2xl bg-cyan-950/35 border border-cyan-500/40 space-y-2">
+                  <label className="flex items-center gap-2 text-xs font-bold text-cyan-200 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={candUsaDurataParziale}
+                      onChange={(e) => setCandUsaDurataParziale(e.target.checked)}
+                      className="w-4 h-4 accent-cyan-400"
+                    />
+                    <span>Indica disponibilità con durata inferiore al turno ({turnoPerCandidatura.orarioInizio}–{turnoPerCandidatura.orarioFine})</span>
+                  </label>
+                  {candUsaDurataParziale && (
+                    <div className="grid grid-cols-2 gap-2 pt-1">
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-300 mb-0.5">Dalle ore</label>
+                        <input
+                          type="time"
+                          value={candInizioParziale}
+                          onChange={(e) => setCandInizioParziale(e.target.value)}
+                          className="w-full px-2.5 py-1.5 rounded-lg bg-slate-950 border border-slate-700 text-white text-xs font-bold"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-300 mb-0.5">Alle ore</label>
+                        <input
+                          type="time"
+                          value={candFineParziale}
+                          onChange={(e) => setCandFineParziale(e.target.value)}
+                          className="w-full px-2.5 py-1.5 rounded-lg bg-slate-950 border border-slate-700 text-white text-xs font-bold"
+                        />
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
               {/* Note / Disponibilità */}
               <div>
                 <label className="block text-slate-400 font-bold mb-1">
@@ -1778,15 +2190,34 @@ export const TabelloneTurniSettimanale: React.FC<TabelloneTurniSettimanaleProps>
               </div>
 
               {/* Avviso Regolamento Centrale */}
-              <div className="p-3 rounded-2xl bg-amber-950/30 border border-amber-500/40 text-[11px] text-amber-200/90 space-y-1">
-                <div className="font-black flex items-center gap-1.5 text-amber-300 uppercase text-[10px]">
-                  <AlertCircle className="w-3.5 h-3.5 text-amber-400" />
-                  <span>Approvazione Centrale Operativa Obbligatoria</span>
-                </div>
-                <p className="text-[10.5px] leading-relaxed">
-                  L'inserimento ufficiale nel turno avverrà solo dopo la verifica e l'approvazione da parte di un Operatore di Centrale o dell'Amministratore. Riceverai la conferma non appena convalidata.
-                </p>
-              </div>
+              {(() => {
+                const reqApproval = turnoPerCandidatura
+                  ? getRegoleStrumentiPerTurno(turnoPerCandidatura, tipiTurno).richiedeApprovazioneStaffODirettivo
+                  : true;
+                return (
+                  <div className={`p-3 rounded-2xl border text-[11px] space-y-1 ${
+                    reqApproval
+                      ? 'bg-amber-950/30 border-amber-500/40 text-amber-200/90'
+                      : 'bg-emerald-950/30 border-emerald-500/40 text-emerald-200/90'
+                  }`}>
+                    <div className={`font-black flex items-center gap-1.5 uppercase text-[10px] ${
+                      reqApproval ? 'text-amber-300' : 'text-emerald-300'
+                    }`}>
+                      <AlertCircle className={`w-3.5 h-3.5 ${reqApproval ? 'text-amber-400' : 'text-emerald-400'}`} />
+                      <span>
+                        {reqApproval
+                          ? 'Approvazione Staff / Direttivo Obbligatoria'
+                          : 'Assegnazione Immediata Attiva (se posto libero)'}
+                      </span>
+                    </div>
+                    <p className="text-[10.5px] leading-relaxed">
+                      {reqApproval
+                        ? "L'inserimento ufficiale nel turno avverrà solo dopo la verifica e l'approvazione da parte di un membro dello staff o del direttivo."
+                        : 'Per questo tipo di turno la disponibilità su un posto libero viene confermata immediatamente.'}
+                    </p>
+                  </div>
+                );
+              })()}
 
               {/* Messaggio di Errore Inline */}
               {candErrore && (
@@ -1813,11 +2244,209 @@ export const TabelloneTurniSettimanale: React.FC<TabelloneTurniSettimanaleProps>
                   className="px-5 py-2 rounded-xl bg-teal-600 hover:bg-teal-500 text-white font-black text-xs uppercase flex items-center gap-1.5 shadow-lg shadow-teal-600/30 active:scale-95 transition-all cursor-pointer border border-teal-400/50"
                 >
                   <Send className="w-4 h-4 text-teal-200" />
-                  <span>Invia Candidatura alla Centrale</span>
+                  <span>Conferma Disponibilità</span>
                 </button>
               </div>
             </form>
           </div>
+        </div>,
+        document.body
+      )}
+
+      {/* BANNER PROPOSTE DI CESSIONE / SCAMBIO RICEVUTE DAL COLLEGA */}
+      {typeof document !== 'undefined' && proposteRicevuteInAttesa.length > 0 && createPortal(
+        <div className="fixed bottom-16 left-3 right-3 sm:left-auto sm:right-4 sm:max-w-md z-[9995] space-y-2">
+          {proposteRicevuteInAttesa.map(({ turno: tr, proposta: pr }) => (
+            <div
+              key={pr.id}
+              className="p-3.5 rounded-2xl bg-violet-950/95 border-2 border-violet-400 text-white shadow-2xl space-y-2 text-xs backdrop-blur-md"
+            >
+              <div className="flex items-center gap-2 font-black text-violet-200 uppercase text-[11px]">
+                <ArrowLeftRight className="w-4 h-4 text-violet-300 shrink-0" />
+                <span>
+                  {pr.modalita === 'scambio' ? 'Proposta di Scambio Turno' : 'Proposta di Cessione Turno'}
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-200 leading-snug">
+                <strong>{pr.proponenteNome}</strong> ti propone il turno del{' '}
+                <strong>{tr.data}</strong> ({tr.orarioInizio}-{tr.orarioFine}) presso{' '}
+                <strong>{tr.sedeNome}</strong> ({getEtichettaRuolo(pr.ruoloProponente || pr.ruolo || 'soccorritore2')}).
+                {pr.turnoDestinatarioDescrizione && (
+                  <span className="block text-emerald-300 mt-0.5">
+                    In cambio del tuo turno: {pr.turnoDestinatarioDescrizione}
+                  </span>
+                )}
+              </p>
+              <p className="text-[10px] text-violet-300/90">
+                Se accetti, lo scambio diventerà effettivo dopo l&apos;approvazione del responsabile del calendario.
+              </p>
+              <div className="flex items-center justify-end gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => handleRispondiPropostaScambio(tr, pr, false)}
+                  className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-rose-900 text-slate-200 font-bold text-[11px] cursor-pointer"
+                >
+                  Rifiuta
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleRispondiPropostaScambio(tr, pr, true)}
+                  className="px-3.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-[11px] uppercase cursor-pointer"
+                >
+                  Accetta Proposta
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>,
+        document.body
+      )}
+
+      {/* MODALE CESSIONE / SCAMBIO TURNO CON COLLEGA */}
+      {typeof document !== 'undefined' && modalScambioTurno && createPortal(
+        <div className="fixed inset-0 z-[9997] bg-black/80 backdrop-blur-sm flex items-center justify-center p-3">
+          <form
+            onSubmit={handleInviaPropostaScambio}
+            className="w-full max-w-md bg-slate-900 border-2 border-violet-500/60 rounded-2xl p-5 shadow-2xl space-y-3.5 text-xs"
+          >
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div className="flex items-center gap-2">
+                <ArrowLeftRight className="w-5 h-5 text-violet-400" />
+                <h4 className="text-sm font-black text-white uppercase">Proponi Turno a un Collega</h4>
+              </div>
+              <button
+                type="button"
+                onClick={() => setModalScambioTurno(null)}
+                className="text-slate-400 hover:text-white p-1"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-2.5 rounded-xl bg-slate-950 border border-slate-800 text-[11px] text-slate-300">
+              <div><strong>Tuo turno:</strong> {modalScambioTurno.turno.data} ({modalScambioTurno.turno.orarioInizio}-{modalScambioTurno.turno.orarioFine})</div>
+              <div><strong>Sede:</strong> {modalScambioTurno.turno.sedeNome} • <strong>Ruolo:</strong> {getEtichettaRuolo(modalScambioTurno.ruoloProponente)}</div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => setScambioModalita('cessione')}
+                className={`py-2 px-3 rounded-xl border font-black uppercase text-[11px] ${
+                  scambioModalita === 'cessione'
+                    ? 'bg-violet-600 border-violet-400 text-white'
+                    : 'bg-slate-950 border-slate-700 text-slate-300'
+                }`}
+              >
+                ➡️ Cedi Turno
+              </button>
+              <button
+                type="button"
+                onClick={() => setScambioModalita('scambio')}
+                className={`py-2 px-3 rounded-xl border font-black uppercase text-[11px] ${
+                  scambioModalita === 'scambio'
+                    ? 'bg-violet-600 border-violet-400 text-white'
+                    : 'bg-slate-950 border-slate-700 text-slate-300'
+                }`}
+              >
+                🔄 Scambia Turno
+              </button>
+            </div>
+
+            <div>
+              <label className="block text-slate-300 font-bold mb-1">Seleziona Collega Destinatario *</label>
+              <select
+                required
+                value={scambioDestinatarioId}
+                onChange={(e) => {
+                  setScambioDestinatarioId(e.target.value);
+                  setScambioTurnoDestId('');
+                }}
+                className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white font-bold"
+              >
+                <option value="">-- Scegli un collega --</option>
+                {volontari
+                  .filter((v) => v.id !== volontarioAttivo?.id)
+                  .sort((a, b) => `${a.cognome} ${a.nome}`.localeCompare(`${b.cognome} ${b.nome}`, 'it'))
+                  .map((v) => (
+                    <option key={v.id} value={v.id}>
+                      {v.cognome} {v.nome} ({v.qualifica})
+                    </option>
+                  ))}
+              </select>
+            </div>
+
+            {scambioModalita === 'scambio' && scambioDestinatarioId && (() => {
+              const destObj = volontari.find((v) => v.id === scambioDestinatarioId);
+              const oggi = formatISODateItaly();
+              const turniCollega = turni.filter(
+                (t) =>
+                  t.id !== modalScambioTurno.turno.id &&
+                  t.data >= oggi &&
+                  Boolean(
+                    getRuoloAssegnatoAVolontario(
+                      t,
+                      scambioDestinatarioId,
+                      destObj ? `${destObj.nome} ${destObj.cognome}` : ''
+                    )
+                  )
+              );
+              return (
+                <div>
+                  <label className="block text-slate-300 font-bold mb-1">Turno del collega da scambiare *</label>
+                  <select
+                    required
+                    value={scambioTurnoDestId}
+                    onChange={(e) => setScambioTurnoDestId(e.target.value)}
+                    className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white font-bold"
+                  >
+                    <option value="">-- Seleziona un turno del collega --</option>
+                    {turniCollega.map((tc) => (
+                      <option key={tc.id} value={tc.id}>
+                        {tc.data} ({tc.orarioInizio}-{tc.orarioFine}) — {tc.sedeNome}
+                      </option>
+                    ))}
+                  </select>
+                  {turniCollega.length === 0 && (
+                    <p className="text-[10px] text-amber-400 mt-1">
+                      Questo collega non ha turni futuri assegnati da scambiare: puoi comunque usare &quot;Cedi Turno&quot;.
+                    </p>
+                  )}
+                </div>
+              );
+            })()}
+
+            <div>
+              <label className="block text-slate-400 font-bold mb-1">Messaggio per il collega (opzionale)</label>
+              <input
+                type="text"
+                value={scambioNote}
+                onChange={(e) => setScambioNote(e.target.value)}
+                placeholder="Es. ho un impegno familiare, riesci a coprirmi?"
+                className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white"
+              />
+            </div>
+
+            <div className="p-2.5 rounded-xl bg-violet-950/40 border border-violet-500/35 text-[10.5px] text-violet-200">
+              Il collega riceverà la notifica per accettare o rifiutare. Dopo la sua accettazione, lo scambio sarà effettivo solo con l&apos;approvazione del responsabile calendario.
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2 border-t border-slate-800">
+              <button
+                type="button"
+                onClick={() => setModalScambioTurno(null)}
+                className="px-4 py-2 rounded-xl bg-slate-800 text-slate-300 font-bold"
+              >
+                Annulla
+              </button>
+              <button
+                type="submit"
+                className="px-4 py-2 rounded-xl bg-violet-600 hover:bg-violet-500 text-white font-black uppercase"
+              >
+                Invia Proposta
+              </button>
+            </div>
+          </form>
         </div>,
         document.body
       )}

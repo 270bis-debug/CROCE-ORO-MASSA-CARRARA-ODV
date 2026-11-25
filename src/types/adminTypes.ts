@@ -347,12 +347,67 @@ export interface VoceCostoGestione {
   numeroDocumento?: string;
   note?: string;
   operatoreRegistrazione?: string;
+  rifornimentoId?: string;
+  origineAutomatica?: 'rifornimento_carburante';
   createdAt?: number;
+}
+
+export type StatoScadenzaFiscale = 'Aperta' | 'Chiusa' | 'Annullata';
+
+export type CategoriaScadenzaFiscaleODV =
+  | 'RUNTS & Bilancio'
+  | '5 per Mille'
+  | 'Trasparenza'
+  | 'Fiscale & Tributi'
+  | 'Dipendenti & Collaboratori'
+  | 'Altro';
+
+export interface ScadenzaFiscaleODV {
+  id: string;
+  titolo: string;
+  descrizione: string;
+  categoria: CategoriaScadenzaFiscaleODV;
+  dataScadenza: string; // YYYY-MM-DD
+  ricorrenzaAnnuale?: boolean;
+  attiva: boolean; // attivabile / disattivabile di volta in volta
+  stato: StatoScadenzaFiscale; // 'Aperta' | 'Chiusa' | 'Annullata'
+  giorniPreavvisoCustom?: number[]; // se definito, sovrascrive i giorni default [60, 30, 15]
+  riferimentoNormativo?: string;
+  note?: string;
+  notificheInviate?: Record<string, string>; // es. { "60": "2026-05-01" }
+  predefinita?: boolean;
+  creataDa?: string;
+  aggiornataIl?: string;
+}
+
+export interface ConfigScadenzeFiscaliODV {
+  giorniPreavvisoDefault: number[]; // Default: [60, 30, 15]
+  destinatariDefault: Array<'presidente' | 'tesoriere' | 'segretario'>;
+  updatedAt?: number;
+  updatedBy?: string;
 }
 
 // ---------------------------------------------------------------------------
 // 4. MACRO CATEGORIA 5: DATABASE FORMAZIONE / CORSI
 // ---------------------------------------------------------------------------
+export interface AulaFormazione {
+  id: string;
+  nome: string; // es. "Aula Magna Sede Ronchi"
+  codice?: string; // es. "AULA-01"
+  sedeRiferimentoId?: string;
+  sedeRiferimentoNome?: string;
+  indirizzo: string;
+  coordinate: {
+    lat: number;
+    lng: number;
+  };
+  raggioMetri: number; // default 150m
+  capienza?: number;
+  attiva: boolean;
+  note?: string;
+  creataDa?: string;
+  dataCreazione?: string;
+}
 export type TipologiaCorso =
   | 'Seminario PSV'
   | 'Formazione PSV'
@@ -369,8 +424,11 @@ export interface LezioneCorso {
   orarioInizio: string; // HH:mm
   orarioFine: string; // HH:mm
   ore: number; // Durata ore lezione
-  sedeSvolgimentoTipo?: 'sezione_salvata' | 'altro';
+  sedeSvolgimentoTipo?: 'sezione_salvata' | 'aula_formazione' | 'altro';
   sedeSvolgimentoSedeId?: string;
+  aulaFormazioneId?: string;
+  aulaFormazioneNome?: string;
+  raggioMetriTimbratura?: number;
   sedeNome: string; // es. "Sede Legale Ronchi - Aula Magna" o "Polo Didattico Carrara"
   indirizzoCompleto: string;
   coordinate: {
@@ -404,13 +462,20 @@ export interface CorsoFormazione {
   sezioniDestinatarieIds?: string[];
   sezioniDestinatarieNomi?: string[];
   // Sede di svolgimento predefinita per timbratura GPS
-  sedeSvolgimentoTipo?: 'sezione_salvata' | 'altro';
+  sedeSvolgimentoTipo?: 'sezione_salvata' | 'aula_formazione' | 'altro';
   sedeSvolgimentoSedeId?: string;
+  aulaFormazioneId?: string;
+  aulaFormazioneNome?: string;
+  raggioMetriTimbratura?: number;
   indirizzoCompleto?: string;
   coordinate?: {
     lat: number;
     lng: number;
   };
+  // Link dedicato per timbratura partecipanti esterni senza account (nome, cognome, telefono)
+  linkTimbraturaEsterniToken?: string;
+  linkTimbraturaEsterniAttivo?: boolean;
+  linkTimbraturaEsterniCreatoIl?: string;
   // Programma fino a 20 lezioni in giorni, orari e sedi diverse
   lezioni?: LezioneCorso[];
   // Mansione operativa rilasciata automaticamente al superamento del corso/esame
@@ -467,6 +532,10 @@ export interface PartecipanteCorso {
   // Timbrature generali o prima lezione
   timbraturaEntrata?: DatiTimbraturaGPSCorso | string;
   timbraturaUscita?: DatiTimbraturaGPSCorso | string;
+  // Partecipante esterno senza account (timbratura tramite link condiviso -> evidenziato in viola)
+  isEsterno?: boolean;
+  telefonoEsterno?: string;
+  origineIscrizione?: 'account' | 'link_esterno';
 }
 
 export interface PosizioneCampoPdfPrestampato {
@@ -632,6 +701,74 @@ export interface CandidaturaTurno {
   dataRichiesta: string; // ISO string o formato data ora
   approvatoDa?: string; // nome operatore di centrale o admin che ha validato
   dataDecisione?: string;
+  durataParziale?: boolean; // true se disponibilità con durata inferiore al turno
+  orarioInizioParziale?: string; // HH:mm
+  orarioFineParziale?: string; // HH:mm
+  note?: string;
+}
+
+export interface NotificheUtenteTipoTurno {
+  volontarioId: string;
+  volontarioNome?: string;
+  suRichiestaTurno: boolean; // quando un volontario chiede di segnarsi di turno
+  suFoglioServizio: boolean; // quando un volontario inserisce un foglio di servizio
+  suCancellazioneTurno: boolean; // quando un volontario si cancella dal turno
+}
+
+export interface RegoleStrumentiTipoTurno {
+  // Notifiche configurabili per singolo utente con accesso al database Turni
+  notificheAbilitate: boolean;
+  notifichePerUtente: NotificheUtenteTipoTurno[];
+  destinatariNotifiche?: NotificheUtenteTipoTurno[];
+  // Auto-cancellazione volontario dal turno
+  consentiAutoCancellazioneVolontario: boolean;
+  orePreavvisoCancellazione: number; // ore minime di preavviso prima dell'inizio del turno
+  // Comportamento modifica orario
+  annullaDisponibilitaSuModificaOrario: boolean;
+  // Approvazione disponibilità
+  richiedeApprovazioneStaffODirettivo: boolean;
+  // Durata parziale
+  consentiDisponibilitaDurataInferiore: boolean;
+  // Nascondere dipendenti ai volontari nel calendario
+  nascondiDipendentiAiVolontari: boolean;
+  // Visibilità dei turni: cessione/scambio e modalità monitor
+  consentiPropostaCessioneOScambio: boolean;
+  visibileInModalitaMonitor: boolean;
+}
+
+export interface PropostaScambioTurno {
+  id: string;
+  turnoId: string;
+  tipo?: 'cessione' | 'scambio';
+  modalita?: 'cessione' | 'scambio';
+  ruolo?: RuoloTurno;
+  ruoloProponente?: RuoloTurno;
+  proponenteId: string;
+  proponenteNome: string;
+  destinatarioId: string;
+  destinatarioNome: string;
+  turnoContropartitaId?: string;
+  turnoContropartitaLabel?: string;
+  ruoloContropartita?: RuoloTurno;
+  turnoDestinatarioId?: string;
+  turnoDestinatarioDescrizione?: string;
+  ruoloDestinatario?: RuoloTurno;
+  stato:
+    | 'In Attesa Collega'
+    | 'In Attesa Approvazione Responsabile'
+    | 'Approvato'
+    | 'Approvata'
+    | 'Rifiutato Collega'
+    | 'Rifiutata Collega'
+    | 'Rifiutato Responsabile'
+    | 'Rifiutata Responsabile';
+  dataProposta?: string;
+  dataRichiesta?: string;
+  dataRispostaCollega?: string;
+  approvatoDa?: string;
+  approvataDa?: string;
+  dataApprovazione?: string;
+  dataDecisioneResponsabile?: string;
   note?: string;
 }
 
@@ -652,6 +789,7 @@ export interface TipoTurnoConfig {
   descrizione?: string;
   icona?: string;
   mansioniObbligatorie: MansioneTipoTurno[];
+  regoleStrumenti?: RegoleStrumentiTipoTurno;
   dataCreazione?: string;
   predefinito?: boolean;
 }
@@ -680,6 +818,16 @@ export interface TurnoSedeOperativa {
   centralinista?: { id: string; nome: string };
   osservatore?: { id: string; nome: string };
   richiesteIscrizione?: CandidaturaTurno[];
+  proposteScambio?: PropostaScambioTurno[];
+  orarioModificatoAvviso?:
+    | string
+    | {
+        vecchioOrario: string;
+        nuovoOrario: string;
+        dataModifica: string;
+        exPartecipanti: string[];
+      };
+  visibileInModalitaMonitor?: boolean;
   checklistObbligatoria?: boolean; // Default true (sempre obbligatoria); se false, annulla l'obbligatorietà della checklist per questo turno
   note?: string;
 }
@@ -699,6 +847,13 @@ export interface CommentoBacheca {
   dataOra: string; // HH:mm del DD/MM/YYYY
   timestamp: number;
   likes?: string[]; // Array di nominativi o ID degli utenti che hanno messo like al commento
+}
+
+export interface PresaVisioneBacheca {
+  volontarioId: string;
+  volontarioNome: string;
+  dataOra: string;
+  sezione?: string;
 }
 
 export interface ComunicazioneBacheca {
@@ -725,6 +880,9 @@ export interface ComunicazioneBacheca {
   allegatoDimensione?: number;
   likes?: string[]; // Array di nominativi o ID degli utenti che hanno messo like al post
   commenti?: CommentoBacheca[]; // Elenco commenti e risposte al post
+  richiedePresaVisione?: boolean; // Conferma lettura obbligatoria per comunicazioni importanti
+  preseVisione?: PresaVisioneBacheca[]; // Elenco volontari che hanno confermato la presa visione
+  ultimoPromemoriaPresaVisione?: string; // Data/ora ultimo sollecito inviato ai mancanti
 }
 
 // ---------------------------------------------------------------------------

@@ -36,7 +36,8 @@ import {
   SlidersHorizontal,
   Landmark,
   Copy,
-  Send
+  Send,
+  CalendarClock
 } from 'lucide-react';
 import { useTitoloDatabase, useNomiSottosezioniCustom } from '../../hooks/useNomiDatabase';
 import { getTitoloSottosezione } from '../../constants/macroCategorie';
@@ -83,9 +84,12 @@ import {
 } from '../../utils/prospettoCommercialista';
 import { RIFORNIMENTI_INIZIALI } from '../../data/rifornimentiMockData';
 import { RifornimentoCarburante } from '../../types/consumiTypes';
+import { getRifornimentiMezzi, RIFORNIMENTI_UPDATED_EVENT } from '../../utils/rifornimentiStore';
 import { addDaysISODate, formatISODateItaly, getCurrentYearItaly } from '../../utils/italianTime';
 import { useMetodiPagamentoCustom, formattaEtichettaMetodoPagamento } from '../../utils/metodiPagamentoStore';
 import { GestioneMetodiPagamentoCustomPanel } from './GestioneMetodiPagamentoCustomPanel';
+import { PannelloScadenzeFiscaliOdv } from './PannelloScadenzeFiscaliOdv';
+import { useScadenzeFiscaliOdv } from '../../utils/scadenzeFiscaliOdv';
 
 interface SezioneContabilitaProps {
   serviziArchivio: any[];
@@ -112,6 +116,7 @@ interface SezioneContabilitaProps {
   rifornimenti?: RifornimentoCarburante[];
   sedi?: SedeAssociativaCompleta[];
   allowedSubtabs?: string[] | null;
+  puoModificarePreavvisoFiscale?: boolean;
 }
 
 export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
@@ -138,15 +143,21 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
   manutenzioni = [],
   rifornimenti: rifornimentiProp,
   sedi = [],
-  allowedSubtabs = null
+  allowedSubtabs = null,
+  puoModificarePreavvisoFiscale = false
 }) => {
   const nomiSubCustom = useNomiSottosezioniCustom();
-  const [sottoTab, setSottoTab] = useState<'donazioni' | 'tesseramento' | 'noteDebito' | 'commercialista' | 'costiServizio' | 'contiCorrenti' | 'altreEntrateUscite' | 'costiGestione' | 'ricevute'>('donazioni');
-  const canShowSubtab = (id: string) => !allowedSubtabs || allowedSubtabs.includes(id);
+  const { scadenze: scadenzeFiscaliOdvLista } = useScadenzeFiscaliOdv();
+  const [sottoTab, setSottoTab] = useState<'donazioni' | 'tesseramento' | 'noteDebito' | 'commercialista' | 'costiServizio' | 'contiCorrenti' | 'altreEntrateUscite' | 'costiGestione' | 'ricevute' | 'scadenzeFiscali'>('donazioni');
+  const canShowSubtab = (id: string) => {
+    if (!allowedSubtabs) return true;
+    if (id === 'scadenzeFiscali') return allowedSubtabs.includes('scadenzeFiscali') || allowedSubtabs.length > 0;
+    return allowedSubtabs.includes(id);
+  };
 
   useEffect(() => {
     if (!canShowSubtab(sottoTab)) {
-      const ordine = ['donazioni', 'tesseramento', 'noteDebito', 'commercialista', 'costiServizio', 'contiCorrenti', 'altreEntrateUscite', 'costiGestione', 'ricevute'] as const;
+      const ordine = ['donazioni', 'tesseramento', 'noteDebito', 'commercialista', 'costiServizio', 'contiCorrenti', 'altreEntrateUscite', 'costiGestione', 'ricevute', 'scadenzeFiscali'] as const;
       const prima = ordine.find((t) => canShowSubtab(t));
       if (prima) setSottoTab(prima);
     }
@@ -178,15 +189,20 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
     [metodiPagamentoCustom]
   );
 
-  // Rifornimenti per calcolo uscite carburante
+  // Rifornimenti per calcolo uscite carburante (aggiornati in tempo reale su nuovi rifornimenti e cloud sync)
+  const [rifornimentiLocali, setRifornimentiLocali] = useState<RifornimentoCarburante[]>(() =>
+    getRifornimentiMezzi()
+  );
+  React.useEffect(() => {
+    const aggiorna = () => setRifornimentiLocali(getRifornimentiMezzi());
+    window.addEventListener(RIFORNIMENTI_UPDATED_EVENT, aggiorna);
+    return () => window.removeEventListener(RIFORNIMENTI_UPDATED_EVENT, aggiorna);
+  }, []);
+
   const rifornimentiCarburante: RifornimentoCarburante[] = React.useMemo(() => {
     if (rifornimentiProp && rifornimentiProp.length > 0) return rifornimentiProp;
-    try {
-      const s = localStorage.getItem('CROCE_ORO_RIFORNIMENTI_MEZZI');
-      if (s) return JSON.parse(s);
-    } catch {}
-    return RIFORNIMENTI_INIZIALI;
-  }, [rifornimentiProp]);
+    return rifornimentiLocali;
+  }, [rifornimentiProp, rifornimentiLocali]);
 
   // Ricerca e filtri
   const [ricerca, setRicerca] = useState('');
@@ -377,6 +393,7 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
 
   // Stato Costi di Gestione (Sotto-sezione 8)
   const CATEGORIE_COSTI_GESTIONE = [
+    'Carburante Flotta',
     'Utenze (Luce, Gas, Acqua)',
     'Affitto & Spese Sede',
     'Assicurazioni & Polizze',
@@ -2324,6 +2341,21 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
         >
           <Receipt className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-emerald-400 shrink-0" />
           <span className="break-words">9. {getTitoloSottosezione('contabilita', 'ricevute', 'Emissione Ricevute', nomiSubCustom)} ({listaRicevute.length})</span>
+        </button>
+        )}
+
+        {canShowSubtab('scadenzeFiscali') && (
+        <button
+          type="button"
+          onClick={() => setSottoTab('scadenzeFiscali')}
+          className={`w-full px-2.5 sm:px-3 py-2 rounded-xl text-[10px] sm:text-xs font-black uppercase flex items-center justify-center gap-1.5 text-center leading-tight transition-all cursor-pointer ${
+            sottoTab === 'scadenzeFiscali'
+              ? 'bg-amber-500 text-slate-950 shadow-lg shadow-amber-500/30 border border-amber-300 font-black'
+              : 'bg-slate-900 text-amber-300/90 hover:text-amber-200 border border-amber-500/30'
+          }`}
+        >
+          <CalendarClock className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0" />
+          <span className="break-words">10. {getTitoloSottosezione('contabilita', 'scadenzeFiscali', 'Scadenze Fiscali ODV', nomiSubCustom)} ({scadenzeFiscaliOdvLista.filter((s) => s.attiva && s.stato === 'Aperta').length})</span>
         </button>
         )}
       </div>
@@ -4867,7 +4899,17 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
                             </span>
                           </td>
                           <td className="py-3 px-4">
-                            <div className="font-bold text-white">{v.descrizione}</div>
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              <span className="font-bold text-white">{v.descrizione}</span>
+                              {(v.rifornimentoId || v.origineAutomatica === 'rifornimento_carburante') && (
+                                <span
+                                  className="px-1.5 py-0.5 rounded bg-amber-500/20 border border-amber-500/40 text-amber-300 text-[9.5px] font-black uppercase"
+                                  title="Registrato automaticamente dal modulo Rifornimenti Carburante (contabilizzato una sola volta nella colonna Carburante del Prospetto Commercialista)"
+                                >
+                                  ⛽ Auto da Rifornimento
+                                </span>
+                              )}
+                            </div>
                             <div className="text-[11px] text-rose-300">{v.categoria}</div>
                             {v.note && <div className="text-[10px] text-slate-400 mt-0.5">{v.note}</div>}
                           </td>
@@ -5289,6 +5331,19 @@ export const SezioneContabilita: React.FC<SezioneContabilitaProps> = ({
           </div>
         );
       })()}
+
+      {/* ===================================================================== */}
+      {/* 10. SOTTO-TAB: SCADENZE FISCALI ODV & NOTIFICHE AUTOMATICHE           */}
+      {/* ===================================================================== */}
+      {sottoTab === 'scadenzeFiscali' && canShowSubtab('scadenzeFiscali') && (
+        <PannelloScadenzeFiscaliOdv
+          volontari={volontari}
+          puoModificarePreavviso={Boolean(puoModificarePreavvisoFiscale || isAdmin)}
+          isAdmin={isAdmin}
+          operatoreNome={operatoreCorrente}
+          onNotificaRadio={(msg) => onNotificaRadio?.(msg, 'sistema')}
+        />
+      )}
 
       {/* MODALE EMISSIONE NUOVA RICEVUTA CONTABILE */}
       {modaleNuovaRicevutaAperta && (

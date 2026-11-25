@@ -660,6 +660,199 @@
         }
       },
       "required": ["boardId", "version", "sedi", "bacheca", "timbrature", "config", "updatedByUid", "createdAt", "updatedAt"]
+    },
+    "PublicCourseCard": {
+      "title": "PublicCourseCard",
+      "description": "Zero-PII published training course & classroom GPS specification (token-gated by crs-* ID) enabling external unauthenticated course attendees to clock in/out at the Aula Didattica without exposing any volunteer or attendee PII.",
+      "type": "object",
+      "properties": {
+        "tokenId": {
+          "type": "string",
+          "minLength": 10,
+          "maxLength": 96,
+          "pattern": "^crs-[a-zA-Z0-9_\\-]+$"
+        },
+        "corsoId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "titolo": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 180
+        },
+        "categoria": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "dataInizio": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 24
+        },
+        "dataFine": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 24
+        },
+        "oreTotaliRichieste": {
+          "type": "number"
+        },
+        "aulaNome": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "aulaIndirizzo": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 220
+        },
+        "coordinate": {
+          "type": "object",
+          "description": "Latitude and longitude of the Aula Didattica"
+        },
+        "raggioMetri": {
+          "type": "number"
+        },
+        "lezioni": {
+          "type": "array",
+          "description": "Bounded list (max 40) of course lesson schedules and optional per-lesson classroom coordinates"
+        },
+        "attivo": {
+          "type": "boolean"
+        },
+        "updatedByUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "tokenId",
+        "corsoId",
+        "titolo",
+        "categoria",
+        "dataInizio",
+        "dataFine",
+        "oreTotaliRichieste",
+        "aulaNome",
+        "aulaIndirizzo",
+        "coordinate",
+        "raggioMetri",
+        "lezioni",
+        "attivo",
+        "updatedByUid",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "CourseGuestCheckin": {
+      "title": "CourseGuestCheckin",
+      "description": "Write-only external guest attendance check-in/out for a specific token-gated course. External guests can only create pending records; reads and reconciliation are strictly restricted to verified Croce Oro operators.",
+      "type": "object",
+      "properties": {
+        "checkinId": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 96,
+          "pattern": "^chk-[a-zA-Z0-9_\\-]+$"
+        },
+        "scope": {
+          "type": "string",
+          "enum": ["croce_oro_course_guest"],
+          "minLength": 22,
+          "maxLength": 22
+        },
+        "tokenId": {
+          "type": "string",
+          "minLength": 10,
+          "maxLength": 96,
+          "pattern": "^crs-[a-zA-Z0-9_\\-]+$"
+        },
+        "corsoId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "lezioneId": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 128
+        },
+        "nome": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "cognome": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "telefono": {
+          "type": "string",
+          "minLength": 5,
+          "maxLength": 32
+        },
+        "tipo": {
+          "type": "string",
+          "enum": ["entrata", "uscita"]
+        },
+        "dataOra": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 40
+        },
+        "aulaNome": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "distanzaMetri": {
+          "type": "number"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["pending", "applied"]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "checkinId",
+        "scope",
+        "tokenId",
+        "corsoId",
+        "lezioneId",
+        "nome",
+        "cognome",
+        "telefono",
+        "tipo",
+        "dataOra",
+        "aulaNome",
+        "distanzaMetri",
+        "status",
+        "createdAt",
+        "updatedAt"
+      ]
     }
   },
   "firestore": {
@@ -710,6 +903,14 @@
     "/public_raspberry/{boardId}": {
       "schema": { "$ref": "#/entities/PublicRaspberryBoard" },
       "description": "Zero-PII published Raspberry Pi section display board (single document display_v1) for association notices, section notices, and badge presence/exit timestamps."
+    },
+    "/public_courses/{tokenId}": {
+      "schema": { "$ref": "#/entities/PublicCourseCard" },
+      "description": "Zero-PII token-gated public course and classroom GPS descriptor for external unauthenticated check-in links."
+    },
+    "/course_guest_checkins/{checkinId}": {
+      "schema": { "$ref": "#/entities/CourseGuestCheckin" },
+      "description": "Write-only external guest attendance check-in queue (readable and reconcilable exclusively by verified operators)."
     }
   }
 }

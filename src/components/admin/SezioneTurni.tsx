@@ -38,9 +38,11 @@ import {
   Sun,
   Flame,
   Award,
-  Star
+  Star,
+  Sliders,
+  ArrowLeftRight
 } from 'lucide-react';
-import { TurnoSedeOperativa, SedeAssociativaCompleta, RuoloTurno, CandidaturaTurno, MezzoFlotta } from '../../types/adminTypes';
+import { TurnoSedeOperativa, SedeAssociativaCompleta, RuoloTurno, CandidaturaTurno, MezzoFlotta, PropostaScambioTurno } from '../../types/adminTypes';
 import { MEZZI_FLOTTA_INIZIALI } from '../../data/adminMockData';
 import { MezzoFuoriServizio } from '../../data/suggerimentiMezzi';
 import { Volontario } from '../DatabaseVolontariModal';
@@ -64,11 +66,14 @@ import {
   calcolaCoperturaTurno,
   getCapoServizioTurno,
   getVolontariAssegnatiTurno,
-  risolviMansioniTipoTurnoLive
+  risolviMansioniTipoTurnoLive,
+  getRegoleStrumentiPerTurno,
+  inviaNotificaStrumentiTurniEmail
 } from '../../utils/tipiTurno';
 import { IconaEmoji } from '../IconaEmoji';
 import { formatIconaPerTesto } from '../../utils/emojiIconsArchive';
 import { PannelloTipiTurno } from './PannelloTipiTurno';
+import { PannelloStrumentiTurni } from './PannelloStrumentiTurni';
 import { SelectVolontarioAffinita, StelleAffinita } from './SelectVolontarioAffinita';
 import { addDaysISODate, formatDateItaly, formatISODateItaly, formatTimeItaly } from '../../utils/italianTime';
 
@@ -108,6 +113,7 @@ interface SezioneTurniProps {
   mezziFuoriServizio?: Record<string, MezzoFuoriServizio>;
   operatoreCorrente?: string;
   isAdmin?: boolean;
+  puoGestireStrumentiTurni?: boolean; // Solo Presidente, Amministratore e Segretario
   onNotificaRadio?: (testo: string, tipo?: 'centrale' | 'mezzo' | 'sistema' | 'allarme') => void;
   allowedSubtabs?: string[] | null;
 }
@@ -121,11 +127,15 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
   mezziFuoriServizio = {},
   operatoreCorrente = 'Amministratore',
   isAdmin = true,
+  puoGestireStrumentiTurni = false,
   onNotificaRadio,
   allowedSubtabs = null
 }) => {
   const nomiSubCustom = useNomiSottosezioniCustom();
-  const canShowSubtab = (id: string) => !allowedSubtabs || allowedSubtabs.includes(id);
+  const canShowSubtab = (id: string) => {
+    if (id === 'strumenti') return Boolean(puoGestireStrumentiTurni);
+    return !allowedSubtabs || allowedSubtabs.includes(id);
+  };
   const tipiTurno = useTipiTurno();
   const [catalogoMansioni, setCatalogoMansioni] = useState(() => getMansioniCatalogo());
   useEffect(() => {
@@ -133,7 +143,7 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
     window.addEventListener('croceoro_mansioni_updated', syncMansioni);
     return () => window.removeEventListener('croceoro_mansioni_updated', syncMansioni);
   }, []);
-  const [vistaSottosezione, setVistaSottosezione] = useState<'calendario' | 'candidature' | 'tipi_turno'>(() => {
+  const [vistaSottosezione, setVistaSottosezione] = useState<'calendario' | 'candidature' | 'tipi_turno' | 'strumenti'>(() => {
     if (!allowedSubtabs || allowedSubtabs.includes('calendario')) return 'calendario';
     if (allowedSubtabs.includes('candidature')) return 'candidature';
     if (allowedSubtabs.includes('tipi_turno')) return 'tipi_turno';
@@ -228,6 +238,113 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
         .map((c) => ({ turno: t, candidatura: c }))
     );
   }, [turni]);
+
+  // Tutte le proposte di cessione/scambio già accettate dal collega in attesa di approvazione finale del responsabile
+  const proposteScambioInAttesaResponsabile = useMemo(() => {
+    return turni.flatMap((t) =>
+      (t.proposteScambio || [])
+        .filter((p) => p.stato === 'In Attesa Approvazione Responsabile')
+        .map((p) => ({ turno: t, proposta: p }))
+    );
+  }, [turni]);
+
+  const setSlotRuoloTurno = (
+    turno: TurnoSedeOperativa,
+    ruolo: RuoloTurno,
+    valore: { id: string; nome: string } | undefined
+  ): TurnoSedeOperativa => {
+    const copy: TurnoSedeOperativa = { ...turno };
+    if (ruolo === 'autista') copy.autista = valore;
+    else if (ruolo === 'caposervizio') copy.capoServizioBadge = valore;
+    else if (ruolo === 'soccorritore2') copy.soccorritore2 = valore;
+    else if (ruolo === 'terzoSoccorritore') copy.terzoSoccorritore = valore;
+    else if (ruolo === 'operatoreCentrale') copy.operatoreCentrale = valore;
+    else if (ruolo === 'centralinista') copy.centralinista = valore;
+    else if (ruolo === 'osservatore') copy.osservatore = valore;
+    copy.statoCopertura = calcolaCoperturaTurno(copy);
+    return copy;
+  };
+
+  const handleApprovaPropostaScambio = (turnoId: string, proposta: PropostaScambioTurno) => {
+    const operatore = operatoreCorrente || (isAdmin ? 'Amministratore' : 'Responsabile Turni');
+    const aggiornati = turni.map((t) => {
+      let next = t;
+      if (t.id === turnoId) {
+        // Sostituisce il proponente con il destinatario sul turno di origine
+        next = setSlotRuoloTurno(next, proposta.ruoloProponente || proposta.ruolo || 'soccorritore2', {
+          id: proposta.destinatarioId,
+          nome: proposta.destinatarioNome,
+        });
+        next = {
+          ...next,
+          proposteScambio: (next.proposteScambio || []).map((p) =>
+            p.id === proposta.id
+              ? {
+                  ...p,
+                  stato: 'Approvata' as const,
+                  approvataDa: operatore,
+                  dataApprovazione: formatTimeItaly(undefined, false) + ' del ' + formatDateItaly(),
+                }
+              : p
+          ),
+        };
+      } else if (
+        proposta.modalita === 'scambio' &&
+        proposta.turnoDestinatarioId &&
+        proposta.ruoloDestinatario &&
+        t.id === proposta.turnoDestinatarioId
+      ) {
+        // Completa lo scambio bidirezionale assegnando il proponente al turno del destinatario
+        next = setSlotRuoloTurno(next, proposta.ruoloDestinatario, {
+          id: proposta.proponenteId,
+          nome: proposta.proponenteNome,
+        });
+      }
+      return next;
+    });
+
+    onAggiornaTurni(aggiornati);
+    const emails = [proposta.proponenteId, proposta.destinatarioId]
+      .map((id) => volontari.find((v) => v.id === id)?.email)
+      .filter(Boolean) as string[];
+    inviaNotificaStrumentiTurniEmail({
+      evento: 'scambio_approvato',
+      titolo: `${proposta.modalita === 'scambio' ? 'Scambio' : 'Cessione'} turno approvato`,
+      messaggio: `${operatore} ha approvato ${proposta.modalita === 'scambio' ? 'lo scambio' : 'la cessione'} tra ${proposta.proponenteNome} e ${proposta.destinatarioNome}. Il calendario turni è stato aggiornato.`,
+      destinatariEmails: emails,
+    });
+    onNotificaRadio?.(
+      `🔄 ${proposta.modalita === 'scambio' ? 'SCAMBIO' : 'CESSIONE'} TURNO APPROVATO: ${proposta.proponenteNome} ↔ ${proposta.destinatarioNome} convalidato da ${operatore}.`,
+      'sistema'
+    );
+    mostraAvviso(
+      `✓ ${proposta.modalita === 'scambio' ? 'Scambio' : 'Cessione'} turno tra ${proposta.proponenteNome} e ${proposta.destinatarioNome} approvato e applicato!`
+    );
+  };
+
+  const handleRifiutaPropostaScambio = (turnoId: string, proposta: PropostaScambioTurno) => {
+    const operatore = operatoreCorrente || (isAdmin ? 'Amministratore' : 'Responsabile Turni');
+    const aggiornati = turni.map((t) => {
+      if (t.id !== turnoId) return t;
+      return {
+        ...t,
+        proposteScambio: (t.proposteScambio || []).map((p) =>
+          p.id === proposta.id
+            ? {
+                ...p,
+                stato: 'Rifiutata Responsabile' as const,
+                approvataDa: operatore,
+                dataApprovazione: formatTimeItaly(undefined, false) + ' del ' + formatDateItaly(),
+              }
+            : p
+        ),
+      };
+    });
+    onAggiornaTurni(aggiornati);
+    mostraAvviso(
+      `Proposta di ${proposta.modalita} tra ${proposta.proponenteNome} e ${proposta.destinatarioNome} rifiutata.`
+    );
+  };
 
   // Approvazione candidatura da parte dell'Operatore di Centrale / Admin
   const handleApprovaCandidatura = (turnoId: string, candId: string) => {
@@ -1221,11 +1338,50 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
         serieFutura.forEach((t) => targetIds.add(t.id));
       }
 
+      let turniConOrarioResettato = 0;
+      const partecipantiDaReinvitare = new Map<string, { id: string; nome: string; email?: string; turniInfo: string[] }>();
+
       const aggiornati = turni.map((t) => {
         if (targetIds.has(t.id)) {
           const mansioniAggiornate = tipoSelezionato
             ? tipoSelezionato.mansioniObbligatorie.map((m) => ({ ...m }))
             : t.mansioniRichieste;
+          const regoleTipo = getRegoleStrumentiPerTurno(
+            {
+              ...t,
+              tipoTurnoId: tipoSelezionato ? tipoSelezionato.id : t.tipoTurnoId,
+              tipoTurnoNome: tipoSelezionato ? tipoSelezionato.nome : t.tipoTurnoNome,
+            },
+            tipiTurno
+          );
+          const orarioCambiato = t.orarioInizio !== formInizio || t.orarioFine !== formFine;
+          const deveAnnullareEReinvitare = Boolean(
+            orarioCambiato && regoleTipo.annullaDisponibilitaSuModificaOrario
+          );
+
+          const exPartecipantiNomi: string[] = [];
+          if (deveAnnullareEReinvitare) {
+            const giaAssegnati = getVolontariAssegnatiTurno(t);
+            const candidatiAttesa = (t.richiesteIscrizione || [])
+              .filter((r) => r.stato === 'In Attesa')
+              .map((r) => ({ id: r.volontarioId, nome: r.volontarioNome }));
+            [...giaAssegnati, ...candidatiAttesa].forEach((p) => {
+              if (!p?.id) return;
+              if (!exPartecipantiNomi.includes(p.nome)) exPartecipantiNomi.push(p.nome);
+              const vol = volontari.find((v) => v.id === p.id);
+              const curr = partecipantiDaReinvitare.get(p.id) || {
+                id: p.id,
+                nome: p.nome,
+                email: vol?.email,
+                turniInfo: [],
+              };
+              const info = `${t.data} (${t.sedeNome}: ${t.orarioInizio}-${t.orarioFine} → ${formInizio}-${formFine})`;
+              if (!curr.turniInfo.includes(info)) curr.turniInfo.push(info);
+              partecipantiDaReinvitare.set(p.id, curr);
+            });
+            turniConOrarioResettato++;
+          }
+
           const nextTurno: TurnoSedeOperativa = {
             ...t,
             sedeId: sedeObj?.id || t.sedeId,
@@ -1239,15 +1395,28 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
             orarioInizio: formInizio,
             orarioFine: formFine,
             mezzoAssegnato: mezzoValido,
-            capoServizioBadge: capoBadgeObj,
-            autista: autistaSlot,
+            capoServizioBadge: deveAnnullareEReinvitare ? undefined : capoBadgeObj,
+            autista: deveAnnullareEReinvitare ? undefined : autistaSlot,
             caposervizio: undefined,
-            soccorritore2: socc2Slot,
-            terzoSoccorritore: terzoSlot,
-            operatoreCentrale: centraleSlot,
-            centralinista: centralinistaSlot,
-            osservatore: osservatoreSlot,
-            richiesteIscrizione: t.richiesteIscrizione,
+            soccorritore2: deveAnnullareEReinvitare ? undefined : socc2Slot,
+            terzoSoccorritore: deveAnnullareEReinvitare ? undefined : terzoSlot,
+            operatoreCentrale: deveAnnullareEReinvitare ? undefined : centraleSlot,
+            centralinista: deveAnnullareEReinvitare ? undefined : centralinistaSlot,
+            osservatore: deveAnnullareEReinvitare ? undefined : osservatoreSlot,
+            richiesteIscrizione: deveAnnullareEReinvitare
+              ? (t.richiesteIscrizione || []).map((r) =>
+                  r.stato === 'In Attesa' ? { ...r, stato: 'Rifiutato' as const } : r
+                )
+              : t.richiesteIscrizione,
+            visibileInModalitaMonitor: regoleTipo.visibileInModalitaMonitor,
+            orarioModificatoAvviso: deveAnnullareEReinvitare
+              ? {
+                  vecchioOrario: `${t.orarioInizio}-${t.orarioFine}`,
+                  nuovoOrario: `${formInizio}-${formFine}`,
+                  dataModifica: formatTimeItaly(undefined, false) + ' del ' + formatDateItaly(),
+                  exPartecipanti: exPartecipantiNomi,
+                }
+              : t.orarioModificatoAvviso,
             checklistObbligatoria: formChecklistObbligatoria,
             note: formNote,
             statoCopertura: 'Scoperto'
@@ -1258,6 +1427,28 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
         return t;
       });
       onAggiornaTurni(aggiornati);
+
+      if (turniConOrarioResettato > 0 && partecipantiDaReinvitare.size > 0) {
+        const destinatariEmails = Array.from(partecipantiDaReinvitare.values())
+          .map((p) => p.email)
+          .filter(Boolean) as string[];
+        const elencoNomi = Array.from(partecipantiDaReinvitare.values())
+          .map((p) => p.nome)
+          .join(', ');
+        inviaNotificaStrumentiTurniEmail({
+          evento: 'modifica_orario_reinvito',
+          titolo: `Orario modificato su "${nomeTurnoPulito}" — Disponibilità annullate, nuovo invito`,
+          messaggio: `L'orario del turno "${nomeTurnoPulito}" presso ${sedeObj?.nome || 'Sede'} è stato modificato in ${formInizio}-${formFine}. Come previsto dalle regole del tipo di turno, le precedenti disponibilità di ${elencoNomi} sono state annullate: accedi al Calendario Turni per confermare nuovamente la tua disponibilità.`,
+          tipoTurnoNome: tipoSelezionato?.nome,
+          turnoRiepilogo: `${formData} • ${formInizio}-${formFine} • ${sedeObj?.nome || ''}`,
+          destinatariEmails,
+        });
+        onNotificaRadio?.(
+          `⏰ MODIFICA ORARIO TURNO "${nomeTurnoPulito}": disponibilità annullate su ${turniConOrarioResettato} turni e nuovo invito inviato a ${elencoNomi}.`,
+          'sistema'
+        );
+      }
+
       if (!isAdmin) {
         inviaNotificaModificaAdmin(
           'turni',
@@ -1271,11 +1462,17 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
         );
       }
       mostraAvviso(
-        modificaModalitaSerie === 'serie_futura'
-          ? `✓ Aggiornati ${targetIds.size} turni della serie futura con successo.`
-          : `Turno aggiornato con successo.`
+        turniConOrarioResettato > 0
+          ? `⏰ Orario modificato: disponibilità annullate su ${turniConOrarioResettato} turni e partecipanti reinvitati automaticamente.`
+          : modificaModalitaSerie === 'serie_futura'
+            ? `✓ Aggiornati ${targetIds.size} turni della serie futura con successo.`
+            : `Turno aggiornato con successo.`
       );
     } else {
+      const regoleNuovo = getRegoleStrumentiPerTurno(
+        { tipoTurnoId: tipoSelezionato?.id, tipoTurnoNome: tipoSelezionato?.nome },
+        tipiTurno
+      );
       const nuovo: TurnoSedeOperativa = {
         id: `turno-${Date.now()}`,
         sedeId: sedeObj?.id || 'sede-massa-lejare',
@@ -1293,6 +1490,7 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
         mezzoAssegnato: mezzoValido,
         statoCopertura: 'Scoperto',
         richiesteIscrizione: [],
+        visibileInModalitaMonitor: regoleNuovo.visibileInModalitaMonitor,
         checklistObbligatoria: formChecklistObbligatoria,
         note: formNote
       };
@@ -1557,7 +1755,7 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
       </div>
 
       {/* Navigazione Sottosezioni Database Calendario Turni */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5 sm:gap-2 pb-1">
+      <div className={`grid grid-cols-2 ${puoGestireStrumentiTurni ? 'sm:grid-cols-4' : 'sm:grid-cols-3'} gap-1.5 sm:gap-2 pb-1`}>
         {canShowSubtab('calendario') && (
           <button
             type="button"
@@ -1581,14 +1779,14 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
                 : 'bg-amber-950/80 hover:bg-amber-900/80 border-amber-500/40 text-amber-200'
             }`}
           >
-            <span className="break-words">2. {getTitoloSottosezione('turni', 'candidature', 'Gestione Candidature Turni', nomiSubCustom)} ({tutteCandidatureInAttesa.length})</span>
+            <span className="break-words">2. {getTitoloSottosezione('turni', 'candidature', 'Gestione Candidature Turni', nomiSubCustom)} ({tutteCandidatureInAttesa.length + proposteScambioInAttesaResponsabile.length})</span>
           </button>
         )}
         {canShowSubtab('tipi_turno') && (
           <button
             type="button"
             onClick={() => setVistaSottosezione('tipi_turno')}
-            className={`w-full min-w-0 col-span-2 sm:col-span-1 px-2.5 sm:px-3 py-2 rounded-xl border text-[10px] sm:text-xs font-black uppercase leading-tight transition-all cursor-pointer active:scale-95 flex items-center justify-center gap-1.5 ${
+            className={`w-full min-w-0 px-2.5 sm:px-3 py-2 rounded-xl border text-[10px] sm:text-xs font-black uppercase leading-tight transition-all cursor-pointer active:scale-95 flex items-center justify-center gap-1.5 ${
               vistaSottosezione === 'tipi_turno'
                 ? 'bg-indigo-500 text-white border-indigo-300 shadow-md shadow-indigo-500/20'
                 : 'bg-indigo-950/80 hover:bg-indigo-900/80 border-indigo-500/40 text-indigo-200'
@@ -1596,6 +1794,20 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
           >
             <Layers className="w-3.5 h-3.5 shrink-0" />
             <span className="break-words">3. {getTitoloSottosezione('turni', 'tipi_turno', 'Tipi di Turni', nomiSubCustom)} ({tipiTurno.length})</span>
+          </button>
+        )}
+        {canShowSubtab('strumenti') && (
+          <button
+            type="button"
+            onClick={() => setVistaSottosezione('strumenti')}
+            className={`w-full min-w-0 px-2.5 sm:px-3 py-2 rounded-xl border text-[10px] sm:text-xs font-black uppercase leading-tight transition-all cursor-pointer active:scale-95 flex items-center justify-center gap-1.5 ${
+              vistaSottosezione === 'strumenti'
+                ? 'bg-violet-500 text-white border-violet-300 shadow-md shadow-violet-500/20'
+                : 'bg-violet-950/80 hover:bg-violet-900/80 border-violet-500/40 text-violet-200'
+            }`}
+          >
+            <Sliders className="w-3.5 h-3.5 shrink-0" />
+            <span className="break-words">4. {getTitoloSottosezione('turni', 'strumenti', 'Strumenti', nomiSubCustom)}</span>
           </button>
         )}
       </div>
@@ -1618,14 +1830,100 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
         />
       )}
 
-      {/* SOTTOSEZIONE 2: GESTIONE CANDIDATURE (VISTA DEDICATA) */}
-      {vistaSottosezione === 'candidature' && canShowSubtab('candidature') && tutteCandidatureInAttesa.length === 0 && (
+      {/* SOTTOSEZIONE 4: STRUMENTI (RISERVATA A PRESIDENTE, AMMINISTRATORE E SEGRETARIO) */}
+      {vistaSottosezione === 'strumenti' && canShowSubtab('strumenti') && (
+        <PannelloStrumentiTurni
+          volontari={volontari}
+          onNotificaRadio={(msg) => onNotificaRadio?.(msg, 'sistema')}
+        />
+      )}
+
+      {/* SOTTOSEZIONE 2: GESTIONE CANDIDATURE E SCAMBI (VISTA DEDICATA) */}
+      {vistaSottosezione === 'candidature' &&
+        canShowSubtab('candidature') &&
+        tutteCandidatureInAttesa.length === 0 &&
+        proposteScambioInAttesaResponsabile.length === 0 && (
         <div className="bg-slate-950 p-10 rounded-3xl border border-slate-800 text-center space-y-2">
           <CheckCircle2 className="w-10 h-10 text-emerald-400 mx-auto" />
-          <div className="text-sm font-black text-white uppercase">Nessuna candidatura in attesa di approvazione</div>
+          <div className="text-sm font-black text-white uppercase">Nessuna candidatura o proposta di scambio in attesa</div>
           <p className="text-xs text-slate-400">
-            Tutte le richieste dei volontari sui turni programmati risultano già gestite.
+            Tutte le richieste dei volontari e le proposte di cessione/scambio turno risultano già gestite.
           </p>
+        </div>
+      )}
+
+      {/* PROPOSTE CESSIONE / SCAMBIO TURNO IN ATTESA APPROVAZIONE RESPONSABILE */}
+      {vistaSottosezione !== 'tipi_turno' &&
+        vistaSottosezione !== 'strumenti' &&
+        canShowSubtab('candidature') &&
+        proposteScambioInAttesaResponsabile.length > 0 && (
+        <div className="bg-gradient-to-r from-violet-950/90 via-slate-900 to-violet-950/90 p-4 rounded-3xl border-2 border-violet-500 shadow-xl space-y-3">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-2xl bg-violet-500/20 text-violet-300 border border-violet-500/50 flex items-center justify-center shrink-0">
+              <ArrowLeftRight className="w-5 h-5 text-violet-300" />
+            </div>
+            <div>
+              <h4 className="text-sm font-black text-violet-200 uppercase tracking-wide flex items-center gap-2">
+                <span>Cessioni &amp; Scambi Turno Accettati dal Collega — Approvazione Responsabile</span>
+                <span className="px-2 py-0.5 rounded-full bg-violet-500 text-white font-black text-xs">
+                  {proposteScambioInAttesaResponsabile.length}
+                </span>
+              </h4>
+              <p className="text-xs text-slate-300">
+                Il destinatario ha già accettato la proposta: lo scambio diventa effettivo sul calendario solo dopo la tua approvazione finale.
+              </p>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2.5 pt-2 border-t border-violet-500/30">
+            {proposteScambioInAttesaResponsabile.map(({ turno: tr, proposta: pr }) => {
+              const turnoDest = pr.turnoDestinatarioId
+                ? turni.find((x) => x.id === pr.turnoDestinatarioId)
+                : undefined;
+              return (
+                <div key={pr.id} className="p-3 rounded-2xl bg-slate-950 border border-violet-500/35 space-y-2 text-xs">
+                  <div className="flex items-start justify-between gap-2">
+                    <div>
+                      <span className="px-2 py-0.5 rounded-md bg-violet-500/20 border border-violet-400/40 text-violet-300 text-[10px] font-black uppercase">
+                        {pr.modalita === 'scambio' ? '🔄 Scambio Turni' : '➡️ Cessione Turno'}
+                      </span>
+                      <div className="font-black text-white text-sm mt-1">
+                        {pr.proponenteNome} → {pr.destinatarioNome}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="p-2 rounded-xl bg-slate-900 border border-slate-800 text-[11px] space-y-0.5 font-mono">
+                    <div className="text-slate-300">🏢 {tr.sedeNome}</div>
+                    <div className="text-indigo-300">📅 {tr.data} ({tr.orarioInizio}-{tr.orarioFine})</div>
+                    <div className="text-violet-300 font-bold">🎯 Ruolo: {getEtichettaRuolo(pr.ruoloProponente || pr.ruolo || 'soccorritore2')}</div>
+                    {turnoDest && (
+                      <div className="text-emerald-300 pt-1 border-t border-slate-800 mt-1">
+                        ⇄ Contro-turno: {turnoDest.data} ({turnoDest.orarioInizio}-{turnoDest.orarioFine}) — {pr.ruoloDestinatario ? getEtichettaRuolo(pr.ruoloDestinatario) : ''}
+                      </div>
+                    )}
+                    {pr.note && <div className="text-slate-400 italic text-[10px]">Note: &quot;{pr.note}&quot;</div>}
+                  </div>
+                  <div className="flex items-center justify-end gap-1.5 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => handleApprovaPropostaScambio(tr.id, pr)}
+                      className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs uppercase flex items-center gap-1.5 shadow-md active:scale-95 cursor-pointer"
+                    >
+                      <Check className="w-3.5 h-3.5" />
+                      <span>Approva Scambio</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleRifiutaPropostaScambio(tr.id, pr)}
+                      className="px-2.5 py-1.5 rounded-xl bg-slate-800 hover:bg-red-950 text-slate-300 hover:text-red-300 border border-slate-700 hover:border-red-700 font-bold text-xs uppercase cursor-pointer"
+                    >
+                      <span>Rifiuta</span>
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
 
@@ -1697,7 +1995,7 @@ export const SezioneTurni: React.FC<SezioneTurniProps> = ({
       )}
 
       {/* BANNER NOTIFICA CANDIDATURE VOLONTARI IN ATTESA DI APPROVAZIONE */}
-      {vistaSottosezione !== 'tipi_turno' && canShowSubtab('candidature') && tutteCandidatureInAttesa.length > 0 && (
+      {vistaSottosezione !== 'tipi_turno' && vistaSottosezione !== 'strumenti' && canShowSubtab('candidature') && tutteCandidatureInAttesa.length > 0 && (
         <div className="bg-gradient-to-r from-amber-950/90 via-slate-900 to-amber-950/90 p-4 rounded-3xl border-2 border-amber-500 shadow-xl space-y-3 animate-in fade-in">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div className="flex items-center gap-3">

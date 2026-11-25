@@ -9,8 +9,15 @@ export interface RifornimentoCarburante {
   chilometraggio: number;
   distributore?: string;
   volontarioNome?: string;
-  metodoPagamento?: 'Carta Carburante Q8' | 'Carta Carburante Eni' | 'Cassa Contanti' | 'Bancomat' | 'Altro';
+  volontarioId?: string;
+  sezione?: string;
+  metodoPagamento?: string;
   tipoCarburante?: 'Gasolio / Diesel' | 'Benzina Verde' | 'AdBlue';
+  fotoScontrinoBase64?: string;
+  consumoAnomalo?: boolean;
+  consumoAnomaloNota?: string;
+  creatoDaTurno?: boolean;
+  updatedAt?: number;
   note?: string;
 }
 

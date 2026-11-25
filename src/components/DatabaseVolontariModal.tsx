@@ -218,6 +218,7 @@ export interface Volontario {
   sediTurniAbilitate?: string[]; // Sedi/sezioni autorizzate per visualizzare il tabellone turni (modificabile da centrale)
   sezioneAppartenenzaId?: string; // Sezione territoriale di appartenenza dell'associazione
   sezioneAppartenenzaNome?: string; // Nome della sezione territoriale di appartenenza
+  isDipendente?: boolean; // True se dipendente associativo (può essere nascosto ai volontari nel calendario turni)
 }
 
 export interface DatabaseVolontariModalInitialAction {

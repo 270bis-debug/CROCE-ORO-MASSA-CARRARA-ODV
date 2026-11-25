@@ -361,3 +361,32 @@ body.accesso-web-sfondo-bianco .web-bg-white,
   -webkit-user-drag: none !important;
 }
 
+/* ========================================================================= */
+/* PULIZIA GRAFICA UNIFORME SU SMARTPHONE (ANDROID / iOS)                    */
+/* Previene straripamenti orizzontali, migliora leggibilità tabelle e modal  */
+/* ========================================================================= */
+@media (max-width: 640px) {
+  .overflow-x-auto {
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: thin;
+  }
+
+  table {
+    font-size: 11.5px;
+  }
+
+  table th,
+  table td {
+    padding-left: 0.5rem;
+    padding-right: 0.5rem;
+  }
+
+  input,
+  select,
+  textarea {
+    max-width: 100%;
+    font-size: 14px;
+  }
+}
+
+

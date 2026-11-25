@@ -27,6 +27,15 @@ import { TAGLIE_DISPONIBILI } from '../../data/vestiarioDocumenti';
 import { inviaNotificaModificaAdmin } from '../../utils/notificaModificaAdmin';
 import { useTitoloDatabase, useNomiSottosezioniCustom } from '../../hooks/useNomiDatabase';
 import { getTitoloSottosezione } from '../../constants/macroCategorie';
+import { realtime } from '../../services/realtime';
+import { formatDateTimeItaly } from '../../utils/italianTime';
+import {
+  RichiestaReintegroMagazzino,
+  StatoRichiestaReintegro,
+  REINTEGRO_MAGAZZINO_EVENT,
+  getRichiesteReintegroMagazzino,
+  salvaRichiesteReintegroMagazzino,
+} from '../../utils/reintegroMagazzinoStore';
 
 interface SezioneMagazzinoProps {
   vestiarioMagazzino: ArticoloVestiarioMagazzino[];
@@ -114,6 +123,62 @@ export const SezioneMagazzino: React.FC<SezioneMagazzinoProps> = ({
   const mostraAvviso = (msg: string) => {
     setAvviso(msg);
     setTimeout(() => setAvviso(null), 4000);
+  };
+
+  // Richieste di reintegro generate automaticamente dalle Checklist di Inizio Turno dei Mezzi
+  const [richiesteReintegro, setRichiesteReintegro] = useState<RichiestaReintegroMagazzino[]>(() =>
+    getRichiesteReintegroMagazzino()
+  );
+  const [mostraPannelloReintegri, setMostraPannelloReintegri] = useState(true);
+  const [filtroReintegriChiusi, setFiltroReintegriChiusi] = useState(false);
+
+  useEffect(() => {
+    const refresh = () => setRichiesteReintegro(getRichiesteReintegroMagazzino());
+    window.addEventListener(REINTEGRO_MAGAZZINO_EVENT, refresh);
+    return () => window.removeEventListener(REINTEGRO_MAGAZZINO_EVENT, refresh);
+  }, []);
+
+  const richiesteAperte = richiesteReintegro.filter((r) => r.stato !== 'Reintegrato');
+  const richiesteUrgentiAperte = richiesteAperte.filter((r) => r.priorita === 'Urgente').length;
+
+  const handleAggiornaStatoReintegro = (id: string, nuovoStato: StatoRichiestaReintegro) => {
+    const now = Date.now();
+    const target = richiesteReintegro.find((r) => r.id === id);
+    const aggiornate = richiesteReintegro.map((r) => {
+      if (r.id !== id) return r;
+      return {
+        ...r,
+        stato: nuovoStato,
+        gestitaDa: operatoreCorrente,
+        dataOraChiusura: nuovoStato === 'Reintegrato' ? formatDateTimeItaly() : r.dataOraChiusura,
+        updatedAt: now,
+      };
+    });
+    const saved = salvaRichiesteReintegroMagazzino(aggiornate, now);
+    setRichiesteReintegro(saved.lista);
+    realtime.syncRichiesteReintegroMagazzino(saved.lista, saved.updatedAt);
+
+    if (nuovoStato === 'Reintegrato' && target) {
+      const elencoVoci = target.vociSegnalate.map((v) => v.titolo).join(', ');
+      const nuovoMov: MovimentoMagazzino = {
+        id: `mov-reint-${now}`,
+        data: formatDateTimeItaly(),
+        tipo: 'Scarico / Assegnazione',
+        articoloNome: `Reintegro Checklist ${target.mezzoSigla}: ${elencoVoci.slice(0, 90)}`,
+        quantita: Math.max(1, target.vociSegnalate.length),
+        operatore: operatoreCorrente,
+        destinatarioOOrigine: `${target.mezzoSigla} (Segnalato da ${target.volontarioNome})`,
+        note: `Reintegro completato da segnalazione checklist inizio turno (${target.vociSegnalate.length} voci ripristinate).`,
+      };
+      onAggiornaMovimenti([nuovoMov, ...movimenti]);
+      onNotificaRadio?.(
+        `✅ REINTEGRO MEZZO COMPLETATO: ${target.mezzoSigla} ripristinato dal Magazzino (${operatoreCorrente}).`,
+        'sistema'
+      );
+      mostraAvviso(`Reintegro per ${target.mezzoSigla} segnato come completato e registrato nei movimenti.`);
+    } else if (target) {
+      mostraAvviso(`Richiesta di reintegro per ${target.mezzoSigla} spostata in "${nuovoStato}".`);
+    }
   };
 
   // Salva Articolo Vestiario
@@ -399,6 +464,151 @@ export const SezioneMagazzino: React.FC<SezioneMagazzinoProps> = ({
           >
             Filtra Sottoscorta
           </button>
+        </div>
+      )}
+
+      {/* Pannello Collegamento Diretto Checklist Mezzo -> Magazzino */}
+      {richiesteReintegro.length > 0 && (
+        <div className="bg-slate-900/95 border border-orange-500/40 rounded-2xl overflow-hidden shadow-lg">
+          <div className="px-4 py-3 bg-gradient-to-r from-orange-950/70 via-slate-900 to-slate-900 flex flex-wrap items-center justify-between gap-2 border-b border-orange-500/20">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <div className="p-2 rounded-xl bg-orange-500/20 border border-orange-500/40 shrink-0">
+                <Truck className="w-4 h-4 text-orange-400" />
+              </div>
+              <div className="min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <h3 className="text-xs sm:text-sm font-black text-white uppercase tracking-tight">
+                    Segnalazioni & Reintegri da Checklist Mezzi
+                  </h3>
+                  {richiesteAperte.length > 0 ? (
+                    <span className="px-2 py-0.5 rounded-full bg-orange-500 text-slate-950 font-black text-[10px]">
+                      {richiesteAperte.length} DA EVADERE
+                    </span>
+                  ) : (
+                    <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 font-black text-[10px]">
+                      TUTTO REINTEGRATO
+                    </span>
+                  )}
+                  {richiesteUrgentiAperte > 0 && (
+                    <span className="px-2 py-0.5 rounded-full bg-red-600 text-white font-black text-[10px] animate-pulse">
+                      {richiesteUrgentiAperte} URGENTI
+                    </span>
+                  )}
+                </div>
+                <p className="text-[11px] text-slate-400">
+                  Ogni voce mancante o guasta segnalata in checklist di inizio turno compare automaticamente qui per il reintegro.
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={() => setFiltroReintegriChiusi((v) => !v)}
+                className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-bold uppercase cursor-pointer"
+              >
+                {filtroReintegriChiusi ? 'Solo Aperte' : `Storico (${richiesteReintegro.length})`}
+              </button>
+              <button
+                type="button"
+                onClick={() => setMostraPannelloReintegri((v) => !v)}
+                className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-[10px] font-black uppercase cursor-pointer"
+              >
+                {mostraPannelloReintegri ? 'Comprimi' : 'Espandi'}
+              </button>
+            </div>
+          </div>
+
+          {mostraPannelloReintegri && (
+            <div className="p-3 sm:p-4 space-y-2.5 max-h-80 overflow-y-auto">
+              {(filtroReintegriChiusi ? richiesteReintegro : richiesteAperte).length === 0 ? (
+                <div className="text-center py-4 text-xs text-emerald-300 font-bold">
+                  ✓ Nessuna richiesta di reintegro aperta. Tutti i mezzi sono dotati e conformi.
+                </div>
+              ) : (
+                (filtroReintegriChiusi ? richiesteReintegro : richiesteAperte).map((req) => (
+                  <div
+                    key={req.id}
+                    className={`p-3 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
+                      req.stato === 'Reintegrato'
+                        ? 'bg-emerald-950/20 border-emerald-500/30 opacity-75'
+                        : req.priorita === 'Urgente'
+                        ? 'bg-red-950/25 border-red-500/40'
+                        : 'bg-slate-950/80 border-slate-800'
+                    }`}
+                  >
+                    <div className="space-y-1 min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="px-2 py-0.5 rounded bg-slate-800 text-cyan-300 font-mono font-black text-xs">
+                          🚑 {req.mezzoSigla}
+                        </span>
+                        <span
+                          className={`px-2 py-0.5 rounded text-[10px] font-black uppercase ${
+                            req.stato === 'Reintegrato'
+                              ? 'bg-emerald-500/20 text-emerald-300'
+                              : req.stato === 'In Lavorazione'
+                              ? 'bg-amber-500/20 text-amber-300'
+                              : 'bg-red-500/20 text-red-300'
+                          }`}
+                        >
+                          {req.stato}
+                        </span>
+                        {req.priorita === 'Urgente' && req.stato !== 'Reintegrato' && (
+                          <span className="px-1.5 py-0.5 rounded bg-red-600 text-white text-[9px] font-black uppercase">
+                            URGENTE
+                          </span>
+                        )}
+                        <span className="text-[10px] text-slate-400">
+                          {req.dataOraSegnalazione} • Segnalato da <strong className="text-slate-200">{req.volontarioNome}</strong>
+                        </span>
+                      </div>
+                      <ul className="text-xs text-slate-200 space-y-0.5 pl-1">
+                        {req.vociSegnalate.map((v, idx) => (
+                          <li key={`${req.id}-${idx}`} className="flex items-start gap-1.5">
+                            <span className="text-orange-400 font-bold">•</span>
+                            <span>
+                              <strong className="text-white">{v.titolo}</strong>{' '}
+                              <span className="text-[10px] text-slate-400">[{v.categoria}]</span>
+                              {v.noteKo && <span className="text-amber-300 italic"> — {v.noteKo}</span>}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                      {req.noteGenerali && (
+                        <p className="text-[11px] text-slate-400 italic">Note equipaggio: {req.noteGenerali}</p>
+                      )}
+                      {req.stato === 'Reintegrato' && req.gestitaDa && (
+                        <p className="text-[10px] text-emerald-400">
+                          ✓ Reintegrato da {req.gestitaDa} il {req.dataOraChiusura}
+                        </p>
+                      )}
+                    </div>
+
+                    {req.stato !== 'Reintegrato' && (
+                      <div className="flex items-center gap-1.5 shrink-0 flex-wrap">
+                        {req.stato === 'Da Evadere' && (
+                          <button
+                            type="button"
+                            onClick={() => handleAggiornaStatoReintegro(req.id, 'In Lavorazione')}
+                            className="px-2.5 py-1.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 text-[10px] font-black uppercase cursor-pointer"
+                          >
+                            In Lavorazione
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => handleAggiornaStatoReintegro(req.id, 'Reintegrato')}
+                          className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] font-black uppercase flex items-center gap-1 shadow-md cursor-pointer"
+                        >
+                          <Check className="w-3.5 h-3.5" />
+                          <span>Segna Reintegrato</span>
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                ))
+              )}
+            </div>
+          )}
         </div>
       )}
 

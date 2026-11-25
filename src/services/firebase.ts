@@ -2090,6 +2090,7 @@ export function buildPublicBoardTurni(turni: any[]): any[] {
     if (typeof t.tipoTurnoNome === 'string' && t.tipoTurnoNome.trim()) clean.tipoTurnoNome = t.tipoTurnoNome.trim().slice(0, 120);
     if (typeof t.mezzoAssegnato === 'string' && t.mezzoAssegnato.trim()) clean.mezzoAssegnato = t.mezzoAssegnato.trim().slice(0, 64);
     if (typeof t.checklistObbligatoria === 'boolean') clean.checklistObbligatoria = t.checklistObbligatoria;
+    if (typeof t.visibileInModalitaMonitor === 'boolean') clean.visibileInModalitaMonitor = t.visibileInModalitaMonitor;
     if (typeof t.note === 'string' && t.note.trim()) clean.note = t.note.trim().slice(0, 300);
 
     if (Array.isArray(t.mansioniRichieste) && t.mansioniRichieste.length > 0) {
@@ -2724,3 +2725,308 @@ export async function readPublicRaspberryBoardFromServer(): Promise<{
     }
   }
 }
+
+// ============================================================================
+// PUBLIC COURSE CARDS & WRITE-ONLY EXTERNAL GUEST CHECK-INS (AULA DIDATTICA)
+// ============================================================================
+export interface PublicCourseLezioneDoc {
+  id: string;
+  data: string;
+  orarioInizio: string;
+  orarioFine: string;
+  argomento: string;
+  aulaNome?: string;
+  aulaIndirizzo?: string;
+  coordinate?: { lat: number; lng: number };
+  raggioMetri?: number;
+}
+
+export interface PublicCourseDoc {
+  tokenId: string;
+  corsoId: string;
+  titolo: string;
+  categoria: string;
+  dataInizio: string;
+  dataFine: string;
+  oreTotaliRichieste: number;
+  aulaNome: string;
+  aulaIndirizzo: string;
+  coordinate: { lat: number; lng: number };
+  raggioMetri: number;
+  lezioni: PublicCourseLezioneDoc[];
+  attivo: boolean;
+  updatedByUid?: string;
+  createdAt?: any;
+  updatedAt?: any;
+}
+
+export interface CourseGuestCheckinRecord {
+  checkinId: string;
+  scope: 'croce_oro_course_guest';
+  tokenId: string;
+  corsoId: string;
+  lezioneId: string;
+  nome: string;
+  cognome: string;
+  telefono: string;
+  tipo: 'entrata' | 'uscita';
+  dataOra: string;
+  aulaNome: string;
+  distanzaMetri: number;
+  status: 'pending' | 'applied';
+  createdAt?: any;
+  updatedAt?: any;
+}
+
+export async function publishPublicCourseFirestore(payload: Omit<PublicCourseDoc, 'updatedByUid' | 'createdAt' | 'updatedAt'>): Promise<boolean> {
+  const user = auth.currentUser;
+  if (!user || !user.emailVerified) return false;
+  const tokenId = String(payload.tokenId || '').trim();
+  if (!/^crs-[a-zA-Z0-9_\-]{6,92}$/.test(tokenId)) return false;
+
+  const docRef = doc(db, 'public_courses', tokenId);
+  const cleanLezioni: PublicCourseLezioneDoc[] = Array.isArray(payload.lezioni)
+    ? payload.lezioni.slice(0, 40).map((l) => ({
+        id: String(l?.id || '').slice(0, 80),
+        data: String(l?.data || '').slice(0, 20),
+        orarioInizio: String(l?.orarioInizio || '').slice(0, 12),
+        orarioFine: String(l?.orarioFine || '').slice(0, 12),
+        argomento: String(l?.argomento || '').slice(0, 160),
+        ...(l?.aulaNome ? { aulaNome: String(l.aulaNome).slice(0, 140) } : {}),
+        ...(l?.aulaIndirizzo ? { aulaIndirizzo: String(l.aulaIndirizzo).slice(0, 200) } : {}),
+        ...(l?.coordinate && Number.isFinite(Number(l.coordinate.lat)) && Number.isFinite(Number(l.coordinate.lng))
+          ? { coordinate: { lat: Number(l.coordinate.lat), lng: Number(l.coordinate.lng) } }
+          : {}),
+        ...(typeof l?.raggioMetri === 'number' && Number.isFinite(l.raggioMetri)
+          ? { raggioMetri: Math.max(10, Math.min(2000, Math.round(l.raggioMetri))) }
+          : {}),
+      }))
+    : [];
+
+  const cleanDoc = {
+    tokenId,
+    corsoId: String(payload.corsoId || '').trim().slice(0, 128),
+    titolo: String(payload.titolo || 'Corso di Formazione').trim().slice(0, 180),
+    categoria: String(payload.categoria || 'Formazione').trim().slice(0, 80),
+    dataInizio: String(payload.dataInizio || '2026-01-01').trim().slice(0, 24),
+    dataFine: String(payload.dataFine || '').trim().slice(0, 24),
+    oreTotaliRichieste: Math.max(0, Math.min(2000, Number(payload.oreTotaliRichieste) || 0)),
+    aulaNome: String(payload.aulaNome || 'Aula Didattica').trim().slice(0, 160),
+    aulaIndirizzo: String(payload.aulaIndirizzo || '').trim().slice(0, 220),
+    coordinate: {
+      lat: Number(payload.coordinate?.lat) || 44.0361,
+      lng: Number(payload.coordinate?.lng) || 10.1415,
+    },
+    raggioMetri: Math.max(10, Math.min(2000, Math.round(Number(payload.raggioMetri) || 120))),
+    lezioni: sanitizeForFirestore(cleanLezioni),
+    attivo: Boolean(payload.attivo),
+    updatedByUid: user.uid,
+  };
+
+  try {
+    const snap = await getDoc(docRef);
+    if (!snap.exists()) {
+      await setDoc(docRef, {
+        ...cleanDoc,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+    } else {
+      await updateDoc(docRef, {
+        ...cleanDoc,
+        updatedAt: serverTimestamp(),
+      });
+    }
+    return true;
+  } catch (err) {
+    try {
+      handleFirestoreError(err, OperationType.WRITE, `public_courses/${tokenId}`);
+    } catch {
+      return false;
+    }
+    return false;
+  }
+}
+
+async function readPublicCourseViaRest(tokenId: string): Promise<{
+  exists: boolean;
+  data: PublicCourseDoc | null;
+  status: 'ok' | 'not_found' | 'error';
+}> {
+  const cleanToken = String(tokenId || '').trim();
+  if (!/^crs-[a-zA-Z0-9_\-]{6,92}$/.test(cleanToken)) {
+    return { exists: false, data: null, status: 'not_found' };
+  }
+  const url = `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(
+    firebaseConfig.projectId
+  )}/databases/${encodeURIComponent(
+    firebaseConfig.firestoreDatabaseId
+  )}/documents/public_courses/${encodeURIComponent(cleanToken)}?key=${encodeURIComponent(
+    firebaseConfig.apiKey
+  )}`;
+
+  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const timeoutId = controller ? setTimeout(() => controller.abort(), 8000) : null;
+  try {
+    const res = await fetch(url, {
+      method: 'GET',
+      cache: 'no-store',
+      signal: controller ? controller.signal : undefined,
+    });
+    if (timeoutId) clearTimeout(timeoutId);
+    if (res.status === 404) return { exists: false, data: null, status: 'not_found' };
+    if (!res.ok) return { exists: false, data: null, status: 'error' };
+    const json = await res.json();
+    const decoded = decodeFirestoreRestValue({ mapValue: { fields: json?.fields || {} } });
+    if (!decoded) return { exists: false, data: null, status: 'not_found' };
+    return {
+      exists: true,
+      data: {
+        tokenId: String(decoded.tokenId || cleanToken),
+        corsoId: String(decoded.corsoId || ''),
+        titolo: String(decoded.titolo || ''),
+        categoria: String(decoded.categoria || 'Formazione'),
+        dataInizio: String(decoded.dataInizio || ''),
+        dataFine: String(decoded.dataFine || ''),
+        oreTotaliRichieste: Number(decoded.oreTotaliRichieste) || 0,
+        aulaNome: String(decoded.aulaNome || 'Aula Didattica'),
+        aulaIndirizzo: String(decoded.aulaIndirizzo || ''),
+        coordinate: {
+          lat: Number(decoded.coordinate?.lat) || 44.0361,
+          lng: Number(decoded.coordinate?.lng) || 10.1415,
+        },
+        raggioMetri: Number(decoded.raggioMetri) || 120,
+        lezioni: Array.isArray(decoded.lezioni) ? decoded.lezioni : [],
+        attivo: Boolean(decoded.attivo),
+      },
+      status: 'ok',
+    };
+  } catch {
+    if (timeoutId) clearTimeout(timeoutId);
+    return { exists: false, data: null, status: 'error' };
+  }
+}
+
+export async function readPublicCourseFromServer(tokenId: string): Promise<{
+  exists: boolean;
+  data: PublicCourseDoc | null;
+  status: 'ok' | 'not_found' | 'error';
+}> {
+  const restRes = await readPublicCourseViaRest(tokenId);
+  if (restRes.status === 'ok' || restRes.status === 'not_found') {
+    return restRes;
+  }
+  const cleanToken = String(tokenId || '').trim();
+  try {
+    const snap = await getDocFromServer(doc(db, 'public_courses', cleanToken));
+    return {
+      exists: snap.exists(),
+      data: snap.exists() ? (snap.data() as PublicCourseDoc) : null,
+      status: snap.exists() ? 'ok' : 'not_found',
+    };
+  } catch {
+    try {
+      const snap = await getDoc(doc(db, 'public_courses', cleanToken));
+      return {
+        exists: snap.exists(),
+        data: snap.exists() ? (snap.data() as PublicCourseDoc) : null,
+        status: snap.exists() ? 'ok' : 'not_found',
+      };
+    } catch {
+      return { exists: false, data: null, status: 'error' };
+    }
+  }
+}
+
+export async function submitCourseGuestCheckinFirestore(input: {
+  tokenId: string;
+  corsoId: string;
+  lezioneId?: string;
+  nome: string;
+  cognome: string;
+  telefono: string;
+  tipo: 'entrata' | 'uscita';
+  dataOra: string;
+  aulaNome: string;
+  distanzaMetri: number;
+}): Promise<{ ok: boolean; checkinId?: string; error?: string }> {
+  const tokenId = String(input.tokenId || '').trim();
+  const corsoId = String(input.corsoId || '').trim().slice(0, 128);
+  const nome = String(input.nome || '').trim().slice(0, 80);
+  const cognome = String(input.cognome || '').trim().slice(0, 80);
+  const telefono = String(input.telefono || '').trim().slice(0, 32);
+  if (!/^crs-[a-zA-Z0-9_\-]{6,92}$/.test(tokenId) || !corsoId || !nome || !cognome || telefono.length < 5) {
+    return { ok: false, error: 'Dati di timbratura non validi o incompleti.' };
+  }
+
+  const checkinId = `chk-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const docRef = doc(db, 'course_guest_checkins', checkinId);
+  const record = {
+    checkinId,
+    scope: 'croce_oro_course_guest' as const,
+    tokenId,
+    corsoId,
+    lezioneId: String(input.lezioneId || '').trim().slice(0, 128),
+    nome,
+    cognome,
+    telefono,
+    tipo: input.tipo === 'uscita' ? 'uscita' : 'entrata',
+    dataOra: String(input.dataOra || '').trim().slice(0, 40),
+    aulaNome: String(input.aulaNome || 'Aula Didattica').trim().slice(0, 160),
+    distanzaMetri: Math.max(0, Math.min(50000, Math.round(Number(input.distanzaMetri) || 0))),
+    status: 'pending' as const,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  };
+
+  try {
+    await setDoc(docRef, record);
+    return { ok: true, checkinId };
+  } catch (err: any) {
+    return { ok: false, error: err?.message || 'Errore salvataggio timbratura su cloud.' };
+  }
+}
+
+export function listenPendingCourseGuestCheckinsFirestore(
+  onItems: (items: CourseGuestCheckinRecord[]) => void,
+  onError?: (err: Error) => void
+): Unsubscribe {
+  const q = query(
+    collection(db, 'course_guest_checkins'),
+    where('scope', '==', 'croce_oro_course_guest')
+  );
+  return onSnapshot(
+    q,
+    (snapshot) => {
+      const items: CourseGuestCheckinRecord[] = [];
+      snapshot.forEach((docSnap) => {
+        const d = docSnap.data() as CourseGuestCheckinRecord;
+        if (d && d.status === 'pending') {
+          items.push(d);
+        }
+      });
+      onItems(items);
+    },
+    (error) => {
+      try {
+        handleFirestoreError(error, OperationType.LIST, 'course_guest_checkins');
+      } catch (wrapped: any) {
+        onError?.(wrapped);
+      }
+    }
+  );
+}
+
+export async function markCourseGuestCheckinAppliedFirestore(checkinId: string): Promise<void> {
+  const cleanId = String(checkinId || '').trim();
+  if (!/^chk-[a-zA-Z0-9_\-]+$/.test(cleanId)) return;
+  try {
+    await updateDoc(doc(db, 'course_guest_checkins', cleanId), {
+      status: 'applied',
+      updatedAt: serverTimestamp(),
+    });
+  } catch {
+    // Non bloccare l'UI se il record è già stato applicato da un altro terminale
+  }
+}
+

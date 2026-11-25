@@ -26,6 +26,20 @@ service cloud.firestore {
         signupId.matches('^cand-[a-zA-Z0-9_\\-]+$');
     }
 
+    function isValidCourseTokenId(tokenId) {
+      return tokenId is string &&
+        tokenId.size() >= 10 &&
+        tokenId.size() <= 96 &&
+        tokenId.matches('^crs-[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidCourseGuestCheckinId(checkinId) {
+      return checkinId is string &&
+        checkinId.size() >= 8 &&
+        checkinId.size() <= 96 &&
+        checkinId.matches('^chk-[a-zA-Z0-9_\\-]+$');
+    }
+
     function incoming() {
       return request.resource.data;
     }
@@ -617,6 +631,163 @@ service cloud.firestore {
         data.updatedAt == request.time;
     }
 
+    function isValidPublicCourseData(data, tokenId) {
+      return data.keys().hasAll([
+          'tokenId',
+          'corsoId',
+          'titolo',
+          'categoria',
+          'dataInizio',
+          'dataFine',
+          'oreTotaliRichieste',
+          'aulaNome',
+          'aulaIndirizzo',
+          'coordinate',
+          'raggioMetri',
+          'lezioni',
+          'attivo',
+          'updatedByUid',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'tokenId',
+          'corsoId',
+          'titolo',
+          'categoria',
+          'dataInizio',
+          'dataFine',
+          'oreTotaliRichieste',
+          'aulaNome',
+          'aulaIndirizzo',
+          'coordinate',
+          'raggioMetri',
+          'lezioni',
+          'attivo',
+          'updatedByUid',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.tokenId is string &&
+        data.tokenId == tokenId &&
+        isValidCourseTokenId(data.tokenId) &&
+        data.corsoId is string &&
+        data.corsoId.size() >= 1 &&
+        data.corsoId.size() <= 128 &&
+        data.titolo is string &&
+        data.titolo.size() >= 1 &&
+        data.titolo.size() <= 180 &&
+        data.categoria is string &&
+        data.categoria.size() >= 1 &&
+        data.categoria.size() <= 80 &&
+        data.dataInizio is string &&
+        data.dataInizio.size() >= 4 &&
+        data.dataInizio.size() <= 24 &&
+        data.dataFine is string &&
+        data.dataFine.size() <= 24 &&
+        data.oreTotaliRichieste is number &&
+        data.oreTotaliRichieste >= 0 &&
+        data.oreTotaliRichieste <= 2000 &&
+        data.aulaNome is string &&
+        data.aulaNome.size() >= 1 &&
+        data.aulaNome.size() <= 160 &&
+        data.aulaIndirizzo is string &&
+        data.aulaIndirizzo.size() <= 220 &&
+        data.coordinate is map &&
+        data.coordinate.keys().hasAll(['lat', 'lng']) &&
+        data.coordinate.keys().hasOnly(['lat', 'lng']) &&
+        data.coordinate.lat is number &&
+        data.coordinate.lng is number &&
+        data.raggioMetri is number &&
+        data.raggioMetri >= 10 &&
+        data.raggioMetri <= 2000 &&
+        data.lezioni is list &&
+        data.lezioni.size() <= 40 &&
+        (data.lezioni.size() == 0 || data.lezioni[0] is map) &&
+        data.attivo is bool &&
+        data.updatedByUid is string &&
+        data.updatedByUid == request.auth.uid &&
+        isValidId(data.updatedByUid) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp &&
+        data.updatedAt == request.time;
+    }
+
+    function isValidCourseGuestCheckinData(data, checkinId) {
+      return data.keys().hasAll([
+          'checkinId',
+          'scope',
+          'tokenId',
+          'corsoId',
+          'lezioneId',
+          'nome',
+          'cognome',
+          'telefono',
+          'tipo',
+          'dataOra',
+          'aulaNome',
+          'distanzaMetri',
+          'status',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'checkinId',
+          'scope',
+          'tokenId',
+          'corsoId',
+          'lezioneId',
+          'nome',
+          'cognome',
+          'telefono',
+          'tipo',
+          'dataOra',
+          'aulaNome',
+          'distanzaMetri',
+          'status',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.checkinId is string &&
+        data.checkinId == checkinId &&
+        isValidCourseGuestCheckinId(data.checkinId) &&
+        data.scope is string &&
+        data.scope == 'croce_oro_course_guest' &&
+        data.scope.size() == 22 &&
+        data.tokenId is string &&
+        isValidCourseTokenId(data.tokenId) &&
+        data.corsoId is string &&
+        data.corsoId.size() >= 1 &&
+        data.corsoId.size() <= 128 &&
+        data.lezioneId is string &&
+        data.lezioneId.size() <= 128 &&
+        data.nome is string &&
+        data.nome.size() >= 1 &&
+        data.nome.size() <= 80 &&
+        data.cognome is string &&
+        data.cognome.size() >= 1 &&
+        data.cognome.size() <= 80 &&
+        data.telefono is string &&
+        data.telefono.size() >= 5 &&
+        data.telefono.size() <= 32 &&
+        data.tipo is string &&
+        data.tipo in ['entrata', 'uscita'] &&
+        data.dataOra is string &&
+        data.dataOra.size() >= 8 &&
+        data.dataOra.size() <= 40 &&
+        data.aulaNome is string &&
+        data.aulaNome.size() >= 1 &&
+        data.aulaNome.size() <= 160 &&
+        data.distanzaMetri is number &&
+        data.distanzaMetri >= 0 &&
+        data.distanzaMetri <= 50000 &&
+        data.status is string &&
+        data.status in ['pending', 'applied'] &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp &&
+        data.updatedAt == request.time;
+    }
+
     // 4. Sharded Live Cloud State Collection
     match /sync_shards/{shardId} {
       allow get: if isValidId(shardId) && isAllowedShardId(shardId) && isOperator();
@@ -943,7 +1114,46 @@ service cloud.firestore {
       allow delete: if isValidId(boardId) && boardId == 'display_v1' && isAdmin();
     }
 
-    // 16. Boot Health Check Doc (no PII)
+    // 16. Zero-PII Public Course Descriptor (Token-Gated by crs-* ID, Zero List Queries)
+    match /public_courses/{tokenId} {
+      allow get: if isValidCourseTokenId(tokenId);
+      allow list: if false;
+      allow create: if isValidCourseTokenId(tokenId) &&
+        isOperator() &&
+        isValidPublicCourseData(incoming(), tokenId) &&
+        incoming().createdAt == request.time;
+      allow update: if isValidCourseTokenId(tokenId) &&
+        isOperator() &&
+        isValidPublicCourseData(incoming(), tokenId) &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().tokenId == existing().tokenId;
+      allow delete: if isValidCourseTokenId(tokenId) && isOperator();
+    }
+
+    // 17. Write-Only External Guest Course Check-Ins (Zero Public Reads to Protect Guest Phone/Name PII)
+    match /course_guest_checkins/{checkinId} {
+      allow get: if isValidCourseGuestCheckinId(checkinId) && isOperator();
+      allow list: if isOperator() && resource.data.scope == 'croce_oro_course_guest';
+      allow create: if isValidCourseGuestCheckinId(checkinId) &&
+        isValidCourseGuestCheckinData(incoming(), checkinId) &&
+        incoming().status == 'pending' &&
+        incoming().createdAt == request.time &&
+        exists(/databases/$(database)/documents/public_courses/$(incoming().tokenId)) &&
+        get(/databases/$(database)/documents/public_courses/$(incoming().tokenId)).data.attivo == true &&
+        get(/databases/$(database)/documents/public_courses/$(incoming().tokenId)).data.corsoId == incoming().corsoId;
+      allow update: if isValidCourseGuestCheckinId(checkinId) &&
+        isOperator() &&
+        isValidCourseGuestCheckinData(incoming(), checkinId) &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().checkinId == existing().checkinId &&
+        incoming().scope == existing().scope &&
+        incoming().tokenId == existing().tokenId &&
+        incoming().corsoId == existing().corsoId &&
+        incoming().status in ['pending', 'applied'];
+      allow delete: if isValidCourseGuestCheckinId(checkinId) && isOperator();
+    }
+
+    // 18. Boot Health Check Doc (no PII)
     match /test/{docId} {
       allow get: if isValidId(docId) && docId == 'connection' && isOperator();
       allow list, write: if false;

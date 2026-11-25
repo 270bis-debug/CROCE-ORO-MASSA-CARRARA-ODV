@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback, lazy, Suspense } from 'react';
 import {
   Shield,
   Phone,
@@ -80,13 +80,62 @@ import {
   Tv,
   Smartphone,
   UserCheck,
-  ExternalLink
+  ExternalLink,
+  ShieldCheck,
+  WifiOff,
+  CloudUpload,
+  Fuel,
+  Vote,
+  Library
 } from 'lucide-react';
 import { ModalAccessoWeb } from './components/ModalAccessoWeb';
 import { ModalProfiloAccount } from './components/ModalProfiloAccount';
 import { SimulatoreDispositivoMobile } from './components/SimulatoreDispositivoMobile';
-import { ModalGestioneDisplayRaspberry } from './components/ModalGestioneDisplayRaspberry';
-import { VistaDedicataRaspberrySenzaLogin } from './components/VistaDedicataRaspberrySenzaLogin';
+const ModalGestioneDisplayRaspberry = lazy(() =>
+  import('./components/ModalGestioneDisplayRaspberry').then(m => ({ default: m.ModalGestioneDisplayRaspberry }))
+);
+const VistaDedicataRaspberrySenzaLogin = lazy(() =>
+  import('./components/VistaDedicataRaspberrySenzaLogin').then(m => ({ default: m.VistaDedicataRaspberrySenzaLogin }))
+);
+const VistaTimbraturaCorsoEsterno = lazy(() =>
+  import('./components/VistaTimbraturaCorsoEsterno').then(m => ({ default: m.VistaTimbraturaCorsoEsterno }))
+);
+const ModalCentroDirettivoOdv = lazy(() =>
+  import('./components/admin/ModalCentroDirettivoOdv').then(m => ({ default: m.ModalCentroDirettivoOdv }))
+);
+const ModalRifornimentoRapidoTurno = lazy(() =>
+  import('./components/ModalRifornimentoRapidoTurno').then(m => ({ default: m.ModalRifornimentoRapidoTurno }))
+);
+const ModalSegnalazioneGuastoMezzo = lazy(() =>
+  import('./components/ModalSegnalazioneGuastoMezzo').then(m => ({ default: m.ModalSegnalazioneGuastoMezzo }))
+);
+const ModalArchivioDocumentiSop = lazy(() =>
+  import('./components/ModalArchivioDocumentiSop').then(m => ({ default: m.ModalArchivioDocumentiSop }))
+);
+const ModalAssembleeSondaggiVolontario = lazy(() =>
+  import('./components/ModalAssembleeSondaggiVolontario').then(m => ({ default: m.ModalAssembleeSondaggiVolontario }))
+);
+import type { BackupPreviewInfo, TabCentroDirettivo } from './components/admin/ModalCentroDirettivoOdv';
+import {
+  AreaAuditLog,
+  creaERegistraEventoAudit,
+  getAuditLogEntries,
+  salvaAuditLogEntries,
+} from './utils/auditLogStore';
+import {
+  creaRichiestaReintegroDaChecklist,
+  getRichiesteReintegroMagazzino,
+  salvaRichiesteReintegroMagazzino,
+} from './utils/reintegroMagazzinoStore';
+import {
+  TurnoScopertoAlert,
+  analizzaTurniScopertiProssime48h,
+} from './utils/turniScopertiNotifier';
+import {
+  getDelibereSociOdv,
+  getVerbaliOrganiSociali,
+  salvaLibriSocialiOdv,
+} from './utils/libriSocialiOdv';
 import {
   RaspberryDisplayConfig,
   applicaAutoChiusuraNfc24hSuLista,
@@ -95,6 +144,21 @@ import {
   sanitizeRaspberryDisplayConfig,
   saveRaspberryDisplayConfigLocal,
 } from './utils/raspberryDisplayConfig';
+import {
+  isDedicatedExternalCourseUrl,
+  getExternalCourseTokenFromUrl,
+  applicaTimbraturaEsternoSuCorsi,
+  getAuleFormazioneCatalogo,
+} from './utils/auleFormazione';
+import {
+  getScadenzeFiscaliOdv,
+  getConfigScadenzeFiscaliOdv,
+  salvaScadenzeFiscaliOdv,
+  calcolaGiorniAllaScadenza,
+  risolviDestinatariScadenzeFiscali,
+  inviaEmailPromemoriaScadenzaFiscale,
+  isUtenteTesoriereOAdmin,
+} from './utils/scadenzeFiscaliOdv';
 import {
   SimulatedDevicePlatform,
   SimulatedDisplayMode,
@@ -105,7 +169,9 @@ import {
   setRuntimeSimulatedDevice
 } from './utils/deviceSimulation';
 import { PasskeyRecord, getNotificationEmailForVolontario } from './utils/passkeyAuth';
-import { ModalSyncServerCroceOro } from './components/admin/ModalSyncServerCroceOro';
+const ModalSyncServerCroceOro = lazy(() =>
+  import('./components/admin/ModalSyncServerCroceOro').then(m => ({ default: m.ModalSyncServerCroceOro }))
+);
 import { ModalRinominaDbSub } from './components/admin/ModalRinominaDbSub';
 import { ModalModificaFoglioViaggio } from './components/ModalModificaFoglioViaggio';
 import {
@@ -120,7 +186,9 @@ import { CroceOroLogo } from './components/CroceOroLogo';
 import { STRUTTURE_VETERINARIE, StrutturaVeterinaria } from './data/struttureVeterinarie';
 import { SEDI_CROCE_ORO, SedeCroceOro } from './data/sediCroceOro';
 import { MappaOperativa, PosizioneGPS } from './components/MappaOperativa';
-import { VistaCittadinoLiveTracking } from './components/VistaCittadinoLiveTracking';
+const VistaCittadinoLiveTracking = lazy(() =>
+  import('./components/VistaCittadinoLiveTracking').then(m => ({ default: m.VistaCittadinoLiveTracking }))
+);
 import { DatabaseVolontariModal, Volontario } from './components/DatabaseVolontariModal';
 import { mergeVolontariListsSafe, mergeLoggedSessionsSafe, LoggedSessionEntry, normalizeDeletedIds } from './utils/volontariMerge';
 import { buildPinResetHash } from './utils/hashReset';
@@ -144,7 +212,9 @@ import {
 import { TabelloneTurniSettimanale } from './components/TabelloneTurniSettimanale';
 import { SchermataSceltaRuolo } from './components/SchermataSceltaRuolo';
 import { SchermataAccountInAttivazione } from './components/SchermataAccountInAttivazione';
-import { PaginaWebResetPinStandalone } from './components/PaginaWebResetPinStandalone';
+const PaginaWebResetPinStandalone = lazy(() =>
+  import('./components/PaginaWebResetPinStandalone').then(m => ({ default: m.PaginaWebResetPinStandalone }))
+);
 import { isAccessoDaWeb } from './utils/accessoWeb';
 import { ModalSetupPermessiIniziali } from './components/ModalSetupPermessiIniziali';
 import { PWAInstallButton } from './components/PWAInstallButton';
@@ -157,7 +227,9 @@ import {
   richiedeAdeguamentoLogin,
   RisultatoObbligoFirmaEPin
 } from './components/ModalObbligoFirmaEPin';
-import { ModalAnteprimaMultipla } from './components/ModalAnteprimaMultipla';
+const ModalAnteprimaMultipla = lazy(() =>
+  import('./components/ModalAnteprimaMultipla').then(m => ({ default: m.ModalAnteprimaMultipla }))
+);
 import { attivaServiceWorkerEPush, getPushSubscriptionStatus, inviaTestPushRadioLocale, isRunningInEmbeddedIframe, mostraNotificaNativa } from './services/pushManager';
 import { soundEngine } from './services/soundEngine';
 import { vhfRadioEngine } from './services/vhfRadioEngine';
@@ -231,22 +303,51 @@ import {
   getTipiTurnoCatalogo,
   applicaTipiTurnoDaSync,
   aggiornaTurniDopoModificaMansione,
+  getRegoleStrumentiPerTurno,
+  inviaNotificaStrumentiTurniEmail,
 } from './utils/tipiTurno';
 import {
   applicaCustomEmojiIconsDaSync,
   getCustomEmojiIcons,
 } from './utils/emojiIconsArchive';
 import { AdminTopNavbar } from './components/admin/AdminTopNavbar';
-import { SezioneVolontari } from './components/admin/SezioneVolontari';
-import { SezioneMezzi } from './components/admin/SezioneMezzi';
-import { SezioneContabilita } from './components/admin/SezioneContabilita';
-import { SezioneFormazione } from './components/admin/SezioneFormazione';
-import { SezioneMagazzino } from './components/admin/SezioneMagazzino';
-import { SezioneSedi } from './components/admin/SezioneSedi';
-import { SezioneTurni } from './components/admin/SezioneTurni';
-import { SezioneBacheca } from './components/admin/SezioneBacheca';
-import { SezioneContatti } from './components/admin/SezioneContatti';
-import { GiornaleBordoCentrale } from './components/admin/GiornaleBordoCentrale';
+const SezioneVolontari = lazy(() =>
+  import('./components/admin/SezioneVolontari').then(m => ({ default: m.SezioneVolontari }))
+);
+const SezioneMezzi = lazy(() =>
+  import('./components/admin/SezioneMezzi').then(m => ({ default: m.SezioneMezzi }))
+);
+const SezioneContabilita = lazy(() =>
+  import('./components/admin/SezioneContabilita').then(m => ({ default: m.SezioneContabilita }))
+);
+const SezioneFormazione = lazy(() =>
+  import('./components/admin/SezioneFormazione').then(m => ({ default: m.SezioneFormazione }))
+);
+const SezioneMagazzino = lazy(() =>
+  import('./components/admin/SezioneMagazzino').then(m => ({ default: m.SezioneMagazzino }))
+);
+const SezioneSedi = lazy(() =>
+  import('./components/admin/SezioneSedi').then(m => ({ default: m.SezioneSedi }))
+);
+const SezioneTurni = lazy(() =>
+  import('./components/admin/SezioneTurni').then(m => ({ default: m.SezioneTurni }))
+);
+const SezioneBacheca = lazy(() =>
+  import('./components/admin/SezioneBacheca').then(m => ({ default: m.SezioneBacheca }))
+);
+const SezioneContatti = lazy(() =>
+  import('./components/admin/SezioneContatti').then(m => ({ default: m.SezioneContatti }))
+);
+const GiornaleBordoCentrale = lazy(() =>
+  import('./components/admin/GiornaleBordoCentrale').then(m => ({ default: m.GiornaleBordoCentrale }))
+);
+
+const LazyViewFallback: React.FC<{ label?: string }> = ({ label = 'Caricamento modulo...' }) => (
+  <div className="w-full py-12 flex flex-col items-center justify-center gap-3 text-slate-300">
+    <div className="w-8 h-8 rounded-full border-2 border-amber-400 border-t-transparent animate-spin" />
+    <span className="text-xs font-bold uppercase tracking-wider text-slate-400">{label}</span>
+  </div>
+);
 import { ModalBachecaVolontario } from './components/ModalBachecaVolontario';
 import { ModalCentroNotifiche } from './components/ModalCentroNotifiche';
 import { ModalNuovoServizioAutonomo, DatiNuovoServizioAutonomo } from './components/ModalNuovoServizioAutonomo';
@@ -294,6 +395,8 @@ import {
   VoceCostoGestione,
   SollecitoFirmaPinCampaign
 } from './types/adminTypes';
+import { RifornimentoCarburante } from './types/consumiTypes';
+import { creaVoceCostoGestioneDaRifornimento } from './utils/rifornimentiStore';
 import { CONTATTI_INIZIALI } from './data/contattiMockData';
 import {
   TIMBRATURE_INIZIALI,
@@ -1103,7 +1206,11 @@ export default function App() {
   }, []);
 
   if (isDedicatedResetPage) {
-    return <PaginaWebResetPinStandalone />;
+    return (
+      <Suspense fallback={<LazyViewFallback label="Caricamento recupero PIN..." />}>
+        <PaginaWebResetPinStandalone />
+      </Suspense>
+    );
   }
 
   // Se l'utente sta accedendo tramite il link di tracciamento live inviato via WhatsApp (o SMS)
@@ -1122,7 +1229,11 @@ export default function App() {
   }, []);
 
   if (isDedicatedLiveTrackingPage) {
-    return <VistaCittadinoLiveTracking />;
+    return (
+      <Suspense fallback={<LazyViewFallback label="Caricamento tracciamento live..." />}>
+        <VistaCittadinoLiveTracking />
+      </Suspense>
+    );
   }
 
   // Link dedicato Modalità Monitor (senza login obbligatorio), distinto dal Tabellone Turni aperto da account loggato
@@ -1146,6 +1257,10 @@ export default function App() {
 
   // Link dedicato Display Raspberry di Sezione (senza login obbligatorio — /?view=raspberry&sede=...)
   const isDedicatedRaspberryPage = useMemo(() => isDedicatedRaspberryUrl(), []);
+
+  // Link dedicato Timbratura Corso per Esterni senza account (/?view=timbratura-corso&token=...)
+  const isDedicatedExternalCoursePage = useMemo(() => isDedicatedExternalCourseUrl(), []);
+  const externalCourseToken = useMemo(() => getExternalCourseTokenFromUrl(), []);
 
   const isWeb = isAccessoDaWeb();
   const isInFrameSimulazioneDispositivo = useMemo(() => isInsideDeviceSimulationFrame(), []);
@@ -1593,6 +1708,47 @@ export default function App() {
       return agg;
     });
     realtime.submitChecklistCompilata(checklist);
+
+    // Collegamento automatico Checklist Mezzo -> Magazzino per voci non conformi / mancanti / guaste
+    const richiestaReintegro = creaRichiestaReintegroDaChecklist(checklist);
+    if (richiestaReintegro) {
+      const tutte = getRichiesteReintegroMagazzino();
+      realtime.syncRichiesteReintegroMagazzino(tutte, Date.now());
+      const elencoVoci = richiestaReintegro.vociSegnalate.map((v) => v.titolo).join(', ');
+      const emailsDest = (volontariRef.current || [])
+        .filter((v) => {
+          if (!v || v.approvato === false) return false;
+          const r = `${v.caricaConsiglioDirettivo || ''} ${v.qualifica || ''}`.toLowerCase();
+          return Boolean(
+            v.profiloCentrale ||
+              r.includes('presidente') ||
+              r.includes('magazzin') ||
+              v.macroCategorieAbilitate?.includes('magazzino')
+          );
+        })
+        .map((v) => (v.emailNotifiche || v.email || '').trim())
+        .filter((e) => e.includes('@'));
+
+      if (!realtime.isServerlessStatic()) {
+        fetch(`${realtime.getApiBaseUrl()}/api/notifica-reintegro-magazzino`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            richiesta: richiestaReintegro,
+            destinatariEmails: emailsDest,
+          }),
+        }).catch(() => {});
+      }
+
+      const auditRes = creaERegistraEventoAudit({
+        operatore: checklist.volontarioNome || 'Equipaggio',
+        area: 'magazzino',
+        azione: `Richiesta Reintegro Automatica (${checklist.mezzoSigla})`,
+        dettaglio: `${richiestaReintegro.vociSegnalate.length} voci non conformi in checklist: ${elencoVoci.slice(0, 200)}`,
+        criticita: richiestaReintegro.priorita === 'Urgente' ? 'critico' : 'importante',
+      });
+      realtime.syncAuditLog(auditRes.lista);
+    }
   };
 
   // 5. Tessere Associative
@@ -1682,6 +1838,38 @@ export default function App() {
       localStorage.setItem('CROCE_ORO_COSTI_GESTIONE', JSON.stringify(nuovi));
     } catch {}
     realtime.syncCostiGestione(nuovi);
+  };
+
+  // Collegamento automatico Rifornimento Carburante -> Costi di Gestione (Contabilità)
+  const handleRegistraRifornimentoInContabilita = (rifornimento: RifornimentoCarburante) => {
+    if (!rifornimento || !rifornimento.id || Number(rifornimento.costoTotale) <= 0) return;
+    const voce = creaVoceCostoGestioneDaRifornimento(rifornimento);
+    setCostiGestione((prev) => {
+      const esiste = prev.some((v) => v.rifornimentoId === rifornimento.id || v.id === voce.id);
+      const aggiornati = esiste
+        ? prev.map((v) => (v.rifornimentoId === rifornimento.id || v.id === voce.id ? voce : v))
+        : [voce, ...prev];
+      try {
+        localStorage.setItem('CROCE_ORO_COSTI_GESTIONE', JSON.stringify(aggiornati));
+      } catch {}
+      realtime.syncCostiGestione(aggiornati);
+      return aggiornati;
+    });
+  };
+
+  const handleRimuoviRifornimentoDaContabilita = (rifornimentoId: string) => {
+    if (!rifornimentoId) return;
+    setCostiGestione((prev) => {
+      const filtrati = prev.filter(
+        (v) => v.rifornimentoId !== rifornimentoId && v.id !== `cgest-rif-${rifornimentoId}`
+      );
+      if (filtrati.length === prev.length) return prev;
+      try {
+        localStorage.setItem('CROCE_ORO_COSTI_GESTIONE', JSON.stringify(filtrati));
+      } catch {}
+      realtime.syncCostiGestione(filtrati);
+      return filtrati;
+    });
   };
 
   // 6d-bis. Emissione Ricevute (Database Contabilità -> Sottosezione 9)
@@ -3588,6 +3776,10 @@ export default function App() {
   const [modalServiziTurnoAperta, setModalServiziTurnoAperta] = useState<boolean>(false);
   const [modalTabelloneTurniVolontario, setModalTabelloneTurniVolontario] = useState<boolean>(false);
   const [modalBachecaVolontarioAperta, setModalBachecaVolontarioAperta] = useState<boolean>(false);
+  const [modalRifornimentoRapidoAperta, setModalRifornimentoRapidoAperta] = useState<boolean>(false);
+  const [modalSegnalazioneGuastoAperta, setModalSegnalazioneGuastoAperta] = useState<boolean>(false);
+  const [modalArchivioSopAperta, setModalArchivioSopAperta] = useState<boolean>(false);
+  const [modalAssembleeSondaggiAperta, setModalAssembleeSondaggiAperta] = useState<boolean>(false);
   const [servizioTurnoCopiatoId, setServizioTurnoCopiatoId] = useState<string | null>(null);
   const [rubricaAperta, setRubricaAperta] = useState(false);
   const [modalCopiaAperta, setModalCopiaAperta] = useState(false);
@@ -5804,6 +5996,290 @@ export default function App() {
     return checkRuolo(utenteCentraleLive) || checkRuolo(volontarioLoggatoCorrente);
   }, [accountSimulato, utenteCentraleLive, volontarioLoggatoCorrente]);
 
+  // Accesso al Centro Direttivo ODV & RUNTS (Direttivo, Presidente, Segretario, Tesoriere, Admin)
+  const puoAccedereCentroDirettivo = useMemo(() => {
+    const check = (u?: { isAdmin?: boolean; pin?: string; caricaConsiglioDirettivo?: string; qualifica?: string } | null) => {
+      if (!u) return false;
+      const txt = `${u.caricaConsiglioDirettivo || ''} ${u.qualifica || ''}`.toLowerCase();
+      return Boolean(
+        u.isAdmin ||
+          u.pin === '4451' ||
+          txt.includes('presidente') ||
+          txt.includes('segretar') ||
+          txt.includes('tesorier') ||
+          txt.includes('consiglier') ||
+          txt.includes('direttiv')
+      );
+    };
+    if (accountSimulato) return check(accountSimulato);
+    return check(utenteCentraleLive) || check(volontarioLoggatoCorrente);
+  }, [accountSimulato, utenteCentraleLive, volontarioLoggatoCorrente]);
+
+  // Accesso esclusivo Amministratore & Presidente (Registro Attività Audit Log e Backup/Ripristino Completo)
+  const isAdminOPresidenteDirettivo = useMemo(() => {
+    const check = (u?: { isAdmin?: boolean; pin?: string; caricaConsiglioDirettivo?: string; qualifica?: string } | null) => {
+      if (!u) return false;
+      const txt = `${u.caricaConsiglioDirettivo || ''} ${u.qualifica || ''}`.toLowerCase();
+      return Boolean(u.isAdmin || u.pin === '4451' || (txt.includes('presidente') && !txt.includes('vicepresidente')));
+    };
+    if (accountSimulato) return check(accountSimulato);
+    return check(utenteCentraleLive) || check(volontarioLoggatoCorrente);
+  }, [accountSimulato, utenteCentraleLive, volontarioLoggatoCorrente]);
+
+  const [modalCentroDirettivoAperta, setModalCentroDirettivoAperta] = useState(false);
+  const [tabCentroDirettivo, setTabCentroDirettivo] = useState<TabCentroDirettivo>('scadenze');
+
+  // Stato Coda Offline persistente con invio automatico al ritorno della rete
+  const [offlineQueueStatus, setOfflineQueueStatus] = useState(() => realtime.getOfflineQueueStatus());
+  useEffect(() => {
+    setOfflineQueueStatus(realtime.getOfflineQueueStatus());
+    return realtime.on('offline_queue_status', (st: any) => {
+      if (st && typeof st === 'object') setOfflineQueueStatus(st);
+    });
+  }, []);
+
+  const operatoreAuditNome = useMemo(() => {
+    if (utenteCentraleLive?.nome) return `${utenteCentraleLive.nome} ${utenteCentraleLive.cognome || ''}`.trim();
+    if (volontarioLoggatoCorrente?.nome) return `${volontarioLoggatoCorrente.nome} ${volontarioLoggatoCorrente.cognome || ''}`.trim();
+    return 'Amministratore';
+  }, [utenteCentraleLive, volontarioLoggatoCorrente]);
+
+  const registraAuditEvento = useCallback(
+    (area: AreaAuditLog, azione: string, dettaglio: string, criticita: 'info' | 'importante' | 'critico' = 'info') => {
+      const { lista } = creaERegistraEventoAudit({
+        operatore: operatoreAuditNome,
+        area,
+        azione,
+        dettaglio,
+        criticita,
+      });
+      realtime.syncAuditLog(lista);
+    },
+    [operatoreAuditNome]
+  );
+
+  // Calcola checksum integrità deterministico per file Backup Completo
+  const calcolaChecksumBackup = (payloadObj: any): string => {
+    const str = JSON.stringify(payloadObj);
+    let h = 2166136261;
+    for (let i = 0; i < str.length; i++) {
+      h ^= str.charCodeAt(i);
+      h = Math.imul(h, 16777619);
+    }
+    return `CO-${(h >>> 0).toString(16).toUpperCase().padStart(8, '0')}-${str.length}`;
+  };
+
+  const handleEsportaBackupCompleto = () => {
+    const dataPayload = {
+      volontari,
+      turniSedi,
+      timbratureVolontari,
+      luoghiTimbratura,
+      mezziFlotta,
+      manutenzioniMezzi,
+      corsiFormazione,
+      serviziArchivio: archivioPDF,
+      comunicazioniBacheca,
+      sediAssociative,
+      tessereAssociative,
+      noteDiDebito,
+      ricevuteContabilita,
+      magazzinoVestiario,
+      attrezzatureOperative,
+      movimentiMagazzino,
+      contatti,
+      giornaleBordo,
+      checklistsCompilate,
+      libriSocialiVerbali: getVerbaliOrganiSociali(),
+      libriSocialiDelibere: getDelibereSociOdv(),
+      richiesteReintegroMagazzino: getRichiesteReintegroMagazzino(),
+      auditLog: getAuditLogEntries(),
+    };
+    const checksum = calcolaChecksumBackup(dataPayload);
+    const envelope = {
+      schema: 'CROCE_ORO_FULL_BACKUP_V1',
+      appVersion: APP_VERSION,
+      exportedAt: formatDateTimeItaly(),
+      exportedAtIso: new Date().toISOString(),
+      exportedBy: operatoreAuditNome,
+      checksum,
+      data: dataPayload,
+    };
+    const blob = new Blob([JSON.stringify(envelope, null, 2)], { type: 'application/json;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const fileName = `Backup_Completo_CroceOro_${formatISODateItaly()}_v${APP_VERSION}.json`;
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = fileName;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1200);
+
+    const totalRecords =
+      volontari.length +
+      turniSedi.length +
+      timbratureVolontari.length +
+      mezziFlotta.length +
+      corsiFormazione.length +
+      archivioPDF.length +
+      tessereAssociative.length +
+      noteDiDebito.length;
+
+    registraAuditEvento('backup', 'Esportato Backup Completo (.JSON)', `${fileName} (${totalRecords} record principali)`, 'importante');
+    return { fileName, totalRecords };
+  };
+
+  const handleAnalizzaFileBackup = (jsonText: string, fileName: string): { ok: boolean; error?: string; preview?: BackupPreviewInfo } => {
+    try {
+      const parsed = JSON.parse(jsonText);
+      const data = parsed?.data && typeof parsed.data === 'object' ? parsed.data : parsed;
+      if (!data || typeof data !== 'object') {
+        return { ok: false, error: 'Struttura JSON non riconosciuta.' };
+      }
+      const checksumOk = Boolean(parsed?.checksum && parsed?.data && calcolaChecksumBackup(parsed.data) === parsed.checksum);
+      return {
+        ok: true,
+        preview: {
+          fileName,
+          exportedAt: String(parsed?.exportedAt || 'Data non indicata'),
+          appVersion: String(parsed?.appVersion || 'Legacy'),
+          exportedBy: String(parsed?.exportedBy || 'Operatore'),
+          checksumOk,
+          counts: {
+            volontari: Array.isArray(data.volontari) ? data.volontari.length : 0,
+            turni: Array.isArray(data.turniSedi) ? data.turniSedi.length : 0,
+            timbrature: Array.isArray(data.timbratureVolontari) ? data.timbratureVolontari.length : 0,
+            mezzi: Array.isArray(data.mezziFlotta) ? data.mezziFlotta.length : 0,
+            corsi: Array.isArray(data.corsiFormazione) ? data.corsiFormazione.length : 0,
+            serviziArchivio: Array.isArray(data.serviziArchivio) ? data.serviziArchivio.length : 0,
+            bacheca: Array.isArray(data.comunicazioniBacheca) ? data.comunicazioniBacheca.length : 0,
+            noteDiDebito: Array.isArray(data.noteDiDebito) ? data.noteDiDebito.length : 0,
+            tessere: Array.isArray(data.tessereAssociative) ? data.tessereAssociative.length : 0,
+            verbali: Array.isArray(data.libriSocialiVerbali) ? data.libriSocialiVerbali.length : 0,
+            delibere: Array.isArray(data.libriSocialiDelibere) ? data.libriSocialiDelibere.length : 0,
+          },
+          rawPayload: data,
+        },
+      };
+    } catch {
+      return { ok: false, error: 'Il file selezionato non è un file JSON valido.' };
+    }
+  };
+
+  const handleRipristinaBackupCompleto = (data: any): { ok: boolean; message: string } => {
+    try {
+      if (!data || typeof data !== 'object') return { ok: false, message: 'Dati di backup non validi.' };
+      if (Array.isArray(data.volontari) && data.volontari.length > 0) aggiornaVolontari(data.volontari);
+      if (Array.isArray(data.sediAssociative) && data.sediAssociative.length > 0) handleAggiornaSedi(data.sediAssociative);
+      if (Array.isArray(data.turniSedi)) handleAggiornaTurni(data.turniSedi);
+      if (Array.isArray(data.timbratureVolontari)) handleAggiornaTimbrature(data.timbratureVolontari);
+      if (Array.isArray(data.luoghiTimbratura) && data.luoghiTimbratura.length > 0) handleAggiornaLuoghiTimbratura(data.luoghiTimbratura);
+      if (Array.isArray(data.mezziFlotta) && data.mezziFlotta.length > 0) handleAggiornaMezziFlotta(data.mezziFlotta);
+      if (Array.isArray(data.corsiFormazione)) handleAggiornaCorsi(data.corsiFormazione);
+      if (Array.isArray(data.comunicazioniBacheca)) handleAggiornaComunicazioniBacheca(data.comunicazioniBacheca);
+      if (Array.isArray(data.tessereAssociative)) handleAggiornaTessere(data.tessereAssociative);
+      if (Array.isArray(data.noteDiDebito)) handleAggiornaNoteDiDebito(data.noteDiDebito);
+      if (Array.isArray(data.magazzinoVestiario)) handleAggiornaMagazzinoVestiario(data.magazzinoVestiario);
+      if (Array.isArray(data.attrezzatureOperative)) handleAggiornaAttrezzature(data.attrezzatureOperative);
+      if (Array.isArray(data.movimentiMagazzino)) handleAggiornaMovimenti(data.movimentiMagazzino);
+      if (Array.isArray(data.serviziArchivio)) {
+        setArchivioPDF(data.serviziArchivio);
+        try {
+          localStorage.setItem('CROCE_ORO_ARCHIVIO_PDF', JSON.stringify(data.serviziArchivio));
+        } catch {}
+      }
+      if (Array.isArray(data.libriSocialiVerbali) || Array.isArray(data.libriSocialiDelibere)) {
+        const saved = salvaLibriSocialiOdv(
+          Array.isArray(data.libriSocialiVerbali) ? data.libriSocialiVerbali : [],
+          Array.isArray(data.libriSocialiDelibere) ? data.libriSocialiDelibere : []
+        );
+        realtime.syncLibriSociali(saved.verbali, saved.delibere, saved.updatedAt);
+      }
+      if (Array.isArray(data.richiesteReintegroMagazzino)) {
+        const saved = salvaRichiesteReintegroMagazzino(data.richiesteReintegroMagazzino);
+        realtime.syncRichiesteReintegroMagazzino(saved.lista, saved.updatedAt);
+      }
+      if (Array.isArray(data.auditLog)) {
+        salvaAuditLogEntries(data.auditLog);
+      }
+
+      registraAuditEvento(
+        'backup',
+        'Ripristino Completo da File Backup',
+        `Ripristinati archivi associativi e sincronizzati su cloud da ${operatoreAuditNome}`,
+        'critico'
+      );
+      return { ok: true, message: 'Ripristino completo completato e sincronizzato su tutti i dispositivi!' };
+    } catch (err: any) {
+      return { ok: false, message: err?.message || 'Errore durante il ripristino del backup.' };
+    }
+  };
+
+  const handleInviaAvvisoTurniScoperti = async (
+    alerts: TurnoScopertoAlert[],
+    forzaInvio: boolean
+  ): Promise<{ ok: boolean; msg: string }> => {
+    if (!alerts || alerts.length === 0) {
+      return { ok: true, msg: 'Nessun turno scoperto nelle prossime 48 ore.' };
+    }
+    const cloudLog = realtime.getPromemoriaTurniScopertiInviati();
+    const daInviare = forzaInvio ? alerts : alerts.filter((a) => !cloudLog[a.dedupKey]);
+    if (daInviare.length === 0) {
+      return { ok: true, msg: 'Avvisi per i turni scoperti correnti già inviati in precedenza.' };
+    }
+
+    // Lock immediato su cloud prima della chiamata HTTP per evitare duplicati
+    const nowIso = new Date().toISOString();
+    const nextLog: Record<string, string> = { ...cloudLog };
+    daInviare.forEach((a) => {
+      nextLog[a.dedupKey] = nowIso;
+    });
+    if (!forzaInvio) {
+      realtime.syncPromemoriaTurniScopertiInviati(nextLog);
+    }
+
+    if (realtime.isServerlessStatic()) {
+      aggiungiNotifica(
+        `⚠️ TURNI SCOPERTI (48h): Rilevati ${daInviare.length} turni con ruoli da coprire.`,
+        'allarme'
+      );
+      return { ok: true, msg: `Segnalati ${daInviare.length} turni scoperti.` };
+    }
+
+    try {
+      const res = await fetch(`${realtime.getApiBaseUrl()}/api/notifica-turni-scoperti`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          alerts: daInviare,
+          cloudLog: nextLog,
+          forzaInvio,
+          operatore: operatoreAuditNome,
+        }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (json?.promemoriaTurniScopertiInviati) {
+        realtime.syncPromemoriaTurniScopertiInviati(json.promemoriaTurniScopertiInviati);
+      }
+      if (json?.success) {
+        registraAuditEvento(
+          'turni',
+          forzaInvio ? 'Sollecito Manuale Turni Scoperti' : 'Avviso Automatico Turni Scoperti',
+          `${json.countInviati || daInviare.length} turni segnalati (Push: ${json.pushSent || 0}, Email: ${json.emailsSent || 0})`,
+          'importante'
+        );
+        return {
+          ok: true,
+          msg: `Avviso inviato per ${json.countInviati || daInviare.length} turni scoperti (Push: ${json.pushSent || 0}, Email: ${json.emailsSent || 0}).`,
+        };
+      }
+      return { ok: false, msg: json?.error || 'Impossibile inviare avviso turni scoperti.' };
+    } catch {
+      return { ok: false, msg: 'Errore di rete durante l’invio avviso turni scoperti.' };
+    }
+  };
+
   // Sincronizzazione live configurazione Display Raspberry tra dispositivi
   useEffect(() => {
     const unsubCfg = realtime.on('RASPBERRY_CONFIG_UPDATED', (payload: any) => {
@@ -5876,6 +6352,287 @@ export default function App() {
     const intervalId = window.setInterval(verificaAutoChiusuraNfc, 60_000);
     return () => window.clearInterval(intervalId);
   }, [timbratureVolontari.length]);
+
+  // Permesso modifica giorni di preavviso Scadenze Fiscali ODV: solo Amministratore e Tesoriere
+  const puoModificarePreavvisoFiscale = useMemo(() => {
+    if (accountSimulato) {
+      return isUtenteTesoriereOAdmin(accountSimulato);
+    }
+    return (
+      isCentraleAdmin ||
+      isUtenteTesoriereOAdmin(utenteCentraleLive) ||
+      isUtenteTesoriereOAdmin(volontarioLoggatoCorrente)
+    );
+  }, [accountSimulato, isCentraleAdmin, utenteCentraleLive, volontarioLoggatoCorrente]);
+
+  // Helper notifiche automatiche Strumenti Calendario Turni quando un volontario inserisce un Foglio di Servizio
+  const notificaFoglioServizioPerRegoleTurno = useCallback(
+    (codiceServizio: string, mezzoNome: string, volontarioNome?: string, volontarioId?: string) => {
+      try {
+        const oggiIso = formatISODateItaly();
+        const vNomeNorm = (volontarioNome || '').trim().toLowerCase();
+        const tipiCatalogo = getTipiTurnoCatalogo();
+        const turniOggi = (turniSedi || []).filter((t) => {
+          if (t.data !== oggiIso) return false;
+          if (volontarioId || vNomeNorm) {
+            const slots = [
+              t.autista,
+              t.caposervizio,
+              t.soccorritore2,
+              t.terzoSoccorritore,
+              t.operatoreCentrale,
+              t.centralinista,
+              t.osservatore,
+            ].filter(Boolean) as Array<{ id?: string; nome?: string }>;
+            const foundInSlots = slots.some(
+              (s) =>
+                (volontarioId && s.id === volontarioId) ||
+                (vNomeNorm && (s.nome || '').trim().toLowerCase().includes(vNomeNorm))
+            );
+            if (foundInSlots) return true;
+          }
+          if (mezzoNome && t.mezzoAssegnato && t.mezzoAssegnato.toLowerCase().includes(mezzoNome.toLowerCase())) {
+            return true;
+          }
+          return false;
+        });
+
+        const tipiNotificati = new Set<string>();
+        turniOggi.forEach((turno) => {
+          const regole = getRegoleStrumentiPerTurno(turno, tipiCatalogo);
+          if (!regole.notificheAbilitate) return;
+          const chiaveTipo = turno.tipoTurnoId || turno.tipoTurnoNome || turno.id;
+          if (tipiNotificati.has(chiaveTipo)) return;
+          tipiNotificati.add(chiaveTipo);
+
+          const destinatariIds = (regole.notifichePerUtente || [])
+            .filter((cfg) => Boolean(cfg?.suFoglioServizio))
+            .map((cfg) => cfg.volontarioId);
+          if (destinatariIds.length === 0) return;
+
+          const destVolontari = volontari.filter((v) => destinatariIds.includes(v.id));
+          const emails = destVolontari
+            .map((v) => getNotificationEmailForVolontario(v))
+            .filter((e): e is string => Boolean(e && e.includes('@')));
+          const nomi = destVolontari.map((v) => `${v.nome} ${v.cognome}`.trim());
+
+          const nomeTipo = turno.tipoTurnoNome || turno.nomeTurno || 'Turno';
+          const titoloNotifica = `Foglio di Servizio ${codiceServizio} (${nomeTipo})`;
+          const msgNotifica = `${volontarioNome || 'Equipaggio'} ha inserito il foglio di servizio ${codiceServizio} (mezzo: ${mezzoNome || 'N/D'}) durante il turno "${nomeTipo}" del ${turno.data}.`;
+
+          aggiungiNotifica(`📋 ${titoloNotifica}: ${msgNotifica}`, 'sistema');
+          if (emails.length > 0) {
+            inviaNotificaStrumentiTurniEmail({
+              destinatariEmails: emails,
+              destinatariNomi: nomi,
+              evento: 'foglio_servizio',
+              tipoTurnoNome: nomeTipo,
+              titolo: titoloNotifica,
+              messaggio: msgNotifica,
+              dettagli: {
+                'Codice Servizio': codiceServizio,
+                Mezzo: mezzoNome || 'N/D',
+                Volontario: volontarioNome || 'Equipaggio',
+                'Tipo Turno': nomeTipo,
+                Data: turno.data
+              }
+            }).catch(() => {});
+          }
+        });
+      } catch (err) {
+        console.warn('[Turni Strumenti] Errore verifica notifica foglio servizio:', err);
+      }
+    },
+    [turniSedi, volontari]
+  );
+
+  // Flag di pronto per gli shard cloud Firestore (compleanni, scadenze fiscali, turni, mezzi, turni scoperti)
+  // Attendere il caricamento completo degli shard cloud 'config' impedisce invii duplicati ai riavvii/aggiornamenti
+  const [cloudBirthdayReady, setCloudBirthdayReady] = useState<boolean>(() => realtime.isCloudConfigReady());
+  useEffect(() => {
+    const checkReady = () => {
+      if (realtime.isCloudConfigReady()) {
+        setCloudBirthdayReady(true);
+      }
+    };
+    checkReady();
+    const unsubs = [
+      realtime.on('cloud_shards_ready', checkReady),
+      realtime.on('PROMEMORIA_COMPLEANNI_UPDATED', checkReady),
+      realtime.on('firebase_session', checkReady),
+      realtime.on('VOLONTARI_UPDATED', checkReady),
+    ];
+    return () => {
+      unsubs.forEach(fn => fn());
+    };
+  }, []);
+
+  // Controllo automatico Scadenze Fiscali ODV (60gg, 30gg, 15gg o giorni personalizzati)
+  // Invia notifica via Email + App a Presidente, Tesoriere e Segretario UNA SOLA VOLTA su cloud Firestore
+  useEffect(() => {
+    if (!cloudBirthdayReady) return;
+    if (!utenteCentraleLive && !isCentraleAdmin && !puoGestireDisplayRaspberry) return;
+    if (!Array.isArray(volontari) || volontari.length === 0) return;
+
+    let cancelled = false;
+    const verificaScadenzeFiscali = async () => {
+      const lista = getScadenzeFiscaliOdv();
+      const config = getConfigScadenzeFiscaliOdv();
+      const destinatari = risolviDestinatariScadenzeFiscali(volontari);
+      if (destinatari.length === 0) return;
+
+      const oggiIso = formatISODateItaly();
+      const cloudFiscalLog = { ...realtime.getPromemoriaScadenzeFiscaliInviate() };
+      let modificata = false;
+      const aggiornata = [...lista];
+
+      for (let i = 0; i < aggiornata.length; i++) {
+        const scad = aggiornata[i];
+        if (!scad.attiva || scad.stato !== 'Aperta') continue;
+        const giorniMancanti = calcolaGiorniAllaScadenza(scad.dataScadenza, oggiIso);
+        if (giorniMancanti < 0) continue;
+
+        const soglie =
+          scad.giorniPreavvisoCustom && scad.giorniPreavvisoCustom.length > 0
+            ? scad.giorniPreavvisoCustom
+            : config.giorniPreavvisoDefault;
+
+        // Trova la soglia più urgente raggiunta non ancora inviata né sullo storico locale né su cloud Firestore
+        const sogliaDaInviare = [...soglie]
+          .sort((a, b) => a - b)
+          .find((soglia) => {
+            if (giorniMancanti > soglia) return false;
+            const chiave = `${scad.dataScadenza}_${soglia}gg`;
+            const cloudKey = `${scad.id}_${scad.dataScadenza}_${soglia}`;
+            return !scad.notificheInviate?.[chiave] && !cloudFiscalLog[cloudKey];
+          });
+
+        if (sogliaDaInviare === undefined) continue;
+        const chiave = `${scad.dataScadenza}_${sogliaDaInviare}gg`;
+        const cloudKey = `${scad.id}_${scad.dataScadenza}_${sogliaDaInviare}`;
+        const nowIso = new Date().toISOString();
+
+        // Lock cloud immediato prima di inviare
+        cloudFiscalLog[cloudKey] = nowIso;
+        realtime.syncPromemoriaScadenzeFiscaliInviate(cloudFiscalLog);
+
+        // Notifica Email server-side con anti-duplicazione cloud
+        const resEmail = await inviaEmailPromemoriaScadenzaFiscale({
+          scadenza: scad,
+          giorniMancanti,
+          sogliaGiorni: sogliaDaInviare,
+          destinatari,
+          cloudLog: cloudFiscalLog,
+          apiBase: realtime.getApiBaseUrl(),
+        }).catch(() => ({ ok: false, inviate: 0, alreadySent: false, promemoriaScadenzeFiscaliInviate: undefined }));
+
+        if (resEmail?.promemoriaScadenzeFiscaliInviate) {
+          realtime.syncPromemoriaScadenzeFiscaliInviate(resEmail.promemoriaScadenzeFiscaliInviate);
+        }
+
+        if (!resEmail?.alreadySent) {
+          aggiungiNotifica(
+            `🏛️ SCADENZA FISCALE ODV (-${giorniMancanti}gg • soglia ${sogliaDaInviare}gg): "${scad.titolo}" in scadenza il ${scad.dataScadenza} — Avvisati Presidente, Tesoriere e Segretario.`,
+            'allarme'
+          );
+        }
+
+        if (cancelled) return;
+        aggiornata[i] = {
+          ...scad,
+          notificheInviate: {
+            ...(scad.notificheInviate || {}),
+            [chiave]: nowIso
+          }
+        };
+        modificata = true;
+      }
+
+      if (modificata && !cancelled) {
+        const saved = salvaScadenzeFiscaliOdv(aggiornata, config);
+        realtime.syncScadenzeFiscaliOdv(saved.lista, saved.config);
+      }
+    };
+
+    const timer = window.setTimeout(() => {
+      verificaScadenzeFiscali().catch(() => {});
+    }, 4500);
+    const interval = window.setInterval(() => {
+      verificaScadenzeFiscali().catch(() => {});
+    }, 6 * 60 * 60 * 1000);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+      window.clearInterval(interval);
+    };
+  }, [cloudBirthdayReady, utenteCentraleLive, isCentraleAdmin, puoGestireDisplayRaspberry, volontari]);
+
+  // Riconciliazione live delle timbrature effettuate da partecipanti ESTERNI (link senza account)
+  // Le presenze vengono integrate nei corsi e mostrate in viola nel Registro Presenze
+  useEffect(() => {
+    if (!utenteCentraleLive && !isCentraleAdmin && !puoGestireDisplayRaspberry) return;
+    const processedIds = new Set<string>();
+    const unsub = realtime.listenPendingCourseGuestCheckins((items) => {
+      if (!Array.isArray(items) || items.length === 0) return;
+      let corsiCorrenti = corsiFormazioneRef.current;
+      let almenoUnaApplicata = false;
+
+      for (const item of items) {
+        if (!item?.checkinId || processedIds.has(item.checkinId)) continue;
+        const dataOraParts = String(item.dataOra || '').trim().split(/\s+/);
+        const dataStr = dataOraParts[0] || formatDateItaly();
+        const orarioRaw = dataOraParts[1] || formatTimeItaly(undefined, true);
+        const orarioStr = orarioRaw.length === 5 ? `${orarioRaw}:00` : orarioRaw;
+        const payload = {
+          checkinId: item.checkinId,
+          tokenId: item.tokenId,
+          corsoId: item.corsoId,
+          lezioneId: item.lezioneId || undefined,
+          nome: item.nome,
+          cognome: item.cognome,
+          telefono: item.telefono,
+          tipo: item.tipo,
+          orario: orarioStr,
+          data: dataStr,
+          lat: 0,
+          lng: 0,
+          distanzaMetri: item.distanzaMetri || 0,
+          aulaNome: item.aulaNome || 'Aula Didattica',
+        };
+        const { corsiAggiornati, applicata } = applicaTimbraturaEsternoSuCorsi(corsiCorrenti, payload);
+        if (applicata) {
+          processedIds.add(item.checkinId);
+          corsiCorrenti = corsiAggiornati;
+          almenoUnaApplicata = true;
+          aggiungiNotifica(
+            `🟣 TIMBRATURA ESTERNO CORSO (${item.tipo.toUpperCase()}): ${item.nome} ${item.cognome} (${item.telefono}) alle ${orarioStr} presso ${item.aulaNome}`,
+            'sistema'
+          );
+          realtime.markCourseGuestCheckinApplied(item.checkinId).catch(() => {});
+        }
+      }
+
+      if (almenoUnaApplicata) {
+        handleAggiornaCorsi(corsiCorrenti);
+      }
+    });
+
+    return () => unsub();
+  }, [utenteCentraleLive, isCentraleAdmin, puoGestireDisplayRaspberry]);
+
+  // Mantiene aggiornate le schede pubbliche dei corsi con link esterni attivi
+  useEffect(() => {
+    if (!utenteCentraleLive && !isCentraleAdmin) return;
+    const corsiConLink = (corsiFormazione || []).filter((c) => Boolean(c.linkTimbraturaEsterniToken));
+    if (corsiConLink.length === 0) return;
+    const timer = window.setTimeout(() => {
+      const aule = getAuleFormazioneCatalogo();
+      corsiConLink.forEach((c) => {
+        realtime.publishPublicCourse(c, aule).catch(() => {});
+      });
+    }, 1500);
+    return () => window.clearTimeout(timer);
+  }, [corsiFormazione, utenteCentraleLive, isCentraleAdmin]);
 
   // Consegna notifica in-app agli account loggati che non hanno ancora caricato la propria firma sull'app
   useEffect(() => {
@@ -7969,6 +8726,12 @@ export default function App() {
 
     setArchivioPDF(prev => [nuovoArchivio, ...prev.filter(x => x.codice !== nuovoArchivio.codice)]);
     realtime.archiveService(nuovoArchivio);
+    notificaFoglioServizioPerRegoleTurno(
+      nuovoArchivio.codice,
+      nuovoArchivio.mezzo,
+      sessioneTurnoRef.current?.volontarioNome || nuovoArchivio.operatoreMittenteNome || 'Volontario',
+      sessioneTurnoRef.current?.volontarioId
+    );
 
     if (kmMancanti) {
       aggiungiNotifica(`ARCHIVIO: Scheda ${missione.codice} archiviata al rientro. ⚠️ SOLO IN QUESTO CASO IL PDF NON VIENE GENERATO finché la Centrale o il volontario non inseriscono i chilometri!`, 'allarme');
@@ -10905,6 +11668,12 @@ export default function App() {
 
     setArchivioPDF(prev => [nuovoArchivio, ...prev.filter(x => x.codice !== nuovoArchivio.codice)]);
     realtime.archiveService(nuovoArchivio);
+    notificaFoglioServizioPerRegoleTurno(
+      nuovoArchivio.codice,
+      nuovoArchivio.mezzo,
+      operatoreNome,
+      utenteCentrale?.id
+    );
     setContatoreMissioni(prev => prev + 1);
     setModalSchedaDirettaAperta(false);
 
@@ -14008,6 +14777,9 @@ KM TOTALI: ${kmTot} KM`;
 
       // Promemoria automatico turno del giorno prima (UNA SOLA volta per account alle ore 09:00)
       realtime.on('PROMEMORIA_TURNO_DOMANI', (payload: any) => {
+        if (payload?.promemoriaTurniInviati && typeof payload.promemoriaTurniInviati === 'object') {
+          realtime.syncPromemoriaTurniInviati(payload.promemoriaTurniInviati);
+        }
         const volIdCorrente = sessioneTurnoRef.current?.volontarioId;
         const volNomeCorrente = sessioneTurnoRef.current?.volontarioNome;
         const savedSubVolId = typeof window !== 'undefined' ? localStorage.getItem('CROCE_ORO_SUBSCRIBED_VOL_ID') : null;
@@ -14065,6 +14837,116 @@ KM TOTALI: ${kmTot} KM`;
             prev.some(n => n.id === payload.notification.id) ? prev : [...prev, payload.notification]
           );
         }
+      }),
+
+      // Avviso automatico Turni Scoperti 24-48h per volontari abilitati e Direttivo/Centrale
+      realtime.on('AVVISO_TURNO_SCOPERTO', (payload: any) => {
+        if (payload?.promemoriaTurniScopertiInviati && typeof payload.promemoriaTurniScopertiInviati === 'object') {
+          realtime.syncPromemoriaTurniScopertiInviati(payload.promemoriaTurniScopertiInviati);
+        }
+        const volIdCorrente = sessioneTurnoRef.current?.volontarioId;
+        const savedSubVolId = typeof window !== 'undefined' ? localStorage.getItem('CROCE_ORO_SUBSCRIBED_VOL_ID') : null;
+        const destinatariIds: string[] = Array.isArray(payload?.destinatariIds) ? payload.destinatariIds : [];
+        const isDestinatario = Boolean(
+          (volIdCorrente && destinatariIds.includes(volIdCorrente)) ||
+          (savedSubVolId && destinatariIds.includes(savedSubVolId))
+        );
+        const isCentrale = ruoloRef.current === 'admin' || layoutViewRef.current === 'both' || layoutViewRef.current === 'centrale';
+        if (isDestinatario || isCentrale) {
+          const dedupKey = `turno-scoperto-${payload?.dedupKey || payload?.turnoId || ''}-${payload?.data || ''}`;
+          aggiungiNotifica(`🚨 ${payload?.titolo || 'Turno Scoperto'}: ${payload?.testo || ''}`, 'allarme', {
+            registraInCentro: true,
+            dedupKey,
+            ignoraSuono: !isDestinatario
+          });
+          if (isDestinatario) {
+            mostraNotificaNativa(payload?.titolo || '🚨 Turno Scoperto — Disponibilità Richiesta', {
+              body: payload?.testo || 'Un turno nelle prossime 48 ore ha posti scoperti.',
+              tag: dedupKey
+            });
+          }
+        }
+      }),
+
+      // Collegamento diretto Checklist Mezzo -> Magazzino (notifica automatica reintegro)
+      realtime.on('NUOVA_RICHIESTA_REINTEGRO_MAGAZZINO', (payload: any) => {
+        if (Array.isArray(payload?.richiesteReintegroMagazzino)) {
+          realtime.syncRichiesteReintegroMagazzino(payload.richiesteReintegroMagazzino);
+        }
+        const isCentrale = ruoloRef.current === 'admin' || layoutViewRef.current === 'both' || layoutViewRef.current === 'centrale';
+        if (isCentrale && payload?.richiesta) {
+          const r = payload.richiesta;
+          aggiungiNotifica(
+            `📦 Reintegro Magazzino richiesto da Checklist ${r.siglaMezzo || ''}: ${(r.materialiMancanti || []).length} voci da reintegrare`,
+            'mezzo',
+            {
+              registraInCentro: true,
+              dedupKey: `reintegro-magazzino-${r.id || ''}`,
+              ignoraSuono: false
+            }
+          );
+        }
+      }),
+
+      // Promemoria Presa Visione Bacheca (destinato solo ai volontari mancanti)
+      realtime.on('PROMEMORIA_PRESA_VISION_BACHECA', (payload: any) => {
+        const volId = sessioneTurnoRef.current?.volontarioId || utenteCentraleRef.current?.id || '';
+        const volNome = (
+          sessioneTurnoRef.current?.volontarioNome ||
+          (utenteCentraleRef.current?.nome ? `${utenteCentraleRef.current.nome} ${utenteCentraleRef.current.cognome || ''}` : '')
+        )
+          .trim()
+          .toLowerCase();
+        const ids: string[] = Array.isArray(payload?.destinatariIds) ? payload.destinatariIds : [];
+        const nomi: string[] = Array.isArray(payload?.destinatariNomi)
+          ? payload.destinatariNomi.map((n: any) => String(n || '').trim().toLowerCase())
+          : [];
+        const destinatario = (volId && ids.includes(volId)) || (volNome && nomi.includes(volNome));
+        if (destinatario) {
+          aggiungiNotifica(
+            `📢 Promemoria Presa Visione richiesta: "${payload?.titolo || 'Comunicazione importante'}" — apri la Bacheca per confermare.`,
+            'sistema',
+            {
+              registraInCentro: true,
+              dedupKey: `pv-reminder-${payload?.postId || ''}-${payload?.timestamp || ''}`,
+              ignoraSuono: false
+            }
+          );
+        }
+      }),
+
+      // Segnalazione Guasto / Danno / Sinistro Mezzo in tempo reale
+      realtime.on('NUOVA_SEGNALAZIONE_GUASTO_MEZZO', (payload: any) => {
+        const isCentraleOAdmin =
+          ruoloRef.current === 'admin' || layoutViewRef.current === 'both' || layoutViewRef.current === 'centrale';
+        if (isCentraleOAdmin && payload?.mezzoSigla) {
+          const isCrit = payload?.gravita === 'Critico / Fuori Servizio' || payload?.richiestoFermoImmediato;
+          aggiungiNotifica(
+            `${isCrit ? '🚨 FERMO MEZZO' : '🔧 Guasto/Danno Mezzo'} ${payload.mezzoSigla} (${payload.tipo || 'Segnalazione'}) — ${payload.segnalatoDaNome || 'Volontario'}: ${(payload.descrizione || '').slice(0, 90)}`,
+            isCrit ? 'allarme' : 'mezzo',
+            {
+              registraInCentro: true,
+              dedupKey: `guasto-mezzo-${payload?.id || ''}`,
+              ignoraSuono: false
+            }
+          );
+        }
+      }),
+
+      // Nuova Convocazione Assemblea o Sondaggio Rapido dal Direttivo
+      realtime.on('NUOVA_CONVOCAZIONE_O_SONDAGGIO', (payload: any) => {
+        if (!payload?.titolo) return;
+        const icona = payload?.tipo === 'convocazione' ? '📜' : '🗳️';
+        const etichetta = payload?.tipo === 'convocazione' ? 'Nuova Convocazione Assemblea' : 'Nuovo Sondaggio Rapido';
+        aggiungiNotifica(
+          `${icona} ${etichetta}: "${payload.titolo}" (${payload.creatoDa || 'Consiglio Direttivo'})`,
+          'sistema',
+          {
+            registraInCentro: true,
+            dedupKey: `ass-sond-${payload?.id || ''}`,
+            ignoraSuono: false
+          }
+        );
       }),
 
       // Sincronizzazione Realtime Registro Timbrature Volontari
@@ -14172,6 +15054,9 @@ KM TOTALI: ${kmTot} KM`;
         }
       }),
       realtime.on('NOTIFICA_COMPLEANNO_VOLONTARIO', (payload: any) => {
+        if (payload?.compleanniInviati && typeof payload.compleanniInviati === 'object') {
+          realtime.syncPromemoriaCompleanniInviati(payload.compleanniInviati);
+        }
         if (!payload || !Array.isArray(payload.festeggiati) || payload.festeggiati.length === 0) return;
         const currentRole = ruoloRef.current;
         const currentUtente = utenteCentraleRef.current;
@@ -14188,13 +15073,24 @@ KM TOTALI: ${kmTot} KM`;
           const nomiStr = payload.festeggiati
             .map((f: any) => `${f.nomeCompleto}${f.eta !== undefined ? ` (${f.eta} anni)` : ''}`)
             .join(', ');
-          riceviERegistraNotifica({
-            categoria: 'sistema',
-            titolo: `🎂 Compleanno Volontario (${payload.dataOggi || 'Oggi'})`,
-            messaggio: `Oggi ricorre il compleanno di ${nomiStr}! Email di notifica inviata a Presidenza e agli account con accesso al database Volontari.`,
-            priorita: 'Importante',
-            dedupKey: `compleanno-${payload.dataOggi || ''}-${nomiStr}`
-          });
+          const dedupKey = `compleanno-${payload.dataOggi || formatISODateItaly()}-${nomiStr}`;
+          const localShownKey = `CROCE_ORO_NOTIF_COMPLEANNO_MOSTRATA_${dedupKey}`;
+          let giaMostrata = false;
+          try {
+            giaMostrata = localStorage.getItem(localShownKey) === '1';
+          } catch {}
+          if (!giaMostrata) {
+            try {
+              localStorage.setItem(localShownKey, '1');
+            } catch {}
+            riceviERegistraNotifica({
+              categoria: 'sistema',
+              titolo: `🎂 Compleanno Volontario (${payload.dataOggi || 'Oggi'})`,
+              messaggio: `Oggi ricorre il compleanno di ${nomiStr}! Email di notifica inviata a Presidenza e agli account con accesso al database Volontari.`,
+              priorita: 'Importante',
+              dedupKey
+            });
+          }
         }
         if (payload.notification) {
           setNotificheCentrale(prev =>
@@ -14757,32 +15653,170 @@ KM TOTALI: ${kmTot} KM`;
     } catch {}
   }, [sessioneTurno.volontarioId, sessioneTurno.volontarioNome, turniSedi]);
 
-  // Sincronizza con il server l'elenco aggiornato dei volontari (incluse date di nascita e permessi database Volontari)
-  // per garantire che le notifiche email dei compleanni arrivino anche a tutti gli account abilitati al DB Volontari
+  // Controllo automatico compleanni (usa cloudBirthdayReady dichiarato sopra per attendere lo shard cloud)
+
   const ultimoCheckCompleanniRef = useRef<string>('');
   useEffect(() => {
+    if (!cloudBirthdayReady) return;
     if (!Array.isArray(volontari) || volontari.length === 0) return;
     if (realtime.isServerlessStatic()) return;
 
-    const todayStr = formatISODateItaly();
-    const fingerprint = [
-      todayStr,
-      ...volontari.map(v => `${v.id}:${v.dataNascita || ''}:${v.emailNotifiche || v.email || ''}:${(v.macroCategorieAbilitate || []).includes('volontari') ? '1' : '0'}`)
-    ].join('|');
+    const normalizzaChiaveNome = (nome: string) =>
+      String(nome || '')
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '_')
+        .replace(/^_+|_+$/g, '');
 
-    if (ultimoCheckCompleanniRef.current === fingerprint) return;
-    ultimoCheckCompleanniRef.current = fingerprint;
+    const eseguiSyncCompleanni = () => {
+      const todayStr = formatISODateItaly();
+      const [yyyy, mm, dd] = todayStr.split('-');
+      const oggiFormatted = `${dd}/${mm}/${yyyy}`;
 
-    const timer = setTimeout(() => {
+      // Costruisce lo storico cloud + eventuali notifiche di compleanno già ricevute oggi sul dispositivo
+      const compleanniGiaInviati: Record<string, any> = {
+        ...realtime.getPromemoriaCompleanniInviati()
+      };
+
+      const notifCompleannoOggi = notificheRicevuteAccountRef.current.filter(
+        (n) =>
+          (n.titolo && n.titolo.includes('Compleanno') && n.titolo.includes(oggiFormatted)) ||
+          (n.dedupKey && n.dedupKey.includes(`compleanno-${oggiFormatted}`))
+      );
+      if (notifCompleannoOggi.length > 0) {
+        const testoArchivio = notifCompleannoOggi.map(n => `${n.titolo} ${n.messaggio}`).join(' ').toLowerCase();
+        for (const v of volontari) {
+          const nomeCompleto = `${v.nome || ''} ${v.cognome || ''}`.trim();
+          if (nomeCompleto && testoArchivio.includes(nomeCompleto.toLowerCase())) {
+            const normName = normalizzaChiaveNome(nomeCompleto);
+            const rec = { sentAt: new Date().toISOString(), recipients: [] as string[] };
+            if (v.id && !compleanniGiaInviati[`compleanno_${todayStr}_${v.id}`]) {
+              compleanniGiaInviati[`compleanno_${todayStr}_${v.id}`] = rec;
+            }
+            if (normName && !compleanniGiaInviati[`compleanno_nome_${todayStr}_${normName}`]) {
+              compleanniGiaInviati[`compleanno_nome_${todayStr}_${normName}`] = rec;
+            }
+          }
+        }
+      }
+
+      const oraIt = Number(
+        new Intl.DateTimeFormat('en-GB', {
+          timeZone: 'Europe/Rome',
+          hour: '2-digit',
+          hour12: false
+        }).format(new Date())
+      );
+      const fasciaGiorno = Number.isFinite(oraIt) && oraIt >= 8 ? 'post08' : 'pre08';
+      const fingerprint = `${todayStr}|${fasciaGiorno}|${volontari.length}|${Object.keys(compleanniGiaInviati).sort().join(',')}`;
+      if (ultimoCheckCompleanniRef.current === fingerprint) return;
+      ultimoCheckCompleanniRef.current = fingerprint;
+
       fetch(`${realtime.getApiBaseUrl()}/api/notifica-compleanni`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ forzaInvio: false, volontari })
-      }).catch(() => {});
-    }, 1500);
+        body: JSON.stringify({
+          forzaInvio: false,
+          volontari,
+          compleanniGiaInviati,
+          cloudSyncVerified: true
+        })
+      })
+        .then(r => (r.ok ? r.json() : null))
+        .then(data => {
+          if (data?.compleanniInviati && typeof data.compleanniInviati === 'object') {
+            realtime.syncPromemoriaCompleanniInviati(data.compleanniInviati);
+          }
+        })
+        .catch(() => {});
+    };
 
-    return () => clearTimeout(timer);
-  }, [volontari]);
+    const timer = setTimeout(eseguiSyncCompleanni, 1500);
+    // Ricontrolla ogni 5 minuti se cambia giorno o si supera la fascia delle 08:00 (terminale aperto H24)
+    const interval = setInterval(() => {
+      const todayStr = formatISODateItaly();
+      const oraIt = Number(
+        new Intl.DateTimeFormat('en-GB', {
+          timeZone: 'Europe/Rome',
+          hour: '2-digit',
+          hour12: false
+        }).format(new Date())
+      );
+      const fasciaGiorno = Number.isFinite(oraIt) && oraIt >= 8 ? 'post08' : 'pre08';
+      if (!ultimoCheckCompleanniRef.current.startsWith(`${todayStr}|${fasciaGiorno}|`)) {
+        eseguiSyncCompleanni();
+      }
+    }, 5 * 60 * 1000);
+
+    return () => {
+      clearTimeout(timer);
+      clearInterval(interval);
+    };
+  }, [cloudBirthdayReady, volontari]);
+
+  // Anti-duplicazione cloud su Firestore per Promemoria Turni Domani (ore 09:00) + Avviso Automatico "Turni Scoperti" (24-48h)
+  const ultimoCheckTurniCloudRef = useRef<string>('');
+  useEffect(() => {
+    if (!cloudBirthdayReady) return;
+    if (!Array.isArray(turniSedi) || turniSedi.length === 0) return;
+
+    const eseguiVerificheTurniCloud = () => {
+      const todayStr = formatISODateItaly();
+      const oraIt = Number(
+        new Intl.DateTimeFormat('en-GB', {
+          timeZone: 'Europe/Rome',
+          hour: '2-digit',
+          hour12: false
+        }).format(new Date())
+      );
+
+      // 1. Idrata storico cloud promemoria turni di domani sul server e verifica invii (dopo le 09:00)
+      if (!realtime.isServerlessStatic()) {
+        const promemoriaGiaInviati = realtime.getPromemoriaTurniInviati();
+        const fp = `${todayStr}|${oraIt >= 9 ? 'post09' : 'pre09'}|${turniSedi.length}|${Object.keys(promemoriaGiaInviati).length}`;
+        if (ultimoCheckTurniCloudRef.current !== fp) {
+          ultimoCheckTurniCloudRef.current = fp;
+          fetch(`${realtime.getApiBaseUrl()}/api/promemoria-turni/verifica`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              forzaInvio: false,
+              turni: turniSedi,
+              promemoriaGiaInviati,
+              cloudSyncVerified: true,
+            }),
+          })
+            .then(r => (r.ok ? r.json() : null))
+            .then(data => {
+              if (data?.promemoriaTurniInviati && typeof data.promemoriaTurniInviati === 'object') {
+                realtime.syncPromemoriaTurniInviati(data.promemoriaTurniInviati);
+              }
+            })
+            .catch(() => {});
+        }
+      }
+
+      // 2. Avviso Automatico "Turni Scoperti" nelle prossime 24-48 ore (attivo per sessioni Centrale/Direttivo/Admin)
+      if ((ruolo === 'admin' || puoAccedereCentroDirettivo) && Array.isArray(volontari) && volontari.length > 0) {
+        const scoperti = analizzaTurniScopertiProssime48h(turniSedi, volontari);
+        if (scoperti.length > 0) {
+          const cloudLogScoperti = realtime.getPromemoriaTurniScopertiInviati();
+          const nuoviScoperti = scoperti.filter((s) => !cloudLogScoperti[s.dedupKey]);
+          if (nuoviScoperti.length > 0) {
+            handleInviaAvvisoTurniScoperti(nuoviScoperti, false).catch(() => {});
+          }
+        }
+      }
+    };
+
+    const t = window.setTimeout(eseguiVerificheTurniCloud, 3500);
+    const iv = window.setInterval(eseguiVerificheTurniCloud, 15 * 60 * 1000);
+    return () => {
+      window.clearTimeout(t);
+      window.clearInterval(iv);
+    };
+  }, [cloudBirthdayReady, turniSedi, volontari, ruolo, puoAccedereCentroDirettivo]);
 
   // Controllo periodico promemoria timbratura entrata/uscita (-10 min notifica standard, +10 min notifica diversa NON sirena) per Turni e Corsi/Formazione
   useEffect(() => {
@@ -14945,14 +15979,25 @@ KM TOTALI: ${kmTot} KM`;
     );
   }
 
+  // Pagina dedicata Timbratura Corso per Partecipanti Esterni senza account (/?view=timbratura-corso&token=...)
+  if (isDedicatedExternalCoursePage) {
+    return (
+      <Suspense fallback={<LazyViewFallback label="Caricamento timbratura corso..." />}>
+        <VistaTimbraturaCorsoEsterno token={externalCourseToken} />
+      </Suspense>
+    );
+  }
+
   // Display Raspberry di Sezione accessibile via link diretto senza login obbligatorio (/?view=raspberry&sede=...)
   if (isDedicatedRaspberryPage) {
     return (
-      <VistaDedicataRaspberrySenzaLogin
-        initialSedi={sediAssociative}
-        initialComunicazioni={comunicazioniBacheca}
-        initialTimbrature={timbratureVolontari}
-      />
+      <Suspense fallback={<LazyViewFallback label="Caricamento display Raspberry..." />}>
+        <VistaDedicataRaspberrySenzaLogin
+          initialSedi={sediAssociative}
+          initialComunicazioni={comunicazioniBacheca}
+          initialTimbrature={timbratureVolontari}
+        />
+      </Suspense>
     );
   }
 
@@ -15802,6 +16847,91 @@ KM TOTALI: ${kmTot} KM`;
                           </button>
                         )}
 
+                        {/* Centro Direttivo ODV & RUNTS (Cruscotto Scadenze, Libri Sociali, Report Ore, Audit Log, Backup) */}
+                        {puoAccedereCentroDirettivo && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setMenuHeaderAzioniAperto(false);
+                              setTabCentroDirettivo('scadenze');
+                              setModalCentroDirettivoAperta(true);
+                            }}
+                            className="w-full px-2.5 py-2 rounded-lg bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-200 border border-indigo-400/50 font-black text-xs flex items-center justify-between gap-2 cursor-pointer"
+                          >
+                            <span className="flex items-center gap-2 min-w-0">
+                              <ShieldCheck className="w-4 h-4 text-amber-400 shrink-0" />
+                              <span className="truncate">Centro Direttivo ODV & RUNTS</span>
+                            </span>
+                            <span className="px-1.5 py-0.5 rounded bg-amber-500/20 text-[9px] font-black uppercase text-amber-300 shrink-0">
+                              ODV
+                            </span>
+                          </button>
+                        )}
+
+                        {/* Accessi Rapidi: Assemblee & Sondaggi, Archivio Documenti SOP, Rifornimento & Guasto Mezzo */}
+                        {(ruolo === 'admin' || sessioneTurnoEffettiva.attivo) && (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setMenuHeaderAzioniAperto(false);
+                                setModalAssembleeSondaggiAperta(true);
+                              }}
+                              className="w-full px-2.5 py-2 rounded-lg bg-violet-500/15 hover:bg-violet-500/25 text-violet-200 border border-violet-400/40 font-black text-xs flex items-center justify-between gap-2 cursor-pointer"
+                            >
+                              <span className="flex items-center gap-2 min-w-0">
+                                <Vote className="w-4 h-4 text-violet-300 shrink-0" />
+                                <span className="truncate">Assemblee &amp; Sondaggi</span>
+                              </span>
+                              <span className="px-1.5 py-0.5 rounded bg-violet-500/20 text-[9px] font-black uppercase text-violet-200 shrink-0">
+                                ODV
+                              </span>
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setMenuHeaderAzioniAperto(false);
+                                setModalArchivioSopAperta(true);
+                              }}
+                              className="w-full px-2.5 py-2 rounded-lg bg-teal-500/15 hover:bg-teal-500/25 text-teal-200 border border-teal-400/40 font-black text-xs flex items-center justify-between gap-2 cursor-pointer"
+                            >
+                              <span className="flex items-center gap-2 min-w-0">
+                                <Library className="w-4 h-4 text-teal-300 shrink-0" />
+                                <span className="truncate">Documenti &amp; Procedure (SOP)</span>
+                              </span>
+                              <span className="px-1.5 py-0.5 rounded bg-teal-500/20 text-[9px] font-black uppercase text-teal-200 shrink-0">
+                                SOP
+                              </span>
+                            </button>
+
+                            <div className="grid grid-cols-2 gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setMenuHeaderAzioniAperto(false);
+                                  setModalRifornimentoRapidoAperta(true);
+                                }}
+                                className="px-2 py-2 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 text-amber-200 border border-amber-400/40 font-black text-[11px] flex items-center justify-center gap-1.5 cursor-pointer"
+                              >
+                                <Fuel className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                                <span className="truncate">Rifornimento</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setMenuHeaderAzioniAperto(false);
+                                  setModalSegnalazioneGuastoAperta(true);
+                                }}
+                                className="px-2 py-2 rounded-lg bg-rose-500/15 hover:bg-rose-500/25 text-rose-200 border border-rose-400/40 font-black text-[11px] flex items-center justify-center gap-1.5 cursor-pointer"
+                              >
+                                <Wrench className="w-3.5 h-3.5 text-rose-400 shrink-0" />
+                                <span className="truncate">Guasto Mezzo</span>
+                              </button>
+                            </div>
+                          </>
+                        )}
+
                         {/* Sezione PROFILO ACCOUNT — visibile ad ogni account loggato nel menù Strumenti */}
                         {(ruolo === 'admin' || sessioneTurnoEffettiva.attivo) && (
                           <button
@@ -16116,6 +17246,26 @@ KM TOTALI: ${kmTot} KM`;
                       </button>
                     )}
 
+                    {puoAccedereCentroDirettivo && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setTabCentroDirettivo('scadenze');
+                          setModalCentroDirettivoAperta(true);
+                        }}
+                        className={`px-2 py-1 rounded-lg font-black text-[11px] flex items-center gap-1 cursor-pointer border whitespace-nowrap transition-all ${
+                          isWeb
+                            ? 'bg-indigo-100 hover:bg-indigo-200 text-indigo-950 border-indigo-500'
+                            : 'bg-indigo-950/80 hover:bg-indigo-900/80 text-indigo-200 border-indigo-400/60'
+                        }`}
+                        style={isWeb ? { backgroundColor: '#e0e7ff', color: '#1e1b4b', borderColor: '#6366f1' } : undefined}
+                        title="Centro Direttivo ODV & RUNTS (Cruscotto Scadenze, Libri Sociali, Ore & Certificati, Audit Log, Backup)"
+                      >
+                        <ShieldCheck className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                        <span>Centro ODV</span>
+                      </button>
+                    )}
+
                     {permessiDaRiabilitare && (
                       <button
                         type="button"
@@ -16341,6 +17491,8 @@ KM TOTALI: ${kmTot} KM`;
           />
         )}
 
+        {/* SEZIONI DATABASE AMMINISTRATIVE (CARICATE ON-DEMAND CON REACT.LAZY PER AVVIO RAPIDO MOBILE) */}
+        <Suspense fallback={<LazyViewFallback label="Apertura database in corso..." />}>
         {/* VISTA 2: DATABASE VOLONTARI, VESTIARIO, PIN, AMMISSIONI & REGISTRO TIMBRATURE */}
         {ruolo === 'admin' && adminSection === 'volontari' && (
           <SezioneVolontari
@@ -16387,6 +17539,8 @@ KM TOTALI: ${kmTot} KM`;
               onAggiornaChecklistsTemplates={handleAggiornaChecklistsTemplates}
               checklistsCompilate={checklistsCompilate}
               onAggiornaChecklistsCompilate={handleAggiornaChecklistsCompilate}
+              onRegistraRifornimentoInContabilita={handleRegistraRifornimentoInContabilita}
+              onRimuoviRifornimentoDaContabilita={handleRimuoviRifornimentoDaContabilita}
               sedi={sediAssociative}
               onAggiornaSedi={handleAggiornaSedi}
               operatoreCorrente={utenteCentrale?.nome ? `${utenteCentrale.nome} ${utenteCentrale.cognome || ''}`.trim() : 'Amministratore'}
@@ -16427,6 +17581,7 @@ KM TOTALI: ${kmTot} KM`;
             onAggiungiContatto={handleAggiungiContatto}
             manutenzioni={manutenzioniMezzi}
             sedi={sediAssociative}
+            puoModificarePreavvisoFiscale={puoModificarePreavvisoFiscale}
             allowedSubtabs={isCentraleAdmin ? null : getAllowedSubtabsForDatabase(utenteCentraleLive, 'contabilita')}
           />
         )}
@@ -16489,6 +17644,7 @@ KM TOTALI: ${kmTot} KM`;
             mezziFuoriServizio={mezziFuoriServizio}
             operatoreCorrente={utenteCentrale?.nome ? `${utenteCentrale.nome} ${utenteCentrale.cognome || ''}` : 'Amministratore'}
             isAdmin={isCentraleAdmin}
+            puoGestireStrumentiTurni={puoGestireDisplayRaspberry}
             onNotificaRadio={aggiungiNotifica}
             allowedSubtabs={isCentraleAdmin ? null : getAllowedSubtabsForDatabase(utenteCentraleLive, 'turni')}
           />
@@ -16501,6 +17657,7 @@ KM TOTALI: ${kmTot} KM`;
             onAggiornaComunicazioni={handleAggiornaComunicazioniBacheca}
             corsiFormazione={corsiFormazione}
             sedi={sediAssociative}
+            volontari={volontari}
             operatoreCorrente={utenteCentrale?.nome ? `${utenteCentrale.nome} ${utenteCentrale.cognome || ''}` : 'Amministratore'}
             operatoreId={utenteCentrale?.id || 'admin'}
             isAdmin={isCentraleAdmin}
@@ -16528,6 +17685,7 @@ KM TOTALI: ${kmTot} KM`;
             onApriNumeriUtili={() => setRubricaAperta(true)}
           />
         )}
+        </Suspense>
 
         {/* 1. SEZIONE BORDO MEZZO (SIMULATORE SMARTPHONE / TERMINALE BORDO) */}
         {(ruolo === 'volontario' || (ruolo === 'admin' && adminSection === 'centrale')) && (layoutView === 'both' || layoutView === 'smartphone') && (
@@ -18674,13 +19832,103 @@ KM TOTALI: ${kmTot} KM`;
                             <div className="min-w-0">
                               <h4 className="text-[11px] sm:text-xs font-black uppercase text-white leading-tight flex items-center gap-1">
                                 <span className="truncate">Bacheca</span>
-                                {comunicazioniBacheca.filter(c => c.attiva && c.priorita === 'Urgente').length > 0 && (
+                                {comunicazioniBacheca.some(
+                                  (c) =>
+                                    c.attiva &&
+                                    c.richiedePresaVisione &&
+                                    !(c.preseVisione || []).some(
+                                      (p) =>
+                                        (sessioneTurnoEffettiva.volontarioId && p.volontarioId === sessioneTurnoEffettiva.volontarioId) ||
+                                        (sessioneTurnoEffettiva.volontarioNome &&
+                                          (p.volontarioNome || '').trim().toLowerCase() ===
+                                            sessioneTurnoEffettiva.volontarioNome.trim().toLowerCase())
+                                    )
+                                ) ? (
+                                  <span className="px-1 py-0.5 rounded bg-rose-600 text-white text-[8px] font-black uppercase animate-pulse shrink-0">
+                                    Da Confermare
+                                  </span>
+                                ) : comunicazioniBacheca.filter(c => c.attiva && c.priorita === 'Urgente').length > 0 ? (
                                   <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse shrink-0" />
-                                )}
+                                ) : null}
                               </h4>
                               <p className="text-[9.5px] text-slate-300 leading-tight mt-0.5 line-clamp-2">
                                 Avvisi, circolari e prossimi corsi
                               </p>
+                            </div>
+                          </button>
+                        </div>
+
+                        {/* Strumenti Operativi Rapidi del Volontario in Turno */}
+                        <div className="w-full grid grid-cols-2 gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setModalRifornimentoRapidoAperta(true)}
+                            className="p-2 rounded-xl bg-amber-950/90 hover:bg-amber-900/90 border border-amber-500/60 text-left flex items-center gap-2 active:scale-[0.98] transition-all cursor-pointer shadow-sm"
+                          >
+                            <div className="w-7 h-7 rounded-lg bg-amber-500/20 border border-amber-400/40 text-amber-300 flex items-center justify-center shrink-0">
+                              <Fuel className="w-4 h-4" />
+                            </div>
+                            <div className="min-w-0">
+                              <div className="text-[10.5px] font-black uppercase text-white leading-tight truncate">
+                                Rifornimento
+                              </div>
+                              <div className="text-[9px] text-amber-200/80 leading-tight truncate">
+                                Carburante &amp; foto
+                              </div>
+                            </div>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => setModalSegnalazioneGuastoAperta(true)}
+                            className="p-2 rounded-xl bg-rose-950/90 hover:bg-rose-900/90 border border-rose-500/60 text-left flex items-center gap-2 active:scale-[0.98] transition-all cursor-pointer shadow-sm"
+                          >
+                            <div className="w-7 h-7 rounded-lg bg-rose-500/20 border border-rose-400/40 text-rose-300 flex items-center justify-center shrink-0">
+                              <Wrench className="w-4 h-4" />
+                            </div>
+                            <div className="min-w-0">
+                              <div className="text-[10.5px] font-black uppercase text-white leading-tight truncate">
+                                Guasto / Sinistro
+                              </div>
+                              <div className="text-[9px] text-rose-200/80 leading-tight truncate">
+                                Segnala con foto
+                              </div>
+                            </div>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => setModalArchivioSopAperta(true)}
+                            className="p-2 rounded-xl bg-cyan-950/90 hover:bg-cyan-900/90 border border-cyan-500/60 text-left flex items-center gap-2 active:scale-[0.98] transition-all cursor-pointer shadow-sm"
+                          >
+                            <div className="w-7 h-7 rounded-lg bg-cyan-500/20 border border-cyan-400/40 text-cyan-300 flex items-center justify-center shrink-0">
+                              <Library className="w-4 h-4" />
+                            </div>
+                            <div className="min-w-0">
+                              <div className="text-[10.5px] font-black uppercase text-white leading-tight truncate">
+                                Documenti &amp; SOP
+                              </div>
+                              <div className="text-[9px] text-cyan-200/80 leading-tight truncate">
+                                Procedure &amp; Statuto
+                              </div>
+                            </div>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => setModalAssembleeSondaggiAperta(true)}
+                            className="p-2 rounded-xl bg-indigo-950/90 hover:bg-indigo-900/90 border border-indigo-500/60 text-left flex items-center gap-2 active:scale-[0.98] transition-all cursor-pointer shadow-sm"
+                          >
+                            <div className="w-7 h-7 rounded-lg bg-indigo-500/20 border border-indigo-400/40 text-indigo-300 flex items-center justify-center shrink-0">
+                              <Vote className="w-4 h-4" />
+                            </div>
+                            <div className="min-w-0">
+                              <div className="text-[10.5px] font-black uppercase text-white leading-tight truncate">
+                                Assemblee &amp; Voti
+                              </div>
+                              <div className="text-[9px] text-indigo-200/80 leading-tight truncate">
+                                Deleghe &amp; sondaggi
+                              </div>
                             </div>
                           </button>
                         </div>
@@ -19107,15 +20355,17 @@ KM TOTALI: ${kmTot} KM`;
             </div>
 
             {subSezioneCentrale === 'giornale_bordo' && (!centraleAllowedSubtabs || centraleAllowedSubtabs.includes('giornale_bordo')) ? (
-              <GiornaleBordoCentrale
-                voci={giornaleBordo}
-                onAggiungiVoce={handleAggiungiVoceGiornaleBordo}
-                onFirmaPresaVisione={handleFirmaPresaVisioneGiornaleBordo}
-                operatoreCorrente={utenteCentrale ? `${utenteCentrale.nome} ${utenteCentrale.cognome}`.trim() : (ruolo === 'admin' ? 'Amministratore' : 'Operatore Centrale')}
-                isCentraleAdmin={isCentraleAdmin}
-                mezziFlotta={mezziFlotta}
-                onTornaAllaCentrale={() => setSubSezioneCentrale('missioni')}
-              />
+              <Suspense fallback={<LazyViewFallback label="Caricamento giornale di bordo..." />}>
+                <GiornaleBordoCentrale
+                  voci={giornaleBordo}
+                  onAggiungiVoce={handleAggiungiVoceGiornaleBordo}
+                  onFirmaPresaVisione={handleFirmaPresaVisioneGiornaleBordo}
+                  operatoreCorrente={utenteCentrale ? `${utenteCentrale.nome} ${utenteCentrale.cognome}`.trim() : (ruolo === 'admin' ? 'Amministratore' : 'Operatore Centrale')}
+                  isCentraleAdmin={isCentraleAdmin}
+                  mezziFlotta={mezziFlotta}
+                  onTornaAllaCentrale={() => setSubSezioneCentrale('missioni')}
+                />
+              </Suspense>
             ) : (!centraleAllowedSubtabs || centraleAllowedSubtabs.includes('missioni')) ? (
               <>
                 {/* Box Form Compilazione Scheda */}
@@ -23522,13 +24772,15 @@ KM TOTALI: ${kmTot} KM`;
 
       {/* MODALE ANTEPRIMA MULTIPLA & FIRMA SIMULTANEA / DIFFERITA */}
       {modalAnteprimaMultiplaAperta && (
-        <ModalAnteprimaMultipla
-          items={archivioPDF.filter(s => selectedArchiveIds.includes(s.id || s.codice))}
-          nomeOperatore={utenteCentrale ? `${utenteCentrale.nome} ${utenteCentrale.cognome}`.trim() : 'Centrale Operativa'}
-          onClose={() => setModalAnteprimaMultiplaAperta(false)}
-          onFirmaTutti={(ids) => handleFirmaSimultanea(ids)}
-          onFirmaSingolo={(item) => handleFirmaDocumentoCentrale(item as any)}
-        />
+        <Suspense fallback={null}>
+          <ModalAnteprimaMultipla
+            items={archivioPDF.filter(s => selectedArchiveIds.includes(s.id || s.codice))}
+            nomeOperatore={utenteCentrale ? `${utenteCentrale.nome} ${utenteCentrale.cognome}`.trim() : 'Centrale Operativa'}
+            onClose={() => setModalAnteprimaMultiplaAperta(false)}
+            onFirmaTutti={(ids) => handleFirmaSimultanea(ids)}
+            onFirmaSingolo={(item) => handleFirmaDocumentoCentrale(item as any)}
+          />
+        </Suspense>
       )}
 
       {/* MODALE PRECARICAMENTO / MODIFICA FIRMA OPERATORE CENTRALE */}
@@ -23633,26 +24885,30 @@ KM TOTALI: ${kmTot} KM`;
       />
 
       {/* MODALE SALVATAGGIO & BACKUP SUI 10 GB DI SPAZIO HOSTING WWW.CROCEORO.ORG */}
-      <ModalSyncServerCroceOro
-        aperta={modalSyncServerAperta}
-        onChiudi={() => setModalSyncServerAperta(false)}
-        operatoreNome={utenteCentrale?.nome ? `${utenteCentrale.nome} ${utenteCentrale.cognome || ''}` : 'Amministratore'}
-        datiApplicativi={{
-          serviziArchivio: archivioPDF,
-          volontari,
-          timbrature: timbratureVolontari,
-          mezzi: mezziFlotta,
-          manutenzioni: manutenzioniMezzi,
-          tessere: tessereAssociative,
-          noteDiDebito,
-          corsi: corsiFormazione,
-          sedi: sediAssociative,
-          turni: turniSedi,
-          bacheca: comunicazioniBacheca,
-          contatti,
-          magazzino: magazzinoMezzi
-        }}
-      />
+      {modalSyncServerAperta && (
+        <Suspense fallback={null}>
+          <ModalSyncServerCroceOro
+            aperta={modalSyncServerAperta}
+            onChiudi={() => setModalSyncServerAperta(false)}
+            operatoreNome={utenteCentrale?.nome ? `${utenteCentrale.nome} ${utenteCentrale.cognome || ''}` : 'Amministratore'}
+            datiApplicativi={{
+              serviziArchivio: archivioPDF,
+              volontari,
+              timbrature: timbratureVolontari,
+              mezzi: mezziFlotta,
+              manutenzioni: manutenzioniMezzi,
+              tessere: tessereAssociative,
+              noteDiDebito,
+              corsi: corsiFormazione,
+              sedi: sediAssociative,
+              turni: turniSedi,
+              bacheca: comunicazioniBacheca,
+              contatti,
+              magazzino: magazzinoMezzi
+            }}
+          />
+        </Suspense>
+      )}
 
       {/* MODALE RINOMINA DB & RINOMINA SUB (DAL MENÙ STRUMENTI) */}
       <ModalRinominaDbSub
@@ -25773,34 +27029,64 @@ KM TOTALI: ${kmTot} KM`;
       {/* GESTIONE DISPLAY RASPBERRY DI SEZIONE (ADMIN / PRESIDENTE / SEGRETARIO) */}
       {/* ------------------------------------------------------------- */}
       {modalGestioneRaspberryAperta && puoGestireDisplayRaspberry && (
-        <ModalGestioneDisplayRaspberry
-          isOpen={modalGestioneRaspberryAperta}
-          onClose={() => setModalGestioneRaspberryAperta(false)}
-          sedi={sediAssociative}
-          onAggiornaSedi={handleAggiornaSedi}
-          comunicazioni={comunicazioniBacheca}
-          onAggiornaComunicazioni={handleAggiornaComunicazioniBacheca}
-          timbrature={timbratureVolontari}
-          config={raspberryDisplayConfig}
-          onSalvaConfig={handleSalvaConfigDisplayRaspberry}
-          operatoreCorrente={
-            utenteCentraleLive?.nome
-              ? `${utenteCentraleLive.nome} ${utenteCentraleLive.cognome || ''}`.trim()
-              : volontarioLoggatoCorrente
-              ? `${volontarioLoggatoCorrente.nome} ${volontarioLoggatoCorrente.cognome || ''}`.trim()
-              : 'Direzione Associativa'
-          }
-          operatoreId={utenteCentraleLive?.id || volontarioLoggatoCorrente?.id}
-          onRefreshSync={() => {
-            realtime.publishRaspberryBoardNow({
-              sedi: sediAssociative,
-              bacheca: comunicazioniBacheca,
-              timbrature: timbratureVolontari,
-              config: raspberryDisplayConfig,
-            });
-            realtime.refreshPublicRaspberryBoard().catch(() => {});
-          }}
-        />
+        <Suspense fallback={<LazyViewFallback label="Caricamento Display Raspberry..." />}>
+          <ModalGestioneDisplayRaspberry
+            isOpen={modalGestioneRaspberryAperta}
+            onClose={() => setModalGestioneRaspberryAperta(false)}
+            sedi={sediAssociative}
+            onAggiornaSedi={handleAggiornaSedi}
+            comunicazioni={comunicazioniBacheca}
+            onAggiornaComunicazioni={handleAggiornaComunicazioniBacheca}
+            timbrature={timbratureVolontari}
+            config={raspberryDisplayConfig}
+            onSalvaConfig={handleSalvaConfigDisplayRaspberry}
+            operatoreCorrente={operatoreAuditNome}
+            operatoreId={utenteCentraleLive?.id || volontarioLoggatoCorrente?.id}
+            onRefreshSync={() => {
+              realtime.publishRaspberryBoardNow({
+                sedi: sediAssociative,
+                bacheca: comunicazioniBacheca,
+                timbrature: timbratureVolontari,
+                config: raspberryDisplayConfig,
+              });
+              realtime.refreshPublicRaspberryBoard().catch(() => {});
+            }}
+          />
+        </Suspense>
+      )}
+
+      {/* ------------------------------------------------------------- */}
+      {/* CENTRO DIRETTIVO ODV & RUNTS (SCADENZE, LIBRI SOCIALI, ORE, AUDIT, BACKUP) */}
+      {/* ------------------------------------------------------------- */}
+      {modalCentroDirettivoAperta && puoAccedereCentroDirettivo && (
+        <Suspense fallback={<LazyViewFallback label="Caricamento Centro Direttivo ODV..." />}>
+          <ModalCentroDirettivoOdv
+            isOpen={modalCentroDirettivoAperta}
+            onClose={() => setModalCentroDirettivoAperta(false)}
+            initialTab={tabCentroDirettivo}
+            operatoreCorrente={operatoreAuditNome}
+            canAccessAdminOrPresident={isAdminOPresidenteDirettivo}
+            isDirettivoOAdmin={puoAccedereCentroDirettivo}
+            volontari={volontari}
+            mezziFlotta={mezziFlotta}
+            manutenzioni={manutenzioniMezzi}
+            turni={turniSedi}
+            timbrature={timbratureVolontari}
+            corsi={corsiFormazione}
+            serviziArchivio={archivioPDF}
+            tessereAssociative={tessereAssociative}
+            onVaiADatabase={(dbKey) => {
+              setAdminSection(dbKey);
+            }}
+            onApriAssembleeSondaggi={() => setModalAssembleeSondaggiAperta(true)}
+            onApriArchivioSop={() => setModalArchivioSopAperta(true)}
+            onInviaAvvisoTurniScoperti={handleInviaAvvisoTurniScoperti}
+            onEsportaBackupCompleto={handleEsportaBackupCompleto}
+            onAnalizzaFileBackup={handleAnalizzaFileBackup}
+            onRipristinaBackupCompleto={handleRipristinaBackupCompleto}
+            onRegistraAudit={registraAuditEvento}
+          />
+        </Suspense>
       )}
 
       {/* ------------------------------------------------------------- */}
@@ -25824,6 +27110,100 @@ KM TOTALI: ${kmTot} KM`;
         sezioneVolontarioId={volontarioLoggatoCorrente?.sezioneAppartenenzaId || sediAssociative[0]?.id}
         sedi={sediAssociative}
       />
+
+      {/* ------------------------------------------------------------- */}
+      {/* RIFORNIMENTO CARBURANTE RAPIDO DA TURNO                       */}
+      {/* ------------------------------------------------------------- */}
+      {modalRifornimentoRapidoAperta && (
+        <Suspense fallback={<LazyViewFallback label="Caricamento Rifornimento Rapido..." />}>
+          <ModalRifornimentoRapidoTurno
+            aperta={modalRifornimentoRapidoAperta}
+            onChiudi={() => setModalRifornimentoRapidoAperta(false)}
+            mezziFlotta={mezziFlotta}
+            mezzoPreselezionato={sessioneTurnoEffettiva.mezzoScelto}
+            volontarioId={sessioneTurnoEffettiva.volontarioId || utenteCentraleLive?.id}
+            volontarioNome={sessioneTurnoEffettiva.volontarioNome || operatoreAuditNome}
+            sezioneNome={volontarioLoggatoCorrente?.sezioneAppartenenzaNome || sediAssociative[0]?.nome}
+            onAggiornaKmMezzo={(sigla, nuovoKm) => {
+              const target = mezziFlotta.find((m) => m.sigla === sigla);
+              if (target && nuovoKm > (target.chilometraggioAttuale || 0)) {
+                handleAggiornaMezziFlotta(
+                  mezziFlotta.map((m) => (m.sigla === sigla ? { ...m, chilometraggioAttuale: nuovoKm } : m))
+                );
+              }
+            }}
+            onRifornimentoRegistrato={handleRegistraRifornimentoInContabilita}
+            onNotificaRadio={aggiungiNotifica}
+          />
+        </Suspense>
+      )}
+
+      {/* ------------------------------------------------------------- */}
+      {/* SEGNALAZIONE GUASTI, DANNI E SINISTRI MEZZI (CON FOTO)        */}
+      {/* ------------------------------------------------------------- */}
+      {modalSegnalazioneGuastoAperta && (
+        <Suspense fallback={<LazyViewFallback label="Caricamento Segnalazione Guasto..." />}>
+          <ModalSegnalazioneGuastoMezzo
+            aperta={modalSegnalazioneGuastoAperta}
+            onChiudi={() => setModalSegnalazioneGuastoAperta(false)}
+            mezziFlotta={mezziFlotta}
+            volontari={volontari}
+            mezzoPreselezionato={sessioneTurnoEffettiva.mezzoScelto}
+            volontarioId={sessioneTurnoEffettiva.volontarioId || utenteCentraleLive?.id}
+            volontarioNome={sessioneTurnoEffettiva.volontarioNome || operatoreAuditNome}
+            sezioneNome={volontarioLoggatoCorrente?.sezioneAppartenenzaNome || sediAssociative[0]?.nome}
+            onImpostaMezzoFuoriServizio={(sigla, motivo) => {
+              const target = mezziFlotta.find((m) => m.sigla === sigla);
+              if (target && target.stato !== 'Fuori Servizio') {
+                handleAggiornaMezziFlotta(
+                  mezziFlotta.map((m) =>
+                    m.sigla === sigla ? { ...m, stato: 'Fuori Servizio', motivoFuoriServizio: motivo } : m
+                  )
+                );
+                registraAuditEvento('mezzi', `Mezzo ${sigla} Fuori Servizio`, motivo, 'critico');
+              }
+            }}
+            onNotificaRadio={aggiungiNotifica}
+          />
+        </Suspense>
+      )}
+
+      {/* ------------------------------------------------------------- */}
+      {/* ARCHIVIO DOCUMENTI & PROCEDURE OPERATIVE (SOP)                */}
+      {/* ------------------------------------------------------------- */}
+      {modalArchivioSopAperta && (
+        <Suspense fallback={<LazyViewFallback label="Caricamento Archivio Documenti & SOP..." />}>
+          <ModalArchivioDocumentiSop
+            aperta={modalArchivioSopAperta}
+            onChiudi={() => setModalArchivioSopAperta(false)}
+            volontarioId={sessioneTurnoEffettiva.volontarioId || utenteCentraleLive?.id}
+            volontarioNome={sessioneTurnoEffettiva.volontarioNome || operatoreAuditNome}
+            sezioneVolontarioId={volontarioLoggatoCorrente?.sezioneAppartenenzaId}
+            canManage={puoAccedereCentroDirettivo}
+            volontari={volontari}
+            sedi={sediAssociative}
+          />
+        </Suspense>
+      )}
+
+      {/* ------------------------------------------------------------- */}
+      {/* CONVOCAZIONI ASSEMBLEE & SONDAGGI RAPIDI (CREA SOLO DIRETTIVO)*/}
+      {/* ------------------------------------------------------------- */}
+      {modalAssembleeSondaggiAperta && (
+        <Suspense fallback={<LazyViewFallback label="Caricamento Assemblee & Sondaggi..." />}>
+          <ModalAssembleeSondaggiVolontario
+            aperta={modalAssembleeSondaggiAperta}
+            onChiudi={() => setModalAssembleeSondaggiAperta(false)}
+            volontarioId={sessioneTurnoEffettiva.volontarioId || utenteCentraleLive?.id}
+            volontarioNome={sessioneTurnoEffettiva.volontarioNome || operatoreAuditNome}
+            sezioneVolontarioId={volontarioLoggatoCorrente?.sezioneAppartenenzaId}
+            canCreateDirettivo={puoAccedereCentroDirettivo}
+            volontari={volontari}
+            sedi={sediAssociative}
+            onNotificaRadio={aggiungiNotifica}
+          />
+        </Suspense>
+      )}
 
       {/* ------------------------------------------------------------- */}
       {/* CENTRO NOTIFICHE ARCHIVIO PERMANENTE COMPLETO ACCOUNT */}
@@ -26070,6 +27450,37 @@ KM TOTALI: ${kmTot} KM`;
             handleDisconnettiProfilo(true);
           }}
         />
+      )}
+
+      {/* BANNER DISCRETO MODALITÀ OFFLINE & CODA DI INVIO AUTOMATICO (SOLO QUANDO OFFLINE O IN SINCRONIZZAZIONE CODA) */}
+      {(!offlineQueueStatus.online || offlineQueueStatus.pendingCount > 0 || offlineQueueStatus.syncing) && (
+        <div className="fixed bottom-3 left-1/2 -translate-x-1/2 z-[140] max-w-[94vw] px-3.5 py-2 rounded-2xl shadow-2xl border backdrop-blur-md flex items-center gap-2.5 text-xs font-bold bg-slate-950/95 border-amber-500/60 text-amber-100">
+          {!offlineQueueStatus.online ? (
+            <WifiOff className="w-4 h-4 text-amber-400 shrink-0" />
+          ) : (
+            <CloudUpload className="w-4 h-4 text-emerald-400 shrink-0 animate-pulse" />
+          )}
+          <span className="truncate">
+            {!offlineQueueStatus.online
+              ? offlineQueueStatus.pendingCount > 0
+                ? `Modalità offline • ${offlineQueueStatus.pendingCount} operazioni salvate in coda (invio automatico al ritorno rete)`
+                : 'Modalità offline • Le operazioni verranno salvate e inviate appena torna la connessione'
+              : offlineQueueStatus.syncing
+              ? `Sincronizzazione coda offline in corso (${offlineQueueStatus.pendingCount})...`
+              : `${offlineQueueStatus.pendingCount} operazioni in coda pronte per l'invio`}
+          </span>
+          {offlineQueueStatus.online && offlineQueueStatus.pendingCount > 0 && !offlineQueueStatus.syncing && (
+            <button
+              type="button"
+              onClick={() => {
+                realtime.flushOfflineQueue().catch(() => {});
+              }}
+              className="px-2 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] font-black uppercase shrink-0 cursor-pointer"
+            >
+              Invia Ora
+            </button>
+          )}
+        </div>
       )}
 
       {/* BANNER NOTIFICA AGGIORNAMENTO DISPONIBILE */}

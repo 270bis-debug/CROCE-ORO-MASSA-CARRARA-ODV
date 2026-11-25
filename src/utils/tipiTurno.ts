@@ -7,7 +7,14 @@
  */
 
 import { useState, useEffect } from 'react';
-import { TipoTurnoConfig, MansioneTipoTurno, RuoloTurno, TurnoSedeOperativa } from '../types/adminTypes';
+import {
+  TipoTurnoConfig,
+  MansioneTipoTurno,
+  RuoloTurno,
+  TurnoSedeOperativa,
+  RegoleStrumentiTipoTurno,
+  NotificheUtenteTipoTurno,
+} from '../types/adminTypes';
 import {
   getLabelRuoloEquipaggioLive,
   getMansioneCatalogoPerRuoloTurno,
@@ -15,7 +22,200 @@ import {
   MansioneOperativa,
 } from './mansioniVolontari';
 
-export type { TipoTurnoConfig, MansioneTipoTurno };
+export type { TipoTurnoConfig, MansioneTipoTurno, RegoleStrumentiTipoTurno, NotificheUtenteTipoTurno };
+
+export const DEFAULT_REGOLE_STRUMENTI_TIPO_TURNO: RegoleStrumentiTipoTurno = {
+  notificheAbilitate: false,
+  notifichePerUtente: [],
+  destinatariNotifiche: [],
+  consentiAutoCancellazioneVolontario: false,
+  orePreavvisoCancellazione: 24,
+  annullaDisponibilitaSuModificaOrario: false,
+  richiedeApprovazioneStaffODirettivo: true,
+  consentiDisponibilitaDurataInferiore: false,
+  nascondiDipendentiAiVolontari: false,
+  consentiPropostaCessioneOScambio: false,
+  visibileInModalitaMonitor: true,
+};
+
+export function normalizzaRegoleStrumentiTipoTurno(raw?: Partial<RegoleStrumentiTipoTurno> | null): RegoleStrumentiTipoTurno {
+  if (!raw || typeof raw !== 'object') {
+    return { ...DEFAULT_REGOLE_STRUMENTI_TIPO_TURNO, notifichePerUtente: [], destinatariNotifiche: [] };
+  }
+  const destinatariRaw = Array.isArray(raw.notifichePerUtente)
+    ? raw.notifichePerUtente
+    : Array.isArray(raw.destinatariNotifiche)
+    ? raw.destinatariNotifiche
+    : [];
+  const seenDest = new Set<string>();
+  const notifichePerUtente: NotificheUtenteTipoTurno[] = [];
+  for (const item of destinatariRaw) {
+    if (!item || typeof item !== 'object') continue;
+    const volontarioId = String(item.volontarioId || '').trim();
+    if (!volontarioId || seenDest.has(volontarioId)) continue;
+    seenDest.add(volontarioId);
+    notifichePerUtente.push({
+      volontarioId,
+      volontarioNome: String(item.volontarioNome || '').trim() || volontarioId,
+      suRichiestaTurno: Boolean(item.suRichiestaTurno),
+      suFoglioServizio: Boolean(item.suFoglioServizio),
+      suCancellazioneTurno: Boolean(item.suCancellazioneTurno),
+    });
+  }
+  const oreNum = Number(raw.orePreavvisoCancellazione);
+  const orePreavvisoCancellazione =
+    Number.isFinite(oreNum) && oreNum >= 0 && oreNum <= 720 ? Math.floor(oreNum) : 24;
+
+  return {
+    notificheAbilitate: Boolean(raw.notificheAbilitate),
+    notifichePerUtente,
+    destinatariNotifiche: notifichePerUtente,
+    consentiAutoCancellazioneVolontario: Boolean(raw.consentiAutoCancellazioneVolontario),
+    orePreavvisoCancellazione,
+    annullaDisponibilitaSuModificaOrario: Boolean(raw.annullaDisponibilitaSuModificaOrario),
+    richiedeApprovazioneStaffODirettivo:
+      typeof raw.richiedeApprovazioneStaffODirettivo === 'boolean'
+        ? raw.richiedeApprovazioneStaffODirettivo
+        : true,
+    consentiDisponibilitaDurataInferiore: Boolean(raw.consentiDisponibilitaDurataInferiore),
+    nascondiDipendentiAiVolontari: Boolean(raw.nascondiDipendentiAiVolontari),
+    consentiPropostaCessioneOScambio: Boolean(raw.consentiPropostaCessioneOScambio),
+    visibileInModalitaMonitor:
+      typeof raw.visibileInModalitaMonitor === 'boolean' ? raw.visibileInModalitaMonitor : true,
+  };
+}
+
+/**
+ * Risolve le regole Strumenti attive per un dato turno (lookup per tipoTurnoId o tipoTurnoNome).
+ */
+export function getRegoleStrumentiPerTurno(
+  turno?: Pick<TurnoSedeOperativa, 'tipoTurnoId' | 'tipoTurnoNome'> | null,
+  tipiCatalogo?: TipoTurnoConfig[]
+): RegoleStrumentiTipoTurno {
+  if (!turno) return normalizzaRegoleStrumentiTipoTurno(null);
+  const lista = tipiCatalogo && tipiCatalogo.length > 0 ? tipiCatalogo : getTipiTurnoCatalogo();
+  const byId = turno.tipoTurnoId ? lista.find((t) => t.id === turno.tipoTurnoId) : undefined;
+  if (byId) return normalizzaRegoleStrumentiTipoTurno(byId.regoleStrumenti);
+  const nomeNorm = (turno.tipoTurnoNome || '').trim().toLowerCase();
+  if (nomeNorm) {
+    const byName = lista.find((t) => t.nome.trim().toLowerCase() === nomeNorm);
+    if (byName) return normalizzaRegoleStrumentiTipoTurno(byName.regoleStrumenti);
+  }
+  return normalizzaRegoleStrumentiTipoTurno(null);
+}
+
+/**
+ * Identifica se un account è un dipendente (flag esplicito oppure qualifica/mansione contenente "dipendente").
+ */
+export function isVolontarioDipendente(
+  v?: {
+    isDipendente?: boolean;
+    qualifica?: string;
+    mansione?: string;
+    mansioni?: string[];
+    motivoEsenzioneQuota?: string;
+  } | null
+): boolean {
+  if (!v) return false;
+  if (v.isDipendente) return true;
+  const haystacks = [
+    v.qualifica || '',
+    v.mansione || '',
+    v.motivoEsenzioneQuota || '',
+    ...(Array.isArray(v.mansioni) ? v.mansioni : []),
+  ]
+    .join(' ')
+    .toLowerCase();
+  return haystacks.includes('dipendente');
+}
+
+/**
+ * Verifica se un volontario assegnato a un turno può auto-cancellarsi nel rispetto delle ore di preavviso.
+ */
+export function verificaAutoCancellazioneTurno(
+  turno: Pick<TurnoSedeOperativa, 'data' | 'orarioInizio'>,
+  regole: RegoleStrumentiTipoTurno,
+  nowMs: number = Date.now()
+): { consentito: boolean; oreMancanti: number; motivo?: string } {
+  if (!regole.consentiAutoCancellazioneVolontario) {
+    return {
+      consentito: false,
+      oreMancanti: 0,
+      motivo: 'L\'auto-cancellazione non è attiva per questo tipo di turno.',
+    };
+  }
+  const [y, m, d] = (turno.data || '').split('-').map(Number);
+  const [hh, mm] = (turno.orarioInizio || '00:00').split(':').map(Number);
+  if (!y || !m || !d) {
+    return { consentito: true, oreMancanti: 999 };
+  }
+  const startMs = new Date(y, m - 1, d, Number.isFinite(hh) ? hh : 0, Number.isFinite(mm) ? mm : 0, 0).getTime();
+  const diffHours = (startMs - nowMs) / (1000 * 60 * 60);
+  if (diffHours < 0) {
+    return {
+      consentito: false,
+      oreMancanti: 0,
+      motivo: 'Il turno è già iniziato o concluso.',
+    };
+  }
+  if (diffHours < regole.orePreavvisoCancellazione) {
+    return {
+      consentito: false,
+      oreMancanti: Math.max(0, Math.floor(diffHours)),
+      motivo: `Serve un preavviso minimo di ${regole.orePreavvisoCancellazione} ore prima dell'inizio (mancano solo ${Math.floor(diffHours)}h). Contatta la Centrale.`,
+    };
+  }
+  return { consentito: true, oreMancanti: Math.floor(diffHours) };
+}
+
+/**
+ * Invia una notifica email + in-app tramite il server alle persone configurate nelle regole Strumenti del tipo turno.
+ */
+export async function inviaNotificaStrumentiTurniEmail(params: {
+  destinatariEmails: string[];
+  destinatariNomi?: string[];
+  evento:
+    | 'richiesta_turno'
+    | 'foglio_servizio'
+    | 'cancellazione_turno'
+    | 'modifica_orario_turno'
+    | 'modifica_orario_reinvito'
+    | 'proposta_scambio'
+    | 'scambio_accettato_collega'
+    | 'scambio_approvato';
+  tipoTurnoNome?: string;
+  turnoRiepilogo?: string;
+  titolo: string;
+  messaggio: string;
+  dettagli?: Record<string, string>;
+}): Promise<boolean> {
+  const emailsPulite = Array.from(
+    new Set(
+      (params.destinatariEmails || [])
+        .map((e) => String(e || '').trim().toLowerCase())
+        .filter((e) => e.includes('@'))
+    )
+  );
+  if (emailsPulite.length === 0) return false;
+  try {
+    const res = await fetch('/api/notifica-strumenti-turni', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        destinatariEmails: emailsPulite,
+        destinatariNomi: params.destinatariNomi || [],
+        evento: params.evento,
+        titolo: params.titolo,
+        messaggio: params.messaggio,
+        dettagli: params.dettagli || {},
+      }),
+    });
+    const json = await res.json().catch(() => ({}));
+    return Boolean(json.success);
+  } catch {
+    return false;
+  }
+}
 
 export const TIPI_TURNO_STORAGE_KEY = 'CROCE_ORO_TIPI_TURNO';
 export const TIPI_TURNO_UPDATED_AT_KEY = 'CROCE_ORO_TIPI_TURNO_UPDATED_AT';
@@ -522,6 +722,7 @@ export function normalizzaListaTipiTurno(rawList: any[], catalogoCustom?: Mansio
       descrizione: item?.descrizione ? String(item.descrizione).trim() : '',
       icona: item?.icona ? String(item.icona).trim() : '📅',
       mansioniObbligatorie: normalizzaMansioniTipoTurno(item?.mansioniObbligatorie || [], catalogo),
+      regoleStrumenti: normalizzaRegoleStrumentiTipoTurno(item?.regoleStrumenti),
       predefinito: Boolean(item?.predefinito),
       dataCreazione: item?.dataCreazione ? String(item.dataCreazione) : undefined,
     });

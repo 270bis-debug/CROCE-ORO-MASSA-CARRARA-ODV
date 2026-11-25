@@ -50,6 +50,13 @@ import {
   listenPublicRaspberryBoardFirestore,
   readPublicRaspberryBoardFromServer,
   PublicRaspberryBoardDoc,
+  publishPublicCourseFirestore,
+  readPublicCourseFromServer,
+  submitCourseGuestCheckinFirestore,
+  listenPendingCourseGuestCheckinsFirestore,
+  markCourseGuestCheckinAppliedFirestore,
+  PublicCourseDoc,
+  CourseGuestCheckinRecord,
 } from './firebase';
 import {
   loadRaspberryDisplayConfig,
@@ -90,6 +97,48 @@ import {
   getModelliAttestatiUpdatedAt,
   sanitizzaModelliPerCloud
 } from '../utils/modelliAttestatiStore';
+import {
+  applicaAuditLogDaSync,
+  getAuditLogEntries,
+  mergeAuditLogEntries,
+} from '../utils/auditLogStore';
+import {
+  applicaLibriSocialiDaSync,
+  getLibriSocialiUpdatedAt,
+} from '../utils/libriSocialiOdv';
+import {
+  applicaRichiesteReintegroDaSync,
+  getRichiesteReintegroUpdatedAt,
+} from '../utils/reintegroMagazzinoStore';
+import {
+  mergeRifornimentiCloud,
+  getRifornimentiUpdatedAt,
+} from '../utils/rifornimentiStore';
+import {
+  mergeMetodiPagamentoCarburanteCloud,
+  getMetodiPagamentoCarburanteUpdatedAt,
+} from '../utils/metodiPagamentoCarburanteStore';
+import {
+  mergeSegnalazioniGuastiCloud,
+  getSegnalazioniGuastiUpdatedAt,
+} from '../utils/guastiMezziStore';
+import {
+  mergeDocumentiSopCloud,
+  getDocumentiSopUpdatedAt,
+} from '../utils/documentiSopStore';
+import {
+  mergeAssembleeSondaggiCloud,
+  getAssembleeSondaggiUpdatedAt,
+} from '../utils/assembleeSondaggiStore';
+import {
+  applicaScadenzeFiscaliDaSync,
+  getScadenzeFiscaliUpdatedAt,
+} from '../utils/scadenzeFiscaliOdv';
+import {
+  applicaAuleFormazioneDaSync,
+  getAuleFormazioneUpdatedAt,
+  risolviTargetAulaDidattica,
+} from '../utils/auleFormazione';
 
 const stripLegacyCorsi = (list: any): any[] => {
   if (!Array.isArray(list)) return [];
@@ -340,6 +389,7 @@ class RealtimeService {
 
   constructor() {
     capturePublicUrlIfApplicable();
+    this.loadOfflineQueueFromStorage();
     this.initFirebaseRealtime();
     this.connect();
     this.startFallbackPolling();
@@ -349,6 +399,217 @@ class RealtimeService {
   private wsKeepAliveTimer: any = null;
   private lastWsMessageAt: number = 0;
   private awaitingPongSince: number = 0;
+
+  // === CODA OFFLINE PERSISTENTE CON INVIO AUTOMATICO AL RITORNO DELLA RETE ===
+  private readonly OFFLINE_QUEUE_STORAGE_KEY = 'CROCE_ORO_OFFLINE_SYNC_QUEUE_V1';
+  private offlineQueue: Array<{ id: string; type: string; data: any; createdAt: number }> = [];
+  private isFlushingOfflineQueue = false;
+  private lastOfflineQueueSyncedAt = 0;
+  private offlineQueueTimer: any = null;
+
+  private readonly EPHEMERAL_NO_QUEUE_TYPES = new Set<string>([
+    'PTT_AUDIO_CHUNK',
+    'PTT_START',
+    'PTT_STOP',
+    'PING',
+    'PTT_CLIENT_CAPS',
+    'SESSION_HEARTBEAT',
+    'UPDATE_GPS',
+    'TRIGGER_RING',
+    'STOP_RING',
+  ]);
+
+  private readonly COALESCE_QUEUE_TYPES = new Set<string>([
+    'UPDATE_TURNI',
+    'UPDATE_VOLONTARI_LIST',
+    'UPDATE_BACHECA',
+    'UPDATE_TIMBRATURE',
+    'UPDATE_LUOGHI_TIMBRATURA',
+    'UPDATE_GIORNALE_BORDO',
+    'UPDATE_SEDI',
+    'UPDATE_CHECKLISTS_TEMPLATES',
+    'UPDATE_MEZZI_FLOTTA',
+    'UPDATE_CORSI',
+    'UPDATE_CONTATTI',
+    'UPDATE_MAGAZZINO_PARTI',
+    'UPDATE_MAGAZZINO_MEZZI',
+    'UPDATE_MAGAZZINO_VESTIARIO',
+    'UPDATE_ATTREZZATURE_MAGAZZINO',
+    'UPDATE_MOVIMENTI_MAGAZZINO',
+    'UPDATE_NOTE_DEBITO',
+    'UPDATE_RICEVUTE_CONTABILITA',
+    'UPDATE_TESSERE',
+    'UPDATE_ALTRE_ENTRATE_USCITE',
+    'UPDATE_COSTI_GESTIONE',
+    'UPDATE_COSTI_SERVIZIO',
+    'UPDATE_AUDIT_LOG',
+    'UPDATE_LIBRI_SOCIALI',
+    'UPDATE_RICHIESTE_REINTEGRO',
+    'UPDATE_RIFORNIMENTI_MEZZI',
+    'UPDATE_METODI_PAGAMENTO_CARBURANTE',
+    'UPDATE_GUASTI_MEZZI',
+    'UPDATE_DOCUMENTI_SOP',
+    'UPDATE_ASSEMBLEE_SONDAGGI',
+  ]);
+
+  private loadOfflineQueueFromStorage() {
+    if (typeof window === 'undefined') return;
+    try {
+      const raw = localStorage.getItem(this.OFFLINE_QUEUE_STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          this.offlineQueue = parsed
+            .filter((x) => x && typeof x.type === 'string')
+            .slice(-60);
+        }
+      }
+    } catch {
+      this.offlineQueue = [];
+    }
+  }
+
+  private persistOfflineQueue() {
+    if (typeof window === 'undefined') return;
+    try {
+      localStorage.setItem(
+        this.OFFLINE_QUEUE_STORAGE_KEY,
+        JSON.stringify(this.offlineQueue.slice(-60))
+      );
+    } catch {
+      // Se lo storage è pieno, mantieni solo gli ultimi 20 elementi critici
+      try {
+        this.offlineQueue = this.offlineQueue.slice(-20);
+        localStorage.setItem(this.OFFLINE_QUEUE_STORAGE_KEY, JSON.stringify(this.offlineQueue));
+      } catch {}
+    }
+    this.emitOfflineQueueStatus();
+  }
+
+  private emitOfflineQueueStatus() {
+    this.emit('offline_queue_status', this.getOfflineQueueStatus());
+  }
+
+  public getOfflineQueueStatus(): {
+    online: boolean;
+    pendingCount: number;
+    syncing: boolean;
+    lastSyncedAt: number;
+  } {
+    const online = typeof navigator !== 'undefined' ? navigator.onLine !== false : true;
+    return {
+      online,
+      pendingCount: this.offlineQueue.length,
+      syncing: this.isFlushingOfflineQueue,
+      lastSyncedAt: this.lastOfflineQueueSyncedAt,
+    };
+  }
+
+  private enqueueOfflineEvent(type: string, data: any) {
+    if (this.EPHEMERAL_NO_QUEUE_TYPES.has(type)) return;
+    // Evita di saturare localStorage con payload enormi (>250KB)
+    try {
+      const serializedSize = JSON.stringify(data || {}).length;
+      if (serializedSize > 250000) return;
+    } catch {
+      return;
+    }
+    const entry = {
+      id: `oq-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      type,
+      data,
+      createdAt: Date.now(),
+    };
+    if (this.COALESCE_QUEUE_TYPES.has(type)) {
+      const idx = this.offlineQueue.findIndex((item) => item.type === type);
+      if (idx >= 0) {
+        this.offlineQueue[idx] = entry;
+      } else {
+        this.offlineQueue.push(entry);
+      }
+    } else {
+      this.offlineQueue.push(entry);
+    }
+    if (this.offlineQueue.length > 60) {
+      this.offlineQueue = this.offlineQueue.slice(-60);
+    }
+    this.persistOfflineQueue();
+  }
+
+  public async flushOfflineQueue(): Promise<number> {
+    if (this.isFlushingOfflineQueue || this.offlineQueue.length === 0) return 0;
+    const isBrowserOnline = typeof navigator !== 'undefined' ? navigator.onLine !== false : true;
+    if (!isBrowserOnline) {
+      this.emitOfflineQueueStatus();
+      return 0;
+    }
+    const wsOpen = Boolean(this.ws && this.ws.readyState === WebSocket.OPEN);
+    const cloudReady = Boolean(this.firebaseSession.isAuthorized && this.firestoreActive);
+    if (!wsOpen && !cloudReady && this.isServerlessStaticHost()) {
+      return 0;
+    }
+
+    this.isFlushingOfflineQueue = true;
+    this.emitOfflineQueueStatus();
+    let flushed = 0;
+
+    try {
+      const batch = [...this.offlineQueue];
+      const remaining: typeof this.offlineQueue = [];
+
+      for (const item of batch) {
+        let delivered = false;
+        try {
+          this.applyLocalEventToShards(item.type, item.data);
+          if (cloudReady) {
+            delivered = true;
+          }
+          if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+            this.ws.send(JSON.stringify({ type: item.type, data: item.data }));
+            delivered = true;
+          } else if (!this.isServerlessStaticHost()) {
+            const targetBase = this.getApiBaseUrl();
+            if (targetBase) {
+              const resp = await fetch(`${targetBase}/api/event`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ type: item.type, data: item.data }),
+                cache: 'no-store',
+              });
+              if (resp.ok) delivered = true;
+            }
+          }
+        } catch {
+          delivered = false;
+        }
+
+        if (delivered) {
+          flushed++;
+        } else {
+          remaining.push(item);
+        }
+      }
+
+      this.offlineQueue = remaining;
+      if (flushed > 0) {
+        this.lastOfflineQueueSyncedAt = Date.now();
+        // Forza flush immediato di tutti gli shard dirty su Firestore
+        (Object.keys(this.shardDirtyTimers) as SyncShardId[]).forEach((shardId) => {
+          if (this.shardDirtyTimers[shardId]) {
+            clearTimeout(this.shardDirtyTimers[shardId]);
+            delete this.shardDirtyTimers[shardId];
+            this.flushShardToFirestore(shardId).catch(() => {});
+          }
+        });
+      }
+      this.persistOfflineQueue();
+    } finally {
+      this.isFlushingOfflineQueue = false;
+      this.emitOfflineQueueStatus();
+    }
+
+    return flushed;
+  }
 
   private getSavedPushEndpoint(): string | undefined {
     if (typeof window === 'undefined') return undefined;
@@ -460,10 +721,25 @@ class RealtimeService {
       } catch {}
     }
 
+    if (!this.offlineQueueTimer) {
+      this.offlineQueueTimer = setInterval(() => {
+        if (this.offlineQueue.length > 0 && navigator.onLine !== false) {
+          this.flushOfflineQueue().catch(() => {});
+        }
+      }, 15000);
+    }
+
     window.addEventListener('pagehide', flushPending);
+    window.addEventListener('offline', () => {
+      this.emitOfflineQueueStatus();
+    });
     window.addEventListener('online', () => {
+      this.emitOfflineQueueStatus();
       this.forceReconnectWebSocket();
       wakeTransport();
+      setTimeout(() => {
+        this.flushOfflineQueue().catch(() => {});
+      }, 900);
     });
     window.addEventListener('focus', wakeTransport);
     window.addEventListener('pageshow', wakeTransport);
@@ -1849,6 +2125,38 @@ class RealtimeService {
           updatedAt: payload.tipiTurnoUpdatedAt,
         });
       }
+      if (Array.isArray(payload.scadenzeFiscaliOdv) || payload.configScadenzeFiscaliOdv) {
+        if (Array.isArray(payload.scadenzeFiscaliOdv)) {
+          this.cloudState.scadenzeFiscaliOdv = payload.scadenzeFiscaliOdv;
+        }
+        if (payload.configScadenzeFiscaliOdv && typeof payload.configScadenzeFiscaliOdv === 'object') {
+          this.cloudState.configScadenzeFiscaliOdv = payload.configScadenzeFiscaliOdv;
+        }
+        if (payload.scadenzeFiscaliUpdatedAt) {
+          this.cloudState.scadenzeFiscaliUpdatedAt = payload.scadenzeFiscaliUpdatedAt;
+        }
+        applicaScadenzeFiscaliDaSync(
+          payload.scadenzeFiscaliOdv,
+          payload.configScadenzeFiscaliOdv,
+          payload.scadenzeFiscaliUpdatedAt
+        );
+        this.emit('SCADENZE_FISCALI_ODV_UPDATED', {
+          scadenze: payload.scadenzeFiscaliOdv,
+          config: payload.configScadenzeFiscaliOdv,
+          updatedAt: payload.scadenzeFiscaliUpdatedAt,
+        });
+      }
+      if (Array.isArray(payload.auleFormazione)) {
+        this.cloudState.auleFormazione = payload.auleFormazione;
+        if (payload.auleFormazioneUpdatedAt) {
+          this.cloudState.auleFormazioneUpdatedAt = payload.auleFormazioneUpdatedAt;
+        }
+        applicaAuleFormazioneDaSync(payload.auleFormazione, payload.auleFormazioneUpdatedAt);
+        this.emit('AULE_FORMAZIONE_UPDATED', {
+          aule: payload.auleFormazione,
+          updatedAt: payload.auleFormazioneUpdatedAt,
+        });
+      }
       if (Array.isArray(payload.metodiPagamentoCustom)) {
         this.cloudState.metodiPagamentoCustom = payload.metodiPagamentoCustom;
         if (payload.metodiPagamentoCustomUpdatedAt) {
@@ -1892,6 +2200,117 @@ class RealtimeService {
           modelliAttestatiCategoria: payload.modelliAttestatiCategoria,
           updatedAt: payload.modelliAttestatiUpdatedAt,
         });
+      }
+      if (payload.promemoriaCompleanniInviati && typeof payload.promemoriaCompleanniInviati === 'object' && !Array.isArray(payload.promemoriaCompleanniInviati)) {
+        const merged = this.mergePromemoriaCompleanniMap(payload.promemoriaCompleanniInviati);
+        this.cloudState.promemoriaCompleanniInviati = merged;
+        this.emit('PROMEMORIA_COMPLEANNI_UPDATED', {
+          promemoriaCompleanniInviati: merged,
+        });
+      }
+      if (payload.promemoriaTurniInviati && typeof payload.promemoriaTurniInviati === 'object' && !Array.isArray(payload.promemoriaTurniInviati)) {
+        const merged = this.mergeSimpleReminderMap('CROCE_ORO_PROMEMORIA_TURNI_LOG_V1', 'promemoriaTurniInviati', payload.promemoriaTurniInviati, 21);
+        this.cloudState.promemoriaTurniInviati = merged;
+        this.emit('PROMEMORIA_TURNI_UPDATED', { promemoriaTurniInviati: merged });
+      }
+      if (payload.promemoriaScadenzeFiscaliInviate && typeof payload.promemoriaScadenzeFiscaliInviate === 'object' && !Array.isArray(payload.promemoriaScadenzeFiscaliInviate)) {
+        const merged = this.mergeSimpleReminderMap('CROCE_ORO_PROMEMORIA_FISCALI_LOG_V1', 'promemoriaScadenzeFiscaliInviate', payload.promemoriaScadenzeFiscaliInviate, 120);
+        this.cloudState.promemoriaScadenzeFiscaliInviate = merged;
+        this.emit('PROMEMORIA_SCADENZE_FISCALI_UPDATED', { promemoriaScadenzeFiscaliInviate: merged });
+      }
+      if (payload.promemoriaScadenzeMezziInviate && typeof payload.promemoriaScadenzeMezziInviate === 'object' && !Array.isArray(payload.promemoriaScadenzeMezziInviate)) {
+        const merged = this.mergeSimpleReminderMap('CROCE_ORO_PROMEMORIA_MEZZI_LOG_V1', 'promemoriaScadenzeMezziInviate', payload.promemoriaScadenzeMezziInviate, 45);
+        this.cloudState.promemoriaScadenzeMezziInviate = merged;
+        this.emit('PROMEMORIA_SCADENZE_MEZZI_UPDATED', { promemoriaScadenzeMezziInviate: merged });
+      }
+      if (payload.promemoriaTurniScopertiInviati && typeof payload.promemoriaTurniScopertiInviati === 'object' && !Array.isArray(payload.promemoriaTurniScopertiInviati)) {
+        const merged = this.mergeSimpleReminderMap('CROCE_ORO_PROMEMORIA_TURNI_SCOPERTI_LOG_V1', 'promemoriaTurniScopertiInviati', payload.promemoriaTurniScopertiInviati, 14);
+        this.cloudState.promemoriaTurniScopertiInviati = merged;
+        this.emit('PROMEMORIA_TURNI_SCOPERTI_UPDATED', { promemoriaTurniScopertiInviati: merged });
+      }
+      if (Array.isArray(payload.auditLog)) {
+        const mergedAudit = applicaAuditLogDaSync(payload.auditLog);
+        this.cloudState.auditLog = mergedAudit;
+        this.emit('AUDIT_LOG_UPDATED', { auditLog: mergedAudit });
+      }
+      if (Array.isArray(payload.libriSocialiVerbali) || Array.isArray(payload.libriSocialiDelibere)) {
+        const incomingTs = typeof payload.libriSocialiUpdatedAt === 'number' ? payload.libriSocialiUpdatedAt : 0;
+        if (incomingTs >= getLibriSocialiUpdatedAt()) {
+          if (Array.isArray(payload.libriSocialiVerbali)) this.cloudState.libriSocialiVerbali = payload.libriSocialiVerbali;
+          if (Array.isArray(payload.libriSocialiDelibere)) this.cloudState.libriSocialiDelibere = payload.libriSocialiDelibere;
+          this.cloudState.libriSocialiUpdatedAt = incomingTs;
+          applicaLibriSocialiDaSync(payload.libriSocialiVerbali, payload.libriSocialiDelibere, incomingTs);
+          this.emit('LIBRI_SOCIALI_UPDATED', {
+            verbali: payload.libriSocialiVerbali || [],
+            delibere: payload.libriSocialiDelibere || [],
+            updatedAt: incomingTs,
+          });
+        }
+      }
+      if (Array.isArray(payload.richiesteReintegroMagazzino)) {
+        const incomingTs = typeof payload.richiesteReintegroUpdatedAt === 'number' ? payload.richiesteReintegroUpdatedAt : 0;
+        if (incomingTs >= getRichiesteReintegroUpdatedAt()) {
+          this.cloudState.richiesteReintegroMagazzino = payload.richiesteReintegroMagazzino;
+          this.cloudState.richiesteReintegroUpdatedAt = incomingTs;
+          applicaRichiesteReintegroDaSync(payload.richiesteReintegroMagazzino, incomingTs);
+          this.emit('RICHIESTE_REINTEGRO_UPDATED', {
+            richieste: payload.richiesteReintegroMagazzino,
+            updatedAt: incomingTs,
+          });
+        }
+      }
+      if (Array.isArray(payload.rifornimentiMezzi)) {
+        const incomingTs = typeof payload.rifornimentiUpdatedAt === 'number' ? payload.rifornimentiUpdatedAt : 0;
+        if (incomingTs >= getRifornimentiUpdatedAt()) {
+          const merged = mergeRifornimentiCloud(payload.rifornimentiMezzi, incomingTs);
+          this.cloudState.rifornimentiMezzi = merged.lista;
+          this.cloudState.rifornimentiUpdatedAt = merged.updatedAt;
+          this.emit('RIFORNIMENTI_MEZZI_UPDATED', merged);
+        }
+      }
+      if (Array.isArray(payload.metodiPagamentoCarburante) && payload.metodiPagamentoCarburante.length > 0) {
+        const incomingTs =
+          typeof payload.metodiPagamentoCarburanteUpdatedAt === 'number'
+            ? payload.metodiPagamentoCarburanteUpdatedAt
+            : 0;
+        if (incomingTs >= getMetodiPagamentoCarburanteUpdatedAt()) {
+          const merged = mergeMetodiPagamentoCarburanteCloud(payload.metodiPagamentoCarburante, incomingTs);
+          this.cloudState.metodiPagamentoCarburante = merged.lista;
+          this.cloudState.metodiPagamentoCarburanteUpdatedAt = merged.updatedAt;
+          this.emit('METODI_PAGAMENTO_CARBURANTE_UPDATED', merged);
+        }
+      }
+      if (Array.isArray(payload.segnalazioniGuastiMezzi)) {
+        const incomingTs = typeof payload.segnalazioniGuastiUpdatedAt === 'number' ? payload.segnalazioniGuastiUpdatedAt : 0;
+        if (incomingTs >= getSegnalazioniGuastiUpdatedAt()) {
+          const merged = mergeSegnalazioniGuastiCloud(payload.segnalazioniGuastiMezzi, incomingTs);
+          this.cloudState.segnalazioniGuastiMezzi = merged.lista;
+          this.cloudState.segnalazioniGuastiUpdatedAt = merged.updatedAt;
+          this.emit('GUASTI_MEZZI_UPDATED', merged);
+        }
+      }
+      if (Array.isArray(payload.documentiAssociativiSop)) {
+        const incomingTs = typeof payload.documentiSopUpdatedAt === 'number' ? payload.documentiSopUpdatedAt : 0;
+        if (incomingTs >= getDocumentiSopUpdatedAt()) {
+          const merged = mergeDocumentiSopCloud(payload.documentiAssociativiSop, incomingTs);
+          this.cloudState.documentiAssociativiSop = merged.lista;
+          this.cloudState.documentiSopUpdatedAt = merged.updatedAt;
+          this.emit('DOCUMENTI_SOP_UPDATED', merged);
+        }
+      }
+      if (Array.isArray(payload.convocazioniAssemblee) || Array.isArray(payload.sondaggiRapidi)) {
+        const incomingTs = typeof payload.assembleeSondaggiUpdatedAt === 'number' ? payload.assembleeSondaggiUpdatedAt : 0;
+        if (incomingTs >= getAssembleeSondaggiUpdatedAt()) {
+          const merged = mergeAssembleeSondaggiCloud({
+            convocazioni: payload.convocazioniAssemblee || [],
+            sondaggi: payload.sondaggiRapidi || [],
+            updatedAt: incomingTs,
+          });
+          this.cloudState.convocazioniAssemblee = merged.convocazioni;
+          this.cloudState.sondaggiRapidi = merged.sondaggi;
+          this.cloudState.assembleeSondaggiUpdatedAt = merged.updatedAt;
+          this.emit('ASSEMBLEE_SONDAGGI_UPDATED', merged);
+        }
       }
       if (typeof payload.publicAppUrl === 'string' && payload.publicAppUrl.trim() && !isProtectedAiStudioHost(payload.publicAppUrl)) {
         const saved = saveConfiguredPublicUrlLocal(payload.publicAppUrl);
@@ -2365,6 +2784,14 @@ class RealtimeService {
           tipologieMezzoUpdatedAt: this.cloudState.tipologieMezzoUpdatedAt || undefined,
           tipiTurno: Array.isArray(this.cloudState.tipiTurno) ? this.cloudState.tipiTurno : undefined,
           tipiTurnoUpdatedAt: this.cloudState.tipiTurnoUpdatedAt || undefined,
+          scadenzeFiscaliOdv: Array.isArray(this.cloudState.scadenzeFiscaliOdv) ? this.cloudState.scadenzeFiscaliOdv : undefined,
+          configScadenzeFiscaliOdv:
+            this.cloudState.configScadenzeFiscaliOdv && typeof this.cloudState.configScadenzeFiscaliOdv === 'object'
+              ? this.cloudState.configScadenzeFiscaliOdv
+              : undefined,
+          scadenzeFiscaliUpdatedAt: this.cloudState.scadenzeFiscaliUpdatedAt || undefined,
+          auleFormazione: Array.isArray(this.cloudState.auleFormazione) ? this.cloudState.auleFormazione : undefined,
+          auleFormazioneUpdatedAt: this.cloudState.auleFormazioneUpdatedAt || undefined,
           rubricaNumeriUtili: Array.isArray(this.cloudState.rubricaNumeriUtili) ? this.cloudState.rubricaNumeriUtili : undefined,
           rubricaNumeriUtiliUpdatedAt: this.cloudState.rubricaNumeriUtiliUpdatedAt || undefined,
           modelliAttestatiCategoria:
@@ -2372,6 +2799,57 @@ class RealtimeService {
               ? sanitizzaModelliPerCloud(this.cloudState.modelliAttestatiCategoria)
               : undefined,
           modelliAttestatiUpdatedAt: this.cloudState.modelliAttestatiUpdatedAt || undefined,
+          promemoriaCompleanniInviati:
+            this.cloudState.promemoriaCompleanniInviati && typeof this.cloudState.promemoriaCompleanniInviati === 'object'
+              ? this.cloudState.promemoriaCompleanniInviati
+              : undefined,
+          promemoriaTurniInviati:
+            this.cloudState.promemoriaTurniInviati && typeof this.cloudState.promemoriaTurniInviati === 'object'
+              ? this.cloudState.promemoriaTurniInviati
+              : undefined,
+          promemoriaScadenzeFiscaliInviate:
+            this.cloudState.promemoriaScadenzeFiscaliInviate && typeof this.cloudState.promemoriaScadenzeFiscaliInviate === 'object'
+              ? this.cloudState.promemoriaScadenzeFiscaliInviate
+              : undefined,
+          promemoriaScadenzeMezziInviate:
+            this.cloudState.promemoriaScadenzeMezziInviate && typeof this.cloudState.promemoriaScadenzeMezziInviate === 'object'
+              ? this.cloudState.promemoriaScadenzeMezziInviate
+              : undefined,
+          promemoriaTurniScopertiInviati:
+            this.cloudState.promemoriaTurniScopertiInviati && typeof this.cloudState.promemoriaTurniScopertiInviati === 'object'
+              ? this.cloudState.promemoriaTurniScopertiInviati
+              : undefined,
+          auditLog: Array.isArray(this.cloudState.auditLog) ? this.cloudState.auditLog.slice(0, 500) : undefined,
+          libriSocialiVerbali: Array.isArray(this.cloudState.libriSocialiVerbali) ? this.cloudState.libriSocialiVerbali : undefined,
+          libriSocialiDelibere: Array.isArray(this.cloudState.libriSocialiDelibere) ? this.cloudState.libriSocialiDelibere : undefined,
+          libriSocialiUpdatedAt: this.cloudState.libriSocialiUpdatedAt || undefined,
+          richiesteReintegroMagazzino: Array.isArray(this.cloudState.richiesteReintegroMagazzino)
+            ? this.cloudState.richiesteReintegroMagazzino.slice(0, 250)
+            : undefined,
+          richiesteReintegroUpdatedAt: this.cloudState.richiesteReintegroUpdatedAt || undefined,
+          rifornimentiMezzi: Array.isArray(this.cloudState.rifornimentiMezzi)
+            ? this.cloudState.rifornimentiMezzi.slice(0, 180)
+            : undefined,
+          rifornimentiUpdatedAt: this.cloudState.rifornimentiUpdatedAt || undefined,
+          metodiPagamentoCarburante: Array.isArray(this.cloudState.metodiPagamentoCarburante)
+            ? this.cloudState.metodiPagamentoCarburante.slice(0, 60)
+            : undefined,
+          metodiPagamentoCarburanteUpdatedAt: this.cloudState.metodiPagamentoCarburanteUpdatedAt || undefined,
+          segnalazioniGuastiMezzi: Array.isArray(this.cloudState.segnalazioniGuastiMezzi)
+            ? this.cloudState.segnalazioniGuastiMezzi.slice(0, 80)
+            : undefined,
+          segnalazioniGuastiUpdatedAt: this.cloudState.segnalazioniGuastiUpdatedAt || undefined,
+          documentiAssociativiSop: Array.isArray(this.cloudState.documentiAssociativiSop)
+            ? this.cloudState.documentiAssociativiSop.slice(0, 60)
+            : undefined,
+          documentiSopUpdatedAt: this.cloudState.documentiSopUpdatedAt || undefined,
+          convocazioniAssemblee: Array.isArray(this.cloudState.convocazioniAssemblee)
+            ? this.cloudState.convocazioniAssemblee.slice(0, 50)
+            : undefined,
+          sondaggiRapidi: Array.isArray(this.cloudState.sondaggiRapidi)
+            ? this.cloudState.sondaggiRapidi.slice(0, 60)
+            : undefined,
+          assembleeSondaggiUpdatedAt: this.cloudState.assembleeSondaggiUpdatedAt || undefined,
         };
     }
   }
@@ -2621,6 +3099,8 @@ class RealtimeService {
           (Array.isArray(snapshot.customEmojiIcons) && snapshot.customEmojiIcons.length > 0) ||
           (Array.isArray(snapshot.tipologieMezzo) && snapshot.tipologieMezzo.length > 0) ||
           (Array.isArray(snapshot.tipiTurno) && snapshot.tipiTurno.length > 0) ||
+          (Array.isArray(snapshot.scadenzeFiscaliOdv) && snapshot.scadenzeFiscaliOdv.length > 0) ||
+          (Array.isArray(snapshot.auleFormazione) && snapshot.auleFormazione.length > 0) ||
           Boolean(snapshot.nomiDatabase && Object.keys(snapshot.nomiDatabase).length > 0) ||
           (Array.isArray(snapshot.rubricaNumeriUtili) && snapshot.rubricaNumeriUtili.length > 0) ||
           Boolean(getConfiguredPublicUrl()),
@@ -2638,6 +3118,11 @@ class RealtimeService {
           tipologieMezzoUpdatedAt: getTipologieMezzoUpdatedAt() || Date.now(),
           tipiTurno: snapshot.tipiTurno,
           tipiTurnoUpdatedAt: getTipiTurnoUpdatedAt() || Date.now(),
+          scadenzeFiscaliOdv: snapshot.scadenzeFiscaliOdv,
+          configScadenzeFiscaliOdv: snapshot.configScadenzeFiscaliOdv,
+          scadenzeFiscaliUpdatedAt: getScadenzeFiscaliUpdatedAt() || Date.now(),
+          auleFormazione: snapshot.auleFormazione,
+          auleFormazioneUpdatedAt: getAuleFormazioneUpdatedAt() || Date.now(),
           nomiDatabase: snapshot.nomiDatabase,
           nomiDatabaseUpdatedAt: getNomiDatabaseUpdatedAt() || Date.now(),
           rubricaNumeriUtili: snapshot.rubricaNumeriUtili,
@@ -2784,6 +3269,11 @@ class RealtimeService {
           tipologieMezzoUpdatedAt: getTipologieMezzoUpdatedAt() || Date.now(),
           tipiTurno: snapshot.tipiTurno ?? this.cloudState.tipiTurno,
           tipiTurnoUpdatedAt: getTipiTurnoUpdatedAt() || Date.now(),
+          scadenzeFiscaliOdv: snapshot.scadenzeFiscaliOdv ?? this.cloudState.scadenzeFiscaliOdv,
+          configScadenzeFiscaliOdv: snapshot.configScadenzeFiscaliOdv ?? this.cloudState.configScadenzeFiscaliOdv,
+          scadenzeFiscaliUpdatedAt: getScadenzeFiscaliUpdatedAt() || Date.now(),
+          auleFormazione: snapshot.auleFormazione ?? this.cloudState.auleFormazione,
+          auleFormazioneUpdatedAt: getAuleFormazioneUpdatedAt() || Date.now(),
           nomiDatabase: snapshot.nomiDatabase ?? this.cloudState.nomiDatabase,
           nomiDatabaseUpdatedAt: getNomiDatabaseUpdatedAt() || Date.now(),
           rubricaNumeriUtili: snapshot.rubricaNumeriUtili ?? this.cloudState.rubricaNumeriUtili,
@@ -2912,6 +3402,11 @@ class RealtimeService {
         } catch {}
         this.reportOpusCapability();
         this.emit('WS_RECONNECTED', { ts: Date.now() });
+        if (this.offlineQueue.length > 0) {
+          setTimeout(() => {
+            this.flushOfflineQueue().catch(() => {});
+          }, 500);
+        }
       };
 
       this.ws.onmessage = (event) => {
@@ -3017,10 +3512,23 @@ class RealtimeService {
               this.cloudState.tipiTurno = payload.tipiTurno;
               if (payload.updatedAt) this.cloudState.tipiTurnoUpdatedAt = payload.updatedAt;
               applicaTipiTurnoDaSync(payload.tipiTurno, payload.updatedAt);
+            } else if (payload.type === 'SCADENZE_FISCALI_ODV_UPDATED') {
+              if (Array.isArray(payload.scadenze)) this.cloudState.scadenzeFiscaliOdv = payload.scadenze;
+              if (payload.config) this.cloudState.configScadenzeFiscaliOdv = payload.config;
+              if (payload.updatedAt) this.cloudState.scadenzeFiscaliUpdatedAt = payload.updatedAt;
+              applicaScadenzeFiscaliDaSync(payload.scadenze, payload.config, payload.updatedAt);
+            } else if (payload.type === 'AULE_FORMAZIONE_UPDATED' && Array.isArray(payload.aule)) {
+              this.cloudState.auleFormazione = payload.aule;
+              if (payload.updatedAt) this.cloudState.auleFormazioneUpdatedAt = payload.updatedAt;
+              applicaAuleFormazioneDaSync(payload.aule, payload.updatedAt);
             } else if (payload.type === 'METODI_PAGAMENTO_UPDATED' && Array.isArray(payload.metodi)) {
               this.cloudState.metodiPagamentoCustom = payload.metodi;
               if (payload.updatedAt) this.cloudState.metodiPagamentoCustomUpdatedAt = payload.updatedAt;
               applicaMetodiPagamentoDaSync(payload.metodi, payload.updatedAt);
+            } else if (payload.type === 'METODI_PAGAMENTO_CARBURANTE_UPDATED' && Array.isArray(payload.lista)) {
+              const merged = mergeMetodiPagamentoCarburanteCloud(payload.lista, payload.updatedAt);
+              this.cloudState.metodiPagamentoCarburante = merged.lista;
+              this.cloudState.metodiPagamentoCarburanteUpdatedAt = merged.updatedAt;
             } else if (payload.type === 'CATEGORIE_COSTI_SERVIZIO_UPDATED' && Array.isArray(payload.categorie)) {
               this.cloudState.categorieCostiServizio = payload.categorie;
               if (payload.updatedAt) this.cloudState.categorieCostiServizioUpdatedAt = payload.updatedAt;
@@ -3196,8 +3704,24 @@ class RealtimeService {
     if (Array.isArray(this.cloudState.tipiTurno)) {
       applicaTipiTurnoDaSync(this.cloudState.tipiTurno, this.cloudState.tipiTurnoUpdatedAt);
     }
+    if (Array.isArray(this.cloudState.scadenzeFiscaliOdv) || this.cloudState.configScadenzeFiscaliOdv) {
+      applicaScadenzeFiscaliDaSync(
+        this.cloudState.scadenzeFiscaliOdv,
+        this.cloudState.configScadenzeFiscaliOdv,
+        this.cloudState.scadenzeFiscaliUpdatedAt
+      );
+    }
+    if (Array.isArray(this.cloudState.auleFormazione)) {
+      applicaAuleFormazioneDaSync(this.cloudState.auleFormazione, this.cloudState.auleFormazioneUpdatedAt);
+    }
     if (Array.isArray(this.cloudState.metodiPagamentoCustom)) {
       applicaMetodiPagamentoDaSync(this.cloudState.metodiPagamentoCustom, this.cloudState.metodiPagamentoCustomUpdatedAt);
+    }
+    if (Array.isArray(this.cloudState.metodiPagamentoCarburante) && this.cloudState.metodiPagamentoCarburante.length > 0) {
+      mergeMetodiPagamentoCarburanteCloud(
+        this.cloudState.metodiPagamentoCarburante,
+        this.cloudState.metodiPagamentoCarburanteUpdatedAt
+      );
     }
     if (Array.isArray(this.cloudState.categorieCostiServizio) && this.cloudState.categorieCostiServizio.length > 0) {
       applicaCategorieCostiServizioDaSync(this.cloudState.categorieCostiServizio, this.cloudState.categorieCostiServizioUpdatedAt);
@@ -4386,6 +4910,21 @@ class RealtimeService {
           });
         }
         break;
+      case 'UPDATE_SCADENZE_FISCALI_ODV':
+        this.scheduleShardWrite('config', {
+          ...(Array.isArray(data?.scadenze) ? { scadenzeFiscaliOdv: data.scadenze } : {}),
+          ...(data?.config ? { configScadenzeFiscaliOdv: data.config } : {}),
+          scadenzeFiscaliUpdatedAt: data?.updatedAt || Date.now(),
+        });
+        break;
+      case 'UPDATE_AULE_FORMAZIONE':
+        if (Array.isArray(data?.aule)) {
+          this.scheduleShardWrite('config', {
+            auleFormazione: data.aule,
+            auleFormazioneUpdatedAt: data?.updatedAt || Date.now(),
+          });
+        }
+        break;
       case 'UPDATE_RUBRICA_NUMERI_UTILI':
         if (Array.isArray(data?.rubrica)) {
           this.scheduleShardWrite('config', {
@@ -4393,6 +4932,98 @@ class RealtimeService {
             rubricaNumeriUtiliUpdatedAt: data?.updatedAt || Date.now(),
           });
         }
+        break;
+      case 'UPDATE_PROMEMORIA_COMPLEANNI':
+        if (data?.promemoriaCompleanniInviati && typeof data.promemoriaCompleanniInviati === 'object') {
+          const merged = this.mergePromemoriaCompleanniMap(data.promemoriaCompleanniInviati);
+          this.scheduleShardWrite('config', {
+            promemoriaCompleanniInviati: merged,
+          });
+        }
+        break;
+      case 'UPDATE_PROMEMORIA_TURNI':
+        if (data?.promemoriaTurniInviati && typeof data.promemoriaTurniInviati === 'object') {
+          const merged = this.mergeSimpleReminderMap('CROCE_ORO_PROMEMORIA_TURNI_LOG_V1', 'promemoriaTurniInviati', data.promemoriaTurniInviati, 21);
+          this.scheduleShardWrite('config', { promemoriaTurniInviati: merged });
+        }
+        break;
+      case 'UPDATE_PROMEMORIA_SCADENZE_FISCALI':
+        if (data?.promemoriaScadenzeFiscaliInviate && typeof data.promemoriaScadenzeFiscaliInviate === 'object') {
+          const merged = this.mergeSimpleReminderMap('CROCE_ORO_PROMEMORIA_FISCALI_LOG_V1', 'promemoriaScadenzeFiscaliInviate', data.promemoriaScadenzeFiscaliInviate, 120);
+          this.scheduleShardWrite('config', { promemoriaScadenzeFiscaliInviate: merged });
+        }
+        break;
+      case 'UPDATE_PROMEMORIA_SCADENZE_MEZZI':
+        if (data?.promemoriaScadenzeMezziInviate && typeof data.promemoriaScadenzeMezziInviate === 'object') {
+          const merged = this.mergeSimpleReminderMap('CROCE_ORO_PROMEMORIA_MEZZI_LOG_V1', 'promemoriaScadenzeMezziInviate', data.promemoriaScadenzeMezziInviate, 45);
+          this.scheduleShardWrite('config', { promemoriaScadenzeMezziInviate: merged });
+        }
+        break;
+      case 'UPDATE_PROMEMORIA_TURNI_SCOPERTI':
+        if (data?.promemoriaTurniScopertiInviati && typeof data.promemoriaTurniScopertiInviati === 'object') {
+          const merged = this.mergeSimpleReminderMap('CROCE_ORO_PROMEMORIA_TURNI_SCOPERTI_LOG_V1', 'promemoriaTurniScopertiInviati', data.promemoriaTurniScopertiInviati, 14);
+          this.scheduleShardWrite('config', { promemoriaTurniScopertiInviati: merged });
+        }
+        break;
+      case 'UPDATE_AUDIT_LOG':
+        if (Array.isArray(data?.auditLog)) {
+          const merged = mergeAuditLogEntries(getAuditLogEntries(), data.auditLog);
+          this.scheduleShardWrite('config', { auditLog: merged });
+        }
+        break;
+      case 'UPDATE_LIBRI_SOCIALI':
+        this.scheduleShardWrite('config', {
+          libriSocialiVerbali: Array.isArray(data?.verbali) ? data.verbali : this.cloudState.libriSocialiVerbali || [],
+          libriSocialiDelibere: Array.isArray(data?.delibere) ? data.delibere : this.cloudState.libriSocialiDelibere || [],
+          libriSocialiUpdatedAt: typeof data?.updatedAt === 'number' ? data.updatedAt : Date.now(),
+        });
+        break;
+      case 'UPDATE_RICHIESTE_REINTEGRO':
+        if (Array.isArray(data?.richieste)) {
+          this.scheduleShardWrite('config', {
+            richiesteReintegroMagazzino: data.richieste.slice(0, 250),
+            richiesteReintegroUpdatedAt: typeof data?.updatedAt === 'number' ? data.updatedAt : Date.now(),
+          });
+        }
+        break;
+      case 'UPDATE_RIFORNIMENTI_MEZZI':
+        if (Array.isArray(data?.rifornimenti)) {
+          this.scheduleShardWrite('config', {
+            rifornimentiMezzi: data.rifornimenti.slice(0, 180),
+            rifornimentiUpdatedAt: typeof data?.updatedAt === 'number' ? data.updatedAt : Date.now(),
+          });
+        }
+        break;
+      case 'UPDATE_METODI_PAGAMENTO_CARBURANTE':
+        if (Array.isArray(data?.metodi)) {
+          this.scheduleShardWrite('config', {
+            metodiPagamentoCarburante: data.metodi.slice(0, 60),
+            metodiPagamentoCarburanteUpdatedAt: typeof data?.updatedAt === 'number' ? data.updatedAt : Date.now(),
+          });
+        }
+        break;
+      case 'UPDATE_GUASTI_MEZZI':
+        if (Array.isArray(data?.guasti)) {
+          this.scheduleShardWrite('config', {
+            segnalazioniGuastiMezzi: data.guasti.slice(0, 80),
+            segnalazioniGuastiUpdatedAt: typeof data?.updatedAt === 'number' ? data.updatedAt : Date.now(),
+          });
+        }
+        break;
+      case 'UPDATE_DOCUMENTI_SOP':
+        if (Array.isArray(data?.documenti)) {
+          this.scheduleShardWrite('config', {
+            documentiAssociativiSop: data.documenti.slice(0, 60),
+            documentiSopUpdatedAt: typeof data?.updatedAt === 'number' ? data.updatedAt : Date.now(),
+          });
+        }
+        break;
+      case 'UPDATE_ASSEMBLEE_SONDAGGI':
+        this.scheduleShardWrite('config', {
+          convocazioniAssemblee: Array.isArray(data?.convocazioni) ? data.convocazioni.slice(0, 50) : this.cloudState.convocazioniAssemblee || [],
+          sondaggiRapidi: Array.isArray(data?.sondaggi) ? data.sondaggi.slice(0, 60) : this.cloudState.sondaggiRapidi || [],
+          assembleeSondaggiUpdatedAt: typeof data?.updatedAt === 'number' ? data.updatedAt : Date.now(),
+        });
         break;
     }
   }
@@ -4447,12 +5078,13 @@ class RealtimeService {
     }
 
     let sentWs = false;
+    const isBrowserOnline = typeof navigator !== 'undefined' ? navigator.onLine !== false : true;
 
     // 1. Persiste sullo shard Firestore corrispondente in tempo reale
     this.applyLocalEventToShards(type, data);
 
-    // 2. Invio via WebSocket locale/Cloud Run se attivo
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+    // 2. Invio via WebSocket locale/Cloud Run se attivo e online
+    if (isBrowserOnline && this.ws && this.ws.readyState === WebSocket.OPEN) {
       try {
         this.ws.send(payload);
         sentWs = true;
@@ -4461,8 +5093,13 @@ class RealtimeService {
       }
     }
 
-    // 3. Invio HTTP ridondante verso Express solo quando siamo su backend Node/Express (non su Vercel statico)
-    if (!this.isServerlessStaticHost()) {
+    // 3. Se offline o nessun trasporto attivo, accoda in modo persistente su localStorage per invio automatico al rientro rete
+    if (!isBrowserOnline || (!sentWs && !this.firestoreActive)) {
+      this.enqueueOfflineEvent(type, data);
+    }
+
+    // 4. Invio HTTP ridondante verso Express solo quando siamo online su backend Node/Express (non su Vercel statico)
+    if (isBrowserOnline && !this.isServerlessStaticHost()) {
       try {
         const targetBase = this.getApiBaseUrl();
         if (targetBase) {
@@ -4472,12 +5109,16 @@ class RealtimeService {
             body: payload,
             cache: 'no-store',
             keepalive: payload.length < 55000,
-          }).catch(() => {});
+          }).catch(() => {
+            if (!sentWs && !this.firestoreActive) {
+              this.enqueueOfflineEvent(type, data);
+            }
+          });
         }
       } catch {}
     }
 
-    return sentWs || this.firestoreActive;
+    return sentWs || (isBrowserOnline && this.firestoreActive);
   }
 
   public syncSedi(sedi: any[]) {
@@ -5835,6 +6476,418 @@ class RealtimeService {
     this.cloudState.tipiTurno = tipiTurno;
     this.cloudState.tipiTurnoUpdatedAt = updatedAt;
     this.send('UPDATE_TIPI_TURNO', { tipiTurno, updatedAt });
+  }
+
+  public syncScadenzeFiscaliOdv(scadenze: any[], config?: any) {
+    const updatedAt = getScadenzeFiscaliUpdatedAt() || Date.now();
+    this.cloudState.scadenzeFiscaliOdv = scadenze;
+    if (config) this.cloudState.configScadenzeFiscaliOdv = config;
+    this.cloudState.scadenzeFiscaliUpdatedAt = updatedAt;
+    this.send('UPDATE_SCADENZE_FISCALI_ODV', { scadenze, config, updatedAt });
+  }
+
+  public syncAuleFormazione(aule: any[]) {
+    const updatedAt = getAuleFormazioneUpdatedAt() || Date.now();
+    this.cloudState.auleFormazione = aule;
+    this.cloudState.auleFormazioneUpdatedAt = updatedAt;
+    this.send('UPDATE_AULE_FORMAZIONE', { aule, updatedAt });
+  }
+
+  private mergePromemoriaCompleanniMap(
+    incoming?: Record<string, any> | null
+  ): Record<string, { sentAt: string; recipients: string[] } | string> {
+    const STORAGE_KEY = 'CROCE_ORO_PROMEMORIA_COMPLEANNI_INVIATI';
+    const merged: Record<string, { sentAt: string; recipients: string[] } | string> = {};
+
+    const absorb = (src: any) => {
+      if (!src || typeof src !== 'object' || Array.isArray(src)) return;
+      for (const [k, v] of Object.entries(src)) {
+        if (!k || (!k.startsWith('compleanno_') && !k.startsWith('compleanno_nome_')) || !v) continue;
+        const prev = merged[k];
+        if (!prev) {
+          merged[k] = v as any;
+        } else if (typeof v === 'object' && Array.isArray((v as any).recipients)) {
+          const prevRecs = typeof prev === 'object' && Array.isArray(prev.recipients) ? prev.recipients : [];
+          merged[k] = {
+            sentAt: (typeof prev === 'object' && prev.sentAt) || (v as any).sentAt || new Date().toISOString(),
+            recipients: Array.from(new Set([...prevRecs, ...(v as any).recipients])),
+          };
+        }
+      }
+    };
+
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (raw) absorb(JSON.parse(raw));
+    } catch {}
+    absorb(this.cloudState.promemoriaCompleanniInviati);
+    absorb(incoming);
+
+    const cutoffMs = Date.now() - 14 * 24 * 60 * 60 * 1000;
+    for (const k of Object.keys(merged)) {
+      const m = k.match(/(\d{4}-\d{2}-\d{2})/);
+      if (m) {
+        const dt = Date.parse(`${m[1]}T12:00:00Z`);
+        if (Number.isFinite(dt) && dt < cutoffMs) {
+          delete merged[k];
+        }
+      }
+    }
+
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(merged));
+    } catch {}
+    return merged;
+  }
+
+  public isCloudConfigReady(): boolean {
+    return Boolean(
+      this.firebaseSession.isAuthorized &&
+      this.shardLoadedFromCloud['config'] &&
+      this.shardLoadedFromCloud['volontari']
+    );
+  }
+
+  public getPromemoriaCompleanniInviati(): Record<string, { sentAt: string; recipients: string[] } | string> {
+    const merged = this.mergePromemoriaCompleanniMap(null);
+    this.cloudState.promemoriaCompleanniInviati = merged;
+    return merged;
+  }
+
+  public syncPromemoriaCompleanniInviati(incoming?: Record<string, any> | null) {
+    if (!incoming || typeof incoming !== 'object') return;
+    const prevSnapshot = JSON.stringify(this.cloudState.promemoriaCompleanniInviati || {});
+    const merged = this.mergePromemoriaCompleanniMap(incoming);
+    this.cloudState.promemoriaCompleanniInviati = merged;
+    const nextSnapshot = JSON.stringify(merged);
+    if (nextSnapshot !== prevSnapshot && Object.keys(merged).length > 0) {
+      this.send('UPDATE_PROMEMORIA_COMPLEANNI', { promemoriaCompleanniInviati: merged });
+    }
+  }
+
+  private mergeSimpleReminderMap(
+    storageKey: string,
+    cloudField: string,
+    incoming?: Record<string, string> | null,
+    maxAgeDays = 30
+  ): Record<string, string> {
+    const merged: Record<string, string> = {};
+    const absorb = (src: any) => {
+      if (!src || typeof src !== 'object' || Array.isArray(src)) return;
+      for (const [k, v] of Object.entries(src)) {
+        if (!k || typeof v !== 'string') continue;
+        if (!merged[k]) merged[k] = v;
+      }
+    };
+    try {
+      const raw = localStorage.getItem(storageKey);
+      if (raw) absorb(JSON.parse(raw));
+    } catch {}
+    absorb(this.cloudState[cloudField]);
+    absorb(incoming);
+
+    const cutoffMs = Date.now() - maxAgeDays * 86400000;
+    for (const [k, v] of Object.entries(merged)) {
+      const ts = Date.parse(v);
+      if (Number.isFinite(ts) && ts < cutoffMs) {
+        delete merged[k];
+      }
+    }
+    try {
+      localStorage.setItem(storageKey, JSON.stringify(merged));
+    } catch {}
+    return merged;
+  }
+
+  public getPromemoriaTurniInviati(): Record<string, string> {
+    const merged = this.mergeSimpleReminderMap('CROCE_ORO_PROMEMORIA_TURNI_LOG_V1', 'promemoriaTurniInviati', null, 21);
+    this.cloudState.promemoriaTurniInviati = merged;
+    return merged;
+  }
+
+  public syncPromemoriaTurniInviati(incoming?: Record<string, string> | null) {
+    if (!incoming || typeof incoming !== 'object') return;
+    const prev = JSON.stringify(this.cloudState.promemoriaTurniInviati || {});
+    const merged = this.mergeSimpleReminderMap('CROCE_ORO_PROMEMORIA_TURNI_LOG_V1', 'promemoriaTurniInviati', incoming, 21);
+    this.cloudState.promemoriaTurniInviati = merged;
+    if (JSON.stringify(merged) !== prev && Object.keys(merged).length > 0) {
+      this.send('UPDATE_PROMEMORIA_TURNI', { promemoriaTurniInviati: merged });
+    }
+  }
+
+  public getPromemoriaScadenzeFiscaliInviate(): Record<string, string> {
+    const merged = this.mergeSimpleReminderMap('CROCE_ORO_PROMEMORIA_FISCALI_LOG_V1', 'promemoriaScadenzeFiscaliInviate', null, 120);
+    this.cloudState.promemoriaScadenzeFiscaliInviate = merged;
+    return merged;
+  }
+
+  public syncPromemoriaScadenzeFiscaliInviate(incoming?: Record<string, string> | null) {
+    if (!incoming || typeof incoming !== 'object') return;
+    const prev = JSON.stringify(this.cloudState.promemoriaScadenzeFiscaliInviate || {});
+    const merged = this.mergeSimpleReminderMap('CROCE_ORO_PROMEMORIA_FISCALI_LOG_V1', 'promemoriaScadenzeFiscaliInviate', incoming, 120);
+    this.cloudState.promemoriaScadenzeFiscaliInviate = merged;
+    if (JSON.stringify(merged) !== prev && Object.keys(merged).length > 0) {
+      this.send('UPDATE_PROMEMORIA_SCADENZE_FISCALI', { promemoriaScadenzeFiscaliInviate: merged });
+    }
+  }
+
+  public getPromemoriaScadenzeMezziInviate(): Record<string, string> {
+    const merged = this.mergeSimpleReminderMap('CROCE_ORO_PROMEMORIA_MEZZI_LOG_V1', 'promemoriaScadenzeMezziInviate', null, 45);
+    this.cloudState.promemoriaScadenzeMezziInviate = merged;
+    return merged;
+  }
+
+  public syncPromemoriaScadenzeMezziInviate(incoming?: Record<string, string> | null) {
+    if (!incoming || typeof incoming !== 'object') return;
+    const prev = JSON.stringify(this.cloudState.promemoriaScadenzeMezziInviate || {});
+    const merged = this.mergeSimpleReminderMap('CROCE_ORO_PROMEMORIA_MEZZI_LOG_V1', 'promemoriaScadenzeMezziInviate', incoming, 45);
+    this.cloudState.promemoriaScadenzeMezziInviate = merged;
+    if (JSON.stringify(merged) !== prev && Object.keys(merged).length > 0) {
+      this.send('UPDATE_PROMEMORIA_SCADENZE_MEZZI', { promemoriaScadenzeMezziInviate: merged });
+    }
+  }
+
+  public getPromemoriaTurniScopertiInviati(): Record<string, string> {
+    const merged = this.mergeSimpleReminderMap('CROCE_ORO_PROMEMORIA_TURNI_SCOPERTI_LOG_V1', 'promemoriaTurniScopertiInviati', null, 14);
+    this.cloudState.promemoriaTurniScopertiInviati = merged;
+    return merged;
+  }
+
+  public syncPromemoriaTurniScopertiInviati(incoming?: Record<string, string> | null) {
+    if (!incoming || typeof incoming !== 'object') return;
+    const prev = JSON.stringify(this.cloudState.promemoriaTurniScopertiInviati || {});
+    const merged = this.mergeSimpleReminderMap('CROCE_ORO_PROMEMORIA_TURNI_SCOPERTI_LOG_V1', 'promemoriaTurniScopertiInviati', incoming, 14);
+    this.cloudState.promemoriaTurniScopertiInviati = merged;
+    if (JSON.stringify(merged) !== prev && Object.keys(merged).length > 0) {
+      this.send('UPDATE_PROMEMORIA_TURNI_SCOPERTI', { promemoriaTurniScopertiInviati: merged });
+    }
+  }
+
+  public syncAuditLog(entries: any[]) {
+    if (!Array.isArray(entries)) return;
+    const clean = entries.slice(0, 500);
+    this.cloudState.auditLog = clean;
+    this.send('UPDATE_AUDIT_LOG', { auditLog: clean });
+  }
+
+  public syncLibriSociali(verbali: any[], delibere: any[], updatedAt?: number) {
+    const ts = typeof updatedAt === 'number' && updatedAt > 0 ? updatedAt : Date.now();
+    this.cloudState.libriSocialiVerbali = verbali;
+    this.cloudState.libriSocialiDelibere = delibere;
+    this.cloudState.libriSocialiUpdatedAt = ts;
+    this.send('UPDATE_LIBRI_SOCIALI', { verbali, delibere, updatedAt: ts });
+  }
+
+  public syncRichiesteReintegroMagazzino(richieste: any[], updatedAt?: number) {
+    const ts = typeof updatedAt === 'number' && updatedAt > 0 ? updatedAt : Date.now();
+    const clean = Array.isArray(richieste) ? richieste.slice(0, 250) : [];
+    this.cloudState.richiesteReintegroMagazzino = clean;
+    this.cloudState.richiesteReintegroUpdatedAt = ts;
+    this.send('UPDATE_RICHIESTE_REINTEGRO', { richieste: clean, updatedAt: ts });
+  }
+
+  public syncRifornimentiMezzi(rifornimenti: any[], updatedAt?: number) {
+    const ts = typeof updatedAt === 'number' && updatedAt > 0 ? updatedAt : Date.now();
+    const clean = Array.isArray(rifornimenti) ? rifornimenti.slice(0, 180) : [];
+    this.cloudState.rifornimentiMezzi = clean;
+    this.cloudState.rifornimentiUpdatedAt = ts;
+    this.send('UPDATE_RIFORNIMENTI_MEZZI', { rifornimenti: clean, updatedAt: ts });
+  }
+
+  public syncMetodiPagamentoCarburante(metodi: any[], updatedAt?: number) {
+    const ts = typeof updatedAt === 'number' && updatedAt > 0 ? updatedAt : Date.now();
+    const clean = Array.isArray(metodi) ? metodi.slice(0, 60) : [];
+    this.cloudState.metodiPagamentoCarburante = clean;
+    this.cloudState.metodiPagamentoCarburanteUpdatedAt = ts;
+    this.send('UPDATE_METODI_PAGAMENTO_CARBURANTE', { metodi: clean, updatedAt: ts });
+  }
+
+  public syncSegnalazioniGuastiMezzi(guasti: any[], updatedAt?: number) {
+    const ts = typeof updatedAt === 'number' && updatedAt > 0 ? updatedAt : Date.now();
+    const clean = Array.isArray(guasti) ? guasti.slice(0, 80) : [];
+    this.cloudState.segnalazioniGuastiMezzi = clean;
+    this.cloudState.segnalazioniGuastiUpdatedAt = ts;
+    this.send('UPDATE_GUASTI_MEZZI', { guasti: clean, updatedAt: ts });
+  }
+
+  public syncDocumentiSop(documenti: any[], updatedAt?: number) {
+    const ts = typeof updatedAt === 'number' && updatedAt > 0 ? updatedAt : Date.now();
+    const clean = Array.isArray(documenti) ? documenti.slice(0, 60) : [];
+    this.cloudState.documentiAssociativiSop = clean;
+    this.cloudState.documentiSopUpdatedAt = ts;
+    this.send('UPDATE_DOCUMENTI_SOP', { documenti: clean, updatedAt: ts });
+  }
+
+  public syncAssembleeSondaggi(convocazioni: any[], sondaggi: any[], updatedAt?: number) {
+    const ts = typeof updatedAt === 'number' && updatedAt > 0 ? updatedAt : Date.now();
+    const cleanConv = Array.isArray(convocazioni) ? convocazioni.slice(0, 50) : [];
+    const cleanSond = Array.isArray(sondaggi) ? sondaggi.slice(0, 60) : [];
+    this.cloudState.convocazioniAssemblee = cleanConv;
+    this.cloudState.sondaggiRapidi = cleanSond;
+    this.cloudState.assembleeSondaggiUpdatedAt = ts;
+    this.send('UPDATE_ASSEMBLEE_SONDAGGI', { convocazioni: cleanConv, sondaggi: cleanSond, updatedAt: ts });
+  }
+
+  public async publishPublicCourse(corso: any, auleCatalogo?: any[]): Promise<boolean> {
+    if (!corso || !corso.linkTimbraturaEsterniToken) return false;
+    const targetAula = risolviTargetAulaDidattica(corso, null, auleCatalogo);
+    const lezioniPub = Array.isArray(corso.lezioni)
+      ? corso.lezioni.map((l: any) => {
+          const aulaLez = risolviTargetAulaDidattica(corso, l, auleCatalogo);
+          return {
+            id: String(l.id || ''),
+            data: String(l.data || ''),
+            orarioInizio: String(l.orarioInizio || ''),
+            orarioFine: String(l.orarioFine || ''),
+            argomento: String(l.argomento || ''),
+            aulaNome: aulaLez.nome,
+            aulaIndirizzo: aulaLez.indirizzo,
+            coordinate: aulaLez.coordinate,
+            raggioMetri: aulaLez.raggioMetri,
+          };
+        })
+      : [];
+
+    const payload: Omit<PublicCourseDoc, 'updatedByUid' | 'createdAt' | 'updatedAt'> = {
+      tokenId: String(corso.linkTimbraturaEsterniToken),
+      corsoId: String(corso.id || ''),
+      titolo: String(corso.titolo || 'Corso di Formazione'),
+      categoria: String(corso.categoria || 'Formazione'),
+      dataInizio: String(corso.dataInizio || ''),
+      dataFine: String(corso.dataFine || ''),
+      oreTotaliRichieste: Number(corso.oreTotaliRichieste) || 0,
+      aulaNome: targetAula.nome,
+      aulaIndirizzo: targetAula.indirizzo,
+      coordinate: targetAula.coordinate,
+      raggioMetri: targetAula.raggioMetri,
+      lezioni: lezioniPub,
+      attivo: Boolean(corso.linkTimbraturaEsterniAttivo !== false && corso.stato !== 'Annullato'),
+    };
+
+    let okFs = false;
+    try {
+      okFs = await publishPublicCourseFirestore(payload);
+    } catch {}
+
+    let okHttp = false;
+    if (!this.isServerlessStaticHost()) {
+      try {
+        const res = await fetch(`${this.getApiBaseUrl()}/api/public-course`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        okHttp = res.ok;
+      } catch {}
+    }
+    return okFs || okHttp;
+  }
+
+  public async readPublicCourse(tokenId: string): Promise<PublicCourseDoc | null> {
+    const cleanToken = String(tokenId || '').trim();
+    if (!cleanToken) return null;
+    try {
+      const fsRes = await readPublicCourseFromServer(cleanToken);
+      if (fsRes.exists && fsRes.data) return fsRes.data;
+    } catch {}
+    if (!this.isServerlessStaticHost()) {
+      try {
+        const res = await fetch(`${this.getApiBaseUrl()}/api/public-course/${encodeURIComponent(cleanToken)}`, {
+          cache: 'no-store',
+        });
+        if (res.ok) {
+          const json = await res.json();
+          if (json?.course) return json.course as PublicCourseDoc;
+        }
+      } catch {}
+    }
+    return null;
+  }
+
+  public async submitCourseGuestCheckin(input: {
+    tokenId: string;
+    corsoId: string;
+    lezioneId?: string;
+    nome: string;
+    cognome: string;
+    telefono: string;
+    tipo: 'entrata' | 'uscita';
+    dataOra: string;
+    aulaNome: string;
+    distanzaMetri: number;
+  }): Promise<{ ok: boolean; error?: string }> {
+    let okFs = false;
+    let lastError = '';
+    try {
+      const resFs = await submitCourseGuestCheckinFirestore(input);
+      okFs = resFs.ok;
+      if (!resFs.ok && resFs.error) lastError = resFs.error;
+    } catch (e: any) {
+      lastError = e?.message || '';
+    }
+
+    let okHttp = false;
+    if (!this.isServerlessStaticHost()) {
+      try {
+        const res = await fetch(`${this.getApiBaseUrl()}/api/public-course-checkin`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(input),
+        });
+        okHttp = res.ok;
+      } catch {}
+    }
+    if (okFs || okHttp) {
+      return { ok: true };
+    }
+    return { ok: false, error: lastError || 'Impossibile registrare la timbratura in questo momento.' };
+  }
+
+  public listenPendingCourseGuestCheckins(
+    onItems: (items: CourseGuestCheckinRecord[]) => void
+  ): () => void {
+    const unsubs: Array<() => void> = [];
+    if (this.firebaseSession.isAuthorized) {
+      try {
+        unsubs.push(listenPendingCourseGuestCheckinsFirestore(onItems));
+      } catch {}
+    }
+    let timer: any = null;
+    if (!this.isServerlessStaticHost()) {
+      const poll = async () => {
+        try {
+          const res = await fetch(`${this.getApiBaseUrl()}/api/public-course-checkins`, { cache: 'no-store' });
+          if (res.ok) {
+            const json = await res.json();
+            if (Array.isArray(json?.items) && json.items.length > 0) {
+              onItems(json.items as CourseGuestCheckinRecord[]);
+            }
+          }
+        } catch {}
+      };
+      poll();
+      timer = setInterval(poll, 12000);
+    }
+    return () => {
+      unsubs.forEach((u) => {
+        try { u(); } catch {}
+      });
+      if (timer) clearInterval(timer);
+    };
+  }
+
+  public async markCourseGuestCheckinApplied(checkinId: string): Promise<void> {
+    if (!checkinId) return;
+    markCourseGuestCheckinAppliedFirestore(checkinId).catch(() => {});
+    if (!this.isServerlessStaticHost()) {
+      try {
+        fetch(`${this.getApiBaseUrl()}/api/public-course-checkins/ack`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ checkinId }),
+        }).catch(() => {});
+      } catch {}
+    }
   }
 
   public syncRubricaNumeriUtili(rubrica: any[]) {

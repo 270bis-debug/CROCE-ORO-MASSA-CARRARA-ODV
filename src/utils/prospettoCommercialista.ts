@@ -94,6 +94,10 @@ export function calcolaProspettoCommercialista(
     return str;
   };
 
+  const rifornimentiIds = new Set(
+    (rifornimenti || []).map((r) => String(r?.id || '').trim()).filter(Boolean)
+  );
+
   for (let m = 0; m < 12; m++) {
     const meseNum = m + 1;
     const meseStr = `${anno}-${String(meseNum).padStart(2, '0')}`;
@@ -167,6 +171,11 @@ export function calcolaProspettoCommercialista(
     let conteggioGestEnt = 0;
     let sommaGestEnt = 0;
     (costiGestione || []).forEach((voce) => {
+      // Evita doppio conteggio: se la voce nasce in automatico da un rifornimento già presente nel registro carburante,
+      // viene già contabilizzata nella colonna dedicata "Carburante Flotta (€)".
+      if (voce.rifornimentoId && rifornimentiIds.has(String(voce.rifornimentoId).trim())) {
+        return;
+      }
       const dataV = extractIsoDate(voce.data || '');
       const imp = Number(voce.importo) || 0;
       if (dataV.startsWith(meseStr) && imp > 0) {
