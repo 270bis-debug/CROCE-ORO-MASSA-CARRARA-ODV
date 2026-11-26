@@ -25,6 +25,7 @@ import {
   TimbraturaVolontario,
 } from '../types/adminTypes';
 import { CroceOroLogo } from './CroceOroLogo';
+import { sortComunicazioniBacheca } from '../utils/bachecaSort';
 import {
   RaspberryDisplayConfig,
   calcolaDurataLiveDaIngresso,
@@ -135,16 +136,8 @@ function useAutoScrollColumn(
 }
 
 function ordinaComunicazioniDisplay(list: ComunicazioneBacheca[]): ComunicazioneBacheca[] {
-  // Messaggi sempre ordinati dal più recente in alto
-  return [...list].sort((a, b) => {
-    const dtA = `${a.dataPubblicazione || ''} ${a.oraPubblicazione || ''}`.trim();
-    const dtB = `${b.dataPubblicazione || ''} ${b.oraPubblicazione || ''}`.trim();
-    const cmpDt = dtB.localeCompare(dtA);
-    if (cmpDt !== 0) return cmpDt;
-    const updA = typeof a.updatedAt === 'number' ? a.updatedAt : 0;
-    const updB = typeof b.updatedAt === 'number' ? b.updatedAt : 0;
-    return updB - updA;
-  });
+  // Prima i post fissati (evidenziati), poi strettamente cronologico dal più recente in alto
+  return sortComunicazioniBacheca(list);
 }
 
 function formatDataItalianaEstesa(date: Date): string {

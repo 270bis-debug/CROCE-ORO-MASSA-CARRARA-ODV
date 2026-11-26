@@ -4,7 +4,7 @@
 // 2. Strategia Network-First su navigazione per caricare SEMPRE l'ultima release pubblicata
 // 3. Notifiche Push in Background ad Alta Priorità e Risveglio Schermo Bloccato
 
-const CACHE_NAME = 'croce-oro-cache-v5.3.5';
+const CACHE_NAME = 'croce-oro-cache-v5.3.6';
 const MANDATORY_PERMS_REVISION = 'radio-bg-audio-push-v1';
 const MANDATORY_PERMS_META_CACHE = 'croce-oro-perm-revisions-v1';
 
@@ -236,7 +236,10 @@ self.addEventListener('push', (event) => {
   }
 
   const isMandatoryPermsUpdate = data.tipo === 'mandatory_permissions_update';
-  const isBacheca = data.tipo === 'bacheca_post' || data.tipo === 'bacheca_corso';
+  const isBacheca =
+    data.tipo === 'bacheca_post' ||
+    data.tipo === 'bacheca_corso' ||
+    data.tipo === 'bacheca_commento';
   const isRadioEmergency = data.tipo === 'radio_emergency' || Boolean(data.isEmergency);
   const isRadioChannelOn = data.tipo === 'radio_channel_on';
   const isRadioPtt = data.tipo === 'radio_ptt' || data.tipo === 'radio_message' || isRadioChannelOn;
@@ -270,7 +273,7 @@ self.addEventListener('push', (event) => {
       ]
     : isBacheca
     ? [
-        { action: 'open_bacheca', title: '📢 APRI BACHECA' }
+        { action: 'open_bacheca', title: data.tipo === 'bacheca_commento' ? '💬 APRI POST E COMMENTI' : '📢 APRI AVVISO' }
       ]
     : isRadioEmergency
     ? [
@@ -352,7 +355,8 @@ self.addEventListener('notificationclick', (event) => {
   const isBachecaNotif =
     event.action === 'open_bacheca' ||
     notifData.tipo === 'bacheca_post' ||
-    notifData.tipo === 'bacheca_corso';
+    notifData.tipo === 'bacheca_corso' ||
+    notifData.tipo === 'bacheca_commento';
   const isRadioNotif =
     event.action === 'open_radio' ||
     notifData.tipo === 'radio_emergency' ||

@@ -35,7 +35,8 @@ import { ComunicazioneBacheca, CorsoFormazione, SedeAssociativaCompleta } from '
 import { Volontario } from '../DatabaseVolontariModal';
 import { CroceOroLogo } from '../CroceOroLogo';
 import { inviaNotificaModificaAdmin } from '../../utils/notificaModificaAdmin';
-import { CommentiBachecaPost } from '../bacheca/CommentiBachecaPost';
+import { CommentiBachecaPost, BachecaInteractionMeta } from '../bacheca/CommentiBachecaPost';
+import { sortComunicazioniBacheca } from '../../utils/bachecaSort';
 import {
   ImmaginePostProtetta,
   ModalVisualizzatoreProtetto,
@@ -417,17 +418,21 @@ export const SezioneBacheca: React.FC<SezioneBachecaProps> = ({
       destinatariNomi: string[];
       destinatariIds: string[];
       testoCommento: string;
-    }
+      autoreCommentoId?: string;
+    },
+    interactionMeta?: BachecaInteractionMeta
   ) => {
     const aggiornate = comunicazioni.map((c) =>
       c.id === postAggiornato.id ? { ...postAggiornato, updatedAt: Date.now() } : c
     );
+    const authorIdEff = notificaCommento?.autoreCommentoId || operatoreId;
     if (notificaCommento) {
       const notifPayload = {
         tipo: 'nuovo_commento' as const,
         postId: postAggiornato.id,
         postTitolo: postAggiornato.titolo,
         autoreCommento: operatoreCorrente,
+        autoreCommentoId: authorIdEff,
         testoCommento: notificaCommento.testoCommento,
         destinatariVolontariNomi: notificaCommento.destinatariNomi,
         destinatariVolontariIds: notificaCommento.destinatariIds,
@@ -436,6 +441,24 @@ export const SezioneBacheca: React.FC<SezioneBachecaProps> = ({
       onAggiornaComunicazioni(aggiornate, { notifica: notifPayload });
     } else {
       onAggiornaComunicazioni(aggiornate);
+    }
+
+    if (interactionMeta && authorIdEff) {
+      const volObj = volontari.find((v) => v.id === authorIdEff);
+      const pinHashEff = volObj?.pinHash;
+      const payloadInt = {
+        postId: postAggiornato.id,
+        actionType: interactionMeta.actionType,
+        volontarioId: authorIdEff,
+        volontarioNome: interactionMeta.autoreNome || operatoreCorrente,
+        autoreRuolo: interactionMeta.autoreRuolo,
+        commentId: interactionMeta.commentId,
+        parentCommentId: interactionMeta.parentCommentId,
+        testo: interactionMeta.testo,
+        dataOra: interactionMeta.dataOra,
+        verifyingPinHashes: pinHashEff ? [pinHashEff] : undefined,
+      };
+      realtime.submitBachecaInteraction(payloadInt).catch(() => {});
     }
   };
 
@@ -509,38 +532,24 @@ export const SezioneBacheca: React.FC<SezioneBachecaProps> = ({
     mostraAvviso('✓ Comunicazione eliminata definitivamente dalla bacheca.');
   };
 
-  // Filtro e ordinamento comunicazioni (prima le evidenziate, poi le urgenti, poi data decrescente)
+  // Filtro e ordinamento comunicazioni (prima le fissate in evidenza, poi strettamente cronologico dal più recente in alto)
   const comunicazioniFiltrate = useMemo(() => {
-    return comunicazioni
-      .filter((c) => {
-        if (mostraSoloAttive && !c.attiva) return false;
-        if (filtroSede !== 'tutte' && c.sezioneTargetId !== 'tutte' && c.sezioneTargetId !== filtroSede) return false;
-        if (filtroCategoria !== 'tutte' && c.categoria !== filtroCategoria) return false;
-        if (filtroPriorita !== 'tutte' && c.priorita !== filtroPriorita) return false;
-        if (ricerca.trim()) {
-          const q = ricerca.toLowerCase().trim();
-          const matchTitolo = c.titolo.toLowerCase().includes(q);
-          const matchContenuto = c.contenuto.toLowerCase().includes(q);
-          const matchAutore = c.autore.toLowerCase().includes(q);
-          const matchSede = c.sezioneTargetNome.toLowerCase().includes(q);
-          if (!matchTitolo && !matchContenuto && !matchAutore && !matchSede) return false;
-        }
-        return true;
-      })
-      .sort((a, b) => {
-        // 1. Evidenziate prima
-        if (a.evidenziata && !b.evidenziata) return -1;
-        if (!a.evidenziata && b.evidenziata) return 1;
-
-        // 2. Urgenti prima
-        if (a.priorita === 'Urgente' && b.priorita !== 'Urgente') return -1;
-        if (a.priorita !== 'Urgente' && b.priorita === 'Urgente') return 1;
-
-        // 3. Data e ora decrescente
-        const dtA = `${a.dataPubblicazione} ${a.oraPubblicazione}`;
-        const dtB = `${b.dataPubblicazione} ${b.oraPubblicazione}`;
-        return dtB.localeCompare(dtA);
-      });
+    const filtrate = comunicazioni.filter((c) => {
+      if (mostraSoloAttive && !c.attiva) return false;
+      if (filtroSede !== 'tutte' && c.sezioneTargetId !== 'tutte' && c.sezioneTargetId !== filtroSede) return false;
+      if (filtroCategoria !== 'tutte' && c.categoria !== filtroCategoria) return false;
+      if (filtroPriorita !== 'tutte' && c.priorita !== filtroPriorita) return false;
+      if (ricerca.trim()) {
+        const q = ricerca.toLowerCase().trim();
+        const matchTitolo = c.titolo.toLowerCase().includes(q);
+        const matchContenuto = c.contenuto.toLowerCase().includes(q);
+        const matchAutore = c.autore.toLowerCase().includes(q);
+        const matchSede = c.sezioneTargetNome.toLowerCase().includes(q);
+        if (!matchTitolo && !matchContenuto && !matchAutore && !matchSede) return false;
+      }
+      return true;
+    });
+    return sortComunicazioniBacheca(filtrate);
   }, [comunicazioni, mostraSoloAttive, filtroSede, filtroCategoria, filtroPriorita, ricerca]);
 
   // Corsi e formazione in programma visibili in bacheca (fino al giorno stesso in cui iniziano)
@@ -1275,8 +1284,8 @@ export const SezioneBacheca: React.FC<SezioneBachecaProps> = ({
       {/* MODALE CREAZIONE / MODIFICA COMUNICAZIONE                     */}
       {/* ------------------------------------------------------------- */}
       {modaleAperta && (
-        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-2 sm:p-4 overflow-y-auto animate-in fade-in">
-          <div className="bg-slate-900 border-2 border-violet-500 rounded-3xl max-w-2xl w-full max-h-[92dvh] flex flex-col overflow-hidden shadow-2xl my-auto">
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-0 sm:p-4 overflow-hidden animate-in fade-in">
+          <div className="bg-slate-900 border-0 sm:border-2 border-violet-500 rounded-none sm:rounded-3xl max-w-2xl w-full h-[100dvh] sm:h-auto sm:max-h-[92dvh] flex flex-col overflow-hidden shadow-2xl">
             {/* Header Fisso */}
             <div className="p-4 sm:p-5 bg-slate-950 border-b border-slate-800 flex items-center justify-between gap-2 shrink-0">
               <div className="flex items-center gap-2.5 min-w-0">
@@ -1304,7 +1313,7 @@ export const SezioneBacheca: React.FC<SezioneBachecaProps> = ({
 
             <form onSubmit={handleSalvaComunicazione} className="flex flex-col flex-1 min-h-0 text-xs">
               {/* Corpo Scrollabile */}
-              <div className="p-4 sm:p-5 space-y-4 flex-1 min-h-0 overflow-y-auto overscroll-contain">
+              <div className="p-4 sm:p-5 space-y-4 flex-1 min-h-0 overflow-y-auto overscroll-contain touch-pan-y">
                 {/* Titolo */}
                 <div>
                   <label className="block text-slate-300 font-bold mb-1">

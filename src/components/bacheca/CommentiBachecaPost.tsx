@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Heart,
   MessageSquare,
@@ -18,6 +18,17 @@ import { ComunicazioneBacheca, CommentoBacheca } from '../../types/adminTypes';
 import { soundEngine } from '../../services/soundEngine';
 import { formatDateTimeItaly } from '../../utils/italianTime';
 
+export interface BachecaInteractionMeta {
+  actionType: 'comment' | 'like_post' | 'unlike_post' | 'like_comment' | 'unlike_comment';
+  commentId?: string;
+  parentCommentId?: string;
+  parentAutoreNome?: string;
+  autoreNome: string;
+  autoreRuolo?: string;
+  testo?: string;
+  dataOra: string;
+}
+
 interface CommentiBachecaPostProps {
   post: ComunicazioneBacheca;
   currentUserId?: string;
@@ -25,11 +36,16 @@ interface CommentiBachecaPostProps {
   currentUserRuolo?: string;
   isAdmin: boolean;
   isPresidente: boolean;
-  onAggiornaPost: (postAggiornato: ComunicazioneBacheca, notificaCommento?: {
-    destinatariNomi: string[];
-    destinatariIds: string[];
-    testoCommento: string;
-  }) => void;
+  onAggiornaPost: (
+    postAggiornato: ComunicazioneBacheca,
+    notificaCommento?: {
+      destinatariNomi: string[];
+      destinatariIds: string[];
+      testoCommento: string;
+      autoreCommentoId?: string;
+    },
+    interactionMeta?: BachecaInteractionMeta
+  ) => void;
   mostraCommentiIniziali?: boolean;
 }
 
@@ -47,6 +63,12 @@ export const CommentiBachecaPost: React.FC<CommentiBachecaPostProps> = ({
   const [nuovoCommento, setNuovoCommento] = useState('');
   const [nomePersonalizzato, setNomePersonalizzato] = useState(currentUserName || '');
   const [mostraModificaNome, setMostraModificaNome] = useState(false);
+
+  useEffect(() => {
+    if (currentUserName && !mostraModificaNome) {
+      setNomePersonalizzato(currentUserName);
+    }
+  }, [currentUserName, mostraModificaNome]);
   const [feedbackInviato, setFeedbackInviato] = useState<string | null>(null);
   const [rispostaAId, setRispostaAId] = useState<string | null>(null);
   const [rispostaANome, setRispostaANome] = useState<string | null>(null);
@@ -78,18 +100,25 @@ export const CommentiBachecaPost: React.FC<CommentiBachecaPostProps> = ({
       ...post,
       likes: nuoviLikes
     };
-    onAggiornaPost(postAggiornato);
+    onAggiornaPost(postAggiornato, undefined, {
+      actionType: postPiaciuto ? 'unlike_post' : 'like_post',
+      autoreNome: currentUserName || 'Volontario',
+      autoreRuolo: currentUserRuolo,
+      dataOra: formatDateTimeItaly(undefined, false),
+    });
   };
 
   // 2. GESTIONE LIKE A UN SINGOLO COMMENTO
   const handleToggleLikeCommento = (commentoId: string) => {
     const userIdentifier = currentUserId || currentUserName;
+    let wasLiked = false;
     const commentiAggiornati = commenti.map((c) => {
       if (c.id === commentoId) {
         const cLikes = c.likes || [];
         const giaPiaciuto = cLikes.some(
           (u) => u === currentUserId || u.toLowerCase() === currentUserName.toLowerCase()
         );
+        wasLiked = giaPiaciuto;
         let nuoviLikesCommento: string[];
         if (giaPiaciuto) {
           nuoviLikesCommento = cLikes.filter(
@@ -107,10 +136,20 @@ export const CommentiBachecaPost: React.FC<CommentiBachecaPostProps> = ({
       return c;
     });
 
-    onAggiornaPost({
-      ...post,
-      commenti: commentiAggiornati
-    });
+    onAggiornaPost(
+      {
+        ...post,
+        commenti: commentiAggiornati
+      },
+      undefined,
+      {
+        actionType: wasLiked ? 'unlike_comment' : 'like_comment',
+        commentId: commentoId,
+        autoreNome: currentUserName || 'Volontario',
+        autoreRuolo: currentUserRuolo,
+        dataOra: formatDateTimeItaly(undefined, false),
+      }
+    );
   };
 
   // 3. INVIA NUOVO COMMENTO DIRETTO O RISPOSTA A COMMENTO
@@ -186,7 +225,18 @@ export const CommentiBachecaPost: React.FC<CommentiBachecaPostProps> = ({
       {
         destinatariNomi,
         destinatariIds,
-        testoCommento: testoDaInviare
+        testoCommento: testoDaInviare,
+        autoreCommentoId: currentUserId
+      },
+      {
+        actionType: 'comment',
+        commentId: nuovoItem.id,
+        parentCommentId: parentCommentoId || undefined,
+        parentAutoreNome: parentAutoreNome || undefined,
+        autoreNome: nomeAutoreEffettivo,
+        autoreRuolo: ruoloEffettivo,
+        testo: testoDaInviare,
+        dataOra: dataOraStr,
       }
     );
 
@@ -209,7 +259,8 @@ export const CommentiBachecaPost: React.FC<CommentiBachecaPostProps> = ({
   // 4. ELIMINA COMMENTO (RISERVATO A ADMIN E PRESIDENTE)
   const handleConfermaEliminaCommento = () => {
     if (!isAdmin && !isPresidente) {
-      alert('⛔ Solo l\'Amministratore e il Presidente possono eliminare i commenti.');
+      setFeedbackInviato('⛔ Solo Amministratore e Presidente possono eliminare i commenti.');
+      setTimeout(() => setFeedbackInviato(null), 3500);
       setCommentoDaEliminareId(null);
       return;
     }

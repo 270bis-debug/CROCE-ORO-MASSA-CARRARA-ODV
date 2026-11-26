@@ -30,6 +30,7 @@ import {
 } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
 import { buildEmailResetHash, buildPinResetHash } from '../utils/hashReset';
+import { sortComunicazioniBacheca } from '../utils/bachecaSort';
 
 export enum OperationType {
   CREATE = 'create',
@@ -2467,14 +2468,9 @@ export interface PublicRaspberryBoardDoc {
 
 export function buildPublicRaspberryBacheca(bacheca: any[]): any[] {
   if (!Array.isArray(bacheca)) return [];
-  const activeOnly = bacheca
-    .filter((c) => c && typeof c === 'object' && c.attiva !== false)
-    .sort((a, b) => {
-      if (Boolean(a.evidenziata) !== Boolean(b.evidenziata)) return a.evidenziata ? -1 : 1;
-      const dtA = `${a.dataPubblicazione || ''} ${a.oraPubblicazione || ''}`;
-      const dtB = `${b.dataPubblicazione || ''} ${b.oraPubblicazione || ''}`;
-      return dtB.localeCompare(dtA);
-    });
+  const activeOnly = sortComunicazioniBacheca(
+    bacheca.filter((c) => c && typeof c === 'object' && c.attiva !== false)
+  );
 
   const out: any[] = [];
   for (const c of activeOnly) {
@@ -2493,6 +2489,43 @@ export function buildPublicRaspberryBacheca(bacheca: any[]): any[] {
             ...(typeof p.timestamp === 'number' ? { timestamp: p.timestamp } : {}),
           }))
       : [];
+    const cleanLikes = Array.isArray(c.likes)
+      ? c.likes
+          .filter((u: any) => typeof u === 'string' && u.trim().length > 0)
+          .slice(0, 200)
+          .map((u: string) => u.trim().slice(0, 128))
+      : [];
+    const cleanCommenti = Array.isArray(c.commenti)
+      ? c.commenti
+          .filter((cm: any) => cm && typeof cm === 'object' && cm.id && cm.testo)
+          .slice(-80)
+          .map((cm: any) => ({
+            id: String(cm.id).trim().slice(0, 128),
+            postPadreId: String(cm.postPadreId || id).trim().slice(0, 128),
+            ...(typeof cm.rispostaACommentoId === 'string' && cm.rispostaACommentoId.trim()
+              ? { rispostaACommentoId: cm.rispostaACommentoId.trim().slice(0, 128) }
+              : {}),
+            ...(typeof cm.rispostaANominativo === 'string' && cm.rispostaANominativo.trim()
+              ? { rispostaANominativo: cm.rispostaANominativo.trim().slice(0, 120) }
+              : {}),
+            ...(typeof cm.autoreId === 'string' && cm.autoreId.trim()
+              ? { autoreId: cm.autoreId.trim().slice(0, 128) }
+              : {}),
+            autoreNome: typeof cm.autoreNome === 'string' ? cm.autoreNome.trim().slice(0, 120) : 'Volontario',
+            ...(typeof cm.autoreRuolo === 'string' && cm.autoreRuolo.trim()
+              ? { autoreRuolo: cm.autoreRuolo.trim().slice(0, 60) }
+              : {}),
+            testo: String(cm.testo).trim().slice(0, 1000),
+            dataOra: typeof cm.dataOra === 'string' ? cm.dataOra.trim().slice(0, 40) : '',
+            timestamp: typeof cm.timestamp === 'number' && Number.isFinite(cm.timestamp) ? cm.timestamp : Date.now(),
+            likes: Array.isArray(cm.likes)
+              ? cm.likes
+                  .filter((u: any) => typeof u === 'string' && u.trim().length > 0)
+                  .slice(0, 120)
+                  .map((u: string) => u.trim().slice(0, 128))
+              : [],
+          }))
+      : [];
     out.push({
       id,
       titolo,
@@ -2504,10 +2537,13 @@ export function buildPublicRaspberryBacheca(bacheca: any[]): any[] {
       dataPubblicazione: typeof c.dataPubblicazione === 'string' ? c.dataPubblicazione.trim().slice(0, 24) : '',
       oraPubblicazione: typeof c.oraPubblicazione === 'string' ? c.oraPubblicazione.trim().slice(0, 16) : '',
       autore: typeof c.autore === 'string' ? c.autore.trim().slice(0, 120) : 'Direzione',
+      ...(typeof c.autoreId === 'string' && c.autoreId.trim() ? { autoreId: c.autoreId.trim().slice(0, 128) } : {}),
       attiva: true,
       evidenziata: Boolean(c.evidenziata),
       ...(c.richiedePresaVisione ? { richiedePresaVisione: true } : {}),
       ...(cleanPrese.length > 0 ? { preseVisione: cleanPrese } : {}),
+      ...(cleanLikes.length > 0 ? { likes: cleanLikes } : {}),
+      ...(cleanCommenti.length > 0 ? { commenti: cleanCommenti } : {}),
       ...(typeof c.scadenza === 'string' && c.scadenza.trim() ? { scadenza: c.scadenza.trim().slice(0, 24) } : {}),
       ...(typeof c.updatedAt === 'number' ? { updatedAt: c.updatedAt } : {}),
     });
@@ -3244,6 +3280,24 @@ export function getCachedVolunteerPinHashes(
   if (Array.isArray(cached)) {
     cached.forEach(pushValid);
   }
+  // Fallback robusto: estrai pinHash (o hash del PIN locale) dal database volontari salvato su dispositivo
+  // per account già loggati prima della v5.3.4 o autenticati con Passkey/biometria
+  try {
+    if (typeof localStorage !== 'undefined') {
+      for (const lsKey of ['CROCE_ORO_VOLONTARI_DB', 'CROCE_ORO_VOLONTARI']) {
+        const raw = localStorage.getItem(lsKey);
+        if (!raw) continue;
+        const parsed = JSON.parse(raw);
+        if (!Array.isArray(parsed)) continue;
+        const found = parsed.find((v: any) => v && String(v.id || '').trim() === volId);
+        if (!found) continue;
+        if (typeof found.pinHash === 'string') pushValid(found.pinHash);
+        if (typeof found.pin === 'string' && /^[0-9]{4}$/.test(found.pin.trim())) {
+          pushValid(buildPinResetHash(volId, found.pin.trim()));
+        }
+      }
+    }
+  } catch {}
   return ordered;
 }
 
@@ -3471,6 +3525,24 @@ export interface BachecaAckRecord {
   updatedAt?: any;
 }
 
+async function resolveVolunteerPinHashesWithRosterFallback(
+  volId: string,
+  extraCandidates: Array<string | undefined | null> = []
+): Promise<string[]> {
+  let hashes = getCachedVolunteerPinHashes(volId, extraCandidates);
+  if (hashes.length > 0) return hashes;
+  try {
+    const rosterRes = await readPublicVolunteerRosterFromServer();
+    const match = rosterRes?.data?.entries?.find((e) => e && String(e.id || '').trim() === volId);
+    if (match?.pinHash && SHA256_HEX_REGEX.test(String(match.pinHash).trim().toLowerCase())) {
+      const h = String(match.pinHash).trim().toLowerCase();
+      cacheActiveVolunteerPinHash(volId, h, false);
+      hashes = [h];
+    }
+  } catch {}
+  return hashes;
+}
+
 export async function submitBachecaAckFirestore(input: {
   postId: string;
   volontarioId: string;
@@ -3484,7 +3556,7 @@ export async function submitBachecaAckFirestore(input: {
   if (!VALID_DOC_ID_REGEX.test(postId) || !VALID_DOC_ID_REGEX.test(volId)) {
     return { ok: false, code: 'invalid-ids' };
   }
-  const hashes = getCachedVolunteerPinHashes(volId, input.verifyingPinHashes || []);
+  const hashes = await resolveVolunteerPinHashesWithRosterFallback(volId, input.verifyingPinHashes || []);
   if (hashes.length === 0) {
     return { ok: false, code: 'missing-pin-hash' };
   }
@@ -3562,6 +3634,159 @@ export async function markBachecaAckAppliedFirestore(ackId: string): Promise<voi
     });
   } catch {}
 }
+
+// ============================================================================
+// ZERO-PII WRITE-ONLY BACHECA COMMENTS & LIKES QUEUE (bacheca_interactions/{id})
+// Consente agli smartphone volontari senza Google Auth di pubblicare commenti,
+// risposte e Mi Piace sui post in bacheca con verifica crittografica pinHash,
+// riconciliati in tempo reale dalla Centrale Operativa con invio notifica Push.
+// ============================================================================
+
+const BACHECA_INT_SCOPE = 'croce_oro_bacheca_int';
+
+export type BachecaInteractionActionType =
+  | 'comment'
+  | 'like_post'
+  | 'unlike_post'
+  | 'like_comment'
+  | 'unlike_comment';
+
+export interface BachecaInteractionRecord {
+  interactionId: string;
+  scope: 'croce_oro_bacheca_int';
+  actionType: BachecaInteractionActionType;
+  postId: string;
+  commentId: string;
+  parentCommentId: string;
+  parentAutoreNome: string;
+  volontarioId: string;
+  volontarioNome: string;
+  volontarioRuolo: string;
+  testo: string;
+  dataOra: string;
+  verifyingPinHash: string;
+  status: 'pending' | 'applied';
+  createdAt?: any;
+  updatedAt?: any;
+}
+
+export async function submitBachecaInteractionFirestore(input: {
+  actionType: BachecaInteractionActionType;
+  postId: string;
+  commentId?: string;
+  parentCommentId?: string;
+  parentAutoreNome?: string;
+  volontarioId: string;
+  volontarioNome: string;
+  volontarioRuolo?: string;
+  testo?: string;
+  dataOra: string;
+  verifyingPinHashes?: Array<string | undefined | null>;
+}): Promise<{ ok: boolean; code?: string; interactionId?: string }> {
+  const postId = String(input?.postId || '').trim();
+  const volId = String(input?.volontarioId || '').trim();
+  if (!VALID_DOC_ID_REGEX.test(postId) || !VALID_DOC_ID_REGEX.test(volId)) {
+    return { ok: false, code: 'invalid-ids' };
+  }
+  const actionType = input.actionType;
+  const testo = String(input.testo || '').trim().slice(0, 1200);
+  if (actionType === 'comment' && !testo) {
+    return { ok: false, code: 'empty-comment' };
+  }
+  const hashes = await resolveVolunteerPinHashesWithRosterFallback(volId, input.verifyingPinHashes || []);
+  if (hashes.length === 0) {
+    return { ok: false, code: 'missing-pin-hash' };
+  }
+
+  const rawCommentId = String(input.commentId || '').trim();
+  const commentId = rawCommentId && VALID_DOC_ID_REGEX.test(rawCommentId) ? rawCommentId.slice(0, 128) : '';
+  const rawParentId = String(input.parentCommentId || '').trim();
+  const parentCommentId = rawParentId && VALID_DOC_ID_REGEX.test(rawParentId) ? rawParentId.slice(0, 128) : '';
+  const parentAutoreNome = String(input.parentAutoreNome || '').trim().slice(0, 120);
+  const nome = String(input.volontarioNome || 'Volontario').trim().slice(0, 120) || 'Volontario';
+  const ruolo = String(input.volontarioRuolo || 'Volontario').trim().slice(0, 60);
+  const dataOra = String(input.dataOra || '').trim().slice(0, 40) || new Date().toLocaleString('it-IT');
+  const suffix = `${Date.now()}-${Math.floor(Math.random() * 100000)}`;
+  const interactionId = `int-${actionType.replace(/_/g, '')}-${suffix}`.slice(0, 128);
+  const ref = doc(db, 'bacheca_interactions', interactionId);
+
+  for (const hash of hashes) {
+    try {
+      await setDoc(ref, {
+        interactionId,
+        scope: BACHECA_INT_SCOPE,
+        actionType,
+        postId,
+        commentId,
+        parentCommentId,
+        parentAutoreNome,
+        volontarioId: volId,
+        volontarioNome: nome,
+        volontarioRuolo: ruolo,
+        testo,
+        dataOra,
+        verifyingPinHash: hash,
+        status: 'pending',
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+      return { ok: true, interactionId };
+    } catch {
+      // Prova hash successivo se presente
+    }
+  }
+  return { ok: false, code: 'permission-denied' };
+}
+
+export function listenPendingBachecaInteractionsFirestore(
+  onItems: (items: BachecaInteractionRecord[]) => void,
+  onError?: (err: Error) => void
+): Unsubscribe {
+  const q = query(
+    collection(db, 'bacheca_interactions'),
+    where('scope', '==', BACHECA_INT_SCOPE)
+  );
+  return onSnapshot(
+    q,
+    (snapshot) => {
+      const items: BachecaInteractionRecord[] = [];
+      snapshot.forEach((docSnap) => {
+        const d = docSnap.data() as BachecaInteractionRecord;
+        if (d && d.status === 'pending' && typeof d.postId === 'string' && typeof d.volontarioId === 'string') {
+          items.push(d);
+        }
+      });
+      // Ordina per createdAt crescente così commenti e like vengono applicati in ordine cronologico
+      items.sort((a, b) => {
+        const msA = typeof a.createdAt?.toMillis === 'function' ? a.createdAt.toMillis() : 0;
+        const msB = typeof b.createdAt?.toMillis === 'function' ? b.createdAt.toMillis() : 0;
+        return msA - msB;
+      });
+      onItems(items);
+    },
+    (error) => {
+      try {
+        handleFirestoreError(error, OperationType.LIST, 'bacheca_interactions');
+      } catch (wrapped: any) {
+        onError?.(wrapped);
+      }
+    }
+  );
+}
+
+export async function markBachecaInteractionAppliedFirestore(interactionId: string): Promise<void> {
+  const user = auth.currentUser;
+  if (!user || !user.emailVerified) return;
+  const cleanId = String(interactionId || '').trim();
+  if (!VALID_DOC_ID_REGEX.test(cleanId)) return;
+  try {
+    await updateDoc(doc(db, 'bacheca_interactions', cleanId), {
+      status: 'applied',
+      updatedAt: serverTimestamp(),
+    });
+  } catch {}
+}
+
 
 
 

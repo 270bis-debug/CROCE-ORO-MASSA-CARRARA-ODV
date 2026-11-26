@@ -5,6 +5,7 @@ import {
   CorsoFormazione,
   ComunicazioneBacheca
 } from '../types/adminTypes';
+import { sortComunicazioniBacheca } from './bachecaSort';
 
 export type CanonicalSedeKey = 'ronchi' | 'lejare' | 'carrara' | 'pietrasanta' | 'lunigiana';
 
@@ -451,11 +452,7 @@ export function mergeComunicazioniBachecaSafe(
   normalizzaComunicazioniBacheca(Array.isArray(base) ? base : []).forEach(insertOrMerge);
   normalizzaComunicazioniBacheca(Array.isArray(incoming) ? incoming : []).forEach(insertOrMerge);
 
-  return Array.from(byId.values()).sort((a, b) => {
-    const dtA = `${a.dataPubblicazione || ''} ${a.oraPubblicazione || ''}`;
-    const dtB = `${b.dataPubblicazione || ''} ${b.oraPubblicazione || ''}`;
-    return dtB.localeCompare(dtA);
-  });
+  return sortComunicazioniBacheca(Array.from(byId.values()));
 }
 
 export function normalizzaCorsiFormazione(

@@ -67,6 +67,11 @@ import {
   submitBachecaAckFirestore,
   listenPendingBachecaAcksFirestore,
   markBachecaAckAppliedFirestore,
+  BachecaInteractionRecord,
+  BachecaInteractionActionType,
+  submitBachecaInteractionFirestore,
+  listenPendingBachecaInteractionsFirestore,
+  markBachecaInteractionAppliedFirestore,
 } from './firebase';
 import { buildPinResetHash } from '../utils/hashReset';
 import {
@@ -342,6 +347,10 @@ class RealtimeService {
   private volunteerActivityLastLoggedState: Map<string, boolean> = new Map();
   private bachecaAcksUnsub: (() => void) | null = null;
   private bachecaAcksReconciling: Set<string> = new Set();
+  private pendingBachecaAcksQueue: BachecaAckRecord[] = [];
+  private bachecaInteractionsUnsub: (() => void) | null = null;
+  private bachecaInteractionsReconciling: Set<string> = new Set();
+  private pendingBachecaInteractionsQueue: BachecaInteractionRecord[] = [];
   private lastBachecaPushSentByPost: Map<string, number> = new Map();
   private publicRosterUnsub: (() => void) | null = null;
   private publicBoardUnsub: (() => void) | null = null;
@@ -1092,29 +1101,57 @@ class RealtimeService {
       for (const p of prevList) {
         if (p?.id) prevById.set(String(p.id), p);
       }
-      const mergePreseOnPost = (remotePost: any) => {
+      const mergeLocalInteractionsOnPost = (remotePost: any) => {
         const localPost = prevById.get(String(remotePost.id));
+        if (!localPost) return remotePost;
+        let nextPost = remotePost;
+
+        // 1. Preserva prese visione locali non ancora riconciliate sul server
         const localPrese: any[] = Array.isArray(localPost?.preseVisione) ? localPost.preseVisione : [];
         const remotePrese: any[] = Array.isArray(remotePost?.preseVisione) ? remotePost.preseVisione : [];
-        if (localPrese.length === 0) return remotePost;
-        const mergedPrese = [...remotePrese];
-        for (const lp of localPrese) {
-          const exists = mergedPrese.some(
-            (rp: any) =>
-              (lp?.volontarioId && rp?.volontarioId && String(lp.volontarioId) === String(rp.volontarioId)) ||
-              (lp?.volontarioNome &&
-                rp?.volontarioNome &&
-                String(lp.volontarioNome).trim().toLowerCase() === String(rp.volontarioNome).trim().toLowerCase())
-          );
-          if (!exists) mergedPrese.push(lp);
+        if (localPrese.length > 0) {
+          const mergedPrese = [...remotePrese];
+          for (const lp of localPrese) {
+            const exists = mergedPrese.some(
+              (rp: any) =>
+                (lp?.volontarioId && rp?.volontarioId && String(lp.volontarioId) === String(rp.volontarioId)) ||
+                (lp?.volontarioNome &&
+                  rp?.volontarioNome &&
+                  String(lp.volontarioNome).trim().toLowerCase() === String(rp.volontarioNome).trim().toLowerCase())
+            );
+            if (!exists) mergedPrese.push(lp);
+          }
+          if (mergedPrese.length > remotePrese.length) {
+            nextPost = { ...nextPost, preseVisione: mergedPrese };
+          }
         }
-        return mergedPrese.length > remotePrese.length ? { ...remotePost, preseVisione: mergedPrese } : remotePost;
+
+        // 2. Preserva commenti locali recenti (ultimi 5 minuti) in attesa di riconciliazione Centrale
+        const localCommenti: any[] = Array.isArray(localPost?.commenti) ? localPost.commenti : [];
+        const remoteCommenti: any[] = Array.isArray(remotePost?.commenti) ? remotePost.commenti : [];
+        if (localCommenti.length > 0) {
+          const remoteCommIds = new Set(remoteCommenti.map((c: any) => String(c?.id || '')));
+          const mergedCommenti = [...remoteCommenti];
+          for (const lc of localCommenti) {
+            if (!lc?.id || remoteCommIds.has(String(lc.id))) continue;
+            const lcTs = Number(lc.timestamp || 0);
+            if (lcTs > 0 && nowMs - lcTs < 300_000) {
+              mergedCommenti.push(lc);
+            }
+          }
+          if (mergedCommenti.length > remoteCommenti.length) {
+            mergedCommenti.sort((a: any, b: any) => Number(a?.timestamp || 0) - Number(b?.timestamp || 0));
+            nextPost = { ...nextPost, commenti: mergedCommenti };
+          }
+        }
+
+        return nextPost;
       };
 
       const isDefinitivelyUnauthenticated = this.firebaseSession.ready && !this.firebaseSession.isAuthorized && !isFirebaseCurrentUserSignedIn();
       let syncedBacheca: any[];
       if (isDefinitivelyUnauthenticated) {
-        syncedBacheca = bachecaNorm.map(mergePreseOnPost);
+        syncedBacheca = bachecaNorm.map(mergeLocalInteractionsOnPost);
         const remoteIds = new Set(syncedBacheca.map((p: any) => String(p.id)));
         // Preserva eventuali post appena ricevuti via notifica Push (ultimi 120s) finché lo snapshot pubblico non li riflette
         for (const lp of prevList) {
@@ -1443,6 +1480,12 @@ class RealtimeService {
         this.bachecaAcksUnsub();
       } catch {}
       this.bachecaAcksUnsub = null;
+    }
+    if (this.bachecaInteractionsUnsub) {
+      try {
+        this.bachecaInteractionsUnsub();
+      } catch {}
+      this.bachecaInteractionsUnsub = null;
     }
     this.detachRadioSlotListeners();
     this.firestoreActive = false;
@@ -1830,18 +1873,26 @@ class RealtimeService {
   }
 
   private async sendBachecaWebPush(params: {
-    tipo: 'nuovo_post' | 'nuovo_corso';
+    tipo: 'nuovo_post' | 'nuovo_corso' | 'nuovo_commento';
     postId: string;
     titolo: string;
     body: string;
     sezioneTargetId?: string;
     priorita?: string;
     postPreview?: Record<string, any>;
+    autoreCommento?: string;
+    autoreCommentoId?: string;
+    destinatariVolontariIds?: string[];
+    destinatariVolontariNomi?: string[];
+    excludeSelfEndpoint?: boolean;
   }) {
     if (typeof window === 'undefined' || !this.firebaseSession.isAuthorized) return;
-    const rateKey = `${params.tipo}:${params.postId || params.titolo}`;
+    const rateKey =
+      params.tipo === 'nuovo_commento'
+        ? `${params.tipo}:${params.postId}:${params.autoreCommento || ''}:${params.body.slice(0, 40)}`
+        : `${params.tipo}:${params.postId || params.titolo}`;
     const lastSent = this.lastBachecaPushSentByPost.get(rateKey) || 0;
-    if (Date.now() - lastSent < 8000) return;
+    if (Date.now() - lastSent < 4000) return;
     this.lastBachecaPushSentByPost.set(rateKey, Date.now());
 
     try {
@@ -1849,29 +1900,102 @@ class RealtimeService {
       if (allSubs.length === 0) return;
 
       const myEndpoint = this.getSavedPushEndpoint();
-      const targetSecId = String(params.sezioneTargetId || 'tutte').trim();
-      const isTargetedSection = Boolean(targetSecId && targetSecId !== 'tutte');
-      const volSezioneById = new Map<string, string>();
+      const shouldExcludeSelf = params.excludeSelfEndpoint !== false;
       const vols = Array.isArray(this.cloudState.volontari) ? this.cloudState.volontari : [];
-      for (const v of vols) {
-        if (v?.id && typeof v.sezioneAppartenenzaId === 'string' && v.sezioneAppartenenzaId.trim()) {
-          volSezioneById.set(String(v.id), v.sezioneAppartenenzaId.trim());
-        }
-      }
 
-      const targetSubs = allSubs.filter((sub) => {
-        if (!sub || !sub.endpoint) return false;
-        if (myEndpoint && sub.endpoint === myEndpoint) return false;
-        if (!isTargetedSection) return true;
-        if (sub.role === 'admin' || sub.role === 'centrale') return true;
-        const volSec = sub.volontarioId ? volSezioneById.get(String(sub.volontarioId)) : undefined;
-        // Se il volontario non ha una sezione assegnata, invia comunque per non isolarlo
-        return !volSec || volSec === targetSecId;
-      });
+      let targetSubs = allSubs;
+      if (params.tipo === 'nuovo_commento') {
+        const destIds = new Set<string>(
+          (params.destinatariVolontariIds || []).map((id) => String(id || '').trim()).filter(Boolean)
+        );
+        const destNomiNorm = (params.destinatariVolontariNomi || [])
+          .map((n) => String(n || '').trim().toLowerCase())
+          .filter(Boolean);
+
+        // Mappa i nominativi destinatari sui rispettivi volontarioId in anagrafica
+        let includeAdminAndCentrale = false;
+        if (
+          destIds.has('admin') ||
+          destIds.has('vol-admin') ||
+          destIds.has('admin-centrale-root')
+        ) {
+          includeAdminAndCentrale = true;
+        }
+        for (const dn of destNomiNorm) {
+          if (
+            dn.includes('amministrator') ||
+            dn.includes('direzione') ||
+            dn.includes('centrale') ||
+            dn.includes('admin') ||
+            dn.includes('segreteria')
+          ) {
+            includeAdminAndCentrale = true;
+          }
+          for (const v of vols) {
+            if (!v?.id) continue;
+            const full1 = `${v.nome || ''} ${v.cognome || ''}`.trim().toLowerCase();
+            const full2 = `${v.cognome || ''} ${v.nome || ''}`.trim().toLowerCase();
+            if ((full1 && (dn === full1 || dn.includes(full1) || full1.includes(dn))) || (full2 && (dn === full2 || dn.includes(full2) || full2.includes(dn)))) {
+              destIds.add(String(v.id));
+              if (v.profiloCentrale || v.isAdmin) {
+                includeAdminAndCentrale = true;
+              }
+            }
+          }
+        }
+
+        const senderVolId = String(params.autoreCommentoId || '').trim();
+        targetSubs = allSubs.filter((sub) => {
+          if (!sub || !sub.endpoint) return false;
+          if (shouldExcludeSelf && myEndpoint && sub.endpoint === myEndpoint) return false;
+          if (senderVolId && sub.volontarioId && String(sub.volontarioId) === senderVolId) return false;
+          if (sub.volontarioId && destIds.has(String(sub.volontarioId))) return true;
+          if (includeAdminAndCentrale && (sub.role === 'admin' || sub.role === 'centrale')) return true;
+          return false;
+        });
+      } else {
+        const targetSecId = String(params.sezioneTargetId || 'tutte').trim();
+        const isTargetedSection = Boolean(targetSecId && targetSecId !== 'tutte');
+        const volSezioneById = new Map<string, string>();
+        for (const v of vols) {
+          if (v?.id && typeof v.sezioneAppartenenzaId === 'string' && v.sezioneAppartenenzaId.trim()) {
+            volSezioneById.set(String(v.id), v.sezioneAppartenenzaId.trim());
+          }
+        }
+
+        targetSubs = allSubs.filter((sub) => {
+          if (!sub || !sub.endpoint) return false;
+          if (shouldExcludeSelf && myEndpoint && sub.endpoint === myEndpoint) return false;
+          if (!isTargetedSection) return true;
+          if (sub.role === 'admin' || sub.role === 'centrale') return true;
+          const volSec = sub.volontarioId ? volSezioneById.get(String(sub.volontarioId)) : undefined;
+          // Se il volontario non ha una sezione assegnata, invia comunque per non isolarlo
+          return !volSec || volSec === targetSecId;
+        });
+      }
 
       if (targetSubs.length === 0) return;
 
       const isUrgente = params.priorita === 'Urgente';
+      const pushTipo =
+        params.tipo === 'nuovo_corso'
+          ? 'bacheca_corso'
+          : params.tipo === 'nuovo_commento'
+          ? 'bacheca_commento'
+          : 'bacheca_post';
+      const pushTitle =
+        params.tipo === 'nuovo_corso'
+          ? `🎓 Corso in Bacheca: ${params.titolo}`
+          : params.tipo === 'nuovo_commento'
+          ? `💬 ${params.autoreCommento || 'Volontario'} ha commentato: ${params.titolo}`
+          : isUrgente
+          ? `🚨 Bacheca Urgente: ${params.titolo}`
+          : `📢 Bacheca Croce Oro: ${params.titolo}`;
+      const pushTag =
+        params.tipo === 'nuovo_commento'
+          ? `bacheca-comm-${params.postId || Date.now()}-${Date.now()}`
+          : `bacheca-${params.postId || Date.now()}`;
+
       const pushApiBase = window.location.origin.replace(/\/$/, '');
       await fetch(`${pushApiBase}/api/push-send`, {
         method: 'POST',
@@ -1883,17 +2007,12 @@ class RealtimeService {
             auth: s.auth,
           })),
           payload: {
-            title:
-              params.tipo === 'nuovo_corso'
-                ? `🎓 Corso in Bacheca: ${params.titolo}`
-                : isUrgente
-                ? `🚨 Bacheca Urgente: ${params.titolo}`
-                : `📢 Bacheca Croce Oro: ${params.titolo}`,
+            title: pushTitle,
             body: params.body,
-            tag: `bacheca-${params.postId || Date.now()}`,
+            tag: pushTag,
             urgenza: isUrgente ? 'ROSSO' : 'GIALLO',
             soundType: 'cicalino',
-            tipo: params.tipo === 'nuovo_corso' ? 'bacheca_corso' : 'bacheca_post',
+            tipo: pushTipo,
             postId: params.postId,
             ...(params.postPreview ? { postPreview: params.postPreview } : {}),
             isEmergency: false,
@@ -1907,7 +2026,8 @@ class RealtimeService {
   }
 
   private async applyPendingBachecaAcks(acks: BachecaAckRecord[]) {
-    if (!this.firebaseSession.isAuthorized || !Array.isArray(acks) || acks.length === 0) return;
+    this.pendingBachecaAcksQueue = Array.isArray(acks) ? acks : [];
+    if (!this.firebaseSession.isAuthorized || this.pendingBachecaAcksQueue.length === 0) return;
     if (!this.shardLoadedFromCloud['bacheca']) return;
 
     const currentBacheca = Array.isArray(this.cloudState.bacheca) ? this.cloudState.bacheca : [];
@@ -1917,7 +2037,7 @@ class RealtimeService {
     let changed = false;
     const toMarkApplied: string[] = [];
 
-    for (const ack of acks) {
+    for (const ack of this.pendingBachecaAcksQueue) {
       if (!ack?.ackId || this.bachecaAcksReconciling.has(ack.ackId)) continue;
       this.bachecaAcksReconciling.add(ack.ackId);
 
@@ -1975,12 +2095,240 @@ class RealtimeService {
           ? this.cloudState.bachecaEliminatiIds
           : [],
       });
-      this.publishRaspberryBoardNow({ bacheca: updatedBacheca });
+      this.publishRaspberryBoardNow({ bacheca: updatedBacheca }, true).catch(() => {});
     }
 
     for (const ackId of toMarkApplied) {
       await markBachecaAckAppliedFirestore(ackId).catch(() => {});
       this.bachecaAcksReconciling.delete(ackId);
+    }
+  }
+
+  private async applyPendingBachecaInteractions(interactions: BachecaInteractionRecord[]) {
+    this.pendingBachecaInteractionsQueue = Array.isArray(interactions) ? interactions : [];
+    if (!this.firebaseSession.isAuthorized || this.pendingBachecaInteractionsQueue.length === 0) return;
+    if (!this.shardLoadedFromCloud['bacheca']) return;
+
+    const currentBacheca = Array.isArray(this.cloudState.bacheca) ? this.cloudState.bacheca : [];
+    if (currentBacheca.length === 0) return;
+
+    let updatedBacheca = currentBacheca;
+    let changed = false;
+    const toMarkApplied: string[] = [];
+    const commentNotificationsToSend: Array<{
+      notifica: any;
+      postSnapshot: any;
+      autoreCommentoId: string;
+    }> = [];
+
+    for (const item of this.pendingBachecaInteractionsQueue) {
+      if (!item?.interactionId || this.bachecaInteractionsReconciling.has(item.interactionId)) continue;
+      this.bachecaInteractionsReconciling.add(item.interactionId);
+
+      const postIdx = updatedBacheca.findIndex((c: any) => c && String(c.id) === String(item.postId));
+      if (postIdx === -1) {
+        this.bachecaInteractionsReconciling.delete(item.interactionId);
+        continue;
+      }
+
+      const post = updatedBacheca[postIdx];
+      const nowTs = Date.now();
+      const volId = String(item.volontarioId || '').trim();
+      const volNome = String(item.volontarioNome || 'Volontario').trim();
+      const volNomeNorm = volNome.toLowerCase();
+
+      if (item.actionType === 'comment') {
+        const existingCommenti: any[] = Array.isArray(post.commenti) ? post.commenti : [];
+        const commId = item.commentId || `comm-${item.interactionId}`;
+        const alreadyExists = existingCommenti.some((cm: any) => cm && String(cm.id) === commId);
+        if (!alreadyExists && item.testo) {
+          const createdMs = typeof item.createdAt?.toMillis === 'function' ? item.createdAt.toMillis() : nowTs;
+          const nuovoCommento = {
+            id: commId,
+            postPadreId: post.id,
+            ...(item.parentCommentId ? { rispostaACommentoId: item.parentCommentId } : {}),
+            ...(item.parentAutoreNome ? { rispostaANominativo: item.parentAutoreNome } : {}),
+            autoreId: volId,
+            autoreNome: volNome,
+            autoreRuolo: item.volontarioRuolo || 'Volontario',
+            testo: item.testo,
+            dataOra: item.dataOra || formatDateTimeItaly(undefined, false),
+            timestamp: createdMs,
+            likes: [],
+          };
+          const nextCommenti = [...existingCommenti, nuovoCommento];
+          const nextPost = { ...post, commenti: nextCommenti, updatedAt: nowTs };
+          updatedBacheca = updatedBacheca.map((c: any, idx: number) => (idx === postIdx ? nextPost : c));
+          changed = true;
+
+          // Destinatari deduplicati: autore del post + tutti i commentatori precedenti (escluso il mittente)
+          const destNomiSet = new Set<string>();
+          const destIdsSet = new Set<string>();
+          if (post.autore && String(post.autore).trim().toLowerCase() !== volNomeNorm) {
+            destNomiSet.add(String(post.autore).trim());
+          }
+          if (post.autoreId && String(post.autoreId) !== volId) {
+            destIdsSet.add(String(post.autoreId));
+          }
+          existingCommenti.forEach((cm: any) => {
+            const aNome = String(cm?.autoreNome || '').trim();
+            const aId = String(cm?.autoreId || '').trim();
+            if (aNome && aNome.toLowerCase() !== volNomeNorm) destNomiSet.add(aNome);
+            if (aId && aId !== volId) destIdsSet.add(aId);
+          });
+
+          const notifPayload = {
+            id: `bacheca-comm-${commId}`,
+            tipo: 'nuovo_commento' as const,
+            postId: post.id,
+            postTitolo: post.titolo,
+            autoreCommento: volNome,
+            autoreCommentoId: volId,
+            testoCommento: item.testo,
+            destinatariVolontariNomi: Array.from(destNomiSet),
+            destinatariVolontariIds: Array.from(destIdsSet),
+            createdAt: createdMs,
+            messaggio: `Nuovo commento di ${volNome} su "${post.titolo}": "${item.testo.substring(0, 80)}"`,
+          };
+          commentNotificationsToSend.push({
+            notifica: notifPayload,
+            postSnapshot: nextPost,
+            autoreCommentoId: volId,
+          });
+        }
+      } else if (item.actionType === 'like_post' || item.actionType === 'unlike_post') {
+        const likes: string[] = Array.isArray(post.likes) ? post.likes : [];
+        const hasLike = likes.some(
+          (u) => String(u) === volId || String(u).trim().toLowerCase() === volNomeNorm
+        );
+        if (item.actionType === 'like_post' && !hasLike) {
+          updatedBacheca = updatedBacheca.map((c: any, idx: number) =>
+            idx === postIdx ? { ...c, likes: [...likes, volId || volNome], updatedAt: nowTs } : c
+          );
+          changed = true;
+        } else if (item.actionType === 'unlike_post' && hasLike) {
+          updatedBacheca = updatedBacheca.map((c: any, idx: number) =>
+            idx === postIdx
+              ? {
+                  ...c,
+                  likes: likes.filter((u) => String(u) !== volId && String(u).trim().toLowerCase() !== volNomeNorm),
+                  updatedAt: nowTs,
+                }
+              : c
+          );
+          changed = true;
+        }
+      } else if ((item.actionType === 'like_comment' || item.actionType === 'unlike_comment') && item.commentId) {
+        const commenti: any[] = Array.isArray(post.commenti) ? post.commenti : [];
+        let commChanged = false;
+        const nextCommenti = commenti.map((cm: any) => {
+          if (!cm || String(cm.id) !== String(item.commentId)) return cm;
+          const cLikes: string[] = Array.isArray(cm.likes) ? cm.likes : [];
+          const hasLike = cLikes.some(
+            (u) => String(u) === volId || String(u).trim().toLowerCase() === volNomeNorm
+          );
+          if (item.actionType === 'like_comment' && !hasLike) {
+            commChanged = true;
+            return { ...cm, likes: [...cLikes, volId || volNome] };
+          }
+          if (item.actionType === 'unlike_comment' && hasLike) {
+            commChanged = true;
+            return {
+              ...cm,
+              likes: cLikes.filter((u) => String(u) !== volId && String(u).trim().toLowerCase() !== volNomeNorm),
+            };
+          }
+          return cm;
+        });
+        if (commChanged) {
+          updatedBacheca = updatedBacheca.map((c: any, idx: number) =>
+            idx === postIdx ? { ...c, commenti: nextCommenti, updatedAt: nowTs } : c
+          );
+          changed = true;
+        }
+      }
+
+      toMarkApplied.push(item.interactionId);
+    }
+
+    if (changed) {
+      this.cloudState.bacheca = updatedBacheca;
+      try {
+        localStorage.setItem('CROCE_ORO_BACHECA_COMUNICAZIONI', JSON.stringify(updatedBacheca));
+      } catch {}
+      this.emit('BACHECA_UPDATED', {
+        bacheca: updatedBacheca,
+        bachecaEliminatiIds: Array.isArray(this.cloudState.bachecaEliminatiIds)
+          ? this.cloudState.bachecaEliminatiIds
+          : [],
+        notificheBachecaRecenti: Array.isArray(this.cloudState.notificheBachecaRecenti)
+          ? this.cloudState.notificheBachecaRecenti
+          : [],
+      });
+      this.send('UPDATE_BACHECA', {
+        bacheca: updatedBacheca,
+        bachecaEliminatiIds: Array.isArray(this.cloudState.bachecaEliminatiIds)
+          ? this.cloudState.bachecaEliminatiIds
+          : [],
+      });
+      const pubPromise = this.publishRaspberryBoardNow({ bacheca: updatedBacheca }, true).catch(() => false);
+
+      for (const entry of commentNotificationsToSend) {
+        const notif = entry.notifica;
+        // Notifica in-app immediata anche sulla Centrale Operativa / Admin
+        this.emit('NOTIFICA_BACHECA', {
+          notifica: notif,
+          notificheBachecaRecenti: Array.isArray(this.cloudState.notificheBachecaRecenti)
+            ? this.cloudState.notificheBachecaRecenti
+            : [],
+        });
+        this.send('NOTIFICA_BACHECA', { notifica: notif });
+
+        const p = entry.postSnapshot;
+        const postPreview = p
+          ? {
+              id: String(p.id),
+              titolo: String(p.titolo || '').slice(0, 200),
+              contenuto: String(p.contenuto || '').slice(0, 600),
+              sezioneTargetId: String(p.sezioneTargetId || 'tutte'),
+              sezioneTargetNome: String(p.sezioneTargetNome || 'Tutte le Sezioni Territoriali'),
+              priorita: String(p.priorita || 'Ordinaria'),
+              categoria: String(p.categoria || 'Comunicazione Generale'),
+              dataPubblicazione: String(p.dataPubblicazione || ''),
+              oraPubblicazione: String(p.oraPubblicazione || ''),
+              autore: String(p.autore || 'Direzione'),
+              attiva: true,
+              evidenziata: Boolean(p.evidenziata),
+              richiedePresaVisione: Boolean(p.richiedePresaVisione),
+              updatedAt: typeof p.updatedAt === 'number' ? p.updatedAt : Date.now(),
+            }
+          : undefined;
+
+        Promise.race([
+          pubPromise,
+          new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 5000)),
+        ])
+          .then(() =>
+            this.sendBachecaWebPush({
+              tipo: 'nuovo_commento',
+              postId: String(notif.postId || ''),
+              titolo: String(notif.postTitolo || 'Bacheca'),
+              body: String(notif.messaggio || ''),
+              autoreCommento: String(notif.autoreCommento || 'Volontario'),
+              autoreCommentoId: entry.autoreCommentoId,
+              destinatariVolontariIds: notif.destinatariVolontariIds,
+              destinatariVolontariNomi: notif.destinatariVolontariNomi,
+              postPreview,
+              excludeSelfEndpoint: false,
+            })
+          )
+          .catch(() => {});
+      }
+    }
+
+    for (const intId of toMarkApplied) {
+      await markBachecaInteractionAppliedFirestore(intId).catch(() => {});
+      this.bachecaInteractionsReconciling.delete(intId);
     }
   }
 
@@ -2046,6 +2394,14 @@ class RealtimeService {
             } else if (!fromLocalPendingWrite || isFirstSnapshot) {
               this.applyCloudShardPayload(shardId, payload, !isFirstSnapshot && !fromLocalPendingWrite);
             }
+            if (shardId === 'bacheca') {
+              if (this.pendingBachecaAcksQueue.length > 0) {
+                this.applyPendingBachecaAcks(this.pendingBachecaAcksQueue).catch(() => {});
+              }
+              if (this.pendingBachecaInteractionsQueue.length > 0) {
+                this.applyPendingBachecaInteractions(this.pendingBachecaInteractionsQueue).catch(() => {});
+              }
+            }
           } else if (!exists && isFirstSnapshot && this.pendingInitialWrites.has(shardId)) {
             // Shard ancora vuoto su Firestore e scrittura locale in attesa: ora si può inizializzare
             this.pendingInitialWrites.delete(shardId);
@@ -2088,6 +2444,12 @@ class RealtimeService {
                 (Array.isArray(this.cloudState.sedi) && this.cloudState.sedi.length > 0))
             ) {
               this.publishRaspberryBoardNow(undefined, true).catch(() => {});
+            }
+            if (this.pendingBachecaAcksQueue.length > 0) {
+              this.applyPendingBachecaAcks(this.pendingBachecaAcksQueue).catch(() => {});
+            }
+            if (this.pendingBachecaInteractionsQueue.length > 0) {
+              this.applyPendingBachecaInteractions(this.pendingBachecaInteractionsQueue).catch(() => {});
             }
             this.emit('cloud_shards_ready', { shardExists: { ...this.shardExists } });
           }
@@ -2142,6 +2504,17 @@ class RealtimeService {
       },
       (err) => {
         console.warn('[Realtime] Errore listener bacheca_acks:', err?.message);
+      }
+    );
+
+    this.bachecaInteractionsUnsub = listenPendingBachecaInteractionsFirestore(
+      (interactions) => {
+        if (Array.isArray(interactions) && interactions.length > 0) {
+          this.applyPendingBachecaInteractions(interactions).catch(() => {});
+        }
+      },
+      (err) => {
+        console.warn('[Realtime] Errore listener bacheca_interactions:', err?.message);
       }
     );
 
@@ -6775,7 +7148,12 @@ class RealtimeService {
 
     // Invia notifica Web Push reale SOLO DOPO aver completato la pubblicazione su public_raspberry/display_v1
     // (con fallback di sicurezza 6s) e includendo postPreview compatto, così al click il post è SEMPRE già presente!
-    if (notifica && (notifica.tipo === 'nuovo_post' || notifica.tipo === 'nuovo_corso')) {
+    if (
+      notifica &&
+      (notifica.tipo === 'nuovo_post' ||
+        notifica.tipo === 'nuovo_corso' ||
+        notifica.tipo === 'nuovo_commento')
+    ) {
       const matchedPost = Array.isArray(bacheca)
         ? bacheca.find((c: any) => c && String(c.id) === String(notifica.postId || ''))
         : null;
@@ -6819,6 +7197,11 @@ class RealtimeService {
             sezioneTargetId,
             priorita,
             postPreview,
+            autoreCommento: notifica.autoreCommento ? String(notifica.autoreCommento) : undefined,
+            autoreCommentoId: notifica.autoreCommentoId ? String(notifica.autoreCommentoId) : undefined,
+            destinatariVolontariIds: Array.isArray(notifica.destinatariVolontariIds) ? notifica.destinatariVolontariIds : undefined,
+            destinatariVolontariNomi: Array.isArray(notifica.destinatariVolontariNomi) ? notifica.destinatariVolontariNomi : undefined,
+            excludeSelfEndpoint: true,
           })
         )
         .catch(() => {});
@@ -6843,6 +7226,7 @@ class RealtimeService {
     volontarioNome: string;
     sezione?: string;
     dataOra: string;
+    verifyingPinHashes?: Array<string | undefined | null>;
   }): Promise<{ ok: boolean; code?: string }> {
     if (this.firebaseSession.isAuthorized) {
       return { ok: true };
@@ -6853,6 +7237,38 @@ class RealtimeService {
       volontarioNome: params.volontarioNome,
       sezione: params.sezione,
       dataOra: params.dataOra,
+      verifyingPinHashes: params.verifyingPinHashes,
+    });
+  }
+
+  public async submitBachecaInteraction(params: {
+    actionType: BachecaInteractionActionType;
+    postId: string;
+    commentId?: string;
+    parentCommentId?: string;
+    parentAutoreNome?: string;
+    volontarioId: string;
+    volontarioNome: string;
+    volontarioRuolo?: string;
+    testo?: string;
+    dataOra: string;
+    verifyingPinHashes?: Array<string | undefined | null>;
+  }): Promise<{ ok: boolean; code?: string; interactionId?: string }> {
+    if (this.firebaseSession.isAuthorized) {
+      return { ok: true };
+    }
+    return submitBachecaInteractionFirestore({
+      actionType: params.actionType,
+      postId: params.postId,
+      commentId: params.commentId,
+      parentCommentId: params.parentCommentId,
+      parentAutoreNome: params.parentAutoreNome,
+      volontarioId: params.volontarioId,
+      volontarioNome: params.volontarioNome,
+      volontarioRuolo: params.volontarioRuolo,
+      testo: params.testo,
+      dataOra: params.dataOra,
+      verifyingPinHashes: params.verifyingPinHashes,
     });
   }
 

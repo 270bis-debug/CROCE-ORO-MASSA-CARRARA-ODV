@@ -924,6 +924,91 @@ service cloud.firestore {
         data.updatedAt == request.time;
     }
 
+    function isValidBachecaInteractionId(interactionId) {
+      return interactionId is string &&
+        interactionId.size() >= 10 &&
+        interactionId.size() <= 128 &&
+        interactionId.matches('^int-[a-zA-Z0-9_\\-]{6,124}$');
+    }
+
+    function isValidBachecaInteractionData(data, interactionId) {
+      return data.keys().hasAll([
+          'interactionId',
+          'scope',
+          'actionType',
+          'postId',
+          'commentId',
+          'parentCommentId',
+          'parentAutoreNome',
+          'volontarioId',
+          'volontarioNome',
+          'volontarioRuolo',
+          'testo',
+          'dataOra',
+          'verifyingPinHash',
+          'status',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'interactionId',
+          'scope',
+          'actionType',
+          'postId',
+          'commentId',
+          'parentCommentId',
+          'parentAutoreNome',
+          'volontarioId',
+          'volontarioNome',
+          'volontarioRuolo',
+          'testo',
+          'dataOra',
+          'verifyingPinHash',
+          'status',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.interactionId is string &&
+        data.interactionId == interactionId &&
+        isValidBachecaInteractionId(data.interactionId) &&
+        data.scope is string &&
+        data.scope == 'croce_oro_bacheca_int' &&
+        data.scope.size() == 21 &&
+        data.actionType is string &&
+        data.actionType in ['comment', 'like_post', 'unlike_post', 'like_comment', 'unlike_comment'] &&
+        data.postId is string &&
+        isValidId(data.postId) &&
+        data.commentId is string &&
+        data.commentId.size() <= 128 &&
+        (data.commentId == '' || isValidId(data.commentId)) &&
+        data.parentCommentId is string &&
+        data.parentCommentId.size() <= 128 &&
+        (data.parentCommentId == '' || isValidId(data.parentCommentId)) &&
+        data.parentAutoreNome is string &&
+        data.parentAutoreNome.size() <= 120 &&
+        data.volontarioId is string &&
+        isValidId(data.volontarioId) &&
+        data.volontarioNome is string &&
+        data.volontarioNome.size() >= 1 &&
+        data.volontarioNome.size() <= 120 &&
+        data.volontarioRuolo is string &&
+        data.volontarioRuolo.size() <= 60 &&
+        data.testo is string &&
+        data.testo.size() <= 1200 &&
+        (data.actionType != 'comment' || data.testo.size() >= 1) &&
+        data.dataOra is string &&
+        data.dataOra.size() >= 8 &&
+        data.dataOra.size() <= 40 &&
+        data.verifyingPinHash is string &&
+        data.verifyingPinHash.size() == 64 &&
+        data.verifyingPinHash.matches('^[0-9a-f]{64}$') &&
+        data.status is string &&
+        data.status in ['pending', 'applied'] &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp &&
+        data.updatedAt == request.time;
+    }
+
     // 4. Sharded Live Cloud State Collection
     match /sync_shards/{shardId} {
       allow get: if isValidId(shardId) && isAllowedShardId(shardId) && isOperator();
@@ -1426,7 +1511,44 @@ service cloud.firestore {
       allow delete: if isValidId(ackId) && isOperator();
     }
 
-    // 20. Boot Health Check Doc (no PII)
+    // 20. Zero-PII Write-Only Bacheca Comments & Likes Queue for Volunteer Smartphones
+    match /bacheca_interactions/{interactionId} {
+      allow get: if isValidId(interactionId) && isOperator();
+      allow list: if isOperator() && resource.data.scope == 'croce_oro_bacheca_int';
+      allow create: if isValidId(interactionId) &&
+        isValidBachecaInteractionId(interactionId) &&
+        isValidBachecaInteractionData(incoming(), interactionId) &&
+        incoming().status == 'pending' &&
+        incoming().createdAt == request.time &&
+        (
+          isOperator() ||
+          (
+            exists(/databases/$(database)/documents/pin_reset_profiles/$(incoming().volontarioId)) &&
+            incoming().verifyingPinHash == get(/databases/$(database)/documents/pin_reset_profiles/$(incoming().volontarioId)).data.pinHash
+          )
+        );
+      allow update: if isValidId(interactionId) &&
+        isValidBachecaInteractionId(interactionId) &&
+        isOperator() &&
+        isValidBachecaInteractionData(incoming(), interactionId) &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().interactionId == existing().interactionId &&
+        incoming().scope == existing().scope &&
+        incoming().actionType == existing().actionType &&
+        incoming().postId == existing().postId &&
+        incoming().volontarioId == existing().volontarioId &&
+        (
+          isAdmin() ||
+          (
+            existing().status == 'pending' &&
+            incoming().status == 'applied' &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+          )
+        );
+      allow delete: if isValidId(interactionId) && isOperator();
+    }
+
+    // 21. Boot Health Check Doc (no PII)
     match /test/{docId} {
       allow get: if isValidId(docId) && docId == 'connection' && isOperator();
       allow list, write: if false;

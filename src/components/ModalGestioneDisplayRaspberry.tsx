@@ -31,6 +31,7 @@ import {
   SedeAssociativaCompleta,
   TimbraturaVolontario,
 } from '../types/adminTypes';
+import { sortComunicazioniBacheca } from '../utils/bachecaSort';
 import {
   RaspberryDisplayConfig,
   buildRaspberryKioskUrl,
@@ -169,25 +170,17 @@ export const ModalGestioneDisplayRaspberry: React.FC<ModalGestioneDisplayRaspber
 
   const comunicazioniCentraleLista = useMemo(
     () =>
-      (comunicazioni || [])
-        .filter((c) => isComunicazioneAssociativaCentrale(c))
-        .sort((a, b) =>
-          `${b.dataPubblicazione} ${b.oraPubblicazione}`.localeCompare(
-            `${a.dataPubblicazione} ${a.oraPubblicazione}`
-          )
-        ),
+      sortComunicazioniBacheca(
+        (comunicazioni || []).filter((c) => isComunicazioneAssociativaCentrale(c))
+      ),
     [comunicazioni]
   );
 
   const comunicazioniSezioneLista = useMemo(
     () =>
-      (comunicazioni || [])
-        .filter((c) => matchesComunicazioneSezione(c, sedeSelezionata))
-        .sort((a, b) =>
-          `${b.dataPubblicazione} ${b.oraPubblicazione}`.localeCompare(
-            `${a.dataPubblicazione} ${a.oraPubblicazione}`
-          )
-        ),
+      sortComunicazioniBacheca(
+        (comunicazioni || []).filter((c) => matchesComunicazioneSezione(c, sedeSelezionata))
+      ),
     [comunicazioni, sedeSelezionata]
   );
 

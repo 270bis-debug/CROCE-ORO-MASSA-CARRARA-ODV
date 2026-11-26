@@ -1017,6 +1017,112 @@
         "createdAt",
         "updatedAt"
       ]
+    },
+    "BachecaInteraction": {
+      "title": "BachecaInteraction",
+      "description": "Zero-PII write-only notice board comments and likes queue allowing unauthenticated volunteer smartphones verified via pin_reset_profiles PIN hash to publish comments, replies, and likes, readable and reconcilable exclusively by verified operators.",
+      "type": "object",
+      "properties": {
+        "interactionId": {
+          "type": "string",
+          "minLength": 10,
+          "maxLength": 128,
+          "pattern": "^int-[a-zA-Z0-9_\\-]{6,124}$"
+        },
+        "scope": {
+          "type": "string",
+          "enum": ["croce_oro_bacheca_int"],
+          "minLength": 21,
+          "maxLength": 21
+        },
+        "actionType": {
+          "type": "string",
+          "enum": ["comment", "like_post", "unlike_post", "like_comment", "unlike_comment"]
+        },
+        "postId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "commentId": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 128
+        },
+        "parentCommentId": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 128
+        },
+        "parentAutoreNome": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 120
+        },
+        "volontarioId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "volontarioNome": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "volontarioRuolo": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 60
+        },
+        "testo": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 1200
+        },
+        "dataOra": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 40
+        },
+        "verifyingPinHash": {
+          "type": "string",
+          "minLength": 64,
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["pending", "applied"]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "interactionId",
+        "scope",
+        "actionType",
+        "postId",
+        "commentId",
+        "parentCommentId",
+        "parentAutoreNome",
+        "volontarioId",
+        "volontarioNome",
+        "volontarioRuolo",
+        "testo",
+        "dataOra",
+        "verifyingPinHash",
+        "status",
+        "createdAt",
+        "updatedAt"
+      ]
     }
   },
   "firestore": {
@@ -1083,6 +1189,10 @@
     "/bacheca_acks/{ackId}": {
       "schema": { "$ref": "#/entities/BachecaAck" },
       "description": "Zero-PII write-only notice board read-receipt (Presa Visione) queue verified against pin_reset_profiles PIN hash, readable and reconcilable exclusively by verified operators."
+    },
+    "/bacheca_interactions/{interactionId}": {
+      "schema": { "$ref": "#/entities/BachecaInteraction" },
+      "description": "Zero-PII write-only notice board comments and likes queue verified against pin_reset_profiles PIN hash, readable and reconcilable exclusively by verified operators."
     }
   }
 }

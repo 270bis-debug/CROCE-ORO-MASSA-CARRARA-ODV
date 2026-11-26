@@ -8396,7 +8396,10 @@ async function startServer() {
     if (rawSubs.length === 0 || !notifPayload) {
       return res.json({ success: true, sent: 0, expiredEndpoints: [] });
     }
-    const isBachecaNotif = notifPayload.tipo === 'bacheca_post' || notifPayload.tipo === 'bacheca_corso';
+    const isBachecaNotif =
+      notifPayload.tipo === 'bacheca_post' ||
+      notifPayload.tipo === 'bacheca_corso' ||
+      notifPayload.tipo === 'bacheca_commento';
     const rawPreview = isBachecaNotif && notifPayload.postPreview && typeof notifPayload.postPreview === 'object'
       ? notifPayload.postPreview
       : null;

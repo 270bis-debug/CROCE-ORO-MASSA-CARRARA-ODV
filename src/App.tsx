@@ -2346,21 +2346,55 @@ export default function App() {
         if (replaceAll) {
           const remoteNormalized = normalizzaComunicazioniBacheca(Array.isArray(incoming) ? incoming : []).map((remotePost) => {
             const localPost = prev.find((p) => p.id === remotePost.id);
-            const localPrese = Array.isArray(localPost?.preseVisione) ? localPost.preseVisione : [];
+            if (!localPost) return remotePost;
+            let nextPost = remotePost;
+
+            const localPrese = Array.isArray(localPost.preseVisione) ? localPost.preseVisione : [];
             const remotePrese = Array.isArray(remotePost.preseVisione) ? remotePost.preseVisione : [];
-            if (localPrese.length === 0) return remotePost;
-            const mergedPrese = [...remotePrese];
-            for (const lp of localPrese) {
-              const exists = mergedPrese.some(
-                (rp) =>
-                  (lp.volontarioId && rp.volontarioId && lp.volontarioId === rp.volontarioId) ||
-                  (lp.volontarioNome &&
-                    rp.volontarioNome &&
-                    lp.volontarioNome.trim().toLowerCase() === rp.volontarioNome.trim().toLowerCase())
-              );
-              if (!exists) mergedPrese.push(lp);
+            if (localPrese.length > 0) {
+              const mergedPrese = [...remotePrese];
+              for (const lp of localPrese) {
+                const exists = mergedPrese.some(
+                  (rp) =>
+                    (lp.volontarioId && rp.volontarioId && lp.volontarioId === rp.volontarioId) ||
+                    (lp.volontarioNome &&
+                      rp.volontarioNome &&
+                      lp.volontarioNome.trim().toLowerCase() === rp.volontarioNome.trim().toLowerCase())
+                );
+                if (!exists) mergedPrese.push(lp);
+              }
+              if (mergedPrese.length > remotePrese.length) {
+                nextPost = { ...nextPost, preseVisione: mergedPrese };
+              }
             }
-            return mergedPrese.length > remotePrese.length ? { ...remotePost, preseVisione: mergedPrese } : remotePost;
+
+            // Preserva eventuali commenti/risposte locali molto recenti (<5 min) non ancora riconciliati dal cloud
+            const localCommenti = Array.isArray(localPost.commenti) ? localPost.commenti : [];
+            const remoteCommenti = Array.isArray(remotePost.commenti) ? remotePost.commenti : [];
+            const isRecentLocalComment = (c: { id?: string; timestamp?: number }) => {
+              const ts = Number(c?.timestamp || 0);
+              if (Number.isFinite(ts) && ts > 0 && nowMs - ts < 300_000) return true;
+              if (!c?.id) return false;
+              const m = /(\d{13})/.exec(c.id);
+              if (!m) return false;
+              const idTs = Number(m[1]);
+              return Number.isFinite(idTs) && nowMs - idTs < 300_000;
+            };
+            if (localCommenti.length > 0) {
+              const mergedCommenti = [...remoteCommenti];
+              let commentsChanged = false;
+              for (const lc of localCommenti) {
+                if (isRecentLocalComment(lc) && !mergedCommenti.some((rc) => rc.id === lc.id)) {
+                  mergedCommenti.push(lc);
+                  commentsChanged = true;
+                }
+              }
+              if (commentsChanged) {
+                nextPost = { ...nextPost, commenti: mergedCommenti };
+              }
+            }
+
+            return nextPost;
           });
           const remoteIds = new Set(remoteNormalized.map((p) => p.id));
           const preservedRecent = prev.filter((lp: any) => {
@@ -5793,7 +5827,7 @@ export default function App() {
             setAggiornamentoPermessiObbligatorio(true);
             setModalSetupPermessiAperta(true);
           }
-        } else if (d.tipo === 'bacheca_post' || d.tipo === 'bacheca_corso') {
+        } else if (d.tipo === 'bacheca_post' || d.tipo === 'bacheca_corso' || d.tipo === 'bacheca_commento') {
           if (d.postPreview) {
             applicaAnteprimaPostDaPushRef.current(d.postPreview);
           }
@@ -15198,15 +15232,42 @@ KM TOTALI: ${kmTot} KM`;
         const accountKey = volIdCorrente || adminId || '';
 
         if (notif.tipo === 'nuovo_commento') {
+          // Evita auto-notifica allo stesso autore del commento
+          const commAuthorId = String(notif.autoreCommentoId || '').trim();
+          const commAuthorName = String(notif.autoreCommento || '').trim().toLowerCase();
+          const isSelfComment =
+            (commAuthorId && accountKey && commAuthorId === accountKey) ||
+            (!commAuthorId &&
+              commAuthorName &&
+              ((volNomeCorrente && commAuthorName === volNomeCorrente) ||
+                (adminNome && commAuthorName === adminNome)));
+          if (isSelfComment) return;
+
           // Controlla se l'utente corrente fa parte dei destinatari deduplicati (autore del post o commentatori precedenti)
-          const destNomi: string[] = (notif.destinatariVolontariNomi || []).map((n: string) => (n || '').trim().toLowerCase());
-          const destIds: string[] = notif.destinatariVolontariIds || [];
+          const destNomi: string[] = (notif.destinatariVolontariNomi || [])
+            .map((n: string) => (n || '').trim().toLowerCase())
+            .filter(Boolean);
+          const destIds: string[] = (notif.destinatariVolontariIds || [])
+            .map((id: string) => String(id || '').trim())
+            .filter(Boolean);
+          const isCurrentAdmin = ruoloRef.current === 'admin';
+          const matchesAdminAlias =
+            isCurrentAdmin &&
+            (destIds.some((id) => id === 'admin' || id === 'vol-admin' || id === 'admin-centrale-root') ||
+              destNomi.some(
+                (n) =>
+                  n.includes('amministrator') ||
+                  n.includes('direzione') ||
+                  n.includes('centrale') ||
+                  n === 'admin'
+              ));
 
           const isDestinatario =
             (volIdCorrente && destIds.includes(volIdCorrente)) ||
             (volNomeCorrente && destNomi.some(n => n.includes(volNomeCorrente) || volNomeCorrente.includes(n))) ||
             (adminId && destIds.includes(adminId)) ||
-            (adminNome && destNomi.some(n => n.includes(adminNome) || adminNome.includes(n)));
+            (adminNome && destNomi.some(n => n.includes(adminNome) || adminNome.includes(n))) ||
+            matchesAdminAlias;
 
           if (isDestinatario) {
             riceviERegistraNotifica({
@@ -27331,6 +27392,12 @@ KM TOTALI: ${kmTot} KM`;
         }}
         volontarioNome={sessioneTurnoEffettiva.volontarioNome || (utenteCentraleLive?.nome ? `${utenteCentraleLive.nome} ${utenteCentraleLive.cognome || ''}`.trim() : 'Volontario')}
         volontarioId={sessioneTurnoEffettiva.volontarioId || utenteCentraleLive?.id}
+        volontarioPinHash={
+          volontarioLoggatoCorrente?.pinHash ||
+          (utenteCentraleLive?.id
+            ? volontari.find((v) => v.id === utenteCentraleLive.id)?.pinHash
+            : undefined)
+        }
         isAdmin={isCentraleAdmin}
         isPresidente={Boolean(volontarioLoggatoCorrente?.caricaConsiglioDirettivo?.toLowerCase().includes('presidente') || utenteCentraleLive?.caricaConsiglioDirettivo?.toLowerCase().includes('presidente'))}
         sezioneVolontarioNome={(() => {
