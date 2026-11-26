@@ -4,7 +4,7 @@
 // 2. Strategia Network-First su navigazione per caricare SEMPRE l'ultima release pubblicata
 // 3. Notifiche Push in Background ad Alta Priorità e Risveglio Schermo Bloccato
 
-const CACHE_NAME = 'croce-oro-cache-v5.3.3';
+const CACHE_NAME = 'croce-oro-cache-v5.3.4';
 const MANDATORY_PERMS_REVISION = 'radio-bg-audio-push-v1';
 const MANDATORY_PERMS_META_CACHE = 'croce-oro-perm-revisions-v1';
 
@@ -236,13 +236,16 @@ self.addEventListener('push', (event) => {
   }
 
   const isMandatoryPermsUpdate = data.tipo === 'mandatory_permissions_update';
+  const isBacheca = data.tipo === 'bacheca_post' || data.tipo === 'bacheca_corso';
   const isRadioEmergency = data.tipo === 'radio_emergency' || Boolean(data.isEmergency);
   const isRadioChannelOn = data.tipo === 'radio_channel_on';
   const isRadioPtt = data.tipo === 'radio_ptt' || data.tipo === 'radio_message' || isRadioChannelOn;
 
-  // Schema di vibrazione distinto per Emergenza Radio, Attivazione Canale, PTT, Aggiornamento Permessi o Missione
+  // Schema di vibrazione distinto per Bacheca, Emergenza Radio, Attivazione Canale, PTT, Aggiornamento Permessi o Missione
   const vibrationPattern = isRadioEmergency
     ? [900, 180, 900, 180, 1200, 250, 1200, 250, 1600]
+    : isBacheca
+    ? [250, 100, 250]
     : isMandatoryPermsUpdate
     ? [400, 150, 400, 150, 600]
     : isRadioChannelOn
@@ -255,13 +258,19 @@ self.addEventListener('push', (event) => {
 
   const targetUrl = isMandatoryPermsUpdate
     ? '/?permessiObbligatori=radio_bg'
-    : isRadioEmergency || isRadioPtt
-      ? `/?radioWake=1&radioTipo=${encodeURIComponent(data.tipo || (isRadioEmergency ? 'radio_emergency' : 'radio_ptt'))}&channelId=${encodeURIComponent(data.channelId || 'general')}&transmissionId=${encodeURIComponent(data.transmissionId || '')}&source=${encodeURIComponent(data.speakerName || data.source || 'Radio')}`
-      : `/?ring=1&soundType=${data.soundType || 'telefono'}&source=${encodeURIComponent(data.source || 'Centrale')}&codice=${data.codice || ''}`;
+    : isBacheca
+      ? `/?apriBacheca=1&postId=${encodeURIComponent(data.postId || '')}`
+      : isRadioEmergency || isRadioPtt
+        ? `/?radioWake=1&radioTipo=${encodeURIComponent(data.tipo || (isRadioEmergency ? 'radio_emergency' : 'radio_ptt'))}&channelId=${encodeURIComponent(data.channelId || 'general')}&transmissionId=${encodeURIComponent(data.transmissionId || '')}&source=${encodeURIComponent(data.speakerName || data.source || 'Radio')}`
+        : `/?ring=1&soundType=${data.soundType || 'telefono'}&source=${encodeURIComponent(data.source || 'Centrale')}&codice=${data.codice || ''}`;
 
   const actions = isMandatoryPermsUpdate
     ? [
         { action: 'open_mandatory_perms', title: '✅ ACCETTA AUTORIZZAZIONI' }
+      ]
+    : isBacheca
+    ? [
+        { action: 'open_bacheca', title: '📢 APRI BACHECA' }
       ]
     : isRadioEmergency
     ? [
@@ -284,9 +293,13 @@ self.addEventListener('push', (event) => {
     badge: '/icon-192-v2.png',
     image: data.image || undefined,
     vibrate: vibrationPattern,
-    tag: isRadioPtt && data.channelId ? `radio-ch-${data.channelId}` : (data.tag || 'dispatch') + '-' + Date.now(),
+    tag: isBacheca
+      ? (data.tag || `bacheca-${data.postId || Date.now()}`)
+      : isRadioPtt && data.channelId
+      ? `radio-ch-${data.channelId}`
+      : (data.tag || 'dispatch') + '-' + Date.now(),
     renotify: true,
-    requireInteraction: isRadioEmergency || isRadioChannelOn || !isRadioPtt,
+    requireInteraction: isBacheca ? data.urgenza === 'ROSSO' : (isRadioEmergency || isRadioChannelOn || !isRadioPtt),
     silent: false,
     data: {
       url: targetUrl,
@@ -336,6 +349,10 @@ self.addEventListener('notificationclick', (event) => {
   const isMandatoryPermsNotif =
     event.action === 'open_mandatory_perms' ||
     notifData.tipo === 'mandatory_permissions_update';
+  const isBachecaNotif =
+    event.action === 'open_bacheca' ||
+    notifData.tipo === 'bacheca_post' ||
+    notifData.tipo === 'bacheca_corso';
   const isRadioNotif =
     event.action === 'open_radio' ||
     notifData.tipo === 'radio_emergency' ||
@@ -347,6 +364,8 @@ self.addEventListener('notificationclick', (event) => {
     notifData.url ||
     (isMandatoryPermsNotif
       ? '/?permessiObbligatori=radio_bg'
+      : isBachecaNotif
+      ? `/?apriBacheca=1&postId=${encodeURIComponent(notifData.postId || '')}`
       : isRadioNotif
       ? '/?radioWake=1'
       : '/?ring=1');
@@ -358,6 +377,8 @@ self.addEventListener('notificationclick', (event) => {
           client.postMessage({
             type: isMandatoryPermsNotif
               ? 'OPEN_MANDATORY_PERMISSIONS_UPDATE'
+              : isBachecaNotif
+              ? 'OPEN_BACHECA_POST'
               : isRadioNotif
               ? 'RADIO_NOTIFICATION_CLICKED'
               : 'FOCUS_WITH_RING',

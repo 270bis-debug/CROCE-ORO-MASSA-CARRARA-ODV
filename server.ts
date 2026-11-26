@@ -8391,11 +8391,12 @@ async function startServer() {
 
   // Inoltro diretto Push ad alta priorità a sottoscrizioni sincronizzate via Firestore
   app.post('/api/push-send', async (req, res) => {
-    const rawSubs = Array.isArray(req.body?.subscriptions) ? req.body.subscriptions.slice(0, 80) : [];
+    const rawSubs = Array.isArray(req.body?.subscriptions) ? req.body.subscriptions.slice(0, 250) : [];
     const notifPayload = req.body?.payload && typeof req.body.payload === 'object' ? req.body.payload : null;
     if (rawSubs.length === 0 || !notifPayload) {
       return res.json({ success: true, sent: 0, expiredEndpoints: [] });
     }
+    const isBachecaNotif = notifPayload.tipo === 'bacheca_post' || notifPayload.tipo === 'bacheca_corso';
     const serializedPayload = JSON.stringify({
       title: String(notifPayload.title || '📻 RADIO CROCE ORO').slice(0, 140),
       body: String(notifPayload.body || 'Comunicazione radio in arrivo.').slice(0, 260),
@@ -8403,6 +8404,7 @@ async function startServer() {
       urgenza: String(notifPayload.urgenza || (notifPayload.isEmergency ? 'ROSSO' : 'GIALLO')),
       soundType: String(notifPayload.soundType || 'cicalino'),
       tipo: String(notifPayload.tipo || 'radio_ptt'),
+      postId: String(notifPayload.postId || '').slice(0, 128),
       channelId: String(notifPayload.channelId || 'general'),
       transmissionId: String(notifPayload.transmissionId || ''),
       speakerName: String(notifPayload.speakerName || ''),
@@ -8422,7 +8424,11 @@ async function startServer() {
           await webpush.sendNotification(
             { endpoint, keys: { p256dh, auth } },
             serializedPayload,
-            { urgency: 'high', TTL: notifPayload.isEmergency ? 120 : 60, headers: { Urgency: 'high' } }
+            {
+              urgency: 'high',
+              TTL: isBachecaNotif ? 86400 : notifPayload.isEmergency ? 120 : 60,
+              headers: { Urgency: 'high' },
+            }
           );
           sent++;
         } catch (err: any) {

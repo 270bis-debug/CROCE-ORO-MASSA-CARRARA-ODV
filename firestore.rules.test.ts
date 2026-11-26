@@ -264,5 +264,92 @@ export const DIRTY_DOZEN_PAYLOADS = [
       isAdmin: true
     },
     expected: 'PERMISSION_DENIED'
+  },
+  {
+    name: '29_push_subscriptions_unauthenticated_list',
+    path: '/push_subscriptions',
+    operation: 'list',
+    auth: null,
+    expected: 'PERMISSION_DENIED'
+  },
+  {
+    name: '30_push_subscriptions_unauthenticated_role_escalation',
+    path: '/push_subscriptions/sub_admin_spoof',
+    operation: 'create',
+    auth: null,
+    payload: {
+      subId: 'sub_admin_spoof',
+      scope: 'croce_oro_push',
+      role: 'admin',
+      volontarioId: 'vol-ricci',
+      endpoint: 'https://fcm.googleapis.com/fcm/send/fake',
+      p256dh: 'B'.repeat(40),
+      auth: 'A'.repeat(20),
+      ownerUid: 'vol-ricci',
+      verifyingPinHash: '0'.repeat(64)
+    },
+    expected: 'PERMISSION_DENIED'
+  },
+  {
+    name: '31_push_subscriptions_wrong_pin_hash',
+    path: '/push_subscriptions/sub_vol_ricci_1',
+    operation: 'create',
+    auth: null,
+    payload: {
+      subId: 'sub_vol_ricci_1',
+      scope: 'croce_oro_push',
+      role: 'volontario',
+      volontarioId: 'vol-ricci',
+      endpoint: 'https://fcm.googleapis.com/fcm/send/fake',
+      p256dh: 'B'.repeat(40),
+      auth: 'A'.repeat(20),
+      ownerUid: 'vol-ricci',
+      verifyingPinHash: '0'.repeat(64)
+    },
+    expected: 'PERMISSION_DENIED'
+  },
+  {
+    name: '32_bacheca_acks_unauthenticated_read',
+    path: '/bacheca_acks/ack-post1_vol1',
+    operation: 'get',
+    auth: null,
+    expected: 'PERMISSION_DENIED'
+  },
+  {
+    name: '33_bacheca_acks_status_applied_spoof',
+    path: '/bacheca_acks/ack-post1_vol1',
+    operation: 'create',
+    auth: null,
+    payload: {
+      ackId: 'ack-post1_vol1',
+      scope: 'croce_oro_bacheca_ack',
+      postId: 'post1',
+      volontarioId: 'vol-ricci',
+      volontarioNome: 'Noemi Ricci',
+      sezione: 'Massa',
+      dataOra: '26/11/2026 12:00',
+      verifyingPinHash: '0'.repeat(64),
+      status: 'applied'
+    },
+    expected: 'PERMISSION_DENIED'
+  },
+  {
+    name: '34_bacheca_acks_wrong_pin_hash',
+    path: '/bacheca_acks/ack-post1_vol1',
+    operation: 'create',
+    auth: null,
+    payload: {
+      ackId: 'ack-post1_vol1',
+      scope: 'croce_oro_bacheca_ack',
+      postId: 'post1',
+      volontarioId: 'vol-ricci',
+      volontarioNome: 'Noemi Ricci',
+      sezione: 'Massa',
+      dataOra: '26/11/2026 12:00',
+      verifyingPinHash: '0'.repeat(64),
+      status: 'pending'
+    },
+    expected: 'PERMISSION_DENIED'
   }
 ];
+

@@ -1494,50 +1494,100 @@ export async function savePushSubscriptionFirestore(params: {
   endpoint: string;
   p256dh: string;
   authKey: string;
+  verifyingPinHashes?: Array<string | undefined | null>;
 }): Promise<boolean> {
-  const user = auth.currentUser;
-  if (!user || !user.emailVerified) return false;
   const endpoint = String(params.endpoint || '').trim();
   const p256dh = String(params.p256dh || '').trim();
   const authKey = String(params.authKey || '').trim();
   if (!endpoint.startsWith('https://') || p256dh.length < 16 || authKey.length < 8) return false;
 
-  const safeRole: 'admin' | 'centrale' | 'volontario' | 'all' =
-    params.role === 'admin' || params.role === 'centrale' || params.role === 'volontario' ? params.role : 'all';
+  const user = auth.currentUser;
+  const isAuthOperator = Boolean(user && user.emailVerified);
   const safeVolId = String(params.volontarioId || '').trim().slice(0, 128);
-  const cleanUid = user.uid.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 20);
-  const subId = `sub_${cleanUid}_${hashStringSimpleHex(endpoint)}`;
-  const ref = doc(db, 'push_subscriptions', subId);
 
-  try {
-    await updateDoc(ref, {
-      role: safeRole,
-      volontarioId: safeVolId,
-      endpoint: endpoint.slice(0, 1024),
-      p256dh: p256dh.slice(0, 256),
-      auth: authKey.slice(0, 128),
-      updatedAt: serverTimestamp(),
-    });
-    return true;
-  } catch {
+  if (isAuthOperator && user) {
+    const safeRole: 'admin' | 'centrale' | 'volontario' | 'all' =
+      params.role === 'admin' || params.role === 'centrale' || params.role === 'volontario' ? params.role : 'all';
+    const cleanUid = user.uid.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 20);
+    const subId = `sub_${cleanUid}_${hashStringSimpleHex(endpoint)}`;
+    const ref = doc(db, 'push_subscriptions', subId);
+
     try {
-      await setDoc(ref, {
-        subId,
-        scope: 'croce_oro_push',
+      await updateDoc(ref, {
         role: safeRole,
         volontarioId: safeVolId,
         endpoint: endpoint.slice(0, 1024),
         p256dh: p256dh.slice(0, 256),
         auth: authKey.slice(0, 128),
-        ownerUid: user.uid,
-        createdAt: serverTimestamp(),
+        verifyingPinHash: '----',
         updatedAt: serverTimestamp(),
       });
       return true;
     } catch {
-      return false;
+      try {
+        await setDoc(ref, {
+          subId,
+          scope: 'croce_oro_push',
+          role: safeRole,
+          volontarioId: safeVolId,
+          endpoint: endpoint.slice(0, 1024),
+          p256dh: p256dh.slice(0, 256),
+          auth: authKey.slice(0, 128),
+          ownerUid: user.uid,
+          verifyingPinHash: '----',
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+        return true;
+      } catch {
+        return false;
+      }
     }
   }
+
+  // Smartphone volontario senza Google Auth: verifica crittografica tramite pinHash in pin_reset_profiles/{volontarioId}
+  if (!safeVolId || !VALID_DOC_ID_REGEX.test(safeVolId) || safeVolId === 'vol-admin' || safeVolId === 'admin-centrale-root') {
+    return false;
+  }
+  const hashes = getCachedVolunteerPinHashes(safeVolId, params.verifyingPinHashes || []);
+  if (hashes.length === 0) return false;
+
+  const cleanVolSlug = safeVolId.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 48);
+  const subId = `sub_vol_${cleanVolSlug}_${hashStringSimpleHex(endpoint)}`;
+  const ref = doc(db, 'push_subscriptions', subId);
+
+  for (const hash of hashes) {
+    try {
+      await updateDoc(ref, {
+        endpoint: endpoint.slice(0, 1024),
+        p256dh: p256dh.slice(0, 256),
+        auth: authKey.slice(0, 128),
+        verifyingPinHash: hash,
+        updatedAt: serverTimestamp(),
+      });
+      return true;
+    } catch {
+      try {
+        await setDoc(ref, {
+          subId,
+          scope: 'croce_oro_push',
+          role: 'volontario',
+          volontarioId: safeVolId,
+          endpoint: endpoint.slice(0, 1024),
+          p256dh: p256dh.slice(0, 256),
+          auth: authKey.slice(0, 128),
+          ownerUid: safeVolId,
+          verifyingPinHash: hash,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+        return true;
+      } catch {
+        // Ritenta con eventuale hash candidato successivo
+      }
+    }
+  }
+  return false;
 }
 
 export async function fetchPushSubscriptionsFirestore(): Promise<FirestorePushSubRecord[]> {
@@ -1581,6 +1631,8 @@ export interface PublicVolunteerRosterEntry {
   sottosezioniAbilitate?: Record<string, string[]>;
   pulsantiStrumentiAbilitati?: string[];
   sediTurniAbilitate?: string[];
+  sezioneAppartenenzaId?: string;
+  sezioneAppartenenzaNome?: string;
   bloccatoPerTentativi?: boolean;
   tentativiErrati?: number;
   richiedeResetPassword?: boolean;
@@ -1692,6 +1744,12 @@ export function buildPublicVolunteerRosterEntries(volontari: any[]): PublicVolun
         .map((s: string) => s.trim().slice(0, 64))
         .slice(0, 20);
     }
+    if (typeof v.sezioneAppartenenzaId === 'string' && v.sezioneAppartenenzaId.trim()) {
+      entry.sezioneAppartenenzaId = v.sezioneAppartenenzaId.trim().slice(0, 64);
+    }
+    if (typeof v.sezioneAppartenenzaNome === 'string' && v.sezioneAppartenenzaNome.trim()) {
+      entry.sezioneAppartenenzaNome = v.sezioneAppartenenzaNome.trim().slice(0, 120);
+    }
     if (v.bloccatoPerTentativi) {
       entry.bloccatoPerTentativi = true;
     }
@@ -1741,6 +1799,8 @@ export function convertPublicRosterEntriesToVolontari(entries: PublicVolunteerRo
         ? { pulsantiStrumentiAbilitati: e.pulsantiStrumentiAbilitati }
         : {}),
       ...(Array.isArray(e.sediTurniAbilitate) ? { sediTurniAbilitate: e.sediTurniAbilitate } : {}),
+      ...(e.sezioneAppartenenzaId ? { sezioneAppartenenzaId: e.sezioneAppartenenzaId } : {}),
+      ...(e.sezioneAppartenenzaNome ? { sezioneAppartenenzaNome: e.sezioneAppartenenzaNome } : {}),
       ...(e.bloccatoPerTentativi ? { bloccatoPerTentativi: true } : {}),
       ...(typeof e.tentativiErrati === 'number' ? { tentativiErrati: e.tentativiErrati } : {}),
       ...(e.richiedeResetPassword ? { richiedeResetPassword: true } : {}),
@@ -2403,10 +2463,22 @@ export function buildPublicRaspberryBacheca(bacheca: any[]): any[] {
     const id = typeof c.id === 'string' ? c.id.trim().slice(0, 128) : '';
     const titolo = typeof c.titolo === 'string' ? c.titolo.trim().slice(0, 220) : '';
     if (!id || !titolo) continue;
+    const cleanPrese = Array.isArray(c.preseVisione)
+      ? c.preseVisione
+          .filter((p: any) => p && typeof p === 'object' && (p.volontarioId || p.volontarioNome))
+          .slice(0, 120)
+          .map((p: any) => ({
+            volontarioId: typeof p.volontarioId === 'string' ? p.volontarioId.trim().slice(0, 128) : '',
+            volontarioNome: typeof p.volontarioNome === 'string' ? p.volontarioNome.trim().slice(0, 120) : 'Volontario',
+            ...(typeof p.sezione === 'string' && p.sezione.trim() ? { sezione: p.sezione.trim().slice(0, 120) } : {}),
+            dataOra: typeof p.dataOra === 'string' ? p.dataOra.trim().slice(0, 40) : '',
+            ...(typeof p.timestamp === 'number' ? { timestamp: p.timestamp } : {}),
+          }))
+      : [];
     out.push({
       id,
       titolo,
-      contenuto: typeof c.contenuto === 'string' ? c.contenuto.trim().slice(0, 1800) : '',
+      contenuto: typeof c.contenuto === 'string' ? c.contenuto.trim().slice(0, 2200) : '',
       sezioneTargetId: typeof c.sezioneTargetId === 'string' ? c.sezioneTargetId.trim().slice(0, 128) : 'tutte',
       sezioneTargetNome: typeof c.sezioneTargetNome === 'string' ? c.sezioneTargetNome.trim().slice(0, 160) : 'Tutte le Sezioni',
       priorita: typeof c.priorita === 'string' ? c.priorita.trim().slice(0, 32) : 'Ordinaria',
@@ -2416,6 +2488,9 @@ export function buildPublicRaspberryBacheca(bacheca: any[]): any[] {
       autore: typeof c.autore === 'string' ? c.autore.trim().slice(0, 120) : 'Direzione',
       attiva: true,
       evidenziata: Boolean(c.evidenziata),
+      ...(c.richiedePresaVisione ? { richiedePresaVisione: true } : {}),
+      ...(cleanPrese.length > 0 ? { preseVisione: cleanPrese } : {}),
+      ...(typeof c.scadenza === 'string' && c.scadenza.trim() ? { scadenza: c.scadenza.trim().slice(0, 24) } : {}),
       ...(typeof c.updatedAt === 'number' ? { updatedAt: c.updatedAt } : {}),
     });
     if (out.length >= 140) break;
@@ -3316,5 +3391,121 @@ export async function aggiornaPresenzaVolontarioDaOperatoreFirestore(
     // Se il documento non esiste ancora per questo volontario, non occorre crearlo
   }
 }
+
+// ============================================================================
+// ZERO-PII WRITE-ONLY BACHECA PRESA VISIONE QUEUE (bacheca_acks/{ackId})
+// Consente agli smartphone volontari senza Google Auth di registrare la
+// Presa Visione di una comunicazione in bacheca con verifica pinHash,
+// riconciliata istantaneamente nello shard 'bacheca' dalla Centrale Operativa.
+// ============================================================================
+
+const BACHECA_ACK_SCOPE = 'croce_oro_bacheca_ack';
+
+export interface BachecaAckRecord {
+  ackId: string;
+  scope: 'croce_oro_bacheca_ack';
+  postId: string;
+  volontarioId: string;
+  volontarioNome: string;
+  sezione: string;
+  dataOra: string;
+  verifyingPinHash: string;
+  status: 'pending' | 'applied';
+  createdAt?: any;
+  updatedAt?: any;
+}
+
+export async function submitBachecaAckFirestore(input: {
+  postId: string;
+  volontarioId: string;
+  volontarioNome: string;
+  sezione?: string;
+  dataOra: string;
+  verifyingPinHashes?: Array<string | undefined | null>;
+}): Promise<{ ok: boolean; code?: string }> {
+  const postId = String(input?.postId || '').trim();
+  const volId = String(input?.volontarioId || '').trim();
+  if (!VALID_DOC_ID_REGEX.test(postId) || !VALID_DOC_ID_REGEX.test(volId)) {
+    return { ok: false, code: 'invalid-ids' };
+  }
+  const hashes = getCachedVolunteerPinHashes(volId, input.verifyingPinHashes || []);
+  if (hashes.length === 0) {
+    return { ok: false, code: 'missing-pin-hash' };
+  }
+
+  const cleanPostSlug = postId.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 56);
+  const cleanVolSlug = volId.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 56);
+  const ackId = `ack-${cleanPostSlug}_${cleanVolSlug}`.slice(0, 128);
+  const nome = String(input.volontarioNome || 'Volontario').trim().slice(0, 120) || 'Volontario';
+  const sezione = String(input.sezione || '').trim().slice(0, 120);
+  const dataOra = String(input.dataOra || '').trim().slice(0, 40) || new Date().toLocaleString('it-IT');
+  const ref = doc(db, 'bacheca_acks', ackId);
+
+  for (const hash of hashes) {
+    try {
+      await setDoc(ref, {
+        ackId,
+        scope: BACHECA_ACK_SCOPE,
+        postId,
+        volontarioId: volId,
+        volontarioNome: nome,
+        sezione,
+        dataOra,
+        verifyingPinHash: hash,
+        status: 'pending',
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+      return { ok: true };
+    } catch {
+      // Prova hash successivo se presente
+    }
+  }
+  return { ok: false, code: 'permission-denied' };
+}
+
+export function listenPendingBachecaAcksFirestore(
+  onItems: (items: BachecaAckRecord[]) => void,
+  onError?: (err: Error) => void
+): Unsubscribe {
+  const q = query(
+    collection(db, 'bacheca_acks'),
+    where('scope', '==', BACHECA_ACK_SCOPE)
+  );
+  return onSnapshot(
+    q,
+    (snapshot) => {
+      const items: BachecaAckRecord[] = [];
+      snapshot.forEach((docSnap) => {
+        const d = docSnap.data() as BachecaAckRecord;
+        if (d && d.status === 'pending' && typeof d.postId === 'string' && typeof d.volontarioId === 'string') {
+          items.push(d);
+        }
+      });
+      onItems(items);
+    },
+    (error) => {
+      try {
+        handleFirestoreError(error, OperationType.LIST, 'bacheca_acks');
+      } catch (wrapped: any) {
+        onError?.(wrapped);
+      }
+    }
+  );
+}
+
+export async function markBachecaAckAppliedFirestore(ackId: string): Promise<void> {
+  const user = auth.currentUser;
+  if (!user || !user.emailVerified) return;
+  const cleanId = String(ackId || '').trim();
+  if (!VALID_DOC_ID_REGEX.test(cleanId)) return;
+  try {
+    await updateDoc(doc(db, 'bacheca_acks', cleanId), {
+      status: 'applied',
+      updatedAt: serverTimestamp(),
+    });
+  } catch {}
+}
+
 
 

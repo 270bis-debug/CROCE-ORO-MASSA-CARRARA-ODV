@@ -383,6 +383,9 @@ export const SezioneBacheca: React.FC<SezioneBachecaProps> = ({
         postId: nuova.id,
         postTitolo: nuova.titolo,
         autoreCommento: nuova.autore,
+        sezioneTargetId: nuova.sezioneTargetId,
+        sezioneTargetNome: targetNome,
+        priorita: nuova.priorita,
         soloInApp: true,
         createdAt: nowTs,
         messaggio: `Nuovo post in bacheca: "${nuova.titolo}" [${nuova.priorita}] — ${targetNome}`
@@ -472,6 +475,9 @@ export const SezioneBacheca: React.FC<SezioneBachecaProps> = ({
           postId: p.id,
           postTitolo: p.titolo,
           autoreCommento: p.autore,
+          sezioneTargetId: p.sezioneTargetId,
+          sezioneTargetNome: p.sezioneTargetNome,
+          priorita: p.priorita,
           soloInApp: true,
           createdAt: nowTs,
           messaggio: `Post pubblicato in bacheca: "${p.titolo}" [${p.priorita}] — ${p.sezioneTargetNome}`

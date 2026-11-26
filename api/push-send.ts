@@ -24,7 +24,7 @@ async function readJsonBody(req: IncomingMessage & { body?: any }): Promise<any>
     let raw = '';
     req.on('data', (chunk) => {
       raw += String(chunk || '');
-      if (raw.length > 256_000) {
+      if (raw.length > 512_000) {
         try {
           req.destroy();
         } catch {}
@@ -68,12 +68,13 @@ export default async function handler(
   }
 
   const body = await readJsonBody(req);
-  const rawSubs = Array.isArray(body?.subscriptions) ? body.subscriptions.slice(0, 80) : [];
+  const rawSubs = Array.isArray(body?.subscriptions) ? body.subscriptions.slice(0, 250) : [];
   const notifPayload = body?.payload && typeof body.payload === 'object' ? body.payload : null;
   if (rawSubs.length === 0 || !notifPayload) {
     return sendJson(200, { success: true, sent: 0, expiredEndpoints: [] });
   }
 
+  const isBachecaNotif = notifPayload.tipo === 'bacheca_post' || notifPayload.tipo === 'bacheca_corso';
   const serializedPayload = JSON.stringify({
     title: String(notifPayload.title || '📻 RADIO CROCE ORO').slice(0, 140),
     body: String(notifPayload.body || 'Comunicazione radio in arrivo.').slice(0, 260),
@@ -81,6 +82,7 @@ export default async function handler(
     urgenza: String(notifPayload.urgenza || (notifPayload.isEmergency ? 'ROSSO' : 'GIALLO')),
     soundType: String(notifPayload.soundType || 'cicalino'),
     tipo: String(notifPayload.tipo || 'radio_ptt'),
+    postId: String(notifPayload.postId || '').slice(0, 128),
     channelId: String(notifPayload.channelId || 'general'),
     transmissionId: String(notifPayload.transmissionId || ''),
     speakerName: String(notifPayload.speakerName || ''),
@@ -102,7 +104,11 @@ export default async function handler(
         await webpush.sendNotification(
           { endpoint, keys: { p256dh, auth } },
           serializedPayload,
-          { urgency: 'high', TTL: notifPayload.isEmergency ? 120 : 60, headers: { Urgency: 'high' } }
+          {
+            urgency: 'high',
+            TTL: isBachecaNotif ? 86400 : notifPayload.isEmergency ? 120 : 60,
+            headers: { Urgency: 'high' },
+          }
         );
         sent++;
       } catch (err: any) {

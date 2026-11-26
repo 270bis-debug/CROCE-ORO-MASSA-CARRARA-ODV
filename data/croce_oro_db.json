@@ -42,7 +42,10 @@
       "richiedeResetPassword": true,
       "indirizzoResidenza": "Via Roma 1, 54100 Massa (MS)",
       "resetToken": "rst-1794832952041-3ryw6dq",
-      "loggatoUpdatedAt": 1795216423724
+      "loggatoUpdatedAt": 1795216423724,
+      "isPublicRosterOnly": false,
+      "pinIsEmergency": false,
+      "hasFirma": true
     },
     {
       "id": "vol-1790806001919",
@@ -194,7 +197,10 @@
       "sezioneAppartenenzaId": "sede-carrara-fossone",
       "mansione": "Autista",
       "esenteQuotaAssociativa": false,
-      "loggatoUpdatedAt": 1795250379405
+      "loggatoUpdatedAt": 1795722680975,
+      "isPublicRosterOnly": false,
+      "pinIsEmergency": false,
+      "hasFirma": true
     },
     {
       "id": "vol-1792318394496",
@@ -328,7 +334,9 @@
       "macroCategorieAbilitate": [],
       "mansioni": [
         "Soccorritore Base"
-      ]
+      ],
+      "isPublicRosterOnly": false,
+      "pinIsEmergency": false
     },
     {
       "id": "vol-quattrini",
@@ -490,7 +498,10 @@
         "sede-massa-ronchi",
         "sede-carrara-fossone",
         "sede-massa-lejare"
-      ]
+      ],
+      "isPublicRosterOnly": false,
+      "pinIsEmergency": true,
+      "hasFirma": true
     },
     {
       "id": "vol-ricci",
@@ -645,7 +656,10 @@
         "Autista Emergenza",
         "Operatore di Centrale Operativa"
       ],
-      "resetToken": "rst-mwjc44o9-47585q1a5i6p1q50"
+      "resetToken": "rst-mwjc44o9-47585q1a5i6p1q50",
+      "isPublicRosterOnly": false,
+      "pinIsEmergency": false,
+      "hasFirma": true
     },
     {
       "richiedeResetPassword": true,
@@ -2850,11 +2864,11 @@
     "timestamp": 0
   },
   "gpsPosition": {
-    "lat": 44.063836,
-    "lng": 10.0493779,
-    "accuratezza": 15.303999900817871,
+    "lat": 44.0638361,
+    "lng": 10.0493973,
+    "accuratezza": 14,
     "velocita": null,
-    "orario": "00:26:12"
+    "orario": "20:50:28"
   },
   "activeShift": {
     "attivo": false
@@ -4061,9 +4075,83 @@
     "promemoria_2026-11-08_turno-test-email_vol-admin": "2026-11-08T09:52:46.360Z"
   },
   "promemoriaCompleanniInviati": {},
+  "promemoriaScadenzeFiscaliInviate": {},
+  "promemoriaScadenzeMezziInviate": {},
+  "promemoriaTurniScopertiInviati": {},
+  "auditLog": [],
+  "libriSocialiVerbali": [],
+  "libriSocialiDelibere": [],
+  "libriSocialiUpdatedAt": 0,
+  "richiesteReintegroMagazzino": [],
+  "richiesteReintegroUpdatedAt": 0,
+  "rifornimentiMezzi": [],
+  "rifornimentiUpdatedAt": 0,
+  "metodiPagamentoCarburante": [],
+  "metodiPagamentoCarburanteUpdatedAt": 0,
+  "segnalazioniGuastiMezzi": [],
+  "segnalazioniGuastiUpdatedAt": 0,
+  "documentiAssociativiSop": [],
+  "documentiSopUpdatedAt": 0,
+  "convocazioniAssemblee": [],
+  "sondaggiRapidi": [],
+  "assembleeSondaggiUpdatedAt": 0,
   "timbrature": [],
-  "bacheca": [],
-  "bachecaEliminatiIds": [],
+  "bacheca": [
+    {
+      "categoria": "Turni & Reperibilità",
+      "evidenziata": true,
+      "attiva": true,
+      "sezioneTargetNome": "Sezione Territoriale Carrara (Fossone / Monteverde)",
+      "id": "com-003",
+      "titolo": "Copertura Turni Festivi e Reperibilità Sezione Carrara (Fossone / Monteverde)",
+      "dataPubblicazione": "2026-11-16",
+      "contenuto": "È aperta la raccolta straordinaria delle disponibilità per i turni del weekend e per il presidio della Sezione Territoriale di Carrara (Fossone / Monteverde). I volontari disponibili possono segnalarlo al coordinatore o direttamente tramite il gestionale turni.",
+      "priorita": "Urgente",
+      "autore": "Coordinamento Turni Carrara",
+      "oraPubblicazione": "11:15",
+      "sezioneTargetId": "sede-carrara-fossone",
+      "likes": [],
+      "commenti": [],
+      "updatedAt": 0
+    },
+    {
+      "oraPubblicazione": "09:30",
+      "attiva": true,
+      "contenuto": "Completata la revisione del materiale di bordo e l'aggiornamento delle dotazioni per i mezzi assegnati alle sezioni di Massa (Le Jare) e Carrara (Fossone / Monteverde). Si prega ogni caposervizio di verificare la checklist a inizio turno prima di mettersi in marcia.",
+      "dataPubblicazione": "2026-11-16",
+      "evidenziata": false,
+      "titolo": "Assegnazione e Dislocazione Nuove Dotazioni Mezzi Territoriali",
+      "categoria": "Mezzi & Dotazioni",
+      "sezioneTargetId": "tutte",
+      "sezioneTargetNome": "Tutte le Sezioni Territoriali",
+      "id": "com-002",
+      "autore": "Responsabile Autoparco",
+      "priorita": "Ordinaria",
+      "likes": [],
+      "commenti": [],
+      "updatedAt": 0
+    },
+    {
+      "categoria": "Disposizioni Operative",
+      "sezioneTargetId": "tutte",
+      "oraPubblicazione": "08:00",
+      "evidenziata": true,
+      "id": "com-001",
+      "dataPubblicazione": "2026-11-16",
+      "autore": "Presidenza & Direzione Operativa",
+      "attiva": true,
+      "contenuto": "Si informano tutti i volontari e soccorritori che, a partire da oggi, la suddivisione ufficiale delle fasce orarie dei turni operativi è così articolata per tutte le sedi:\\n• Mattina: 08:00 - 14:00\\n• Pomeriggio: 14:00 - 20:00\\n• Notte: 20:00 - 08:00\\nSi raccomanda la massima puntualità nel passaggio consegne e la tempestiva timbratura GPS.",
+      "sezioneTargetNome": "Tutte le Sezioni Territoriali",
+      "priorita": "Importante",
+      "titolo": "Nuova Suddivisione Oraria Ufficiale dei Turni di Servizio",
+      "likes": [],
+      "commenti": [],
+      "updatedAt": 0
+    }
+  ],
+  "bachecaEliminatiIds": [
+    "com-1795722250689-431"
+  ],
   "notificheBachecaRecenti": [],
   "giornaleBordo": [],
   "codiciEliminati": [
@@ -4081,7 +4169,7 @@
     },
     "vol-1790806001919": {
       "loggato": true,
-      "updatedAt": 1795250379405,
+      "updatedAt": 1795722680975,
       "volontarioNome": "Claudio Simonini",
       "mezzoScelto": "",
       "orarioInizio": "09:49:53"
@@ -4123,14 +4211,12 @@
     "enabled": false,
     "toggledBy": "Sim Centrale",
     "toggledAt": 1795251686408,
-    "activeSpeaker": null
+    "activeSpeaker": null,
+    "codecMode": "adpcm-24k"
   },
   "radioGroups": [],
   "radioEmergency": {
-    "active": false,
-    "triggeredBy": "Sim Centrale",
-    "triggeredAt": 1795251686403,
-    "message": ""
+    "active": false
   },
   "publicAppUrl": ""
 }

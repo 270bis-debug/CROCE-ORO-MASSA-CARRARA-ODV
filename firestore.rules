@@ -205,6 +205,7 @@ service cloud.firestore {
           'p256dh',
           'auth',
           'ownerUid',
+          'verifyingPinHash',
           'createdAt',
           'updatedAt'
         ]) &&
@@ -217,6 +218,7 @@ service cloud.firestore {
           'p256dh',
           'auth',
           'ownerUid',
+          'verifyingPinHash',
           'createdAt',
           'updatedAt'
         ]) &&
@@ -245,8 +247,11 @@ service cloud.firestore {
         data.auth.size() >= 8 &&
         data.auth.size() <= 128 &&
         data.ownerUid is string &&
-        data.ownerUid == request.auth.uid &&
         isValidId(data.ownerUid) &&
+        data.verifyingPinHash is string &&
+        data.verifyingPinHash.size() >= 4 &&
+        data.verifyingPinHash.size() <= 64 &&
+        data.verifyingPinHash.matches('^(----|[0-9a-f]{64})$') &&
         data.createdAt is timestamp &&
         data.updatedAt is timestamp &&
         data.updatedAt == request.time;
@@ -857,6 +862,68 @@ service cloud.firestore {
         data.updatedAt == request.time;
     }
 
+    function isValidBachecaAckId(ackId) {
+      return ackId is string &&
+        ackId.size() >= 8 &&
+        ackId.size() <= 128 &&
+        ackId.matches('^ack-[a-zA-Z0-9_\\-]{4,124}$');
+    }
+
+    function isValidBachecaAckData(data, ackId) {
+      return data.keys().hasAll([
+          'ackId',
+          'scope',
+          'postId',
+          'volontarioId',
+          'volontarioNome',
+          'sezione',
+          'dataOra',
+          'verifyingPinHash',
+          'status',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'ackId',
+          'scope',
+          'postId',
+          'volontarioId',
+          'volontarioNome',
+          'sezione',
+          'dataOra',
+          'verifyingPinHash',
+          'status',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.ackId is string &&
+        data.ackId == ackId &&
+        isValidBachecaAckId(data.ackId) &&
+        data.scope is string &&
+        data.scope == 'croce_oro_bacheca_ack' &&
+        data.scope.size() == 21 &&
+        data.postId is string &&
+        isValidId(data.postId) &&
+        data.volontarioId is string &&
+        isValidId(data.volontarioId) &&
+        data.volontarioNome is string &&
+        data.volontarioNome.size() >= 1 &&
+        data.volontarioNome.size() <= 120 &&
+        data.sezione is string &&
+        data.sezione.size() <= 120 &&
+        data.dataOra is string &&
+        data.dataOra.size() >= 8 &&
+        data.dataOra.size() <= 40 &&
+        data.verifyingPinHash is string &&
+        data.verifyingPinHash.size() == 64 &&
+        data.verifyingPinHash.matches('^[0-9a-f]{64}$') &&
+        data.status is string &&
+        data.status in ['pending', 'applied'] &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp &&
+        data.updatedAt == request.time;
+    }
+
     // 4. Sharded Live Cloud State Collection
     match /sync_shards/{shardId} {
       allow get: if isValidId(shardId) && isAllowedShardId(shardId) && isOperator();
@@ -1083,16 +1150,30 @@ service cloud.firestore {
       allow delete: if isValidId(slotId) && isAllowedRadioSlotId(slotId) && isAdmin();
     }
 
-    // 12. Zero-PII Web Push Subscriptions for Cross-Origin Background Radio Alerts
+    // 12. Zero-PII Web Push Subscriptions for Cross-Origin Background Radio & Bacheca Alerts
     match /push_subscriptions/{subId} {
       allow get: if isValidId(subId) && isOperator();
       allow list: if isOperator() && resource.data.scope == 'croce_oro_push';
       allow create: if isValidId(subId) &&
-        isOperator() &&
         isValidPushSubscriptionData(incoming(), subId) &&
-        incoming().createdAt == request.time;
+        incoming().createdAt == request.time &&
+        (
+          (
+            isOperator() &&
+            incoming().ownerUid == request.auth.uid &&
+            incoming().verifyingPinHash == '----'
+          ) ||
+          (
+            subId.matches('^sub_vol_[a-zA-Z0-9_\\-]+$') &&
+            incoming().role == 'volontario' &&
+            isValidId(incoming().volontarioId) &&
+            incoming().ownerUid == incoming().volontarioId &&
+            incoming().verifyingPinHash.size() == 64 &&
+            exists(/databases/$(database)/documents/pin_reset_profiles/$(incoming().volontarioId)) &&
+            incoming().verifyingPinHash == get(/databases/$(database)/documents/pin_reset_profiles/$(incoming().volontarioId)).data.pinHash
+          )
+        );
       allow update: if isValidId(subId) &&
-        isOperator() &&
         isValidPushSubscriptionData(incoming(), subId) &&
         incoming().createdAt == existing().createdAt &&
         incoming().subId == existing().subId &&
@@ -1100,9 +1181,24 @@ service cloud.firestore {
         (
           isAdmin() ||
           (
+            isOperator() &&
             existing().ownerUid == request.auth.uid &&
             incoming().ownerUid == existing().ownerUid &&
-            incoming().diff(existing()).affectedKeys().hasOnly(['role', 'volontarioId', 'endpoint', 'p256dh', 'auth', 'updatedAt'])
+            incoming().verifyingPinHash == '----' &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['role', 'volontarioId', 'endpoint', 'p256dh', 'auth', 'verifyingPinHash', 'updatedAt'])
+          ) ||
+          (
+            subId.matches('^sub_vol_[a-zA-Z0-9_\\-]+$') &&
+            existing().role == 'volontario' &&
+            incoming().role == 'volontario' &&
+            isValidId(existing().volontarioId) &&
+            incoming().volontarioId == existing().volontarioId &&
+            existing().ownerUid == existing().volontarioId &&
+            incoming().ownerUid == existing().ownerUid &&
+            incoming().verifyingPinHash.size() == 64 &&
+            exists(/databases/$(database)/documents/pin_reset_profiles/$(existing().volontarioId)) &&
+            incoming().verifyingPinHash == get(/databases/$(database)/documents/pin_reset_profiles/$(existing().volontarioId)).data.pinHash &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['endpoint', 'p256dh', 'auth', 'verifyingPinHash', 'updatedAt'])
           )
         );
       allow delete: if isValidId(subId) && (isAdmin() || (isOperator() && existing().ownerUid == request.auth.uid));
@@ -1294,7 +1390,43 @@ service cloud.firestore {
       allow delete: if isValidId(volunteerId) && isOperator();
     }
 
-    // 19. Boot Health Check Doc (no PII)
+    // 19. Zero-PII Write-Only Bacheca Presa Visione (Read-Receipt) Queue for Volunteer Smartphones
+    match /bacheca_acks/{ackId} {
+      allow get: if isValidId(ackId) && isOperator();
+      allow list: if isOperator() && resource.data.scope == 'croce_oro_bacheca_ack';
+      allow create: if isValidId(ackId) &&
+        isValidBachecaAckId(ackId) &&
+        isValidBachecaAckData(incoming(), ackId) &&
+        incoming().status == 'pending' &&
+        incoming().createdAt == request.time &&
+        (
+          isOperator() ||
+          (
+            exists(/databases/$(database)/documents/pin_reset_profiles/$(incoming().volontarioId)) &&
+            incoming().verifyingPinHash == get(/databases/$(database)/documents/pin_reset_profiles/$(incoming().volontarioId)).data.pinHash
+          )
+        );
+      allow update: if isValidId(ackId) &&
+        isValidBachecaAckId(ackId) &&
+        isOperator() &&
+        isValidBachecaAckData(incoming(), ackId) &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().ackId == existing().ackId &&
+        incoming().scope == existing().scope &&
+        incoming().postId == existing().postId &&
+        incoming().volontarioId == existing().volontarioId &&
+        (
+          isAdmin() ||
+          (
+            existing().status == 'pending' &&
+            incoming().status == 'applied' &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+          )
+        );
+      allow delete: if isValidId(ackId) && isOperator();
+    }
+
+    // 20. Boot Health Check Doc (no PII)
     match /test/{docId} {
       allow get: if isValidId(docId) && docId == 'connection' && isOperator();
       allow list, write: if false;

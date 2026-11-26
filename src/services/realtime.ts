@@ -62,6 +62,10 @@ import {
   listenVolunteerActivitiesFirestore,
   segnaFirmaVolontarioApplicataFirestore,
   aggiornaPresenzaVolontarioDaOperatoreFirestore,
+  BachecaAckRecord,
+  submitBachecaAckFirestore,
+  listenPendingBachecaAcksFirestore,
+  markBachecaAckAppliedFirestore,
 } from './firebase';
 import { buildPinResetHash } from '../utils/hashReset';
 import {
@@ -335,6 +339,9 @@ class RealtimeService {
   private volunteerActivitySignatureReconciling: Set<string> = new Set();
   private volunteerActivityLastPushAt: Map<string, number> = new Map();
   private volunteerActivityLastLoggedState: Map<string, boolean> = new Map();
+  private bachecaAcksUnsub: (() => void) | null = null;
+  private bachecaAcksReconciling: Set<string> = new Set();
+  private lastBachecaPushSentByPost: Map<string, number> = new Map();
   private publicRosterUnsub: (() => void) | null = null;
   private publicBoardUnsub: (() => void) | null = null;
   private publicRaspberryUnsub: (() => void) | null = null;
@@ -832,9 +839,10 @@ class RealtimeService {
     if (typeof window === 'undefined') return;
     try {
       // Listener pubblici zero-PII attivi subito all'avvio: consentono sia ai nuovi smartphone/iPhone
-      // sia alla Modalità Monitor (senza login) di ricevere istantaneamente volontari e tabellone turni.
+      // sia alla Modalità Monitor (senza login) di ricevere istantaneamente volontari, tabellone turni e bacheca.
       this.attachPublicRosterListener();
       this.attachPublicBoardListener();
+      this.attachPublicRaspberryListener();
 
       subscribeToFirebaseAuth((session) => {
         this.firebaseSession = session;
@@ -1023,6 +1031,32 @@ class RealtimeService {
     }
   }
 
+  private parseBachecaPostTimestampMs(post: any): number {
+    if (typeof post?.updatedAt === 'number' && Number.isFinite(post.updatedAt) && post.updatedAt > 0) {
+      return post.updatedAt;
+    }
+    const rawDate = String(post?.dataPubblicazione || '').trim();
+    const rawTime = String(post?.oraPubblicazione || '00:00').trim();
+    if (rawDate) {
+      let isoDate = '';
+      const isoMatch = rawDate.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+      const itMatch = rawDate.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})/);
+      if (isoMatch) {
+        isoDate = `${isoMatch[1]}-${isoMatch[2].padStart(2, '0')}-${isoMatch[3].padStart(2, '0')}`;
+      } else if (itMatch) {
+        isoDate = `${itMatch[3]}-${itMatch[2].padStart(2, '0')}-${itMatch[1].padStart(2, '0')}`;
+      }
+      if (isoDate) {
+        const cleanTime = /^\d{1,2}:\d{2}(:\d{2})?$/.test(rawTime)
+          ? (rawTime.length === 5 ? `${rawTime}:00` : rawTime)
+          : '00:00:00';
+        const parsed = new Date(`${isoDate}T${cleanTime}`).getTime();
+        if (!Number.isNaN(parsed) && parsed > 0) return parsed;
+      }
+    }
+    return Date.now();
+  }
+
   private applyPublicRaspberrySnapshot(docData: PublicRaspberryBoardDoc | null): {
     sediCount: number;
     bachecaCount: number;
@@ -1034,31 +1068,101 @@ class RealtimeService {
     const timbratureRaw = Array.isArray(docData.timbrature) ? docData.timbrature : [];
     const cfgRaw = docData.config && typeof docData.config === 'object' ? docData.config : null;
 
-    if (sediRaw.length > 0) {
-      const sediNorm = normalizzaListaSediAssociative(sediRaw);
+    const hasPrivateConfig = this.firebaseSession.isAuthorized && this.shardLoadedFromCloud['config'];
+    const hasPrivateBacheca = this.firebaseSession.isAuthorized && this.shardLoadedFromCloud['bacheca'];
+    const hasPrivateTimbrature = this.firebaseSession.isAuthorized && this.shardLoadedFromCloud['timbrature'];
+
+    const sediNorm = sediRaw.length > 0 ? normalizzaListaSediAssociative(sediRaw) : [];
+    const bachecaNorm = bachecaRaw.length > 0 ? normalizzaComunicazioniBacheca(bachecaRaw) : [];
+
+    if (!hasPrivateConfig && sediNorm.length > 0) {
+      this.cloudState.sedi = sediNorm;
       try {
         localStorage.setItem('CROCE_ORO_SEDI_COMPLETE', JSON.stringify(sediNorm));
       } catch {}
       this.emit('SEDI_UPDATED', { sedi: sediNorm });
     }
 
-    if (bachecaRaw.length > 0) {
-      const bachecaNorm = normalizzaComunicazioniBacheca(bachecaRaw);
-      this.emit('BACHECA_UPDATED', { bacheca: bachecaNorm });
+    if (!hasPrivateBacheca) {
+      const prevById = new Map<string, any>();
+      if (Array.isArray(this.cloudState.bacheca)) {
+        for (const p of this.cloudState.bacheca) {
+          if (p?.id) prevById.set(String(p.id), p);
+        }
+      }
+      const syncedBacheca = bachecaNorm.map((remotePost: any) => {
+        const localPost = prevById.get(String(remotePost.id));
+        const localPrese: any[] = Array.isArray(localPost?.preseVisione) ? localPost.preseVisione : [];
+        const remotePrese: any[] = Array.isArray(remotePost?.preseVisione) ? remotePost.preseVisione : [];
+        if (localPrese.length === 0) return remotePost;
+        const mergedPrese = [...remotePrese];
+        for (const lp of localPrese) {
+          const exists = mergedPrese.some(
+            (rp: any) =>
+              (lp?.volontarioId && rp?.volontarioId && String(lp.volontarioId) === String(rp.volontarioId)) ||
+              (lp?.volontarioNome &&
+                rp?.volontarioNome &&
+                String(lp.volontarioNome).trim().toLowerCase() === String(rp.volontarioNome).trim().toLowerCase())
+          );
+          if (!exists) mergedPrese.push(lp);
+        }
+        return mergedPrese.length > remotePrese.length ? { ...remotePost, preseVisione: mergedPrese } : remotePost;
+      });
+      this.cloudState.bacheca = syncedBacheca;
+      try {
+        localStorage.setItem('CROCE_ORO_BACHECA_COMUNICAZIONI', JSON.stringify(syncedBacheca));
+      } catch {}
+
+      // Sintetizza notifiche in-app per tutti i post attivi degli ultimi 14 giorni
+      // (deduplicate automaticamente per accountId + postId in App.tsx)
+      const nowMs = Date.now();
+      const quattordiciGiorniMs = 14 * 24 * 60 * 60 * 1000;
+      const synthNotifs: NotificaBachecaRecord[] = syncedBacheca
+        .filter((c: any) => c && c.attiva !== false && c.id && c.titolo)
+        .map((c: any) => {
+          const ts = this.parseBachecaPostTimestampMs(c);
+          return {
+            id: `bacheca-post-${c.id}`,
+            tipo: 'nuovo_post' as const,
+            postId: String(c.id),
+            postTitolo: String(c.titolo),
+            autoreCommento: String(c.autore || 'Direzione'),
+            sezioneTargetId: String(c.sezioneTargetId || 'tutte'),
+            sezioneTargetNome: String(c.sezioneTargetNome || 'Tutte le Sezioni'),
+            priorita: String(c.priorita || 'Ordinaria'),
+            soloInApp: true,
+            createdAt: ts,
+            messaggio: `Nuovo post in bacheca: "${c.titolo}" [${c.priorita || 'Ordinaria'}] — ${c.sezioneTargetNome || 'Tutte le Sezioni'}`,
+          };
+        })
+        .filter((n) => nowMs - n.createdAt <= quattordiciGiorniMs);
+
+      if (synthNotifs.length > 0) {
+        this.cloudState.notificheBachecaRecenti = mergeNotificheBachecaRecenti(
+          this.cloudState.notificheBachecaRecenti,
+          synthNotifs
+        );
+      }
+
+      this.emit('BACHECA_UPDATED', {
+        bacheca: syncedBacheca,
+        notificheBachecaRecenti: synthNotifs,
+        isPublicBoardSnapshot: true,
+      });
     }
 
-    if (timbratureRaw.length > 0) {
+    if (!hasPrivateTimbrature && timbratureRaw.length > 0) {
       this.emit('TIMBRATURE_UPDATED', { timbrature: timbratureRaw });
     }
 
-    if (cfgRaw && Object.keys(cfgRaw).length > 0) {
+    if (!hasPrivateConfig && cfgRaw && Object.keys(cfgRaw).length > 0) {
       const savedCfg = saveRaspberryDisplayConfigLocal(cfgRaw as any);
       this.emit('RASPBERRY_CONFIG_UPDATED', { config: savedCfg });
     }
 
     this.emit('RASPBERRY_BOARD_UPDATED', {
-      sedi: sediRaw.length > 0 ? normalizzaListaSediAssociative(sediRaw) : [],
-      bacheca: normalizzaComunicazioniBacheca(bachecaRaw),
+      sedi: sediNorm,
+      bacheca: bachecaNorm,
       timbrature: timbratureRaw,
       config: cfgRaw ? saveRaspberryDisplayConfigLocal(cfgRaw as any) : null,
     });
@@ -1312,6 +1416,12 @@ class RealtimeService {
         this.volunteerActivityUnsub();
       } catch {}
       this.volunteerActivityUnsub = null;
+    }
+    if (this.bachecaAcksUnsub) {
+      try {
+        this.bachecaAcksUnsub();
+      } catch {}
+      this.bachecaAcksUnsub = null;
     }
     this.detachRadioSlotListeners();
     this.firestoreActive = false;
@@ -1698,6 +1808,159 @@ class RealtimeService {
     } catch {}
   }
 
+  private async sendBachecaWebPush(params: {
+    tipo: 'nuovo_post' | 'nuovo_corso';
+    postId: string;
+    titolo: string;
+    body: string;
+    sezioneTargetId?: string;
+    priorita?: string;
+  }) {
+    if (typeof window === 'undefined' || !this.firebaseSession.isAuthorized) return;
+    const rateKey = `${params.tipo}:${params.postId || params.titolo}`;
+    const lastSent = this.lastBachecaPushSentByPost.get(rateKey) || 0;
+    if (Date.now() - lastSent < 8000) return;
+    this.lastBachecaPushSentByPost.set(rateKey, Date.now());
+
+    try {
+      const allSubs = await fetchPushSubscriptionsFirestore();
+      if (allSubs.length === 0) return;
+
+      const myEndpoint = this.getSavedPushEndpoint();
+      const targetSecId = String(params.sezioneTargetId || 'tutte').trim();
+      const isTargetedSection = Boolean(targetSecId && targetSecId !== 'tutte');
+      const volSezioneById = new Map<string, string>();
+      const vols = Array.isArray(this.cloudState.volontari) ? this.cloudState.volontari : [];
+      for (const v of vols) {
+        if (v?.id && typeof v.sezioneAppartenenzaId === 'string' && v.sezioneAppartenenzaId.trim()) {
+          volSezioneById.set(String(v.id), v.sezioneAppartenenzaId.trim());
+        }
+      }
+
+      const targetSubs = allSubs.filter((sub) => {
+        if (!sub || !sub.endpoint) return false;
+        if (myEndpoint && sub.endpoint === myEndpoint) return false;
+        if (!isTargetedSection) return true;
+        if (sub.role === 'admin' || sub.role === 'centrale') return true;
+        const volSec = sub.volontarioId ? volSezioneById.get(String(sub.volontarioId)) : undefined;
+        // Se il volontario non ha una sezione assegnata, invia comunque per non isolarlo
+        return !volSec || volSec === targetSecId;
+      });
+
+      if (targetSubs.length === 0) return;
+
+      const isUrgente = params.priorita === 'Urgente';
+      const pushApiBase = window.location.origin.replace(/\/$/, '');
+      await fetch(`${pushApiBase}/api/push-send`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          subscriptions: targetSubs.map((s) => ({
+            endpoint: s.endpoint,
+            p256dh: s.p256dh,
+            auth: s.auth,
+          })),
+          payload: {
+            title:
+              params.tipo === 'nuovo_corso'
+                ? `🎓 Corso in Bacheca: ${params.titolo}`
+                : isUrgente
+                ? `🚨 Bacheca Urgente: ${params.titolo}`
+                : `📢 Bacheca Croce Oro: ${params.titolo}`,
+            body: params.body,
+            tag: `bacheca-${params.postId || Date.now()}`,
+            urgenza: isUrgente ? 'ROSSO' : 'GIALLO',
+            soundType: 'cicalino',
+            tipo: params.tipo === 'nuovo_corso' ? 'bacheca_corso' : 'bacheca_post',
+            postId: params.postId,
+            isEmergency: false,
+            requireInteraction: isUrgente,
+          },
+        }),
+        cache: 'no-store',
+        keepalive: true,
+      }).catch(() => {});
+    } catch {}
+  }
+
+  private async applyPendingBachecaAcks(acks: BachecaAckRecord[]) {
+    if (!this.firebaseSession.isAuthorized || !Array.isArray(acks) || acks.length === 0) return;
+    if (!this.shardLoadedFromCloud['bacheca']) return;
+
+    const currentBacheca = Array.isArray(this.cloudState.bacheca) ? this.cloudState.bacheca : [];
+    if (currentBacheca.length === 0) return;
+
+    let updatedBacheca = currentBacheca;
+    let changed = false;
+    const toMarkApplied: string[] = [];
+
+    for (const ack of acks) {
+      if (!ack?.ackId || this.bachecaAcksReconciling.has(ack.ackId)) continue;
+      this.bachecaAcksReconciling.add(ack.ackId);
+
+      const postIdx = updatedBacheca.findIndex((c: any) => c && String(c.id) === String(ack.postId));
+      if (postIdx === -1) {
+        this.bachecaAcksReconciling.delete(ack.ackId);
+        continue;
+      }
+
+      const post = updatedBacheca[postIdx];
+      const existingPrese: any[] = Array.isArray(post.preseVisione) ? post.preseVisione : [];
+      const alreadyRecorded = existingPrese.some(
+        (p: any) =>
+          (p?.volontarioId && String(p.volontarioId) === String(ack.volontarioId)) ||
+          (p?.volontarioNome &&
+            String(p.volontarioNome).trim().toLowerCase() === String(ack.volontarioNome).trim().toLowerCase())
+      );
+
+      if (!alreadyRecorded) {
+        const nowTs = Date.now();
+        const nuovaConferma = {
+          volontarioId: ack.volontarioId,
+          volontarioNome: ack.volontarioNome,
+          sezione: ack.sezione || undefined,
+          dataOra: ack.dataOra || formatDateTimeItaly(),
+          timestamp: nowTs,
+        };
+        updatedBacheca = updatedBacheca.map((c: any, idx: number) =>
+          idx === postIdx
+            ? { ...c, preseVisione: [...existingPrese, nuovaConferma], updatedAt: nowTs }
+            : c
+        );
+        changed = true;
+      }
+      toMarkApplied.push(ack.ackId);
+    }
+
+    if (changed) {
+      this.cloudState.bacheca = updatedBacheca;
+      try {
+        localStorage.setItem('CROCE_ORO_BACHECA_COMUNICAZIONI', JSON.stringify(updatedBacheca));
+      } catch {}
+      this.emit('BACHECA_UPDATED', {
+        bacheca: updatedBacheca,
+        bachecaEliminatiIds: Array.isArray(this.cloudState.bachecaEliminatiIds)
+          ? this.cloudState.bachecaEliminatiIds
+          : [],
+        notificheBachecaRecenti: Array.isArray(this.cloudState.notificheBachecaRecenti)
+          ? this.cloudState.notificheBachecaRecenti
+          : [],
+      });
+      this.send('UPDATE_BACHECA', {
+        bacheca: updatedBacheca,
+        bachecaEliminatiIds: Array.isArray(this.cloudState.bachecaEliminatiIds)
+          ? this.cloudState.bachecaEliminatiIds
+          : [],
+      });
+      this.publishRaspberryBoardNow({ bacheca: updatedBacheca });
+    }
+
+    for (const ackId of toMarkApplied) {
+      await markBachecaAckAppliedFirestore(ackId).catch(() => {});
+      this.bachecaAcksReconciling.delete(ackId);
+    }
+  }
+
   private attachFirestoreShardListeners() {
     this.detachFirestoreShardListeners();
 
@@ -1829,6 +2092,17 @@ class RealtimeService {
       },
       (err) => {
         console.warn('[Realtime] Errore listener volunteer_activity:', err?.message);
+      }
+    );
+
+    this.bachecaAcksUnsub = listenPendingBachecaAcksFirestore(
+      (acks) => {
+        if (Array.isArray(acks) && acks.length > 0) {
+          this.applyPendingBachecaAcks(acks).catch(() => {});
+        }
+      },
+      (err) => {
+        console.warn('[Realtime] Errore listener bacheca_acks:', err?.message);
       }
     );
 
@@ -1987,6 +2261,11 @@ class RealtimeService {
           bachecaEliminatiIds: deletedIds,
           notificheBachecaRecenti: this.cloudState.notificheBachecaRecenti || [],
         });
+        // Garantisce che anche i post già presenti su Firestore siano subito pubblicati su public_raspberry/display_v1
+        // così tutti gli smartphone volontari senza Google Auth li visualizzano istantaneamente (deduplicato via signature)
+        if (this.firebaseSession.isAuthorized && mergedBacheca.length > 0) {
+          this.publishRaspberryBoardNow({ bacheca: mergedBacheca });
+        }
       } else if (Array.isArray(payload.notificheBachecaRecenti)) {
         this.emit('BACHECA_UPDATED', {
           bacheca: Array.isArray(this.cloudState.bacheca) ? this.cloudState.bacheca : [],
@@ -6439,6 +6718,30 @@ class RealtimeService {
     this.cloudState.bacheca = bacheca;
     this.send('UPDATE_BACHECA', { bacheca, notifica, bachecaEliminatiIds: deletedIds });
     this.publishRaspberryBoardNow({ bacheca });
+
+    // Invia anche notifica Web Push reale (background / blocco schermo) ai volontari e dispositivi registrati
+    if (notifica && (notifica.tipo === 'nuovo_post' || notifica.tipo === 'nuovo_corso')) {
+      const matchedPost = Array.isArray(bacheca)
+        ? bacheca.find((c: any) => c && String(c.id) === String(notifica.postId || ''))
+        : null;
+      const postId = String(notifica.postId || matchedPost?.id || '');
+      const titolo = String(notifica.postTitolo || matchedPost?.titolo || 'Nuova Comunicazione');
+      const sezioneTargetId = String(notifica.sezioneTargetId || matchedPost?.sezioneTargetId || 'tutte');
+      const priorita = String(notifica.priorita || matchedPost?.priorita || 'Ordinaria');
+      const body = String(
+        notifica.messaggio ||
+          `Nuova comunicazione in bacheca: "${titolo}"`
+      );
+      this.sendBachecaWebPush({
+        tipo: notifica.tipo,
+        postId,
+        titolo,
+        body,
+        sezioneTargetId,
+        priorita,
+      }).catch(() => {});
+    }
+
     if (!this.isServerlessStaticHost()) {
       try {
         const baseUrl = this.getApiBaseUrl();
@@ -6450,6 +6753,25 @@ class RealtimeService {
         }).catch(() => {});
       } catch {}
     }
+  }
+
+  public async submitBachecaPresaVisione(params: {
+    postId: string;
+    volontarioId: string;
+    volontarioNome: string;
+    sezione?: string;
+    dataOra: string;
+  }): Promise<{ ok: boolean; code?: string }> {
+    if (this.firebaseSession.isAuthorized) {
+      return { ok: true };
+    }
+    return submitBachecaAckFirestore({
+      postId: params.postId,
+      volontarioId: params.volontarioId,
+      volontarioNome: params.volontarioNome,
+      sezione: params.sezione,
+      dataOra: params.dataOra,
+    });
   }
 
   public async fetchBacheca(): Promise<any[] | null> {

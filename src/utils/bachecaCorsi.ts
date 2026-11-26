@@ -14,6 +14,9 @@ export interface NotificaBachecaRecord {
   dataInizio?: string;
   tipologia?: string;
   sedeCorso?: string;
+  sezioneTargetId?: string;
+  sezioneTargetNome?: string;
+  priorita?: string;
   soloInApp?: boolean;
   createdAt: number;
 }

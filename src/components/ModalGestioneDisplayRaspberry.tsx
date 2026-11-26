@@ -304,8 +304,12 @@ export const ModalGestioneDisplayRaspberry: React.FC<ModalGestioneDisplayRaspber
         tipo: 'nuovo_post',
         postId: nuova.id,
         postTitolo: nuova.titolo,
+        sezioneTargetId: nuova.sezioneTargetId,
+        sezioneTargetNome: nuova.sezioneTargetNome,
+        priorita: nuova.priorita,
         messaggio: `📢 Nuova comunicazione (${nuova.sezioneTargetNome}): ${nuova.titolo}`,
         autore: nuova.autore,
+        createdAt: Date.now(),
         timestamp: Date.now(),
       },
     });

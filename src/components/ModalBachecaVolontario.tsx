@@ -31,6 +31,7 @@ import {
   ContenutoProtettoBacheca
 } from './bacheca/VisualizzatoreProtettoBacheca';
 import { formatDimensioneFile } from '../utils/bachecaMedia';
+import { realtime } from '../services/realtime';
 import {
   getCorsiVisibiliInBacheca,
   getDataInizioEffettivaCorso,
@@ -178,6 +179,17 @@ export const ModalBachecaVolontario: React.FC<ModalBachecaVolontarioProps> = ({
         : c
     );
     onAggiornaComunicazioni?.(aggiornate);
+    if (volontarioId) {
+      realtime
+        .submitBachecaPresaVisione({
+          postId: com.id,
+          volontarioId,
+          volontarioNome: nuovaConferma.volontarioNome,
+          sezione: sezioneVolontarioNome,
+          dataOra: nuovaConferma.dataOra,
+        })
+        .catch(() => {});
+    }
     setAvvisoBacheca(`✓ Presa visione registrata per "${com.titolo}".`);
     setTimeout(() => setAvvisoBacheca(null), 3500);
   };

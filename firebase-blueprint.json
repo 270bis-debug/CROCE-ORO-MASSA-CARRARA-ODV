@@ -519,6 +519,13 @@
           "maxLength": 128,
           "pattern": "^[a-zA-Z0-9_\\-]+$"
         },
+        "verifyingPinHash": {
+          "type": "string",
+          "description": "Placeholder '----' for Google-authenticated operators; 64-hex SHA-256 PIN digest verified against pin_reset_profiles for unauthenticated volunteer smartphones",
+          "minLength": 4,
+          "maxLength": 64,
+          "pattern": "^(----|[0-9a-f]{64})$"
+        },
         "createdAt": {
           "type": "string",
           "format": "date-time"
@@ -528,7 +535,7 @@
           "format": "date-time"
         }
       },
-      "required": ["subId", "scope", "role", "volontarioId", "endpoint", "p256dh", "auth", "ownerUid", "createdAt", "updatedAt"]
+      "required": ["subId", "scope", "role", "volontarioId", "endpoint", "p256dh", "auth", "ownerUid", "verifyingPinHash", "createdAt", "updatedAt"]
     },
     "PublicRoster": {
       "title": "PublicRoster",
@@ -933,6 +940,83 @@
         "createdAt",
         "updatedAt"
       ]
+    },
+    "BachecaAck": {
+      "title": "BachecaAck",
+      "description": "Zero-PII write-only notice board read-receipt (Presa Visione) queue allowing unauthenticated volunteer smartphones verified via pin_reset_profiles PIN hash to confirm reading a notice, readable and reconcilable exclusively by verified operators.",
+      "type": "object",
+      "properties": {
+        "ackId": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 128,
+          "pattern": "^ack-[a-zA-Z0-9_\\-]{4,124}$"
+        },
+        "scope": {
+          "type": "string",
+          "enum": ["croce_oro_bacheca_ack"],
+          "minLength": 21,
+          "maxLength": 21
+        },
+        "postId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "volontarioId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "volontarioNome": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "sezione": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 120
+        },
+        "dataOra": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 40
+        },
+        "verifyingPinHash": {
+          "type": "string",
+          "minLength": 64,
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["pending", "applied"]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "ackId",
+        "scope",
+        "postId",
+        "volontarioId",
+        "volontarioNome",
+        "sezione",
+        "dataOra",
+        "verifyingPinHash",
+        "status",
+        "createdAt",
+        "updatedAt"
+      ]
     }
   },
   "firestore": {
@@ -970,7 +1054,7 @@
     },
     "/push_subscriptions/{subId}": {
       "schema": { "$ref": "#/entities/PushSubscriptionEntry" },
-      "description": "Zero-PII Web Push subscriptions for background wake alerts across Vercel and Cloud Run."
+      "description": "Zero-PII Web Push subscriptions for background wake alerts across Vercel and Cloud Run (operators and PIN-hash-verified volunteer smartphones)."
     },
     "/public_roster/{rosterId}": {
       "schema": { "$ref": "#/entities/PublicRoster" },
@@ -995,6 +1079,10 @@
     "/volunteer_activity/{volunteerId}": {
       "schema": { "$ref": "#/entities/VolunteerActivity" },
       "description": "Zero-PII write-only volunteer login presence heartbeat and digital signature submission queue verified against pin_reset_profiles PIN hash, readable exclusively by verified operators."
+    },
+    "/bacheca_acks/{ackId}": {
+      "schema": { "$ref": "#/entities/BachecaAck" },
+      "description": "Zero-PII write-only notice board read-receipt (Presa Visione) queue verified against pin_reset_profiles PIN hash, readable and reconcilable exclusively by verified operators."
     }
   }
 }
