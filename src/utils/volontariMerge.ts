@@ -97,6 +97,40 @@ function mergeSingleVolontario<T extends Record<string, any>>(base: T, incoming:
       continue;
     }
     if (
+      key === 'hasFirma' &&
+      incomingIsRosterOnly &&
+      val === false &&
+      (base.hasFirma === true || (typeof base.firmaBase64 === 'string' && base.firmaBase64.trim().length >= 20))
+    ) {
+      merged.hasFirma = true;
+      continue;
+    }
+    if (
+      key === 'pinIsEmergency' &&
+      incomingIsRosterOnly &&
+      val === true &&
+      base.pinIsEmergency === false &&
+      typeof base.pin === 'string' &&
+      /^\d{4}$/.test(base.pin.trim()) &&
+      base.pin.trim() !== '0000'
+    ) {
+      merged.pinIsEmergency = false;
+      continue;
+    }
+    if (
+      key === 'pinHash' &&
+      incomingIsRosterOnly &&
+      incoming.pinIsEmergency === true &&
+      typeof base.pin === 'string' &&
+      /^\d{4}$/.test(base.pin.trim()) &&
+      base.pin.trim() !== '0000' &&
+      typeof base.pinHash === 'string' &&
+      base.pinHash.length === 64
+    ) {
+      merged.pinHash = base.pinHash;
+      continue;
+    }
+    if (
       (key === 'fotoBase64' || key === 'firmaBase64') &&
       typeof val === 'string' &&
       val.trim() === '' &&

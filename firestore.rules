@@ -788,6 +788,75 @@ service cloud.firestore {
         data.updatedAt == request.time;
     }
 
+    function isValidVolunteerActivityData(data, volId) {
+      return data.keys().hasAll([
+          'volunteerId',
+          'scope',
+          'verifyingPinHash',
+          'loggato',
+          'lastHeartbeatMs',
+          'volontarioNome',
+          'mezzoScelto',
+          'orarioInizio',
+          'qualificaTurno',
+          'firmaBase64',
+          'firmaUpdatedAtMs',
+          'firmaApplied',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'volunteerId',
+          'scope',
+          'verifyingPinHash',
+          'loggato',
+          'lastHeartbeatMs',
+          'volontarioNome',
+          'mezzoScelto',
+          'orarioInizio',
+          'qualificaTurno',
+          'firmaBase64',
+          'firmaUpdatedAtMs',
+          'firmaApplied',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.volunteerId is string &&
+        data.volunteerId == volId &&
+        isValidId(data.volunteerId) &&
+        data.scope is string &&
+        data.scope == 'croce_oro_vol_activity' &&
+        data.scope.size() == 22 &&
+        data.verifyingPinHash is string &&
+        data.verifyingPinHash.size() == 64 &&
+        data.verifyingPinHash.matches('^[0-9a-f]{64}$') &&
+        data.loggato is bool &&
+        data.lastHeartbeatMs is int &&
+        data.lastHeartbeatMs >= 0 &&
+        data.lastHeartbeatMs <= 4102444800000 &&
+        data.volontarioNome is string &&
+        data.volontarioNome.size() <= 120 &&
+        data.mezzoScelto is string &&
+        data.mezzoScelto.size() <= 80 &&
+        data.orarioInizio is string &&
+        data.orarioInizio.size() <= 32 &&
+        data.qualificaTurno is string &&
+        data.qualificaTurno.size() <= 80 &&
+        data.firmaBase64 is string &&
+        data.firmaBase64.size() <= 220000 &&
+        (
+          data.firmaBase64 == '' ||
+          data.firmaBase64.matches('^data:image/(png|jpeg|jpg|webp);base64,[A-Za-z0-9+/=]+$')
+        ) &&
+        data.firmaUpdatedAtMs is int &&
+        data.firmaUpdatedAtMs >= 0 &&
+        data.firmaUpdatedAtMs <= 4102444800000 &&
+        data.firmaApplied is bool &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp &&
+        data.updatedAt == request.time;
+    }
+
     // 4. Sharded Live Cloud State Collection
     match /sync_shards/{shardId} {
       allow get: if isValidId(shardId) && isAllowedShardId(shardId) && isOperator();
@@ -1153,7 +1222,79 @@ service cloud.firestore {
       allow delete: if isValidCourseGuestCheckinId(checkinId) && isOperator();
     }
 
-    // 18. Boot Health Check Doc (no PII)
+    // 18. Zero-PII Write-Only Volunteer Presence & Signature Channel (PIN-Hash Verified, Operator Read-Only)
+    match /volunteer_activity/{volunteerId} {
+      allow get: if isValidId(volunteerId) && isOperator();
+      allow list: if isOperator() && resource.data.scope == 'croce_oro_vol_activity';
+      allow create: if isValidId(volunteerId) &&
+        isValidVolunteerActivityData(incoming(), volunteerId) &&
+        incoming().createdAt == request.time &&
+        (
+          isOperator() ||
+          (
+            incoming().firmaApplied == false &&
+            exists(/databases/$(database)/documents/pin_reset_profiles/$(volunteerId)) &&
+            incoming().verifyingPinHash == get(/databases/$(database)/documents/pin_reset_profiles/$(volunteerId)).data.pinHash
+          )
+        );
+      allow update: if isValidId(volunteerId) &&
+        isValidVolunteerActivityData(incoming(), volunteerId) &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().volunteerId == existing().volunteerId &&
+        incoming().scope == existing().scope &&
+        (
+          isAdmin() ||
+          (
+            isOperator() &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'loggato',
+              'lastHeartbeatMs',
+              'firmaBase64',
+              'firmaUpdatedAtMs',
+              'firmaApplied',
+              'updatedAt'
+            ])
+          ) ||
+          (
+            exists(/databases/$(database)/documents/pin_reset_profiles/$(volunteerId)) &&
+            incoming().verifyingPinHash == get(/databases/$(database)/documents/pin_reset_profiles/$(volunteerId)).data.pinHash &&
+            (
+              // Action 1: Volunteer presence login / heartbeat / logout (cannot alter signature fields)
+              incoming().diff(existing()).affectedKeys().hasOnly([
+                'loggato',
+                'lastHeartbeatMs',
+                'volontarioNome',
+                'mezzoScelto',
+                'orarioInizio',
+                'qualificaTurno',
+                'verifyingPinHash',
+                'updatedAt'
+              ]) ||
+              // Action 2: Volunteer signature upload + presence sync
+              (
+                incoming().firmaBase64.size() >= 20 &&
+                incoming().firmaApplied == false &&
+                incoming().diff(existing()).affectedKeys().hasOnly([
+                  'firmaBase64',
+                  'firmaUpdatedAtMs',
+                  'firmaApplied',
+                  'loggato',
+                  'lastHeartbeatMs',
+                  'volontarioNome',
+                  'mezzoScelto',
+                  'orarioInizio',
+                  'qualificaTurno',
+                  'verifyingPinHash',
+                  'updatedAt'
+                ])
+              )
+            )
+          )
+        );
+      allow delete: if isValidId(volunteerId) && isOperator();
+    }
+
+    // 19. Boot Health Check Doc (no PII)
     match /test/{docId} {
       allow get: if isValidId(docId) && docId == 'connection' && isOperator();
       allow list, write: if false;

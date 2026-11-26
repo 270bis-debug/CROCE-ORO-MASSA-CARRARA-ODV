@@ -235,6 +235,8 @@ import { soundEngine } from './services/soundEngine';
 import { vhfRadioEngine } from './services/vhfRadioEngine';
 import { realtime, ConnectionInfo, mergeOperativeTimesImmutable, mergeTurniSediSafe } from './services/realtime';
 import {
+  cacheActiveVolunteerPinHash,
+  completaResetPinProfiloFirestore,
   creaTicketResetPinFirestore,
   generaTokenResetPinSicuro,
   syncPinResetProfilesFirestore
@@ -5894,6 +5896,9 @@ export default function App() {
     const unsubInit = realtime.on('INIT_SYNC', () => {
       inviaPresenzaAttiva();
     });
+    const unsubVols = realtime.on('VOLONTARI_UPDATED', () => {
+      inviaPresenzaAttiva();
+    });
 
     document.addEventListener('visibilitychange', onVisibility);
     window.addEventListener('online', onOnline);
@@ -5903,6 +5908,7 @@ export default function App() {
       document.removeEventListener('visibilitychange', onVisibility);
       window.removeEventListener('online', onOnline);
       unsubInit();
+      unsubVols();
     };
   }, [
     sessioneTurno.attivo,
@@ -5914,6 +5920,36 @@ export default function App() {
     utenteCentrale?.id,
     utenteCentrale?.nome,
     utenteCentrale?.cognome,
+  ]);
+
+  // Controllo globale inaggirabile Firma Digitale & PIN emergenza (0000) anche su sessioni già aperte / ripristinate / Passkey
+  useEffect(() => {
+    if (accountSimulato || !profiloScelto || obbligoAdeguamentoCentrale) return;
+
+    let activeVol: Volontario | null = null;
+    if (ruolo === 'volontario' && sessioneTurno.attivo && sessioneTurno.volontarioId) {
+      activeVol = volontari.find((v) => v.id === sessioneTurno.volontarioId) || null;
+    } else if (
+      ruolo === 'admin' &&
+      utenteCentrale?.id &&
+      utenteCentrale.id !== 'vol-admin' &&
+      utenteCentrale.id !== 'admin-centrale-root'
+    ) {
+      activeVol = volontari.find((v) => v.id === utenteCentrale.id) || null;
+    }
+
+    if (activeVol && richiedeAdeguamentoLogin(activeVol)) {
+      setObbligoAdeguamentoCentrale(activeVol);
+    }
+  }, [
+    volontari,
+    ruolo,
+    profiloScelto,
+    accountSimulato,
+    sessioneTurno.attivo,
+    sessioneTurno.volontarioId,
+    utenteCentrale?.id,
+    obbligoAdeguamentoCentrale,
   ]);
 
   // Corsi e Formazione destinati alla sezione del volontario attualmente loggato
@@ -7813,8 +7849,25 @@ export default function App() {
       } catch {}
     }
     if (utenteCentrale?.id) {
-      setVolontari(prev => prev.map(v => v.id === utenteCentrale.id ? { ...v, firmaBase64: nuovaFirmaBase64 } : v));
-      realtime.updateVolontario({ id: utenteCentrale.id, firmaBase64: nuovaFirmaBase64 });
+      setVolontari(prev =>
+        prev.map(v =>
+          v.id === utenteCentrale.id ? { ...v, firmaBase64: nuovaFirmaBase64, hasFirma: true } : v
+        )
+      );
+      realtime.updateVolontario({ id: utenteCentrale.id, firmaBase64: nuovaFirmaBase64, hasFirma: true });
+      if (!realtime.getFirebaseSession().isAuthorized) {
+        const extraHash = utenteCentrale.pin && /^\d{4}$/.test(utenteCentrale.pin)
+          ? buildPinResetHash(utenteCentrale.id, utenteCentrale.pin)
+          : undefined;
+        realtime.publishVolunteerSignature({
+          volunteerId: utenteCentrale.id,
+          firmaBase64: nuovaFirmaBase64,
+          volontarioNome: `${utenteCentrale.nome || ''} ${utenteCentrale.cognome || ''}`.trim(),
+          qualificaTurno: utenteCentrale.qualifica || 'Operatore Centrale',
+          loggato: true,
+          extraPinHashes: extraHash ? [extraHash] : [],
+        }).catch(() => {});
+      }
     }
 
     setModalFirmaOperatoreAperta(false);
@@ -10723,6 +10776,11 @@ export default function App() {
           profiloCentrale: op.profiloCentrale,
           qualifica: op.qualifica
         };
+        if (pin && /^\d{4}$/.test(pin)) {
+          cacheActiveVolunteerPinHash(op.id, pin, true);
+        } else if (op.pinHash) {
+          cacheActiveVolunteerPinHash(op.id, op.pinHash);
+        }
         setUtenteCentrale(opData);
         try {
           localStorage.setItem('CROCE_ORO_UTENTE_CENTRALE', JSON.stringify(opData));
@@ -10838,12 +10896,20 @@ export default function App() {
     }
 
     // Account Volontario standard: entra direttamente nel Terminale di Bordo
+    if (vol.pin && /^\d{4}$/.test(vol.pin)) {
+      cacheActiveVolunteerPinHash(vol.id, vol.pin, true);
+    } else if (vol.pinHash) {
+      cacheActiveVolunteerPinHash(vol.id, vol.pinHash);
+    }
     setProfiloScelto('volontario');
     setRuolo('volontario');
     try {
       localStorage.setItem('CROCE_ORO_PROFILO_SCELTO', 'volontario');
     } catch {}
     handleLoginVolontario(vol, '', vol.qualifica === 'Autista' ? 'Autista' : 'Soccorritore');
+    if (richiedeAdeguamentoLogin(vol)) {
+      setObbligoAdeguamentoCentrale(vol);
+    }
     aggiungiNotifica(
       `🔐 ACCESSO PASSKEY VOLONTARIO: ${vol.nome} ${vol.cognome} ha effettuato l'accesso diretto con Impronta / Face ID.`,
       'sistema'
@@ -10885,10 +10951,16 @@ export default function App() {
       return { ok: false, error: 'Il nuovo PIN deve essere di 4 cifre valido e non riservato.' };
     }
 
+    const oldPinHash = buildPinResetHash(target.id, pinAttuale);
+    const newPinHash = buildPinResetHash(target.id, nuovoPin);
+    cacheActiveVolunteerPinHash(target.id, oldPinHash);
+    cacheActiveVolunteerPinHash(target.id, newPinHash);
+
     const updatedVol: Volontario = {
       ...target,
       pin: nuovoPin,
-      pinHash: buildPinResetHash(target.id, nuovoPin),
+      pinHash: newPinHash,
+      pinIsEmergency: false,
       pinProvvisorio: false,
       richiedeResetPassword: false,
       tentativiErrati: 0,
@@ -10897,7 +10969,11 @@ export default function App() {
 
     const aggiornati = volontari.map((v) => (v.id === volId ? updatedVol : v));
     aggiornaVolontari(aggiornati);
-    syncPinResetProfilesFirestore([updatedVol]).catch(() => {});
+    if (realtime.getFirebaseSession().isAuthorized) {
+      syncPinResetProfilesFirestore([updatedVol]).catch(() => {});
+    } else {
+      completaResetPinProfiloFirestore(target.id, oldPinHash, nuovoPin).catch(() => {});
+    }
 
     if (utenteCentrale && utenteCentrale.id === volId) {
       const updatedOp = { ...utenteCentrale, pin: nuovoPin };
@@ -11202,6 +11278,11 @@ export default function App() {
           profiloCentrale: op.profiloCentrale,
           qualifica: op.qualifica
         };
+        if (pin && /^\d{4}$/.test(pin)) {
+          cacheActiveVolunteerPinHash(op.id, pin, true);
+        } else if (op.pinHash) {
+          cacheActiveVolunteerPinHash(op.id, op.pinHash);
+        }
         setUtenteCentrale(opData);
         aggiornaStatoLoginCentrale(op.id, true);
         try {
@@ -27378,23 +27459,41 @@ KM TOTALI: ${kmTot} KM`;
         }
       />
 
-      {/* MODALE OBBLIGATORIA FIRMA DIGITALE & CAMBIO PIN 0000 (CENTRALE / ACCESSO AVANZATO) */}
+      {/* MODALE OBBLIGATORIA FIRMA DIGITALE & CAMBIO PIN 0000 (CENTRALE / VOLONTARIO / SESSIONE ATTIVA) */}
       {obbligoAdeguamentoCentrale && (
         <ModalObbligoFirmaEPin
           volontario={obbligoAdeguamentoCentrale}
-          contesto="centrale"
+          contesto={ruolo === 'admin' ? 'centrale' : 'volontario'}
           onCompleta={(risultato: RisultatoObbligoFirmaEPin) => {
             const target = obbligoAdeguamentoCentrale;
             const nowTs = Date.now();
+            const previousPinHash =
+              (typeof target.pinHash === 'string' && target.pinHash.length === 64 ? target.pinHash : '') ||
+              (target.pin && /^\d{4}$/.test(target.pin)
+                ? buildPinResetHash(target.id, target.pin)
+                : buildPinResetHash(target.id, '0000'));
+            const nextPinHash = risultato.nuovoPin
+              ? buildPinResetHash(target.id, risultato.nuovoPin)
+              : previousPinHash;
+
+            if (previousPinHash) {
+              cacheActiveVolunteerPinHash(target.id, previousPinHash);
+            }
+            if (risultato.nuovoPin) {
+              cacheActiveVolunteerPinHash(target.id, risultato.nuovoPin, true);
+            }
+
             const aggiornato: Volontario = {
               ...target,
               loggato: true,
               loggatoUpdatedAt: nowTs,
               ultimoAccesso: formatOrarioConSecondi(new Date(nowTs)),
-              ...(risultato.firmaBase64 ? { firmaBase64: risultato.firmaBase64 } : {}),
+              ...(risultato.firmaBase64 ? { firmaBase64: risultato.firmaBase64, hasFirma: true } : {}),
               ...(risultato.nuovoPin
                 ? {
                     pin: risultato.nuovoPin,
+                    pinHash: nextPinHash,
+                    pinIsEmergency: false,
                     pinProvvisorio: false,
                     richiedeResetPassword: false,
                     tentativiErrati: 0
@@ -27421,6 +27520,27 @@ KM TOTALI: ${kmTot} KM`;
               loggato: true,
               updatedAt: nowTs,
             });
+
+            // Propaga subito nuovo PIN e/o Firma Digitale anche da smartphone senza login Google Operatore
+            const isCloudOp = realtime.getFirebaseSession().isAuthorized;
+            if (!isCloudOp && risultato.nuovoPin) {
+              completaResetPinProfiloFirestore(
+                target.id,
+                previousPinHash || buildPinResetHash(target.id, '0000'),
+                risultato.nuovoPin
+              ).catch(() => {});
+            }
+            if (!isCloudOp && risultato.firmaBase64) {
+              realtime.publishVolunteerSignature({
+                volunteerId: aggiornato.id,
+                firmaBase64: risultato.firmaBase64,
+                volontarioNome: nomeAgg,
+                qualificaTurno: aggiornato.qualifica || (ruolo === 'admin' ? 'Operatore Centrale' : 'Soccorritore'),
+                loggato: true,
+                extraPinHashes: [previousPinHash, nextPinHash],
+              }).catch(() => {});
+            }
+
             aggiornaVolontari(nextVolontari);
             setUtenteCentrale((prev) => {
               if (!prev || prev.id !== aggiornato.id) return prev;
@@ -27447,7 +27567,11 @@ KM TOTALI: ${kmTot} KM`;
           }}
           onAnnullaEdEsci={() => {
             setObbligoAdeguamentoCentrale(null);
-            handleDisconnettiProfilo(true);
+            if (ruolo === 'volontario') {
+              handleLogoutVolontario(true);
+            } else {
+              handleDisconnettiProfilo(true);
+            }
           }}
         />
       )}

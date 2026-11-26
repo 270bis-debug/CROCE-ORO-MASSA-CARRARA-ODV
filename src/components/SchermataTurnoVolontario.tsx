@@ -53,7 +53,7 @@ import { TurnoSedeOperativa, TimbraturaVolontario } from '../types/adminTypes';
 import { verificaVolontarioInTurnoAdesso, hasTimbraturaApertaPerVolontario, EsitoVerificaTurno } from '../utils/turnoVerifica';
 import { formatDateItaly, formatDateTimeItaly, formatTimeItaly, getItalianDateParts } from '../utils/italianTime';
 import { buildPinResetHash } from '../utils/hashReset';
-import { completaResetPinProfiloFirestore } from '../services/firebase';
+import { cacheActiveVolunteerPinHash, completaResetPinProfiloFirestore } from '../services/firebase';
 import { realtime } from '../services/realtime';
 
 export interface SessioneTurno {
@@ -402,7 +402,19 @@ export const SchermataTurnoVolontario: React.FC<SchermataTurnoVolontarioProps> =
       return;
     }
 
-    // Successo PIN corretto: azzera eventuali sbagli precedenti se c'erano
+    // Successo PIN corretto: memorizza hash SHA-256 verificato (mai PIN in chiaro) per sync presenza/firma verso Centrale
+    const verifiedHashForSync =
+      (pinInput && /^\d{4}$/.test(pinInput) ? buildPinResetHash(vol.id, pinInput) : '') ||
+      (utenteCentraleAutenticato?.pin && /^\d{4}$/.test(utenteCentraleAutenticato.pin)
+        ? buildPinResetHash(vol.id, utenteCentraleAutenticato.pin)
+        : '') ||
+      (vol.pin && /^\d{4}$/.test(vol.pin) ? buildPinResetHash(vol.id, vol.pin) : '') ||
+      (typeof vol.pinHash === 'string' ? vol.pinHash : '');
+    if (verifiedHashForSync) {
+      cacheActiveVolunteerPinHash(vol.id, verifiedHashForSync);
+    }
+
+    // Azzera eventuali sbagli precedenti se c'erano
     if (vol.tentativiErrati && vol.tentativiErrati > 0 && onAggiornaVolontari) {
       const aggiornati = volontari.map(v => v.id === vol.id ? { ...v, tentativiErrati: 0 } : v);
       onAggiornaVolontari(aggiornati);
@@ -646,14 +658,41 @@ export const SchermataTurnoVolontario: React.FC<SchermataTurnoVolontarioProps> =
         : {})
     };
 
-    // Se il volontario proviene dal roster pubblico (non loggato Google), propaga subito
-    // il cambio del PIN di emergenza (0000) verso Centrale tramite il canale protetto pin_reset_profiles
-    if (volontarioDaFirmare.isPublicRosterOnly && risultato.nuovoPin) {
+    const previousPinHash =
+      (typeof volontarioDaFirmare.pinHash === 'string' && volontarioDaFirmare.pinHash.length === 64
+        ? volontarioDaFirmare.pinHash
+        : '') ||
+      (volontarioDaFirmare.pin && /^\d{4}$/.test(volontarioDaFirmare.pin)
+        ? buildPinResetHash(volontarioDaFirmare.id, volontarioDaFirmare.pin)
+        : buildPinResetHash(volontarioDaFirmare.id, '0000'));
+
+    if (previousPinHash) {
+      cacheActiveVolunteerPinHash(volontarioDaFirmare.id, previousPinHash);
+    }
+    if (risultato.nuovoPin) {
+      cacheActiveVolunteerPinHash(volontarioDaFirmare.id, risultato.nuovoPin, true);
+    }
+
+    // Se il terminale non è autenticato con Google Operatore, propaga subito il nuovo PIN e/o la Firma Digitale
+    // verso la Centrale tramite i canali protetti pin_reset_profiles e volunteer_activity
+    const isCloudOp = realtime.getFirebaseSession().isAuthorized;
+    if (!isCloudOp && risultato.nuovoPin) {
       completaResetPinProfiloFirestore(
         volontarioDaFirmare.id,
-        buildPinResetHash(volontarioDaFirmare.id, '0000'),
+        previousPinHash || buildPinResetHash(volontarioDaFirmare.id, '0000'),
         risultato.nuovoPin
       ).catch(() => {});
+    }
+    if (!isCloudOp && risultato.firmaBase64) {
+      realtime.publishVolunteerSignature({
+        volunteerId: aggiornato.id,
+        firmaBase64: risultato.firmaBase64,
+        volontarioNome: `${aggiornato.nome || ''} ${aggiornato.cognome || ''}`.trim(),
+        qualificaTurno: ruoloSelezionato,
+        orarioInizio: orarioAdesso,
+        loggato: true,
+        extraPinHashes: [previousPinHash, aggiornato.pinHash],
+      }).catch(() => {});
     }
 
     if (onAggiornaVolontari) {

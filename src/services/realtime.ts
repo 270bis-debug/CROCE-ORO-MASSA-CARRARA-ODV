@@ -57,7 +57,13 @@ import {
   markCourseGuestCheckinAppliedFirestore,
   PublicCourseDoc,
   CourseGuestCheckinRecord,
+  VolunteerActivityRecord,
+  publishVolunteerActivityFirestore,
+  listenVolunteerActivitiesFirestore,
+  segnaFirmaVolontarioApplicataFirestore,
+  aggiornaPresenzaVolontarioDaOperatoreFirestore,
 } from './firebase';
+import { buildPinResetHash } from '../utils/hashReset';
 import {
   loadRaspberryDisplayConfig,
   saveRaspberryDisplayConfigLocal,
@@ -324,6 +330,11 @@ class RealtimeService {
   private shiftSignupsUnsub: (() => void) | null = null;
   private shiftSignupsReconciling: Set<string> = new Set();
   private pendingShiftSignupsQueue: ShiftSignupRecord[] = [];
+  private volunteerActivityUnsub: (() => void) | null = null;
+  private pendingVolunteerActivitiesQueue: VolunteerActivityRecord[] = [];
+  private volunteerActivitySignatureReconciling: Set<string> = new Set();
+  private volunteerActivityLastPushAt: Map<string, number> = new Map();
+  private volunteerActivityLastLoggedState: Map<string, boolean> = new Map();
   private publicRosterUnsub: (() => void) | null = null;
   private publicBoardUnsub: (() => void) | null = null;
   private publicRaspberryUnsub: (() => void) | null = null;
@@ -1296,6 +1307,12 @@ class RealtimeService {
       } catch {}
       this.shiftSignupsUnsub = null;
     }
+    if (this.volunteerActivityUnsub) {
+      try {
+        this.volunteerActivityUnsub();
+      } catch {}
+      this.volunteerActivityUnsub = null;
+    }
     this.detachRadioSlotListeners();
     this.firestoreActive = false;
     this.cloudShardsReadyEmitted = false;
@@ -1804,6 +1821,17 @@ class RealtimeService {
       }
     );
 
+    this.volunteerActivityUnsub = listenVolunteerActivitiesFirestore(
+      (activities) => {
+        if (Array.isArray(activities) && activities.length > 0) {
+          this.applyVolunteerActivitiesFromCloud(activities).catch(() => {});
+        }
+      },
+      (err) => {
+        console.warn('[Realtime] Errore listener volunteer_activity:', err?.message);
+      }
+    );
+
     this.attachRadioSlotListeners();
 
     this.firestoreActive = true;
@@ -1910,6 +1938,11 @@ class RealtimeService {
           .then(() => syncPinResetProfilesFirestore(mergedVols, this.pinResetProfilesReconciling))
           .catch(() => {});
         syncPublicVolunteerRosterFirestore(mergedVols, deletedIds).catch(() => {});
+        if (this.pendingVolunteerActivitiesQueue.length > 0) {
+          const queuedActs = [...this.pendingVolunteerActivitiesQueue];
+          this.pendingVolunteerActivitiesQueue = [];
+          this.applyVolunteerActivitiesFromCloud(queuedActs).catch(() => {});
+        }
       }
     } else {
       Object.assign(this.cloudState, payload);
@@ -4333,6 +4366,22 @@ class RealtimeService {
           activeShift: data,
           loggedSessions: nextLoggedSessions,
         });
+        if (volId && volId !== 'vol-admin' && volId !== 'admin-centrale-root') {
+          if (!this.firebaseSession.isAuthorized) {
+            this.pushVolunteerPresenceToCloud({
+              volunteerId: volId,
+              loggato: Boolean(data?.attivo),
+              lastHeartbeatMs: nowTs,
+              volontarioNome: data?.volontarioNome || '',
+              mezzoScelto: data?.attivo ? (data?.mezzoScelto || '') : '',
+              orarioInizio: data?.orarioInizio || '',
+              qualificaTurno: data?.qualificaTurno || '',
+              force: true,
+            });
+          } else if (!data?.attivo) {
+            aggiornaPresenzaVolontarioDaOperatoreFirestore(volId, false, nowTs).catch(() => {});
+          }
+        }
         break;
       }
       case 'SESSION_HEARTBEAT': {
@@ -4355,6 +4404,22 @@ class RealtimeService {
               v?.id === volId ? { ...v, loggato: isLogged, loggatoUpdatedAt: nowTs } : v
             );
             this.scheduleShardWrite('volontari', { volontari: nextVols });
+          }
+          if (volId !== 'vol-admin' && volId !== 'admin-centrale-root') {
+            if (!this.firebaseSession.isAuthorized) {
+              this.pushVolunteerPresenceToCloud({
+                volunteerId: volId,
+                loggato: isLogged,
+                lastHeartbeatMs: nowTs,
+                volontarioNome: data?.volontarioNome || '',
+                mezzoScelto: isLogged ? (data?.mezzoScelto || '') : '',
+                orarioInizio: data?.orarioInizio || '',
+                qualificaTurno: data?.qualificaTurno || '',
+                force: !isLogged,
+              });
+            } else if (!isLogged) {
+              aggiornaPresenzaVolontarioDaOperatoreFirestore(volId, false, nowTs).catch(() => {});
+            }
           }
         }
         break;
@@ -5248,6 +5313,210 @@ class RealtimeService {
     }
 
     return appliedCount;
+  }
+
+  private resolveVolunteerPinHashCandidates(volId: string, extra?: Array<string | undefined | null>): string[] {
+    const candidates: Array<string | undefined | null> = Array.isArray(extra) ? [...extra] : [];
+    const list = Array.isArray(this.cloudState.volontari) ? this.cloudState.volontari : [];
+    const found = list.find((v: any) => v && v.id === volId);
+    if (found) {
+      if (typeof found.pinHash === 'string' && found.pinHash.length === 64) {
+        candidates.push(found.pinHash);
+      }
+      if (typeof found.pin === 'string' && /^\d{4}$/.test(found.pin.trim())) {
+        candidates.push(buildPinResetHash(volId, found.pin.trim()));
+      }
+    }
+    return candidates.filter((c): c is string => typeof c === 'string' && c.length === 64);
+  }
+
+  private pushVolunteerPresenceToCloud(input: {
+    volunteerId: string;
+    loggato: boolean;
+    lastHeartbeatMs?: number;
+    volontarioNome?: string;
+    mezzoScelto?: string;
+    orarioInizio?: string;
+    qualificaTurno?: string;
+    force?: boolean;
+  }) {
+    const volId = String(input.volunteerId || '').trim();
+    if (!volId || volId === 'vol-admin' || volId === 'admin-centrale-root') return;
+    const now = Date.now();
+    const prevAt = this.volunteerActivityLastPushAt.get(volId) || 0;
+    const prevLogged = this.volunteerActivityLastLoggedState.get(volId);
+    const stateChanged = prevLogged !== input.loggato;
+    if (!input.force && !stateChanged && now - prevAt < 25000) {
+      return;
+    }
+    this.volunteerActivityLastPushAt.set(volId, now);
+    this.volunteerActivityLastLoggedState.set(volId, input.loggato);
+
+    const hashes = this.resolveVolunteerPinHashCandidates(volId);
+    publishVolunteerActivityFirestore({
+      volunteerId: volId,
+      verifyingPinHashes: hashes,
+      loggato: input.loggato,
+      lastHeartbeatMs: input.lastHeartbeatMs || now,
+      volontarioNome: input.volontarioNome,
+      mezzoScelto: input.mezzoScelto,
+      orarioInizio: input.orarioInizio,
+      qualificaTurno: input.qualificaTurno,
+    }).catch(() => {});
+  }
+
+  /**
+   * Pubblica la firma digitale di un volontario sul canale sicuro /volunteer_activity/{volunteerId}
+   * così raggiunge immediatamente la Centrale anche se lo smartphone non è autenticato con Google.
+   */
+  public async publishVolunteerSignature(input: {
+    volunteerId: string;
+    firmaBase64: string;
+    volontarioNome?: string;
+    qualificaTurno?: string;
+    mezzoScelto?: string;
+    orarioInizio?: string;
+    loggato?: boolean;
+    extraPinHashes?: Array<string | undefined | null>;
+  }): Promise<boolean> {
+    const volId = String(input?.volunteerId || '').trim();
+    if (!volId || !input?.firmaBase64 || input.firmaBase64.trim().length < 20) return false;
+    if (this.firebaseSession.isAuthorized) {
+      // Terminale già autenticato su Firestore: la firma viene già scritta in sync_shards/volontari
+      return true;
+    }
+    const hashes = this.resolveVolunteerPinHashCandidates(volId, input.extraPinHashes);
+    const now = Date.now();
+    const res = await publishVolunteerActivityFirestore({
+      volunteerId: volId,
+      verifyingPinHashes: hashes,
+      loggato: input.loggato !== false,
+      lastHeartbeatMs: now,
+      volontarioNome: input.volontarioNome || '',
+      mezzoScelto: input.mezzoScelto || '',
+      orarioInizio: input.orarioInizio || '',
+      qualificaTurno: input.qualificaTurno || '',
+      firmaBase64: input.firmaBase64,
+      firmaUpdatedAtMs: now,
+    });
+    return res.ok;
+  }
+
+  /**
+   * Riconcilia su Centrale/Admin gli stati "Loggato" e le Firme Digitali inviati in tempo reale
+   * dagli smartphone dei volontari tramite il canale /volunteer_activity/{volunteerId}.
+   */
+  private async applyVolunteerActivitiesFromCloud(records: VolunteerActivityRecord[]): Promise<number> {
+    if (!this.firebaseSession.isAuthorized || !Array.isArray(records) || records.length === 0) return 0;
+    const currentVols = Array.isArray(this.cloudState.volontari) ? [...this.cloudState.volontari] : [];
+    if (currentVols.length === 0) {
+      this.pendingVolunteerActivitiesQueue = records;
+      return 0;
+    }
+
+    let sessionsChanged = false;
+    let volsChanged = false;
+    let signaturesApplied = 0;
+    const sessionPatches: Record<string, any> = {};
+    const nextVols = [...currentVols];
+    const currentSessions = this.cloudState.loggedSessions && typeof this.cloudState.loggedSessions === 'object'
+      ? this.cloudState.loggedSessions
+      : {};
+
+    for (const rec of records) {
+      const volId = String(rec?.volunteerId || '').trim();
+      if (!volId || volId === 'vol-admin' || volId === 'admin-centrale-root') continue;
+      const idx = nextVols.findIndex((v: any) => v && v.id === volId);
+      if (idx < 0) continue;
+
+      const vol = nextVols[idx];
+      const recTs = typeof rec.lastHeartbeatMs === 'number' && Number.isFinite(rec.lastHeartbeatMs)
+        ? rec.lastHeartbeatMs
+        : 0;
+      const existingSess = currentSessions[volId];
+      const existingSessTs = typeof existingSess?.updatedAt === 'number' ? existingSess.updatedAt : 0;
+      const existingVolTs = typeof vol?.loggatoUpdatedAt === 'number' ? vol.loggatoUpdatedAt : 0;
+      const latestKnownTs = Math.max(existingSessTs, existingVolTs);
+
+      // 1. Aggiorna presenza Loggato / Offline se il segnale dello smartphone è più recente
+      if (recTs > latestKnownTs) {
+        const isLogged = Boolean(rec.loggato);
+        const nomeFull = rec.volontarioNome || `${vol.nome || ''} ${vol.cognome || ''}`.trim();
+        sessionPatches[volId] = {
+          loggato: isLogged,
+          updatedAt: recTs,
+          volontarioNome: nomeFull || undefined,
+          mezzoScelto: isLogged ? (rec.mezzoScelto || existingSess?.mezzoScelto || '') : '',
+          orarioInizio: rec.orarioInizio || existingSess?.orarioInizio || undefined,
+        };
+        sessionsChanged = true;
+
+        if (Boolean(vol.loggato) !== isLogged || existingVolTs < recTs) {
+          nextVols[idx] = {
+            ...nextVols[idx],
+            loggato: isLogged,
+            loggatoUpdatedAt: recTs,
+            ...(isLogged ? { ultimoAccesso: formatTimeItaly(new Date(recTs)) } : {}),
+            ...(isLogged && rec.mezzoScelto ? { mezzoAttivo: rec.mezzoScelto } : {}),
+          };
+          volsChanged = true;
+        }
+      }
+
+      // 2. Assorbe la Firma Digitale caricata dal volontario su smartphone senza Google Auth
+      const hasPendingFirma =
+        typeof rec.firmaBase64 === 'string' &&
+        rec.firmaBase64.startsWith('data:image/') &&
+        rec.firmaBase64.length >= 20 &&
+        rec.firmaApplied !== true;
+
+      if (hasPendingFirma && !this.volunteerActivitySignatureReconciling.has(volId)) {
+        this.volunteerActivitySignatureReconciling.add(volId);
+        try {
+          const firmaTs = typeof rec.firmaUpdatedAtMs === 'number' && rec.firmaUpdatedAtMs > 0
+            ? rec.firmaUpdatedAtMs
+            : Date.now();
+          nextVols[idx] = {
+            ...nextVols[idx],
+            firmaBase64: rec.firmaBase64,
+            hasFirma: true,
+            firmaUpdatedAtMs: firmaTs,
+          };
+          volsChanged = true;
+          signaturesApplied++;
+          segnaFirmaVolontarioApplicataFirestore(volId).catch(() => {});
+        } finally {
+          this.volunteerActivitySignatureReconciling.delete(volId);
+        }
+      }
+    }
+
+    if (sessionsChanged) {
+      const mergedSessions = mergeLoggedSessionsSafe(this.cloudState.loggedSessions, sessionPatches);
+      this.cloudState.loggedSessions = mergedSessions;
+      this.scheduleShardWrite('mission', { loggedSessions: mergedSessions });
+      this.emit('LOGGED_SESSIONS_UPDATED', {
+        loggedSessions: mergedSessions,
+        ...(volsChanged ? { volontari: nextVols } : {}),
+      });
+    }
+
+    if (volsChanged) {
+      const deletedIds = normalizeDeletedIds(this.cloudState.volontariEliminatiIds);
+      this.cloudState.volontari = nextVols;
+      this.scheduleShardWrite('volontari', { volontari: nextVols });
+      this.pushVolontariToExpressIfNeeded(nextVols, deletedIds);
+      this.emit('VOLONTARI_UPDATED', {
+        volontari: nextVols,
+        volontariEliminatiIds: deletedIds,
+      });
+      if (signaturesApplied > 0) {
+        // Forza pubblicazione immediata della lista pubblica così il telefono vede subito hasFirma: true
+        syncPublicVolunteerRosterFirestore(nextVols, deletedIds).catch(() => {});
+      }
+    }
+
+    return signaturesApplied + (sessionsChanged ? 1 : 0);
   }
 
   /**

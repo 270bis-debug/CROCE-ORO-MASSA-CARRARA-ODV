@@ -3030,3 +3030,291 @@ export async function markCourseGuestCheckinAppliedFirestore(checkinId: string):
   }
 }
 
+// =============================================================================
+// VOLUNTEER ACTIVITY CHANNEL (PRESENZA LOGGATO + FIRMA DIGITALE DA SMARTPHONE)
+// Zero-PII write-only channel verified against /pin_reset_profiles/{volunteerId}.pinHash
+// =============================================================================
+
+export const VOLUNTEER_ACTIVITY_SCOPE = 'croce_oro_vol_activity' as const;
+const VOLUNTEER_ACTIVITY_FIRMA_MAX_LEN = 220000;
+const VOLUNTEER_ACTIVITY_FIRMA_REGEX = /^data:image\/(png|jpeg|jpg|webp);base64,[A-Za-z0-9+/=]+$/;
+const VOLUNTEER_PIN_HASH_CACHE_KEY = 'CROCE_ORO_VOL_PIN_HASH_CACHE_V1';
+
+export interface VolunteerActivityRecord {
+  volunteerId: string;
+  scope: typeof VOLUNTEER_ACTIVITY_SCOPE;
+  verifyingPinHash: string;
+  loggato: boolean;
+  lastHeartbeatMs: number;
+  volontarioNome: string;
+  mezzoScelto: string;
+  orarioInizio: string;
+  qualificaTurno: string;
+  firmaBase64: string;
+  firmaUpdatedAtMs: number;
+  firmaApplied: boolean;
+  createdAt?: any;
+  updatedAt?: any;
+}
+
+function readPinHashCacheMap(): Record<string, string[]> {
+  try {
+    if (typeof localStorage === 'undefined') return {};
+    const raw = localStorage.getItem(VOLUNTEER_PIN_HASH_CACHE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    return parsed as Record<string, string[]>;
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Memorizza localmente (solo hash SHA-256, mai PIN in chiaro) gli ultimi 2 hash verificati
+ * per il volontario, così presenza "Loggato" e firma digitale possono essere sincronizzati
+ * verso la Centrale anche da smartphone senza login Google e subito dopo un cambio PIN.
+ */
+export function cacheActiveVolunteerPinHash(volunteerId: string, pinHashOrPin: string, isRawPin = false): void {
+  const volId = String(volunteerId || '').trim();
+  if (!VALID_DOC_ID_REGEX.test(volId) || volId === 'vol-admin' || volId === 'admin-centrale-root') return;
+  const candidate = isRawPin
+    ? buildPinResetHash(volId, pinHashOrPin)
+    : String(pinHashOrPin || '').trim().toLowerCase();
+  if (!SHA256_HEX_REGEX.test(candidate)) return;
+
+  try {
+    const map = readPinHashCacheMap();
+    const prev = Array.isArray(map[volId]) ? map[volId].filter((h) => SHA256_HEX_REGEX.test(h)) : [];
+    const next = [candidate, ...prev.filter((h) => h !== candidate)].slice(0, 3);
+    map[volId] = next;
+    localStorage.setItem(VOLUNTEER_PIN_HASH_CACHE_KEY, JSON.stringify(map));
+  } catch {
+    // Ignora errori quota localStorage
+  }
+}
+
+export function getCachedVolunteerPinHashes(
+  volunteerId: string,
+  extraCandidates: Array<string | undefined | null> = []
+): string[] {
+  const volId = String(volunteerId || '').trim();
+  if (!VALID_DOC_ID_REGEX.test(volId)) return [];
+  const ordered: string[] = [];
+  const pushValid = (val?: string | null) => {
+    const clean = String(val || '').trim().toLowerCase();
+    if (SHA256_HEX_REGEX.test(clean) && !ordered.includes(clean)) {
+      ordered.push(clean);
+    }
+  };
+  extraCandidates.forEach(pushValid);
+  const map = readPinHashCacheMap();
+  const cached = map[volId];
+  if (Array.isArray(cached)) {
+    cached.forEach(pushValid);
+  }
+  return ordered;
+}
+
+/**
+ * Ridimensiona automaticamente la firma solo se supera il limite del blueprint Firestore (220KB),
+ * preservando la trasparenza PNG/WebP e garantendo sempre il formato data:image/... valido.
+ */
+export async function normalizeSignatureForCloud(firmaBase64?: string | null): Promise<string> {
+  const raw = String(firmaBase64 || '').trim();
+  if (!raw || raw.length < 20) return '';
+  if (raw.length <= VOLUNTEER_ACTIVITY_FIRMA_MAX_LEN && VOLUNTEER_ACTIVITY_FIRMA_REGEX.test(raw)) {
+    return raw;
+  }
+  if (typeof document === 'undefined' || typeof Image === 'undefined') {
+    return '';
+  }
+  try {
+    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const el = new Image();
+      el.onload = () => resolve(el);
+      el.onerror = () => reject(new Error('Invalid signature image'));
+      el.src = raw;
+    });
+    const maxW = 560;
+    const maxH = 220;
+    const scale = Math.min(1, maxW / Math.max(1, img.width), maxH / Math.max(1, img.height));
+    const w = Math.max(1, Math.round(img.width * scale));
+    const h = Math.max(1, Math.round(img.height * scale));
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return '';
+    ctx.clearRect(0, 0, w, h);
+    ctx.drawImage(img, 0, 0, w, h);
+    let out = canvas.toDataURL('image/png');
+    if (out.length > VOLUNTEER_ACTIVITY_FIRMA_MAX_LEN) {
+      out = canvas.toDataURL('image/webp', 0.82);
+    }
+    if (out.length <= VOLUNTEER_ACTIVITY_FIRMA_MAX_LEN && VOLUNTEER_ACTIVITY_FIRMA_REGEX.test(out)) {
+      return out;
+    }
+    return '';
+  } catch {
+    return '';
+  }
+}
+
+export async function publishVolunteerActivityFirestore(input: {
+  volunteerId: string;
+  verifyingPinHashes?: Array<string | undefined | null>;
+  loggato: boolean;
+  lastHeartbeatMs?: number;
+  volontarioNome?: string;
+  mezzoScelto?: string;
+  orarioInizio?: string;
+  qualificaTurno?: string;
+  firmaBase64?: string | null;
+  firmaUpdatedAtMs?: number;
+}): Promise<{ ok: boolean; code?: string }> {
+  const volId = String(input?.volunteerId || '').trim();
+  if (!VALID_DOC_ID_REGEX.test(volId) || volId === 'vol-admin' || volId === 'admin-centrale-root') {
+    return { ok: false, code: 'invalid-volunteer-id' };
+  }
+
+  const hashes = getCachedVolunteerPinHashes(volId, input.verifyingPinHashes || []);
+  if (hashes.length === 0) {
+    return { ok: false, code: 'missing-pin-hash' };
+  }
+
+  const nowMs = Math.max(0, Math.min(4102444800000, Math.round(Number(input.lastHeartbeatMs) || Date.now())));
+  const nome = String(input.volontarioNome || '').trim().slice(0, 120);
+  const mezzo = String(input.mezzoScelto || '').trim().slice(0, 80);
+  const orario = String(input.orarioInizio || '').trim().slice(0, 32);
+  const qualifica = String(input.qualificaTurno || '').trim().slice(0, 80);
+  const cleanFirma = input.firmaBase64 ? await normalizeSignatureForCloud(input.firmaBase64) : '';
+  const hasNewFirma = cleanFirma.length >= 20;
+  const firmaTs = hasNewFirma
+    ? Math.max(0, Math.min(4102444800000, Math.round(Number(input.firmaUpdatedAtMs) || nowMs)))
+    : 0;
+
+  const docRef = doc(db, 'volunteer_activity', volId);
+
+  for (const hash of hashes) {
+    const updatePatch: Record<string, any> = {
+      loggato: Boolean(input.loggato),
+      lastHeartbeatMs: nowMs,
+      volontarioNome: nome,
+      mezzoScelto: mezzo,
+      orarioInizio: orario,
+      qualificaTurno: qualifica,
+      verifyingPinHash: hash,
+      updatedAt: serverTimestamp(),
+      ...(hasNewFirma
+        ? {
+            firmaBase64: cleanFirma,
+            firmaUpdatedAtMs: firmaTs,
+            firmaApplied: false,
+          }
+        : {}),
+    };
+
+    try {
+      await updateDoc(docRef, updatePatch);
+      return { ok: true };
+    } catch (updateErr: any) {
+      const code = String(updateErr?.code || '');
+      // Se il documento non esiste ancora, tenta la creazione completa (allow create)
+      if (code === 'not-found' || code === 'permission-denied') {
+        try {
+          await setDoc(docRef, {
+            volunteerId: volId,
+            scope: VOLUNTEER_ACTIVITY_SCOPE,
+            verifyingPinHash: hash,
+            loggato: Boolean(input.loggato),
+            lastHeartbeatMs: nowMs,
+            volontarioNome: nome,
+            mezzoScelto: mezzo,
+            orarioInizio: orario,
+            qualificaTurno: qualifica,
+            firmaBase64: hasNewFirma ? cleanFirma : '',
+            firmaUpdatedAtMs: hasNewFirma ? firmaTs : 0,
+            firmaApplied: false,
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          });
+          return { ok: true };
+        } catch {
+          // Prova eventuale hash successivo (es. subito dopo cambio PIN prima della riconciliazione)
+        }
+      }
+    }
+  }
+
+  return { ok: false, code: 'permission-denied' };
+}
+
+export function listenVolunteerActivitiesFirestore(
+  onItems: (items: VolunteerActivityRecord[]) => void,
+  onError?: (err: Error) => void
+): Unsubscribe {
+  const q = query(
+    collection(db, 'volunteer_activity'),
+    where('scope', '==', VOLUNTEER_ACTIVITY_SCOPE)
+  );
+  return onSnapshot(
+    q,
+    (snapshot) => {
+      const items: VolunteerActivityRecord[] = [];
+      snapshot.forEach((docSnap) => {
+        const d = docSnap.data() as VolunteerActivityRecord;
+        if (d && typeof d.volunteerId === 'string' && d.volunteerId.trim()) {
+          items.push(d);
+        }
+      });
+      onItems(items);
+    },
+    (error) => {
+      try {
+        handleFirestoreError(error, OperationType.LIST, 'volunteer_activity');
+      } catch (wrapped: any) {
+        onError?.(wrapped);
+      }
+    }
+  );
+}
+
+export async function segnaFirmaVolontarioApplicataFirestore(volunteerId: string): Promise<void> {
+  const user = auth.currentUser;
+  if (!user || !user.emailVerified) return;
+  const volId = String(volunteerId || '').trim();
+  if (!VALID_DOC_ID_REGEX.test(volId)) return;
+  try {
+    await updateDoc(doc(db, 'volunteer_activity', volId), {
+      firmaBase64: '',
+      firmaApplied: true,
+      updatedAt: serverTimestamp(),
+    });
+  } catch {
+    // Non bloccare l'UI se il documento non esiste o è già stato pulito
+  }
+}
+
+export async function aggiornaPresenzaVolontarioDaOperatoreFirestore(
+  volunteerId: string,
+  loggato: boolean,
+  timestampMs?: number
+): Promise<void> {
+  const user = auth.currentUser;
+  if (!user || !user.emailVerified) return;
+  const volId = String(volunteerId || '').trim();
+  if (!VALID_DOC_ID_REGEX.test(volId) || volId === 'vol-admin' || volId === 'admin-centrale-root') return;
+  const ts = Math.max(0, Math.min(4102444800000, Math.round(Number(timestampMs) || Date.now())));
+  try {
+    await updateDoc(doc(db, 'volunteer_activity', volId), {
+      loggato: Boolean(loggato),
+      lastHeartbeatMs: ts,
+      updatedAt: serverTimestamp(),
+    });
+  } catch {
+    // Se il documento non esiste ancora per questo volontario, non occorre crearlo
+  }
+}
+
+

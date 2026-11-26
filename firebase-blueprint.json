@@ -853,6 +853,86 @@
         "createdAt",
         "updatedAt"
       ]
+    },
+    "VolunteerActivity": {
+      "title": "VolunteerActivity",
+      "description": "Zero-PII write-only presence heartbeat and digital signature submission channel for unauthenticated volunteer smartphones, cryptographically gated against pin_reset_profiles PIN hashes and readable/reconcilable exclusively by verified operators.",
+      "type": "object",
+      "properties": {
+        "volunteerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "scope": {
+          "type": "string",
+          "enum": ["croce_oro_vol_activity"]
+        },
+        "verifyingPinHash": {
+          "type": "string",
+          "minLength": 64,
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "loggato": {
+          "type": "boolean"
+        },
+        "lastHeartbeatMs": {
+          "type": "integer"
+        },
+        "volontarioNome": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "mezzoScelto": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "orarioInizio": {
+          "type": "string",
+          "maxLength": 32
+        },
+        "qualificaTurno": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "firmaBase64": {
+          "type": "string",
+          "maxLength": 220000,
+          "pattern": "^(|data:image/(png|jpeg|jpg|webp);base64,[A-Za-z0-9+/=]+)$"
+        },
+        "firmaUpdatedAtMs": {
+          "type": "integer"
+        },
+        "firmaApplied": {
+          "type": "boolean"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "volunteerId",
+        "scope",
+        "verifyingPinHash",
+        "loggato",
+        "lastHeartbeatMs",
+        "volontarioNome",
+        "mezzoScelto",
+        "orarioInizio",
+        "qualificaTurno",
+        "firmaBase64",
+        "firmaUpdatedAtMs",
+        "firmaApplied",
+        "createdAt",
+        "updatedAt"
+      ]
     }
   },
   "firestore": {
@@ -911,6 +991,10 @@
     "/course_guest_checkins/{checkinId}": {
       "schema": { "$ref": "#/entities/CourseGuestCheckin" },
       "description": "Write-only external guest attendance check-in queue (readable and reconcilable exclusively by verified operators)."
+    },
+    "/volunteer_activity/{volunteerId}": {
+      "schema": { "$ref": "#/entities/VolunteerActivity" },
+      "description": "Zero-PII write-only volunteer login presence heartbeat and digital signature submission queue verified against pin_reset_profiles PIN hash, readable exclusively by verified operators."
     }
   }
 }

@@ -4,6 +4,7 @@ import { Volontario } from './DatabaseVolontariModal';
 import { CroceOroLogo } from './CroceOroLogo';
 import { isAccessoDaWeb } from '../utils/accessoWeb';
 import {
+  cacheActiveVolunteerPinHash,
   completaTicketResetPinFirestore,
   completaResetPinProfiloFirestore,
   isValidPinResetTokenFormat
@@ -168,11 +169,21 @@ export const ModalResetPassword: React.FC<ModalResetPasswordProps> = ({
       }
 
       // Aggiorna il volontario rimuovendo flag di richiesta reset e provvisorio
+      const nuovoPinHash = buildPinResetHash(volontarioAttuale.id, pinPulito);
+      if (volontarioAttuale.pinHash && volontarioAttuale.pinHash.length === 64) {
+        cacheActiveVolunteerPinHash(volontarioAttuale.id, volontarioAttuale.pinHash);
+      } else if (pinProvvInputPulito && /^\d{4}$/.test(pinProvvInputPulito)) {
+        cacheActiveVolunteerPinHash(volontarioAttuale.id, pinProvvInputPulito, true);
+      }
+      cacheActiveVolunteerPinHash(volontarioAttuale.id, nuovoPinHash);
+
       const aggiornati = volontari.map(v => {
         if (v.id === volontarioAttuale.id) {
           return {
             ...v,
             pin: pinPulito,
+            pinHash: nuovoPinHash,
+            pinIsEmergency: pinPulito === '0000',
             ...(emailVerifiedByCloud && emailInput ? { email: emailInput } : {}),
             pinProvvisorio: false,
             richiedeResetPassword: false,

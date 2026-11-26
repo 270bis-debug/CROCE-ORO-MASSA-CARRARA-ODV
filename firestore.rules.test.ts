@@ -206,5 +206,63 @@ export const DIRTY_DOZEN_PAYLOADS = [
     operation: 'get',
     auth: null,
     expected: 'PERMISSION_DENIED'
+  },
+  {
+    name: '24_volunteer_activity_unauthenticated_read',
+    path: '/volunteer_activity/vol-ricci',
+    operation: 'get',
+    auth: null,
+    expected: 'PERMISSION_DENIED'
+  },
+  {
+    name: '25_volunteer_activity_unauthenticated_list_scraping',
+    path: '/volunteer_activity',
+    operation: 'list',
+    auth: null,
+    expected: 'PERMISSION_DENIED'
+  },
+  {
+    name: '26_volunteer_activity_wrong_pin_hash_write',
+    path: '/volunteer_activity/vol-ricci',
+    operation: 'create',
+    auth: null,
+    payload: {
+      volunteerId: 'vol-ricci',
+      scope: 'croce_oro_vol_activity',
+      verifyingPinHash: '0'.repeat(64),
+      loggato: true,
+      lastHeartbeatMs: 1795715901990,
+      volontarioNome: 'Noemi Ricci',
+      mezzoScelto: '',
+      orarioInizio: '10:00:00',
+      qualificaTurno: 'Soccorritore',
+      firmaBase64: '',
+      firmaUpdatedAtMs: 0,
+      firmaApplied: false
+    },
+    expected: 'PERMISSION_DENIED'
+  },
+  {
+    name: '27_volunteer_activity_non_image_signature_poisoning',
+    path: '/volunteer_activity/vol-ricci',
+    operation: 'update',
+    auth: null,
+    payload: {
+      firmaBase64: 'javascript:alert(1)',
+      firmaApplied: false
+    },
+    expected: 'PERMISSION_DENIED'
+  },
+  {
+    name: '28_volunteer_activity_shadow_field_injection',
+    path: '/volunteer_activity/vol-ricci',
+    operation: 'create',
+    auth: null,
+    payload: {
+      volunteerId: 'vol-ricci',
+      scope: 'croce_oro_vol_activity',
+      isAdmin: true
+    },
+    expected: 'PERMISSION_DENIED'
   }
 ];
