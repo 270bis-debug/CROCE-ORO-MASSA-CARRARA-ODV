@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import {
   Megaphone,
   X,
@@ -54,6 +54,8 @@ interface ModalBachecaVolontarioProps {
   sezioneVolontarioNome?: string;
   sezioneVolontarioId?: string;
   sedi?: SedeAssociativaCompleta[];
+  highlightPostId?: string | null;
+  onClearHighlight?: () => void;
 }
 
 export const ModalBachecaVolontario: React.FC<ModalBachecaVolontarioProps> = ({
@@ -69,7 +71,9 @@ export const ModalBachecaVolontario: React.FC<ModalBachecaVolontarioProps> = ({
   isPresidente = false,
   sezioneVolontarioNome,
   sezioneVolontarioId,
-  sedi = []
+  sedi = [],
+  highlightPostId = null,
+  onClearHighlight
 }) => {
   const [ricerca, setRicerca] = useState('');
   const [categoriaSelezionata, setCategoriaSelezionata] = useState('tutte');
@@ -77,6 +81,29 @@ export const ModalBachecaVolontario: React.FC<ModalBachecaVolontarioProps> = ({
   const [contenutoProtettoAperto, setContenutoProtettoAperto] = useState<ContenutoProtettoBacheca | null>(null);
   const [confermaEliminaPostId, setConfermaEliminaPostId] = useState<string | null>(null);
   const [avvisoBacheca, setAvvisoBacheca] = useState<string | null>(null);
+  const [aggiornamentoLive, setAggiornamentoLive] = useState(false);
+  const scrollContainerRef = useRef<HTMLDivElement | null>(null);
+
+  // All'apertura della bacheca forza SEMPRE un refresh live dal server e resetta i filtri se aperta da notifica
+  useEffect(() => {
+    if (!aperta) return;
+    if (highlightPostId) {
+      setRicerca('');
+      setCategoriaSelezionata('tutte');
+      setSoloMiaSezione(false);
+    }
+    let cancelled = false;
+    setAggiornamentoLive(true);
+    realtime
+      .refreshPublicRaspberryBoard()
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setAggiornamentoLive(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [aperta, highlightPostId]);
 
   // Filtra comunicazioni attive
   const comunicazioniAttive = useMemo(() => {
@@ -246,10 +273,27 @@ export const ModalBachecaVolontario: React.FC<ModalBachecaVolontarioProps> = ({
     onAggiornaComunicazioni?.(aggiornate, { deletedId: postId });
   };
 
+  // Quando il post evidenziato dalla notifica è presente nella lista, scorri direttamente fino ad esso
+  useEffect(() => {
+    if (!aperta || !highlightPostId) return;
+    const found = comunicazioniAttive.some((c) => c.id === highlightPostId);
+    if (!found) return;
+    const timer = window.setTimeout(() => {
+      try {
+        const container = scrollContainerRef.current;
+        const el = container?.querySelector(`[data-bacheca-post-id="${CSS.escape(highlightPostId)}"]`) as HTMLElement | null;
+        if (el) {
+          el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+      } catch {}
+    }, 120);
+    return () => window.clearTimeout(timer);
+  }, [aperta, highlightPostId, comunicazioniAttive]);
+
   if (!aperta) return null;
 
   return (
-    <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-3 sm:p-5 overflow-y-auto animate-in fade-in">
+    <div className="fixed inset-0 z-[120] bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-3 sm:p-5 overflow-y-auto animate-in fade-in">
       <div className="bg-slate-900 border-2 border-violet-500/80 rounded-3xl max-w-4xl w-full max-h-[92vh] flex flex-col shadow-2xl overflow-hidden my-4">
         
         {/* ------------------------------------------------------------- */}
@@ -330,7 +374,7 @@ export const ModalBachecaVolontario: React.FC<ModalBachecaVolontarioProps> = ({
             </div>
 
             {/* Toggle Mia Sezione */}
-            {sezioneVolontarioNome && (
+            {sezioneVolontarioId && sezioneVolontarioNome && (
               <button
                 type="button"
                 onClick={() => setSoloMiaSezione(!soloMiaSezione)}
@@ -368,7 +412,12 @@ export const ModalBachecaVolontario: React.FC<ModalBachecaVolontarioProps> = ({
         {/* ------------------------------------------------------------- */}
         {/* CORPO MODALE: PROSSIMI CORSI + ELENCO COMUNICAZIONI           */}
         {/* ------------------------------------------------------------- */}
-        <div className="flex-1 p-3.5 sm:p-5 overflow-y-auto space-y-3.5">
+        <div ref={scrollContainerRef} className="flex-1 p-3.5 sm:p-5 overflow-y-auto space-y-3.5">
+          {aggiornamentoLive && (
+            <div className="px-3 py-1.5 rounded-xl bg-violet-950/60 border border-violet-500/40 text-violet-200 text-[11px] font-bold flex items-center justify-between">
+              <span>Aggiornamento comunicazioni in corso...</span>
+            </div>
+          )}
           {/* Blocco Prossimi Corsi & Formazione in Programma */}
           {corsiInBacheca.length > 0 && (
             <div className="space-y-2.5">
@@ -512,12 +561,19 @@ export const ModalBachecaVolontario: React.FC<ModalBachecaVolontarioProps> = ({
             comunicazioniAttive.map((com) => {
               const isUrgente = com.priorita === 'Urgente';
               const isImportante = com.priorita === 'Importante';
+              const isHighlighted = Boolean(highlightPostId && com.id === highlightPostId);
 
               return (
                 <div
                   key={com.id}
+                  data-bacheca-post-id={com.id}
+                  onClick={() => {
+                    if (isHighlighted && onClearHighlight) onClearHighlight();
+                  }}
                   className={`p-4 rounded-2xl border-2 transition-all relative overflow-hidden ${
-                    com.evidenziata
+                    isHighlighted
+                      ? 'bg-gradient-to-r from-violet-900/60 via-slate-950 to-slate-950 border-violet-400 ring-2 ring-violet-400/70 shadow-xl shadow-violet-900/50'
+                      : com.evidenziata
                       ? 'bg-gradient-to-r from-violet-950/40 via-slate-950 to-slate-950 border-violet-500/80 shadow-lg shadow-violet-950/40'
                       : isUrgente
                       ? 'bg-gradient-to-r from-red-950/40 via-slate-950 to-slate-950 border-red-500/80 shadow-lg shadow-red-950/30'
@@ -529,6 +585,11 @@ export const ModalBachecaVolontario: React.FC<ModalBachecaVolontarioProps> = ({
                   {/* Badge e Data */}
                   <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 pb-2 border-b border-slate-800/80">
                     <div className="flex items-center gap-1.5 flex-wrap">
+                      {isHighlighted && (
+                        <span className="px-2 py-0.5 rounded-full bg-amber-400 text-slate-950 text-[9.5px] font-black uppercase">
+                          Nuovo avviso
+                        </span>
+                      )}
                       {com.evidenziata && (
                         <span className="px-2 py-0.5 rounded-full bg-violet-500 text-slate-950 text-[9.5px] font-black uppercase flex items-center gap-1">
                           <Pin className="w-3 h-3 fill-slate-950" />

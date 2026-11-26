@@ -11,6 +11,7 @@ import {
   readShardDocFromServer,
   writeShardDoc,
   testFirestoreConnection,
+  isFirebaseCurrentUserSignedIn,
   getLastFirebaseAuthError,
   FirebaseSessionState,
   fetchOperatorRequestsForAdmin,
@@ -1068,8 +1069,9 @@ class RealtimeService {
     const timbratureRaw = Array.isArray(docData.timbrature) ? docData.timbrature : [];
     const cfgRaw = docData.config && typeof docData.config === 'object' ? docData.config : null;
 
+    const hasGoogleAuthOrPending = this.firebaseSession.isAuthorized || isFirebaseCurrentUserSignedIn();
     const hasPrivateConfig = this.firebaseSession.isAuthorized && this.shardLoadedFromCloud['config'];
-    const hasPrivateBacheca = this.firebaseSession.isAuthorized && this.shardLoadedFromCloud['bacheca'];
+    const hasPrivateBacheca = (this.firebaseSession.isAuthorized && this.shardLoadedFromCloud['bacheca']) || hasGoogleAuthOrPending;
     const hasPrivateTimbrature = this.firebaseSession.isAuthorized && this.shardLoadedFromCloud['timbrature'];
 
     const sediNorm = sediRaw.length > 0 ? normalizzaListaSediAssociative(sediRaw) : [];
@@ -1084,13 +1086,13 @@ class RealtimeService {
     }
 
     if (!hasPrivateBacheca) {
+      const nowMs = Date.now();
+      const prevList: any[] = Array.isArray(this.cloudState.bacheca) ? this.cloudState.bacheca : [];
       const prevById = new Map<string, any>();
-      if (Array.isArray(this.cloudState.bacheca)) {
-        for (const p of this.cloudState.bacheca) {
-          if (p?.id) prevById.set(String(p.id), p);
-        }
+      for (const p of prevList) {
+        if (p?.id) prevById.set(String(p.id), p);
       }
-      const syncedBacheca = bachecaNorm.map((remotePost: any) => {
+      const mergePreseOnPost = (remotePost: any) => {
         const localPost = prevById.get(String(remotePost.id));
         const localPrese: any[] = Array.isArray(localPost?.preseVisione) ? localPost.preseVisione : [];
         const remotePrese: any[] = Array.isArray(remotePost?.preseVisione) ? remotePost.preseVisione : [];
@@ -1107,7 +1109,24 @@ class RealtimeService {
           if (!exists) mergedPrese.push(lp);
         }
         return mergedPrese.length > remotePrese.length ? { ...remotePost, preseVisione: mergedPrese } : remotePost;
-      });
+      };
+
+      const isDefinitivelyUnauthenticated = this.firebaseSession.ready && !this.firebaseSession.isAuthorized && !isFirebaseCurrentUserSignedIn();
+      let syncedBacheca: any[];
+      if (isDefinitivelyUnauthenticated) {
+        syncedBacheca = bachecaNorm.map(mergePreseOnPost);
+        const remoteIds = new Set(syncedBacheca.map((p: any) => String(p.id)));
+        // Preserva eventuali post appena ricevuti via notifica Push (ultimi 120s) finché lo snapshot pubblico non li riflette
+        for (const lp of prevList) {
+          if (lp?.id && !remoteIds.has(String(lp.id)) && typeof lp._fromPushPreviewAt === 'number' && nowMs - lp._fromPushPreviewAt < 120_000) {
+            syncedBacheca.unshift(lp);
+          }
+        }
+      } else {
+        // Durante il boot prima che Firebase Auth sia risolto: merge non distruttivo (non cancella mai post locali)
+        syncedBacheca = mergeComunicazioniBachecaSafe(prevList, bachecaNorm, this.cloudState.bachecaEliminatiIds);
+      }
+
       this.cloudState.bacheca = syncedBacheca;
       try {
         localStorage.setItem('CROCE_ORO_BACHECA_COMUNICAZIONI', JSON.stringify(syncedBacheca));
@@ -1115,7 +1134,6 @@ class RealtimeService {
 
       // Sintetizza notifiche in-app per tutti i post attivi degli ultimi 14 giorni
       // (deduplicate automaticamente per accountId + postId in App.tsx)
-      const nowMs = Date.now();
       const quattordiciGiorniMs = 14 * 24 * 60 * 60 * 1000;
       const synthNotifs: NotificaBachecaRecord[] = syncedBacheca
         .filter((c: any) => c && c.attiva !== false && c.id && c.titolo)
@@ -1147,7 +1165,7 @@ class RealtimeService {
       this.emit('BACHECA_UPDATED', {
         bacheca: syncedBacheca,
         notificheBachecaRecenti: synthNotifs,
-        isPublicBoardSnapshot: true,
+        isPublicBoardSnapshot: isDefinitivelyUnauthenticated,
       });
     }
 
@@ -1211,12 +1229,15 @@ class RealtimeService {
     }
   }
 
-  public publishRaspberryBoardNow(overrides?: {
-    sedi?: any[];
-    bacheca?: any[];
-    timbrature?: any[];
-    config?: Record<string, any>;
-  }) {
+  public publishRaspberryBoardNow(
+    overrides?: {
+      sedi?: any[];
+      bacheca?: any[];
+      timbrature?: any[];
+      config?: Record<string, any>;
+    },
+    force = false
+  ): Promise<boolean> {
     const readArrLS = (key: string): any[] => {
       try {
         const raw = localStorage.getItem(key);
@@ -1243,7 +1264,7 @@ class RealtimeService {
       overrides?.timbrature ??
       (Array.isArray(this.cloudState.timbrature) && this.cloudState.timbrature.length > 0
         ? this.cloudState.timbrature
-        : readArrLS('CROCE_ORO_TIMBRATURE_VOLONTARI'));
+        : readArrLS('CROCE_ORO_TIMBRATURE'));
 
     const config =
       overrides?.config ??
@@ -1251,7 +1272,7 @@ class RealtimeService {
         ? this.cloudState.raspberryDisplayConfig
         : loadRaspberryDisplayConfig());
 
-    syncPublicRaspberryBoardFirestore(sedi, bacheca, timbrature, config).catch(() => {});
+    return syncPublicRaspberryBoardFirestore(sedi, bacheca, timbrature, config, force).catch(() => false);
   }
 
   public async refreshPublicRaspberryBoard(): Promise<{
@@ -1815,6 +1836,7 @@ class RealtimeService {
     body: string;
     sezioneTargetId?: string;
     priorita?: string;
+    postPreview?: Record<string, any>;
   }) {
     if (typeof window === 'undefined' || !this.firebaseSession.isAuthorized) return;
     const rateKey = `${params.tipo}:${params.postId || params.titolo}`;
@@ -1873,6 +1895,7 @@ class RealtimeService {
             soundType: 'cicalino',
             tipo: params.tipo === 'nuovo_corso' ? 'bacheca_corso' : 'bacheca_post',
             postId: params.postId,
+            ...(params.postPreview ? { postPreview: params.postPreview } : {}),
             isEmergency: false,
             requireInteraction: isUrgente,
           },
@@ -2004,6 +2027,15 @@ class RealtimeService {
                 const merged = mergeVolontariListsSafe(payload.volontari, localVols, deletedIds);
                 this.cloudState.volontariEliminatiIds = deletedIds;
                 this.applyCloudShardPayload('volontari', { ...payload, volontari: merged, volontariEliminatiIds: deletedIds }, false);
+              } else if (shardId === 'bacheca' && Array.isArray(payload.bacheca)) {
+                const deletedIds = normalizeDeletedIds([
+                  ...(Array.isArray(this.cloudState.bachecaEliminatiIds) ? this.cloudState.bachecaEliminatiIds : []),
+                  ...(Array.isArray(payload.bachecaEliminatiIds) ? payload.bachecaEliminatiIds : []),
+                ]);
+                const localBacheca = Array.isArray(this.cloudState.bacheca) ? this.cloudState.bacheca : [];
+                const merged = mergeComunicazioniBachecaSafe(payload.bacheca, localBacheca, deletedIds);
+                this.cloudState.bachecaEliminatiIds = deletedIds;
+                this.applyCloudShardPayload('bacheca', { ...payload, bacheca: merged, bachecaEliminatiIds: deletedIds }, false);
               } else {
                 const localBefore = { ...this.cloudState };
                 this.applyCloudShardPayload(shardId, { ...payload, ...localBefore }, false);
@@ -2049,6 +2081,13 @@ class RealtimeService {
                 Array.isArray(this.cloudState.turni) ? this.cloudState.turni : [],
                 Array.isArray(this.cloudState.sedi) ? this.cloudState.sedi : []
               ).catch(() => {});
+            }
+            if (
+              this.firebaseSession.isAuthorized &&
+              ((Array.isArray(this.cloudState.bacheca) && this.cloudState.bacheca.length > 0) ||
+                (Array.isArray(this.cloudState.sedi) && this.cloudState.sedi.length > 0))
+            ) {
+              this.publishRaspberryBoardNow(undefined, true).catch(() => {});
             }
             this.emit('cloud_shards_ready', { shardExists: { ...this.shardExists } });
           }
@@ -2172,6 +2211,14 @@ class RealtimeService {
         ? { ...this.cloudState.radioGroupSpeakers }
         : {};
 
+    const prevBachecaBeforeAssign = Array.isArray(this.cloudState.bacheca) ? this.cloudState.bacheca : [];
+    const prevBachecaDeletedBeforeAssign = Array.isArray(this.cloudState.bachecaEliminatiIds)
+      ? this.cloudState.bachecaEliminatiIds
+      : [];
+    const prevNotificheBachecaBeforeAssign = Array.isArray(this.cloudState.notificheBachecaRecenti)
+      ? this.cloudState.notificheBachecaRecenti
+      : [];
+
     if (shardId === 'volontari') {
       const deletedIds = normalizeDeletedIds([
         ...(Array.isArray(this.cloudState.volontariEliminatiIds) ? this.cloudState.volontariEliminatiIds : []),
@@ -2239,19 +2286,19 @@ class RealtimeService {
     }
     if (shardId === 'bacheca') {
       const deletedIds = normalizeDeletedIds([
-        ...(Array.isArray(this.cloudState.bachecaEliminatiIds) ? this.cloudState.bachecaEliminatiIds : []),
+        ...prevBachecaDeletedBeforeAssign,
         ...(Array.isArray(payload.bachecaEliminatiIds) ? payload.bachecaEliminatiIds : []),
       ]);
       this.cloudState.bachecaEliminatiIds = deletedIds;
       if (Array.isArray(payload.notificheBachecaRecenti)) {
         this.cloudState.notificheBachecaRecenti = mergeNotificheBachecaRecenti(
-          this.cloudState.notificheBachecaRecenti,
+          prevNotificheBachecaBeforeAssign,
           payload.notificheBachecaRecenti
         );
       }
       if (Array.isArray(payload.bacheca)) {
         const mergedBacheca = mergeComunicazioniBachecaSafe(
-          this.cloudState.bacheca,
+          prevBachecaBeforeAssign,
           payload.bacheca,
           deletedIds
         );
@@ -2262,13 +2309,13 @@ class RealtimeService {
           notificheBachecaRecenti: this.cloudState.notificheBachecaRecenti || [],
         });
         // Garantisce che anche i post già presenti su Firestore siano subito pubblicati su public_raspberry/display_v1
-        // così tutti gli smartphone volontari senza Google Auth li visualizzano istantaneamente (deduplicato via signature)
+        // così tutti gli smartphone volontari senza Google Auth li visualizzano istantaneamente
         if (this.firebaseSession.isAuthorized && mergedBacheca.length > 0) {
-          this.publishRaspberryBoardNow({ bacheca: mergedBacheca });
+          this.publishRaspberryBoardNow({ bacheca: mergedBacheca }, true).catch(() => {});
         }
       } else if (Array.isArray(payload.notificheBachecaRecenti)) {
         this.emit('BACHECA_UPDATED', {
-          bacheca: Array.isArray(this.cloudState.bacheca) ? this.cloudState.bacheca : [],
+          bacheca: prevBachecaBeforeAssign,
           bachecaEliminatiIds: deletedIds,
           notificheBachecaRecenti: this.cloudState.notificheBachecaRecenti || [],
         });
@@ -3195,6 +3242,13 @@ class RealtimeService {
       if (currTurni.length > 0 || currSedi.length > 0) {
         syncPublicBoardFirestore(currTurni, currSedi).catch(() => {});
       }
+    }
+    if (shardId === 'bacheca' || shardId === 'timbrature' || shardId === 'config') {
+      const overrides: { bacheca?: any[]; sedi?: any[]; timbrature?: any[] } = {};
+      if (shardId === 'bacheca' && Array.isArray(payload?.bacheca)) overrides.bacheca = payload.bacheca;
+      if (shardId === 'config' && Array.isArray(payload?.sedi)) overrides.sedi = payload.sedi;
+      if (shardId === 'timbrature' && Array.isArray(payload?.timbrature)) overrides.timbrature = payload.timbrature;
+      this.publishRaspberryBoardNow(overrides, shardId === 'bacheca').catch(() => {});
     }
   }
 
@@ -6717,9 +6771,10 @@ class RealtimeService {
     ]);
     this.cloudState.bacheca = bacheca;
     this.send('UPDATE_BACHECA', { bacheca, notifica, bachecaEliminatiIds: deletedIds });
-    this.publishRaspberryBoardNow({ bacheca });
+    const publishPromise = this.publishRaspberryBoardNow({ bacheca }, true);
 
-    // Invia anche notifica Web Push reale (background / blocco schermo) ai volontari e dispositivi registrati
+    // Invia notifica Web Push reale SOLO DOPO aver completato la pubblicazione su public_raspberry/display_v1
+    // (con fallback di sicurezza 6s) e includendo postPreview compatto, così al click il post è SEMPRE già presente!
     if (notifica && (notifica.tipo === 'nuovo_post' || notifica.tipo === 'nuovo_corso')) {
       const matchedPost = Array.isArray(bacheca)
         ? bacheca.find((c: any) => c && String(c.id) === String(notifica.postId || ''))
@@ -6732,14 +6787,41 @@ class RealtimeService {
         notifica.messaggio ||
           `Nuova comunicazione in bacheca: "${titolo}"`
       );
-      this.sendBachecaWebPush({
-        tipo: notifica.tipo,
-        postId,
-        titolo,
-        body,
-        sezioneTargetId,
-        priorita,
-      }).catch(() => {});
+      const postPreview = matchedPost
+        ? {
+            id: String(matchedPost.id || postId),
+            titolo: String(matchedPost.titolo || titolo).slice(0, 200),
+            contenuto: String(matchedPost.contenuto || '').slice(0, 600),
+            sezioneTargetId: String(matchedPost.sezioneTargetId || sezioneTargetId || 'tutte'),
+            sezioneTargetNome: String(matchedPost.sezioneTargetNome || notifica.sezioneTargetNome || 'Tutte le Sezioni Territoriali'),
+            priorita: String(matchedPost.priorita || priorita || 'Ordinaria'),
+            categoria: String(matchedPost.categoria || 'Comunicazione Generale'),
+            dataPubblicazione: String(matchedPost.dataPubblicazione || ''),
+            oraPubblicazione: String(matchedPost.oraPubblicazione || ''),
+            autore: String(matchedPost.autore || notifica.autoreCommento || 'Direzione'),
+            attiva: true,
+            evidenziata: Boolean(matchedPost.evidenziata),
+            richiedePresaVisione: Boolean(matchedPost.richiedePresaVisione),
+            updatedAt: typeof matchedPost.updatedAt === 'number' ? matchedPost.updatedAt : Date.now(),
+          }
+        : undefined;
+
+      Promise.race([
+        publishPromise.catch(() => false),
+        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 6000)),
+      ])
+        .then(() =>
+          this.sendBachecaWebPush({
+            tipo: notifica.tipo,
+            postId,
+            titolo,
+            body,
+            sezioneTargetId,
+            priorita,
+            postPreview,
+          })
+        )
+        .catch(() => {});
     }
 
     if (!this.isServerlessStaticHost()) {
@@ -6791,6 +6873,16 @@ class RealtimeService {
 
   public sendNotificaBacheca(notifica: any) {
     this.send('NOTIFICA_BACHECA', { notifica });
+    if (notifica && notifica.tipo === 'nuovo_corso' && notifica.postTitolo) {
+      this.sendBachecaWebPush({
+        tipo: 'nuovo_corso',
+        postId: String(notifica.postId || ''),
+        titolo: String(notifica.postTitolo),
+        body: String(notifica.messaggio || `Nuovo corso/formazione in bacheca: "${notifica.postTitolo}"`),
+        sezioneTargetId: String(notifica.sezioneTargetId || 'tutte'),
+        priorita: 'Importante',
+      }).catch(() => {});
+    }
     if (!this.isServerlessStaticHost()) {
       try {
         const baseUrl = this.getApiBaseUrl();

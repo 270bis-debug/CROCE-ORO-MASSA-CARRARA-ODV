@@ -2341,26 +2341,39 @@ export default function App() {
         localStorage.setItem('CROCE_ORO_BACHECA_ELIMINATI', JSON.stringify(mergedDeleted));
       } catch {}
       setComunicazioniBacheca((prev) => {
-        const nextList = replaceAll
-          ? normalizzaComunicazioniBacheca(Array.isArray(incoming) ? incoming : []).map((remotePost) => {
-              const localPost = prev.find((p) => p.id === remotePost.id);
-              const localPrese = Array.isArray(localPost?.preseVisione) ? localPost.preseVisione : [];
-              const remotePrese = Array.isArray(remotePost.preseVisione) ? remotePost.preseVisione : [];
-              if (localPrese.length === 0) return remotePost;
-              const mergedPrese = [...remotePrese];
-              for (const lp of localPrese) {
-                const exists = mergedPrese.some(
-                  (rp) =>
-                    (lp.volontarioId && rp.volontarioId && lp.volontarioId === rp.volontarioId) ||
-                    (lp.volontarioNome &&
-                      rp.volontarioNome &&
-                      lp.volontarioNome.trim().toLowerCase() === rp.volontarioNome.trim().toLowerCase())
-                );
-                if (!exists) mergedPrese.push(lp);
-              }
-              return mergedPrese.length > remotePrese.length ? { ...remotePost, preseVisione: mergedPrese } : remotePost;
-            })
-          : mergeComunicazioniBachecaSafe(prev, incoming, mergedDeleted);
+        const nowMs = Date.now();
+        let nextList: ComunicazioneBacheca[];
+        if (replaceAll) {
+          const remoteNormalized = normalizzaComunicazioniBacheca(Array.isArray(incoming) ? incoming : []).map((remotePost) => {
+            const localPost = prev.find((p) => p.id === remotePost.id);
+            const localPrese = Array.isArray(localPost?.preseVisione) ? localPost.preseVisione : [];
+            const remotePrese = Array.isArray(remotePost.preseVisione) ? remotePost.preseVisione : [];
+            if (localPrese.length === 0) return remotePost;
+            const mergedPrese = [...remotePrese];
+            for (const lp of localPrese) {
+              const exists = mergedPrese.some(
+                (rp) =>
+                  (lp.volontarioId && rp.volontarioId && lp.volontarioId === rp.volontarioId) ||
+                  (lp.volontarioNome &&
+                    rp.volontarioNome &&
+                    lp.volontarioNome.trim().toLowerCase() === rp.volontarioNome.trim().toLowerCase())
+              );
+              if (!exists) mergedPrese.push(lp);
+            }
+            return mergedPrese.length > remotePrese.length ? { ...remotePost, preseVisione: mergedPrese } : remotePost;
+          });
+          const remoteIds = new Set(remoteNormalized.map((p) => p.id));
+          const preservedRecent = prev.filter((lp: any) => {
+            if (!lp?.id || remoteIds.has(lp.id)) return false;
+            const fromPushAt = Number(lp._fromPushPreviewAt || 0);
+            if (fromPushAt > 0 && nowMs - fromPushAt < 120_000) return true;
+            if (nowMs - lastBachecaLocalEditRef.current < 15_000) return true;
+            return false;
+          });
+          nextList = [...preservedRecent, ...remoteNormalized];
+        } else {
+          nextList = mergeComunicazioniBachecaSafe(prev, incoming, mergedDeleted);
+        }
         try {
           localStorage.setItem('CROCE_ORO_BACHECA_COMUNICAZIONI', JSON.stringify(nextList));
         } catch {}
@@ -3560,7 +3573,7 @@ export default function App() {
 
     switch (link.tipo) {
       case 'bacheca':
-        setModalBachecaVolontarioAperta(true);
+        apriBachecaConPost(link.idRiferimento || null);
         break;
       case 'turno':
         setModalTabelloneTurniVolontario(true);
@@ -3800,6 +3813,55 @@ export default function App() {
   const [modalServiziTurnoAperta, setModalServiziTurnoAperta] = useState<boolean>(false);
   const [modalTabelloneTurniVolontario, setModalTabelloneTurniVolontario] = useState<boolean>(false);
   const [modalBachecaVolontarioAperta, setModalBachecaVolontarioAperta] = useState<boolean>(false);
+  const [bachecaHighlightPostId, setBachecaHighlightPostId] = useState<string | null>(null);
+
+  const applicaAnteprimaPostDaPush = useCallback((postPreview: any) => {
+    if (!postPreview || typeof postPreview !== 'object' || !postPreview.id || !postPreview.titolo) return;
+    const nowMs = Date.now();
+    const previewItem: any = {
+      id: String(postPreview.id),
+      titolo: String(postPreview.titolo),
+      contenuto: String(postPreview.contenuto || ''),
+      sezioneTargetId: String(postPreview.sezioneTargetId || 'tutte'),
+      sezioneTargetNome: String(postPreview.sezioneTargetNome || 'Tutte le Sezioni Territoriali'),
+      priorita: String(postPreview.priorita || 'Ordinaria'),
+      categoria: String(postPreview.categoria || 'Comunicazione Generale'),
+      dataPubblicazione: String(postPreview.dataPubblicazione || formatISODateItaly(new Date())),
+      oraPubblicazione: String(postPreview.oraPubblicazione || formatTimeItaly(new Date(), false)),
+      autore: String(postPreview.autore || 'Direzione'),
+      attiva: true,
+      evidenziata: Boolean(postPreview.evidenziata),
+      richiedePresaVisione: Boolean(postPreview.richiedePresaVisione),
+      preseVisione: [],
+      likes: [],
+      commenti: [],
+      updatedAt: typeof postPreview.updatedAt === 'number' ? postPreview.updatedAt : nowMs,
+      _fromPushPreviewAt: nowMs,
+    };
+    applicaBachecaRemotaSafe([previewItem], [], false);
+  }, [applicaBachecaRemotaSafe]);
+
+  const apriBachecaConPost = useCallback((postId?: string | null, postPreview?: any) => {
+    if (postPreview) {
+      applicaAnteprimaPostDaPush(postPreview);
+    }
+    const cleanPostId = typeof postId === 'string' && postId.trim() ? postId.trim() : null;
+    setBachecaHighlightPostId(cleanPostId);
+    setModalBachecaVolontarioAperta(true);
+    realtime.refreshPublicRaspberryBoard().catch(() => {});
+    if (cleanPostId) {
+      window.setTimeout(() => {
+        realtime.refreshPublicRaspberryBoard().catch(() => {});
+      }, 1500);
+    }
+  }, [applicaAnteprimaPostDaPush]);
+
+  const apriBachecaConPostRef = useRef(apriBachecaConPost);
+  const applicaAnteprimaPostDaPushRef = useRef(applicaAnteprimaPostDaPush);
+  useEffect(() => {
+    apriBachecaConPostRef.current = apriBachecaConPost;
+    applicaAnteprimaPostDaPushRef.current = applicaAnteprimaPostDaPush;
+  }, [apriBachecaConPost, applicaAnteprimaPostDaPush]);
   const [modalRifornimentoRapidoAperta, setModalRifornimentoRapidoAperta] = useState<boolean>(false);
   const [modalSegnalazioneGuastoAperta, setModalSegnalazioneGuastoAperta] = useState<boolean>(false);
   const [modalArchivioSopAperta, setModalArchivioSopAperta] = useState<boolean>(false);
@@ -3864,11 +3926,11 @@ export default function App() {
         modified = true;
       }
       if (url.searchParams.get('apriBacheca') === '1') {
+        const targetPostId = url.searchParams.get('postId');
         url.searchParams.delete('apriBacheca');
         url.searchParams.delete('postId');
         modified = true;
-        setModalBachecaVolontarioAperta(true);
-        realtime.refreshPublicRaspberryBoard().catch(() => {});
+        apriBachecaConPostRef.current(targetPostId);
       }
       if (modified) {
         window.history.replaceState({}, '', url.pathname + url.search + url.hash);
@@ -5719,8 +5781,7 @@ export default function App() {
           setModalSetupPermessiAperta(true);
         }
       } else if (msg.type === 'OPEN_BACHECA_POST') {
-        setModalBachecaVolontarioAperta(true);
-        realtime.refreshPublicRaspberryBoard().catch(() => {});
+        apriBachecaConPostRef.current(msg.data?.postId || null, msg.data?.postPreview);
       } else if (msg.type === 'RADIO_BACKGROUND_TRIGGER') {
         handleRadioWakePayload(msg.data, false);
       } else if (msg.type === 'RADIO_NOTIFICATION_CLICKED') {
@@ -5733,6 +5794,9 @@ export default function App() {
             setModalSetupPermessiAperta(true);
           }
         } else if (d.tipo === 'bacheca_post' || d.tipo === 'bacheca_corso') {
+          if (d.postPreview) {
+            applicaAnteprimaPostDaPushRef.current(d.postPreview);
+          }
           realtime.refreshPublicRaspberryBoard().catch(() => {});
         } else if (
           d.tipo === 'radio_emergency' ||
@@ -5752,6 +5816,7 @@ export default function App() {
         vhfRadioEngine.armBackgroundReception().catch(() => {});
         silentResyncPush();
         aggiornaStatoRadioBackground();
+        realtime.refreshPublicRaspberryBoard().catch(() => {});
         window.setTimeout(() => {
           checkAndReplayMissedTransmissions();
         }, 400);
@@ -6026,6 +6091,8 @@ export default function App() {
         pulsantiStrumentiAbilitati: accountSimulato.pulsantiStrumentiAbilitati || [],
         profiloCentrale: accountSimulato.profiloCentrale,
         qualifica: accountSimulato.qualifica,
+        sezioneAppartenenzaId: accountSimulato.sezioneAppartenenzaId,
+        sezioneAppartenenzaNome: accountSimulato.sezioneAppartenenzaNome,
       };
     }
     if (!utenteCentrale) return null;
@@ -6034,7 +6101,13 @@ export default function App() {
         (utenteCentrale.id && v.id === utenteCentrale.id) ||
         (utenteCentrale.pin && v.pin === utenteCentrale.pin)
     );
-    if (!currentVol) return utenteCentrale;
+    if (!currentVol) {
+      return {
+        ...utenteCentrale,
+        sezioneAppartenenzaId: undefined as string | undefined,
+        sezioneAppartenenzaNome: undefined as string | undefined,
+      };
+    }
     return {
       ...utenteCentrale,
       isAdmin: isCentraleAdmin || utenteCentrale.isAdmin,
@@ -6044,6 +6117,8 @@ export default function App() {
       pulsantiStrumentiAbilitati: currentVol.pulsantiStrumentiAbilitati ?? utenteCentrale.pulsantiStrumentiAbilitati,
       profiloCentrale: currentVol.profiloCentrale,
       qualifica: currentVol.qualifica,
+      sezioneAppartenenzaId: currentVol.sezioneAppartenenzaId,
+      sezioneAppartenenzaNome: currentVol.sezioneAppartenenzaNome,
     };
   }, [accountSimulato, utenteCentrale, volontari, isCentraleAdmin]);
 
@@ -15153,6 +15228,16 @@ KM TOTALI: ${kmTot} KM`;
           ]);
 
           if (!accountKey) return;
+
+          const isAdminOrCentrale = ruoloRef.current === 'admin' || Boolean(utenteCentraleRef.current?.id);
+          const volCorrente = !isAdminOrCentrale && volIdCorrente
+            ? volontariRef.current.find((v) => v.id === volIdCorrente)
+            : undefined;
+          const volSezioneId = String(volCorrente?.sezioneAppartenenzaId || '').trim();
+          const targetSecId = String(notif.sezioneTargetId || '').trim();
+          if (!isAdminOrCentrale && targetSecId && targetSecId !== 'tutte' && volSezioneId && volSezioneId !== targetSecId) {
+            return;
+          }
 
           if (notif.tipo === 'nuovo_corso') {
             riceviERegistraNotifica({
@@ -27232,21 +27317,36 @@ KM TOTALI: ${kmTot} KM`;
       {/* ------------------------------------------------------------- */}
       <ModalBachecaVolontario
         aperta={modalBachecaVolontarioAperta}
-        onChiudi={() => setModalBachecaVolontarioAperta(false)}
+        onChiudi={() => {
+          setModalBachecaVolontarioAperta(false);
+          setBachecaHighlightPostId(null);
+        }}
         comunicazioni={comunicazioniBacheca}
         onAggiornaComunicazioni={handleAggiornaComunicazioniBacheca}
         corsiFormazione={corsiFormazione}
         onApriDettaglioCorso={(corso) => {
           setModalBachecaVolontarioAperta(false);
+          setBachecaHighlightPostId(null);
           setCorsoSelezionatoVolontario(corso);
         }}
         volontarioNome={sessioneTurnoEffettiva.volontarioNome || (utenteCentraleLive?.nome ? `${utenteCentraleLive.nome} ${utenteCentraleLive.cognome || ''}`.trim() : 'Volontario')}
         volontarioId={sessioneTurnoEffettiva.volontarioId || utenteCentraleLive?.id}
         isAdmin={isCentraleAdmin}
         isPresidente={Boolean(volontarioLoggatoCorrente?.caricaConsiglioDirettivo?.toLowerCase().includes('presidente') || utenteCentraleLive?.caricaConsiglioDirettivo?.toLowerCase().includes('presidente'))}
-        sezioneVolontarioNome={volontarioLoggatoCorrente?.sezioneAppartenenzaNome || sediAssociative[0]?.nome}
-        sezioneVolontarioId={volontarioLoggatoCorrente?.sezioneAppartenenzaId || sediAssociative[0]?.id}
+        sezioneVolontarioNome={(() => {
+          const nomeEsplicito =
+            volontarioLoggatoCorrente?.sezioneAppartenenzaNome ||
+            utenteCentraleLive?.sezioneAppartenenzaNome;
+          if (nomeEsplicito) return nomeEsplicito;
+          const sezId =
+            volontarioLoggatoCorrente?.sezioneAppartenenzaId ||
+            utenteCentraleLive?.sezioneAppartenenzaId;
+          return sezId ? sediAssociative.find((s) => s.id === sezId)?.nome : undefined;
+        })()}
+        sezioneVolontarioId={volontarioLoggatoCorrente?.sezioneAppartenenzaId || utenteCentraleLive?.sezioneAppartenenzaId || undefined}
         sedi={sediAssociative}
+        highlightPostId={bachecaHighlightPostId}
+        onClearHighlight={() => setBachecaHighlightPostId(null)}
       />
 
       {/* ------------------------------------------------------------- */}

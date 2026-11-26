@@ -123,6 +123,10 @@ if (typeof window !== 'undefined') {
   testFirestoreConnection().catch(() => {});
 }
 
+export function isFirebaseCurrentUserSignedIn(): boolean {
+  return Boolean(auth.currentUser && auth.currentUser.emailVerified);
+}
+
 export type FirebaseAuthAccessStatus =
   | 'signed_out'
   | 'unverified'
@@ -2275,8 +2279,13 @@ export function syncPublicBoardFirestore(turni: any[], sedi: any[]): Promise<voi
       const docRef = doc(db, 'public_board', PUBLIC_BOARD_DOC_ID);
       const sanitizedTurni = sanitizeForFirestore(cleanTurni);
       const sanitizedSedi = sanitizeForFirestore(cleanSedi);
-      try {
-        const snap = await getDoc(docRef);
+      const writeOnce = async () => {
+        let snap;
+        try {
+          snap = await getDocFromServer(docRef);
+        } catch {
+          snap = await getDoc(docRef);
+        }
         if (!snap.exists()) {
           await setDoc(docRef, {
             boardId: PUBLIC_BOARD_DOC_ID,
@@ -2298,12 +2307,21 @@ export function syncPublicBoardFirestore(turni: any[], sedi: any[]): Promise<voi
             updatedAt: serverTimestamp(),
           });
         }
+      };
+      try {
+        await writeOnce();
         lastPublishedPublicBoardSig = sig;
-      } catch (err) {
+      } catch (firstErr) {
         try {
-          handleFirestoreError(err, OperationType.WRITE, `public_board/${PUBLIC_BOARD_DOC_ID}`);
-        } catch {
-          // Non bloccare il sync principale se la pubblicazione del tabellone pubblico fallisce temporaneamente
+          await writeOnce();
+          lastPublishedPublicBoardSig = sig;
+        } catch (err) {
+          console.warn('[Firebase] Sync public_board/shifts_v1 non riuscito:', err);
+          try {
+            handleFirestoreError(err, OperationType.WRITE, `public_board/${PUBLIC_BOARD_DOC_ID}`);
+          } catch {
+            // Non bloccare il sync principale se la pubblicazione del tabellone pubblico fallisce temporaneamente
+          }
         }
       }
     })
@@ -2605,7 +2623,7 @@ export function buildPublicRaspberryTimbrature(timbrature: any[]): any[] {
 }
 
 let lastPublishedPublicRaspberrySig = '';
-let publicRaspberrySyncChain: Promise<void> = Promise.resolve();
+let publicRaspberrySyncChain: Promise<boolean> = Promise.resolve(false);
 
 export function resetPublicRaspberrySyncCache(): void {
   lastPublishedPublicRaspberrySig = '';
@@ -2615,38 +2633,62 @@ export function syncPublicRaspberryBoardFirestore(
   sedi: any[],
   bacheca: any[],
   timbrature: any[],
-  config: Record<string, any>
-): Promise<void> {
+  config: Record<string, any>,
+  force = false
+): Promise<boolean> {
   const user = auth.currentUser;
   if (!user || !user.emailVerified) {
-    return Promise.resolve();
+    return Promise.resolve(false);
   }
   const cleanSedi = buildPublicBoardSedi(Array.isArray(sedi) ? sedi : []);
-  const cleanBacheca = buildPublicRaspberryBacheca(Array.isArray(bacheca) ? bacheca : []);
-  const cleanTimbrature = buildPublicRaspberryTimbrature(Array.isArray(timbrature) ? timbrature : []);
+  let cleanBacheca = buildPublicRaspberryBacheca(Array.isArray(bacheca) ? bacheca : []);
+  let cleanTimbrature = buildPublicRaspberryTimbrature(Array.isArray(timbrature) ? timbrature : []);
   const cleanConfig = config && typeof config === 'object' ? sanitizeForFirestore(config) : {};
 
   if (cleanSedi.length === 0 && cleanBacheca.length === 0 && cleanTimbrature.length === 0) {
-    return Promise.resolve();
+    return Promise.resolve(false);
+  }
+
+  // Protezione limite 1 MiB di Firestore: preserva SEMPRE i post bacheca più recenti,
+  // riducendo prima le timbrature storiche e poi eventualmente le comunicazioni più vecchie.
+  const MAX_PUBLIC_RASPBERRY_BYTES = 760_000;
+  let candidateBytes = getUtf8JsonByteLength({ cleanSedi, cleanBacheca, cleanTimbrature, cleanConfig });
+  if (candidateBytes > MAX_PUBLIC_RASPBERRY_BYTES && cleanTimbrature.length > 60) {
+    cleanTimbrature = cleanTimbrature.slice(0, 120);
+    candidateBytes = getUtf8JsonByteLength({ cleanSedi, cleanBacheca, cleanTimbrature, cleanConfig });
+  }
+  if (candidateBytes > MAX_PUBLIC_RASPBERRY_BYTES && cleanTimbrature.length > 20) {
+    cleanTimbrature = cleanTimbrature.slice(0, 40);
+    candidateBytes = getUtf8JsonByteLength({ cleanSedi, cleanBacheca, cleanTimbrature, cleanConfig });
+  }
+  if (candidateBytes > MAX_PUBLIC_RASPBERRY_BYTES && cleanBacheca.length > 40) {
+    cleanBacheca = cleanBacheca.slice(0, 60);
   }
 
   const sig = JSON.stringify({ cleanSedi, cleanBacheca, cleanTimbrature, cleanConfig });
-  if (sig === lastPublishedPublicRaspberrySig) {
-    return Promise.resolve();
+  if (!force && sig === lastPublishedPublicRaspberrySig) {
+    return Promise.resolve(true);
   }
 
-  publicRaspberrySyncChain = publicRaspberrySyncChain
-    .then(async () => {
+  const nextTask = publicRaspberrySyncChain
+    .catch(() => false)
+    .then(async (): Promise<boolean> => {
       const currentUser = auth.currentUser;
-      if (!currentUser || !currentUser.emailVerified) return;
-      if (sig === lastPublishedPublicRaspberrySig) return;
+      if (!currentUser || !currentUser.emailVerified) return false;
+      if (!force && sig === lastPublishedPublicRaspberrySig) return true;
 
       const docRef = doc(db, 'public_raspberry', PUBLIC_RASPBERRY_DOC_ID);
       const sanitizedSedi = sanitizeForFirestore(cleanSedi);
       const sanitizedBacheca = sanitizeForFirestore(cleanBacheca);
       const sanitizedTimbrature = sanitizeForFirestore(cleanTimbrature);
-      try {
-        const snap = await getDoc(docRef);
+
+      const writeOnce = async () => {
+        let snap;
+        try {
+          snap = await getDocFromServer(docRef);
+        } catch {
+          snap = await getDoc(docRef);
+        }
         if (!snap.exists()) {
           await setDoc(docRef, {
             boardId: PUBLIC_RASPBERRY_DOC_ID,
@@ -2672,18 +2714,32 @@ export function syncPublicRaspberryBoardFirestore(
             updatedAt: serverTimestamp(),
           });
         }
+      };
+
+      try {
+        await writeOnce();
         lastPublishedPublicRaspberrySig = sig;
-      } catch (err) {
+        return true;
+      } catch (firstErr) {
+        // Retry immediato rileggendo la versione autorevole dal server (risolve conflitti versione/rete)
         try {
-          handleFirestoreError(err, OperationType.WRITE, `public_raspberry/${PUBLIC_RASPBERRY_DOC_ID}`);
-        } catch {
-          // Non bloccare il sync principale se la pubblicazione Raspberry fallisce temporaneamente
+          await writeOnce();
+          lastPublishedPublicRaspberrySig = sig;
+          return true;
+        } catch (err) {
+          console.warn('[Firebase] Sync public_raspberry/display_v1 non riuscito:', err);
+          try {
+            handleFirestoreError(err, OperationType.WRITE, `public_raspberry/${PUBLIC_RASPBERRY_DOC_ID}`);
+          } catch {
+            // Non bloccare il sync principale se la pubblicazione Raspberry fallisce temporaneamente
+          }
+          return false;
         }
       }
-    })
-    .catch(() => {});
+    });
 
-  return publicRaspberrySyncChain;
+  publicRaspberrySyncChain = nextTask;
+  return nextTask;
 }
 
 async function readPublicRaspberryBoardViaRest(): Promise<{

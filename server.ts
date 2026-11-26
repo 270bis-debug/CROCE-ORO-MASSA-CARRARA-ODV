@@ -8397,6 +8397,27 @@ async function startServer() {
       return res.json({ success: true, sent: 0, expiredEndpoints: [] });
     }
     const isBachecaNotif = notifPayload.tipo === 'bacheca_post' || notifPayload.tipo === 'bacheca_corso';
+    const rawPreview = isBachecaNotif && notifPayload.postPreview && typeof notifPayload.postPreview === 'object'
+      ? notifPayload.postPreview
+      : null;
+    const postPreview = rawPreview && rawPreview.id && rawPreview.titolo
+      ? {
+          id: String(rawPreview.id).slice(0, 128),
+          titolo: String(rawPreview.titolo).slice(0, 200),
+          contenuto: String(rawPreview.contenuto || '').slice(0, 600),
+          sezioneTargetId: String(rawPreview.sezioneTargetId || 'tutte').slice(0, 128),
+          sezioneTargetNome: String(rawPreview.sezioneTargetNome || 'Tutte le Sezioni Territoriali').slice(0, 140),
+          priorita: String(rawPreview.priorita || 'Ordinaria').slice(0, 32),
+          categoria: String(rawPreview.categoria || 'Comunicazione Generale').slice(0, 64),
+          dataPubblicazione: String(rawPreview.dataPubblicazione || '').slice(0, 24),
+          oraPubblicazione: String(rawPreview.oraPubblicazione || '').slice(0, 16),
+          autore: String(rawPreview.autore || 'Direzione').slice(0, 100),
+          attiva: true,
+          evidenziata: Boolean(rawPreview.evidenziata),
+          richiedePresaVisione: Boolean(rawPreview.richiedePresaVisione),
+          updatedAt: typeof rawPreview.updatedAt === 'number' ? rawPreview.updatedAt : Date.now(),
+        }
+      : undefined;
     const serializedPayload = JSON.stringify({
       title: String(notifPayload.title || '📻 RADIO CROCE ORO').slice(0, 140),
       body: String(notifPayload.body || 'Comunicazione radio in arrivo.').slice(0, 260),
@@ -8405,6 +8426,7 @@ async function startServer() {
       soundType: String(notifPayload.soundType || 'cicalino'),
       tipo: String(notifPayload.tipo || 'radio_ptt'),
       postId: String(notifPayload.postId || '').slice(0, 128),
+      ...(postPreview ? { postPreview } : {}),
       channelId: String(notifPayload.channelId || 'general'),
       transmissionId: String(notifPayload.transmissionId || ''),
       speakerName: String(notifPayload.speakerName || ''),
