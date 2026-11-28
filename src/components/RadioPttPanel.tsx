@@ -186,6 +186,9 @@ export const RadioPttPanel: React.FC<RadioPttPanelProps> = ({
     txCodec: vhfRadioEngine.getActiveTxCodec(),
     rxCodec: vhfRadioEngine.getLastRxCodec(),
   });
+  const [continuousShiftListen, setContinuousShiftListen] = useState<boolean>(
+    vhfRadioEngine.isContinuousShiftListenEnabled()
+  );
 
   const isAdmin = ruoloContext === 'admin';
 
@@ -300,10 +303,14 @@ export const RadioPttPanel: React.FC<RadioPttPanelProps> = ({
     const unsubCodec = vhfRadioEngine.subscribeCodecInfo((info) => {
       setCodecInfo(info);
     });
+    const unsubContinuous = vhfRadioEngine.subscribeContinuousShiftListen((enabled) => {
+      setContinuousShiftListen(enabled);
+    });
 
     return () => {
       unsubVu();
       unsubCodec();
+      unsubContinuous();
       window.removeEventListener('pointerup', handleWindowPointerUp, true);
       window.removeEventListener('pointercancel', handleWindowPointerUp, true);
       window.removeEventListener('touchend', handleWindowTouchEnd, true);
@@ -998,6 +1005,37 @@ export const RadioPttPanel: React.FC<RadioPttPanelProps> = ({
                   {bgRadioArmed && bgPushSubscribed ? '✓ Attivo' : 'Attiva Ora'}
                 </button>
               </div>
+            </div>
+            {/* Toggle opzionale "Ascolto Continuo in Turno" (default OFF = zero fruscio/zero scheda media a riposo) */}
+            <div className="pt-1.5 border-t border-slate-800/80 flex items-center justify-between gap-2 flex-wrap">
+              <div className="min-w-0">
+                <div className="text-[10.5px] font-bold text-slate-200 flex items-center gap-1.5">
+                  <span
+                    className={`w-2 h-2 rounded-full shrink-0 ${
+                      continuousShiftListen ? 'bg-cyan-400 animate-pulse' : 'bg-slate-600'
+                    }`}
+                  />
+                  <span>Ascolto Radio Continuo in Turno</span>
+                </div>
+                <div className="text-[9.5px] text-slate-400 leading-tight">
+                  {continuousShiftListen
+                    ? 'Attivo: mantiene sveglio audio e schermo durante il servizio (puoi spegnerlo a fine turno).'
+                    : 'Spento di default (zero consumo/fruscio a riposo). Attivalo solo durante il turno se vuoi ricezione continua a schermo bloccato.'}
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  vhfRadioEngine.setContinuousShiftListen(!continuousShiftListen).catch(() => {});
+                }}
+                className={`px-2.5 py-1 rounded-lg text-[10px] font-black uppercase tracking-wide cursor-pointer border transition-colors shrink-0 ${
+                  continuousShiftListen
+                    ? 'bg-cyan-500/25 hover:bg-cyan-500/35 text-cyan-200 border-cyan-400/60'
+                    : 'bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-700'
+                }`}
+              >
+                {continuousShiftListen ? '● In Turno ON' : 'Attiva in Turno'}
+              </button>
             </div>
             {bgInIframe && !bgPushSubscribed && (
               <div className="text-[10px] text-amber-300/90 leading-snug">

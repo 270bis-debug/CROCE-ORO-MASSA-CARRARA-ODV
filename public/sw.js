@@ -4,7 +4,7 @@
 // 2. Strategia Network-First su navigazione per caricare SEMPRE l'ultima release pubblicata
 // 3. Notifiche Push in Background ad Alta Priorità e Risveglio Schermo Bloccato
 
-const CACHE_NAME = 'croce-oro-cache-v5.3.6';
+const CACHE_NAME = 'croce-oro-cache-v5.4.0';
 const MANDATORY_PERMS_REVISION = 'radio-bg-audio-push-v1';
 const MANDATORY_PERMS_META_CACHE = 'croce-oro-perm-revisions-v1';
 
@@ -240,14 +240,17 @@ self.addEventListener('push', (event) => {
     data.tipo === 'bacheca_post' ||
     data.tipo === 'bacheca_corso' ||
     data.tipo === 'bacheca_commento';
+  const isTurno = data.tipo === 'turno_update';
+  const isMissionDispatch = data.tipo === 'mission_dispatch';
+  const isMissionRing = data.tipo === 'mission_ring';
   const isRadioEmergency = data.tipo === 'radio_emergency' || Boolean(data.isEmergency);
   const isRadioChannelOn = data.tipo === 'radio_channel_on';
   const isRadioPtt = data.tipo === 'radio_ptt' || data.tipo === 'radio_message' || isRadioChannelOn;
 
-  // Schema di vibrazione distinto per Bacheca, Emergenza Radio, Attivazione Canale, PTT, Aggiornamento Permessi o Missione
+  // Schema di vibrazione distinto per Bacheca, Turni, Emergenza Radio, Attivazione Canale, PTT, Aggiornamento Permessi o Missione
   const vibrationPattern = isRadioEmergency
     ? [900, 180, 900, 180, 1200, 250, 1200, 250, 1600]
-    : isBacheca
+    : isBacheca || isTurno
     ? [250, 100, 250]
     : isMandatoryPermsUpdate
     ? [400, 150, 400, 150, 600]
@@ -255,7 +258,7 @@ self.addEventListener('push', (event) => {
     ? [360, 110, 360, 110, 520]
     : isRadioPtt
     ? [260, 90, 320, 90, 260]
-    : data.urgenza === 'ROSSO'
+    : data.urgenza === 'ROSSO' || isMissionRing
     ? [1000, 300, 1000, 300, 1500, 400, 1500, 400, 2000]
     : [600, 200, 600, 200, 1000, 300, 1000];
 
@@ -263,9 +266,11 @@ self.addEventListener('push', (event) => {
     ? '/?permessiObbligatori=radio_bg'
     : isBacheca
       ? `/?apriBacheca=1&postId=${encodeURIComponent(data.postId || '')}`
-      : isRadioEmergency || isRadioPtt
-        ? `/?radioWake=1&radioTipo=${encodeURIComponent(data.tipo || (isRadioEmergency ? 'radio_emergency' : 'radio_ptt'))}&channelId=${encodeURIComponent(data.channelId || 'general')}&transmissionId=${encodeURIComponent(data.transmissionId || '')}&source=${encodeURIComponent(data.speakerName || data.source || 'Radio')}`
-        : `/?ring=1&soundType=${data.soundType || 'telefono'}&source=${encodeURIComponent(data.source || 'Centrale')}&codice=${data.codice || ''}`;
+      : isTurno
+        ? '/?apriTurni=1'
+        : isRadioEmergency || isRadioPtt
+          ? `/?radioWake=1&radioTipo=${encodeURIComponent(data.tipo || (isRadioEmergency ? 'radio_emergency' : 'radio_ptt'))}&channelId=${encodeURIComponent(data.channelId || 'general')}&transmissionId=${encodeURIComponent(data.transmissionId || '')}&source=${encodeURIComponent(data.speakerName || data.source || 'Radio')}`
+          : `/?ring=1&soundType=${data.soundType || 'telefono'}&source=${encodeURIComponent(data.source || 'Centrale')}&codice=${data.codice || ''}`;
 
   const actions = isMandatoryPermsUpdate
     ? [
@@ -274,6 +279,10 @@ self.addEventListener('push', (event) => {
     : isBacheca
     ? [
         { action: 'open_bacheca', title: data.tipo === 'bacheca_commento' ? '💬 APRI POST E COMMENTI' : '📢 APRI AVVISO' }
+      ]
+    : isTurno
+    ? [
+        { action: 'open_turni', title: '📅 APRI TABELLONE TURNI' }
       ]
     : isRadioEmergency
     ? [
@@ -298,11 +307,19 @@ self.addEventListener('push', (event) => {
     vibrate: vibrationPattern,
     tag: isBacheca
       ? (data.tag || `bacheca-${data.postId || Date.now()}`)
+      : isTurno
+      ? (data.tag || `turno-${data.turnoId || Date.now()}`)
       : isRadioPtt && data.channelId
       ? `radio-ch-${data.channelId}`
+      : isMissionDispatch
+      ? (data.tag || `mission-${data.codice || 'dispatch'}`)
       : (data.tag || 'dispatch') + '-' + Date.now(),
     renotify: true,
-    requireInteraction: isBacheca ? data.urgenza === 'ROSSO' : (isRadioEmergency || isRadioChannelOn || !isRadioPtt),
+    requireInteraction: isBacheca
+      ? data.urgenza === 'ROSSO'
+      : isTurno
+      ? false
+      : (isRadioEmergency || isRadioChannelOn || isMissionRing || isMissionDispatch || !isRadioPtt),
     silent: false,
     data: {
       url: targetUrl,
@@ -312,27 +329,43 @@ self.addEventListener('push', (event) => {
     actions
   };
 
-  const notifyClients = self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clients) => {
-    clients.forEach((client) => {
-      client.postMessage({
-        type: 'REMOTE_PUSH_RECEIVED',
-        data: data
-      });
-      if (isRadioEmergency || isRadioPtt) {
+  // Deduplica anti-doppione: invia SEMPRE il messaggio in tempo reale alle finestre aperte,
+  // ma evita di mostrare un secondo banner OS quando l'utente sta già guardando l'app in primo piano
+  // (per avvisi non d'emergenza come Bacheca, Turni, PTT ordinario e Missione già gestita in-app).
+  // Emergenze Radio, Squilli di Allarme e app in background/chiusa mostrano SEMPRE la notifica OS.
+  const handlePushPromise = self.clients
+    .matchAll({ type: 'window', includeUncontrolled: true })
+    .then((clients) => {
+      let hasFocusedVisibleClient = false;
+      clients.forEach((client) => {
+        if (client.visibilityState === 'visible' && client.focused === true) {
+          hasFocusedVisibleClient = true;
+        }
         client.postMessage({
-          type: 'RADIO_BACKGROUND_TRIGGER',
+          type: 'REMOTE_PUSH_RECEIVED',
           data: data
         });
-      }
-    });
-  });
+        if (isRadioEmergency || isRadioPtt) {
+          client.postMessage({
+            type: 'RADIO_BACKGROUND_TRIGGER',
+            data: data
+          });
+        }
+      });
 
-  event.waitUntil(
-    Promise.all([
-      notifyClients,
-      self.registration.showNotification(data.title, options)
-    ])
-  );
+      const suppressOsBanner =
+        hasFocusedVisibleClient &&
+        !isMandatoryPermsUpdate &&
+        !isRadioEmergency &&
+        !isMissionRing;
+
+      if (suppressOsBanner) {
+        return;
+      }
+      return self.registration.showNotification(data.title, options);
+    });
+
+  event.waitUntil(handlePushPromise);
 });
 
 // Click sulla notifica da blocco schermo o tendina notifiche
@@ -357,6 +390,9 @@ self.addEventListener('notificationclick', (event) => {
     notifData.tipo === 'bacheca_post' ||
     notifData.tipo === 'bacheca_corso' ||
     notifData.tipo === 'bacheca_commento';
+  const isTurnoNotif =
+    event.action === 'open_turni' ||
+    notifData.tipo === 'turno_update';
   const isRadioNotif =
     event.action === 'open_radio' ||
     notifData.tipo === 'radio_emergency' ||
@@ -370,6 +406,8 @@ self.addEventListener('notificationclick', (event) => {
       ? '/?permessiObbligatori=radio_bg'
       : isBachecaNotif
       ? `/?apriBacheca=1&postId=${encodeURIComponent(notifData.postId || '')}`
+      : isTurnoNotif
+      ? '/?apriTurni=1'
       : isRadioNotif
       ? '/?radioWake=1'
       : '/?ring=1');
@@ -383,6 +421,8 @@ self.addEventListener('notificationclick', (event) => {
               ? 'OPEN_MANDATORY_PERMISSIONS_UPDATE'
               : isBachecaNotif
               ? 'OPEN_BACHECA_POST'
+              : isTurnoNotif
+              ? 'OPEN_TURNI'
               : isRadioNotif
               ? 'RADIO_NOTIFICATION_CLICKED'
               : 'FOCUS_WITH_RING',

@@ -66,3 +66,16 @@ if (isImportante) {
 const newVersion = `${prima}.${penultima}.${ultima}`;
 console.log(`\n📦 Incremento versione: ${currentVersion} -> ${newVersion} (${isImportante ? 'IMPORTANTE/PROFONDA' : 'DI POCA IMPORTANZA'})`);
 syncAllFilesToVersion(newVersion);
+
+// Verifica se esiste già una voce di changelog filtrata per profilo in src/data/appReleaseNotes.ts
+try {
+  const releaseNotesPath = path.join(ROOT, 'src/data/appReleaseNotes.ts');
+  if (fs.existsSync(releaseNotesPath)) {
+    const rnContent = fs.readFileSync(releaseNotesPath, 'utf-8');
+    if (!rnContent.includes(`version: '${newVersion}'`) && !rnContent.includes(`version: "${newVersion}"`)) {
+      console.log(`ℹ️  Promemoria Bacheca: aggiungi la voce version: '${newVersion}' in src/data/appReleaseNotes.ts per pubblicare automaticamente le novità filtrate per profilo.`);
+    } else {
+      console.log(`  ✓ Nota rilascio Bacheca v${newVersion} presente in src/data/appReleaseNotes.ts`);
+    }
+  }
+} catch {}

@@ -218,6 +218,7 @@ const PaginaWebResetPinStandalone = lazy(() =>
 import { isAccessoDaWeb } from './utils/accessoWeb';
 import { ModalSetupPermessiIniziali } from './components/ModalSetupPermessiIniziali';
 import { PWAInstallButton } from './components/PWAInstallButton';
+import { ModalGuidaInstallazioneApp } from './components/ModalGuidaInstallazioneApp';
 import { BannerAggiornamentoPWA } from './components/BannerAggiornamentoPWA';
 import { ModalFirmaOperatore } from './components/ModalFirmaOperatore';
 import {
@@ -351,6 +352,12 @@ const LazyViewFallback: React.FC<{ label?: string }> = ({ label = 'Caricamento m
   </div>
 );
 import { ModalBachecaVolontario } from './components/ModalBachecaVolontario';
+import {
+  buildAccountReleaseContext,
+  buildPersonalizedReleaseBachecaPosts,
+  getAutoReleaseNotePostId,
+  mergeComunicazioniConReleaseNotes,
+} from './data/appReleaseNotes';
 import { ModalCentroNotifiche } from './components/ModalCentroNotifiche';
 import { ModalNuovoServizioAutonomo, DatiNuovoServizioAutonomo } from './components/ModalNuovoServizioAutonomo';
 import { ModalCorsoVolontario } from './components/ModalCorsoVolontario';
@@ -2432,7 +2439,8 @@ export default function App() {
       } catch {}
     }
     const deletedSet = new Set(nextDeleted);
-    const norm = normalizzaComunicazioniBacheca(nuove).filter((c) => !deletedSet.has(c.id));
+    // Non persistere mai in cloud/localStorage gli avvisi di rilascio generati dinamicamente per singolo profilo
+    const norm = normalizzaComunicazioniBacheca(nuove.filter((c) => !c.isAutoReleaseNote)).filter((c) => !deletedSet.has(c.id));
     setComunicazioniBacheca(norm);
     try {
       localStorage.setItem('CROCE_ORO_BACHECA_COMUNICAZIONI', JSON.stringify(norm));
@@ -2463,10 +2471,6 @@ export default function App() {
   const corsiInBachecaCount = useMemo(() => {
     return getCorsiVisibiliInBacheca(corsiFormazione).length;
   }, [corsiFormazione]);
-
-  const totaleElementiBachecaAttivi = useMemo(() => {
-    return comunicazioniBacheca.filter(c => c.attiva).length + corsiInBachecaCount;
-  }, [comunicazioniBacheca, corsiInBachecaCount]);
 
   // 14. Contatti Esterni (Fornitori, Officine, Clienti/Debitori, Donatori da Intervento)
   const [contatti, setContatti] = useState<ContattoEsterno[]>(() => {
@@ -3920,6 +3924,8 @@ export default function App() {
 
   // Modale Profilo Account (accessibile dal menù Strumenti per ogni account)
   const [modalProfiloAccountAperta, setModalProfiloAccountAperta] = useState<boolean>(false);
+  // Modale Guida Installazione App (Apple & Android • Chrome & Safari + PDF)
+  const [modalGuidaInstallazioneAperta, setModalGuidaInstallazioneAperta] = useState<boolean>(false);
 
   // Modale di Setup Permessi Iniziali (mostrata SOLO alla primissima installazione assoluta sul dispositivo)
   const [modalSetupPermessiAperta, setModalSetupPermessiAperta] = useState<boolean>(() => {
@@ -3965,6 +3971,11 @@ export default function App() {
         url.searchParams.delete('postId');
         modified = true;
         apriBachecaConPostRef.current(targetPostId);
+      }
+      if (url.searchParams.get('apriTurni') === '1') {
+        url.searchParams.delete('apriTurni');
+        modified = true;
+        setModalTabelloneTurniVolontario(true);
       }
       if (modified) {
         window.history.replaceState({}, '', url.pathname + url.search + url.hash);
@@ -5816,6 +5827,8 @@ export default function App() {
         }
       } else if (msg.type === 'OPEN_BACHECA_POST') {
         apriBachecaConPostRef.current(msg.data?.postId || null, msg.data?.postPreview);
+      } else if (msg.type === 'OPEN_TURNI') {
+        setModalTabelloneTurniVolontario(true);
       } else if (msg.type === 'RADIO_BACKGROUND_TRIGGER') {
         handleRadioWakePayload(msg.data, false);
       } else if (msg.type === 'RADIO_NOTIFICATION_CLICKED') {
@@ -5831,6 +5844,9 @@ export default function App() {
           if (d.postPreview) {
             applicaAnteprimaPostDaPushRef.current(d.postPreview);
           }
+          realtime.refreshPublicRaspberryBoard().catch(() => {});
+        } else if (d.tipo === 'mission_dispatch' || d.tipo === 'mission_ring' || d.tipo === 'turno_update') {
+          realtime.ensureConnected();
           realtime.refreshPublicRaspberryBoard().catch(() => {});
         } else if (
           d.tipo === 'radio_emergency' ||
@@ -5943,19 +5959,63 @@ export default function App() {
   }, [aggiornaStatoRadioBackground]);
 
   // Verifica centralizzata se un volontario è attualmente loggato su qualsiasi terminale
+  // Mantiene vivo lo stato durante l'intero turno (anche con app in background), ma scade automaticamente
+  // dopo 18 ore senza alcun heartbeat per evitare "sessioni fantasma" dimenticate aperte.
   const isVolontarioLoggatoLive = useCallback((v: Volontario): boolean => {
     if (sessioneTurno.attivo && sessioneTurno.volontarioId === v.id) return true;
     if (utenteCentrale?.id && utenteCentrale.id === v.id) return true;
+    const SESSION_MAX_AGE_MS = 18 * 60 * 60 * 1000;
+    const now = Date.now();
     const sessCloud = loggedSessions[v.id];
-    if (sessCloud) {
-      const sessTs = typeof sessCloud.updatedAt === 'number' && Number.isFinite(sessCloud.updatedAt) ? sessCloud.updatedAt : 0;
-      const volTs = typeof v.loggatoUpdatedAt === 'number' && Number.isFinite(v.loggatoUpdatedAt) ? v.loggatoUpdatedAt : 0;
-      if (sessTs >= volTs) {
-        return Boolean(sessCloud.loggato);
-      }
+    const sessTs = sessCloud && typeof sessCloud.updatedAt === 'number' && Number.isFinite(sessCloud.updatedAt) ? sessCloud.updatedAt : 0;
+    const volTs = typeof v.loggatoUpdatedAt === 'number' && Number.isFinite(v.loggatoUpdatedAt) ? v.loggatoUpdatedAt : 0;
+
+    if (sessCloud && sessTs >= volTs) {
+      if (!sessCloud.loggato) return false;
+      if (sessTs > 0 && now - sessTs > SESSION_MAX_AGE_MS) return false;
+      return true;
     }
-    return Boolean(v.loggato);
+    if (!v.loggato) return false;
+    if (volTs > 0 && now - volTs > SESSION_MAX_AGE_MS) return false;
+    return true;
   }, [loggedSessions, sessioneTurno.attivo, sessioneTurno.volontarioId, utenteCentrale?.id]);
+
+  // Screen Wake Lock automatico durante una missione attiva (mantiene vivo GPS e Radio in ambulanza, rilasciato a fine servizio)
+  const hasActiveMissionWakeLock = Boolean(missione && !missione.archiviata && !missione.annullata);
+  useEffect(() => {
+    if (!hasActiveMissionWakeLock || typeof navigator === 'undefined') return;
+    const wl = (navigator as any).wakeLock;
+    if (!wl || typeof wl.request !== 'function') return;
+    let sentinel: any = null;
+    let disposed = false;
+
+    const acquire = async () => {
+      if (disposed || document.visibilityState !== 'visible') return;
+      if (sentinel && !sentinel.released) return;
+      try {
+        sentinel = await wl.request('screen');
+      } catch {}
+    };
+
+    const onVis = () => {
+      if (document.visibilityState === 'visible') {
+        acquire().catch(() => {});
+      }
+    };
+
+    acquire().catch(() => {});
+    document.addEventListener('visibilitychange', onVis);
+    return () => {
+      disposed = true;
+      document.removeEventListener('visibilitychange', onVis);
+      if (sentinel) {
+        try {
+          sentinel.release?.();
+        } catch {}
+        sentinel = null;
+      }
+    };
+  }, [hasActiveMissionWakeLock]);
 
   // Elenco volontari con flag `loggato` sempre riconciliato live con `loggedSessions` (usato da modali e riepiloghi)
   const volontariConStatoLive = useMemo(() => {
@@ -6974,6 +7034,134 @@ export default function App() {
       if (prima) setSubSezioneCentrale(prima);
     }
   }, [centraleAllowedSubtabs, subSezioneCentrale]);
+
+  // ---------------------------------------------------------------------------
+  // COMUNICAZIONI AUTOMATICHE AGGIORNAMENTO APP IN BACHECA (FILTRATE PER PROFILO)
+  // ---------------------------------------------------------------------------
+  const accountReleaseContext = useMemo(() => {
+    const activeVol = volontarioLoggatoCorrente || null;
+    const activeCen = utenteCentraleLive || null;
+    const accountId =
+      (ruolo === 'admin' ? activeCen?.id : sessioneTurnoEffettiva.volontarioId) ||
+      activeVol?.id ||
+      activeCen?.id ||
+      (ruolo === 'admin' ? 'admin-centrale-root' : '');
+    const isOpCentrale = Boolean(
+      isCentraleAdmin ||
+        ruolo === 'admin' ||
+        activeCen?.profiloCentrale ||
+        activeVol?.profiloCentrale ||
+        isQualificaOperatoreCentrale(activeCen?.qualifica || activeVol?.qualifica) ||
+        sezioniAbilitateUtente.includes('centrale')
+    );
+    const carica = activeCen?.caricaConsiglioDirettivo || activeVol?.caricaConsiglioDirettivo || '';
+    return buildAccountReleaseContext({
+      accountId,
+      ruolo,
+      isAdmin: Boolean(isCentraleAdmin),
+      isOperatoreCentrale: isOpCentrale,
+      isVolontarioAttivo: Boolean(sessioneTurnoEffettiva.attivo || activeVol),
+      caricaConsiglioDirettivo: carica,
+      sezioniAbilitate: sezioniAbilitateUtente,
+    });
+  }, [
+    ruolo,
+    isCentraleAdmin,
+    volontarioLoggatoCorrente,
+    utenteCentraleLive,
+    sessioneTurnoEffettiva.attivo,
+    sessioneTurnoEffettiva.volontarioId,
+    sezioniAbilitateUtente,
+  ]);
+
+  const [dismissedReleaseNoteIds, setDismissedReleaseNoteIds] = useState<string[]>([]);
+
+  useEffect(() => {
+    if (!accountReleaseContext.isAuthenticated || !accountReleaseContext.accountKey) {
+      setDismissedReleaseNoteIds([]);
+      return;
+    }
+    try {
+      const raw = localStorage.getItem(`CROCE_ORO_DISMISSED_RELEASE_NOTES_${accountReleaseContext.accountKey}`);
+      const parsed = raw ? JSON.parse(raw) : [];
+      setDismissedReleaseNoteIds(Array.isArray(parsed) ? parsed.filter((x) => typeof x === 'string') : []);
+    } catch {
+      setDismissedReleaseNoteIds([]);
+    }
+  }, [accountReleaseContext.isAuthenticated, accountReleaseContext.accountKey]);
+
+  const handleDismissAutoReleaseNote = useCallback(
+    (postId: string) => {
+      if (!postId || !accountReleaseContext.accountKey) return;
+      setDismissedReleaseNoteIds((prev) => {
+        if (prev.includes(postId)) return prev;
+        const next = [...prev, postId].slice(-50);
+        try {
+          localStorage.setItem(`CROCE_ORO_DISMISSED_RELEASE_NOTES_${accountReleaseContext.accountKey}`, JSON.stringify(next));
+        } catch {}
+        return next;
+      });
+    },
+    [accountReleaseContext.accountKey]
+  );
+
+  const comunicazioniBachecaVisibili = useMemo(
+    () =>
+      mergeComunicazioniConReleaseNotes(
+        comunicazioniBacheca,
+        accountReleaseContext,
+        dismissedReleaseNoteIds,
+        APP_VERSION
+      ),
+    [comunicazioniBacheca, accountReleaseContext, dismissedReleaseNoteIds]
+  );
+
+  const totaleElementiBachecaAttivi = useMemo(() => {
+    return comunicazioniBachecaVisibili.filter((c) => c.attiva).length + corsiInBachecaCount;
+  }, [comunicazioniBachecaVisibili, corsiInBachecaCount]);
+
+  // Notifica in-app una tantum per la versione corrente SOLO se questo account ha modifiche visibili
+  useEffect(() => {
+    if (!accountReleaseContext.isAuthenticated || !accountReleaseContext.accountKey) return;
+    const currentPostId = getAutoReleaseNotePostId(APP_VERSION);
+    if (dismissedReleaseNoteIds.includes(currentPostId)) return;
+
+    const releasePosts = buildPersonalizedReleaseBachecaPosts(
+      accountReleaseContext,
+      dismissedReleaseNoteIds,
+      APP_VERSION
+    );
+    const currentPost = releasePosts.find((p) => p.id === currentPostId);
+    if (!currentPost) return; // Nessuna modifica visibile per questo specifico account -> nessuna notifica
+
+    const seenKey = `CROCE_ORO_SEEN_RELEASE_NOTIF_${accountReleaseContext.accountKey}_${APP_VERSION}`;
+    try {
+      if (localStorage.getItem(seenKey) === '1') return;
+    } catch {}
+
+    const dedupKey = `app-release-note:${APP_VERSION}:${accountReleaseContext.accountKey}`;
+    const alreadyProcessed =
+      processedNotifKeysRef.current.has(dedupKey) ||
+      notificheRicevuteAccountRef.current.some((n) => n.dedupKey === dedupKey);
+    if (alreadyProcessed) {
+      try {
+        localStorage.setItem(seenKey, '1');
+      } catch {}
+      return;
+    }
+
+    try {
+      localStorage.setItem(seenKey, '1');
+    } catch {}
+
+    riceviERegistraNotifica({
+      categoria: 'bacheca',
+      titolo: `✨ App aggiornata alla v${APP_VERSION}`,
+      messaggio: `Scopri in Bacheca le novità della versione ${APP_VERSION} disponibili per il tuo profilo (${accountReleaseContext.audienceLabel}).`,
+      linkAzione: { tipo: 'bacheca', idRiferimento: currentPost.id },
+      dedupKey,
+    });
+  }, [accountReleaseContext, dismissedReleaseNoteIds]);
 
 
 
@@ -17272,6 +17460,18 @@ KM TOTALI: ${kmTot} KM`;
                           <span>Autorizzazioni Dispositivo</span>
                         </button>
 
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setMenuHeaderAzioniAperto(false);
+                            setModalGuidaInstallazioneAperta(true);
+                          }}
+                          className="w-full px-2.5 py-2 rounded-lg bg-slate-900 hover:bg-slate-800 text-sky-300 border border-sky-500/30 font-bold text-xs flex items-center gap-2 cursor-pointer"
+                        >
+                          <Smartphone className="w-4 h-4 text-amber-400 shrink-0" />
+                          <span>Guida Installazione App (PDF)</span>
+                        </button>
+
                         {puoVedereBtnWebPc && (
                           <button
                             type="button"
@@ -17699,6 +17899,18 @@ KM TOTALI: ${kmTot} KM`;
                       <span>Autorizzazioni</span>
                     </button>
 
+                    <button
+                      type="button"
+                      onClick={() => setModalGuidaInstallazioneAperta(true)}
+                      className={`px-2 py-1 rounded-lg font-bold text-[11px] flex items-center gap-1 cursor-pointer border whitespace-nowrap ${
+                        isWeb ? 'bg-sky-100 hover:bg-sky-200 text-sky-950 border-sky-400' : 'bg-sky-500/15 hover:bg-sky-500/25 text-sky-300 border-sky-500/40'
+                      }`}
+                      title="Guida installazione App su Apple e Android (Chrome e Safari) + PDF"
+                    >
+                      <Smartphone className="w-3 h-3 shrink-0" />
+                      <span>Guida App</span>
+                    </button>
+
                     {ruolo === 'admin' && adminSection === 'centrale' && (
                       <div className="flex items-center p-0.5 bg-slate-950 rounded-lg border border-slate-800 text-[10.5px]">
                         <button
@@ -17937,7 +18149,7 @@ KM TOTALI: ${kmTot} KM`;
         {/* VISTA 9: GESTIONE BACHECA DI SEZIONE / COMUNICAZIONI AI VOLONTARI */}
         {ruolo === 'admin' && adminSection === 'bacheca' && (
           <SezioneBacheca
-            comunicazioni={comunicazioniBacheca}
+            comunicazioni={comunicazioniBachecaVisibili}
             onAggiornaComunicazioni={handleAggiornaComunicazioniBacheca}
             corsiFormazione={corsiFormazione}
             sedi={sediAssociative}
@@ -17948,6 +18160,7 @@ KM TOTALI: ${kmTot} KM`;
             isPresidente={Boolean(utenteCentrale?.caricaConsiglioDirettivo?.toLowerCase().includes('presidente'))}
             onNotificaRadio={aggiungiNotifica}
             allowedSubtabs={isCentraleAdmin ? null : getAllowedSubtabsForDatabase(utenteCentraleLive, 'bacheca')}
+            onDismissAutoReleaseNote={handleDismissAutoReleaseNote}
           />
         )}
 
@@ -25454,6 +25667,12 @@ KM TOTALI: ${kmTot} KM`;
         );
       })()}
 
+      {/* Modale Guida Installazione App (Apple & Android • Google Chrome & Safari + PDF) */}
+      <ModalGuidaInstallazioneApp
+        isOpen={modalGuidaInstallazioneAperta}
+        onClose={() => setModalGuidaInstallazioneAperta(false)}
+      />
+
       {/* Modale Diagnostica e Stato Sincronizzazione Cloud Multi-Device */}
       <ModalStatoConnessione
         isOpen={modalConnessioneAperta}
@@ -27382,7 +27601,7 @@ KM TOTALI: ${kmTot} KM`;
           setModalBachecaVolontarioAperta(false);
           setBachecaHighlightPostId(null);
         }}
-        comunicazioni={comunicazioniBacheca}
+        comunicazioni={comunicazioniBachecaVisibili}
         onAggiornaComunicazioni={handleAggiornaComunicazioniBacheca}
         corsiFormazione={corsiFormazione}
         onApriDettaglioCorso={(corso) => {
@@ -27414,6 +27633,7 @@ KM TOTALI: ${kmTot} KM`;
         sedi={sediAssociative}
         highlightPostId={bachecaHighlightPostId}
         onClearHighlight={() => setBachecaHighlightPostId(null)}
+        onDismissAutoReleaseNote={handleDismissAutoReleaseNote}
       />
 
       {/* ------------------------------------------------------------- */}

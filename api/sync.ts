@@ -1,5 +1,6 @@
 // Vercel Serverless Function: GET /api/sync
 import type { IncomingMessage, ServerResponse } from 'http';
+import { applyStrictCors } from '../server-lib/apiAuth';
 
 export default function handler(
   req: IncomingMessage & { method?: string },
@@ -7,12 +8,10 @@ export default function handler(
 ) {
   res.setHeader('Content-Type', 'application/json; charset=utf-8');
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  const originAllowed = applyStrictCors(req, res, 'GET, POST, OPTIONS');
 
   if (req.method === 'OPTIONS') {
-    res.statusCode = 204;
+    res.statusCode = originAllowed ? 204 : 403;
     return res.end();
   }
 

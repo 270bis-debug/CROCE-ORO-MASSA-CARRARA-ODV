@@ -14,12 +14,14 @@ import {
   Users,
   AlertCircle,
   Download,
+  Smartphone,
 } from 'lucide-react';
 import { SedeAssociativaCompleta } from '../types/adminTypes';
 import { Volontario } from './DatabaseVolontariModal';
 import {
   CATEGORIE_DOCUMENTI_SOP,
   CategoriaDocumentoSop,
+  DOC_ID_GUIDA_INSTALLAZIONE_APP,
   DOCUMENTI_SOP_UPDATED_EVENT,
   DocumentoAssociativoSop,
   getDocumentiSop,
@@ -28,6 +30,8 @@ import {
 import { leggiAllegatoDocumentoSop } from '../utils/fotoCompressione';
 import { formatDateTimeItaly, formatISODateItaly } from '../utils/italianTime';
 import { realtime } from '../services/realtime';
+import { scaricaGuidaInstallazionePdf } from '../utils/pdfGuidaInstallazioneApp';
+import { ModalGuidaInstallazioneApp } from './ModalGuidaInstallazioneApp';
 
 interface ModalArchivioDocumentiSopProps {
   aperta: boolean;
@@ -57,6 +61,7 @@ export const ModalArchivioDocumentiSop: React.FC<ModalArchivioDocumentiSopProps>
   const [mostraFormNuovo, setMostraFormNuovo] = useState(false);
   const [confermaEliminaId, setConfermaEliminaId] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<string | null>(null);
+  const [modalGuidaInterattivaAperta, setModalGuidaInterattivaAperta] = useState(false);
 
   // Form nuovo documento
   const [fTitolo, setFTitolo] = useState('');
@@ -458,6 +463,40 @@ export const ModalArchivioDocumentiSop: React.FC<ModalArchivioDocumentiSopProps>
                 </div>
               )}
 
+              {docSelezionato.id === DOC_ID_GUIDA_INSTALLAZIONE_APP && (
+                <div className="p-3 rounded-xl bg-gradient-to-r from-sky-950/80 via-slate-900 to-amber-950/50 border border-amber-400/50 flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <FileText className="w-5 h-5 text-amber-400 shrink-0" />
+                    <div className="min-w-0">
+                      <span className="text-xs font-black text-white block truncate">
+                        Guida_Installazione_App_Croce_Oro.pdf
+                      </span>
+                      <span className="text-[10.5px] text-slate-300 block">
+                        Apple (Safari &amp; Chrome) + Android (Chrome) • Link ufficiale incluso
+                      </span>
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => setModalGuidaInterattivaAperta(true)}
+                      className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-black uppercase inline-flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <Smartphone className="w-3.5 h-3.5" />
+                      <span>Guida Interattiva</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => scaricaGuidaInstallazionePdf()}
+                      className="px-3 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-500 text-white text-xs font-black uppercase inline-flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      <span>Scarica PDF</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+
               {docSelezionato.allegatoDataUrl && (
                 <div className="p-3 rounded-xl bg-slate-900 border border-sky-500/40 flex flex-wrap items-center justify-between gap-2">
                   <div className="flex items-center gap-2 min-w-0">
@@ -574,6 +613,17 @@ export const ModalArchivioDocumentiSop: React.FC<ModalArchivioDocumentiSopProps>
                       </div>
 
                       <div className="flex items-center gap-1.5">
+                        {doc.id === DOC_ID_GUIDA_INSTALLAZIONE_APP && (
+                          <button
+                            type="button"
+                            onClick={() => scaricaGuidaInstallazionePdf()}
+                            className="px-2.5 py-1.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 border border-amber-400/50 text-amber-200 font-black text-[10.5px] uppercase inline-flex items-center gap-1 cursor-pointer"
+                            title="Scarica subito la guida in PDF"
+                          >
+                            <Download className="w-3.5 h-3.5" />
+                            <span>PDF</span>
+                          </button>
+                        )}
                         <button
                           type="button"
                           onClick={() => setDocSelezionato(doc)}
@@ -582,7 +632,7 @@ export const ModalArchivioDocumentiSop: React.FC<ModalArchivioDocumentiSopProps>
                           <Eye className="w-3.5 h-3.5" />
                           <span>Apri</span>
                         </button>
-                        {canManage && (
+                        {canManage && doc.id !== DOC_ID_GUIDA_INSTALLAZIONE_APP && (
                           confermaEliminaId === doc.id ? (
                             <button
                               type="button"
@@ -611,6 +661,11 @@ export const ModalArchivioDocumentiSop: React.FC<ModalArchivioDocumentiSopProps>
           )}
         </div>
       </div>
+
+      <ModalGuidaInstallazioneApp
+        isOpen={modalGuidaInterattivaAperta}
+        onClose={() => setModalGuidaInterattivaAperta(false)}
+      />
     </div>
   );
 };

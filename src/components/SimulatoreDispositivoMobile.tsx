@@ -11,11 +11,17 @@ import {
   AppWindow,
   Lock,
   ChevronLeft,
+  ChevronRight,
   Circle,
-  Square
+  Square,
+  Share,
+  MoreHorizontal,
+  MoreVertical,
+  Plus
 } from 'lucide-react';
 import { Volontario } from './DatabaseVolontariModal';
 import {
+  SimulatedBrowserType,
   SimulatedDevicePlatform,
   SimulatedDisplayMode,
   buildDeviceSimulationIframeUrl
@@ -32,11 +38,12 @@ interface SimulatoreDispositivoMobileProps {
   onExitFromIframe: () => void;
 }
 
+const SIMULATED_DISPLAY_HOST = 'croce-oro-massa-carrarra.vercel.app';
+
 const DEVICE_SPECS = {
   android: {
     label: 'Android Smartphone',
     shortLabel: 'Android',
-    osLabel: 'Android 15 • Chrome / PWA',
     width: 412,
     height: 860,
     borderRadius: 'rounded-[36px]',
@@ -47,7 +54,6 @@ const DEVICE_SPECS = {
   apple: {
     label: 'Apple iPhone',
     shortLabel: 'Apple iOS',
-    osLabel: 'iOS 18 • Safari / Schermata Home',
     width: 393,
     height: 852,
     borderRadius: 'rounded-[50px]',
@@ -66,6 +72,7 @@ export const SimulatoreDispositivoMobile: React.FC<SimulatoreDispositivoMobilePr
   onChangeDisplayMode,
   onExitFromIframe
 }) => {
+  const [appleBrowser, setAppleBrowser] = useState<SimulatedBrowserType>('safari');
   const [landscape, setLandscape] = useState(false);
   const [autoFit, setAutoFit] = useState(true);
   const [reloadNonce, setReloadNonce] = useState(0);
@@ -104,13 +111,27 @@ export const SimulatoreDispositivoMobile: React.FC<SimulatoreDispositivoMobilePr
   }, [onExitFromIframe]);
 
   const spec = DEVICE_SPECS[device];
+  const activeBrowser: SimulatedBrowserType = device === 'apple' ? appleBrowser : 'chrome';
+  const isAppleChrome = device === 'apple' && displayMode === 'browser' && activeBrowser === 'chrome';
+  const isAppleSafari = device === 'apple' && displayMode === 'browser' && activeBrowser === 'safari';
+
+  const osLabel = useMemo(() => {
+    if (device === 'apple') {
+      if (displayMode === 'pwa') return 'iOS 18 • App Schermata Home (PWA)';
+      return activeBrowser === 'chrome' ? 'iOS 18 • Google Chrome' : 'iOS 18 • Safari';
+    }
+    return displayMode === 'pwa' ? 'Android 15 • App Installata (PWA)' : 'Android 15 • Google Chrome';
+  }, [device, displayMode, activeBrowser]);
+
   const screenW = landscape ? spec.height : spec.width;
   const screenH = landscape ? spec.width : spec.height;
 
-  // Dimensioni esterne cornice hardware (inclusi status bar / nav bar / bordi)
+  // Dimensioni esterne cornice hardware (inclusi status bar / address bar / browser bottom bar / nav bar / bordi)
+  const appleBrowserBottomBarH = device === 'apple' && displayMode === 'browser' ? 36 : 0;
   const chromeOverheadH =
     (device === 'apple' ? 42 : 34) +
     (displayMode === 'browser' ? 42 : 0) +
+    appleBrowserBottomBarH +
     (device === 'apple' ? 24 : 36) +
     28;
   const totalFrameW = screenW + 24;
@@ -131,10 +152,11 @@ export const SimulatoreDispositivoMobile: React.FC<SimulatoreDispositivoMobilePr
       accountId: account.id,
       device,
       ruolo: ruoloSimulato,
-      displayMode
+      displayMode,
+      browser: activeBrowser
     });
     return reloadNonce > 0 ? `${base}&_r=${reloadNonce}` : base;
-  }, [account.id, device, ruoloSimulato, displayMode, reloadNonce]);
+  }, [account.id, device, ruoloSimulato, displayMode, activeBrowser, reloadNonce]);
 
   useEffect(() => {
     setIframeLoaded(false);
@@ -150,7 +172,7 @@ export const SimulatoreDispositivoMobile: React.FC<SimulatoreDispositivoMobilePr
             <span>{spec.label}</span>
           </span>
           <span className="text-[11px] font-semibold text-slate-300">
-            {spec.osLabel} • <span className="font-mono text-amber-300">{screenW}×{screenH}px</span>
+            {osLabel} • <span className="font-mono text-amber-300">{screenW}×{screenH}px</span>
           </span>
           <span className="hidden md:inline text-[10.5px] text-slate-400">
             • Account: <strong className="text-white">{account.nome} {account.cognome}</strong> ({ruoloSimulato === 'admin' ? 'Vista Centrale / DB' : 'Vista Volontario'})
@@ -197,7 +219,7 @@ export const SimulatoreDispositivoMobile: React.FC<SimulatoreDispositivoMobilePr
             </button>
           </div>
 
-          {/* Modalità App Installata (PWA) vs Browser Web Mobile */}
+          {/* Modalità App Installata (PWA) vs Browser Web Mobile (su Apple: Safari e Google Chrome) */}
           <div className="flex items-center bg-slate-950/90 rounded-lg p-0.5 border border-slate-700/80">
             <button
               type="button"
@@ -212,19 +234,57 @@ export const SimulatoreDispositivoMobile: React.FC<SimulatoreDispositivoMobilePr
               <AppWindow className="w-3 h-3" />
               <span>App PWA</span>
             </button>
-            <button
-              type="button"
-              onClick={() => onChangeDisplayMode('browser')}
-              className={`px-2 py-1 rounded-md text-[10.5px] font-black transition-all cursor-pointer flex items-center gap-1 ${
-                displayMode === 'browser'
-                  ? 'bg-white text-slate-950 shadow'
-                  : 'text-slate-300 hover:text-white'
-              }`}
-              title={`Simula apertura da browser ${device === 'apple' ? 'Safari iOS' : 'Chrome Android'} (sfondo bianco)`}
-            >
-              <Globe className="w-3 h-3" />
-              <span>{device === 'apple' ? 'Safari' : 'Chrome'}</span>
-            </button>
+
+            {device === 'apple' ? (
+              <>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAppleBrowser('safari');
+                    onChangeDisplayMode('browser');
+                  }}
+                  className={`px-2 py-1 rounded-md text-[10.5px] font-black transition-all cursor-pointer flex items-center gap-1 ${
+                    isAppleSafari
+                      ? 'bg-white text-slate-950 shadow'
+                      : 'text-slate-300 hover:text-white'
+                  }`}
+                  title="Simula apertura su iPhone tramite browser Safari iOS"
+                >
+                  <Globe className="w-3 h-3" />
+                  <span>Safari</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAppleBrowser('chrome');
+                    onChangeDisplayMode('browser');
+                  }}
+                  className={`px-2 py-1 rounded-md text-[10.5px] font-black transition-all cursor-pointer flex items-center gap-1 ${
+                    isAppleChrome
+                      ? 'bg-sky-100 text-slate-950 shadow ring-1 ring-sky-400/70'
+                      : 'text-slate-300 hover:text-white'
+                  }`}
+                  title="Simula apertura su iPhone tramite Google Chrome iOS"
+                >
+                  <span className="w-2 h-2 rounded-full bg-gradient-to-tr from-emerald-500 via-amber-400 to-blue-500 shrink-0" />
+                  <span>Chrome</span>
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                onClick={() => onChangeDisplayMode('browser')}
+                className={`px-2 py-1 rounded-md text-[10.5px] font-black transition-all cursor-pointer flex items-center gap-1 ${
+                  displayMode === 'browser'
+                    ? 'bg-white text-slate-950 shadow'
+                    : 'text-slate-300 hover:text-white'
+                }`}
+                title="Simula apertura da browser Google Chrome Android (sfondo bianco)"
+              >
+                <Globe className="w-3 h-3" />
+                <span>Chrome</span>
+              </button>
+            )}
           </div>
 
           {/* Ruota schermo */}
@@ -332,17 +392,45 @@ export const SimulatoreDispositivoMobile: React.FC<SimulatoreDispositivoMobilePr
               </div>
             )}
 
-            {/* Barra Indirizzo Browser (visibile solo in modalità Safari / Chrome) */}
+            {/* Barra Indirizzo Browser (Safari iOS / Google Chrome iOS / Chrome Android) */}
             {displayMode === 'browser' && (
-              <div className="h-[42px] px-3 bg-slate-100 border-b border-slate-200 flex items-center justify-center shrink-0">
-                <div className="w-full px-3 py-1 rounded-full bg-white border border-slate-300 text-[11px] text-slate-700 font-medium flex items-center justify-center gap-1.5 shadow-inner truncate">
-                  <Lock className="w-3 h-3 text-emerald-600 shrink-0" />
-                  <span className="truncate">croce-oro-massa-carrara.vercel.app</span>
-                  <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-slate-100 text-slate-500 shrink-0">
-                    {device === 'apple' ? 'Safari' : 'Chrome'}
-                  </span>
+              isAppleChrome ? (
+                /* Barra Omnibox Google Chrome su iOS (con icona Condividi integrata in alto a destra) */
+                <div className="h-[42px] px-2.5 bg-white border-b border-slate-200 flex items-center gap-1.5 shrink-0">
+                  <div className="flex-1 min-w-0 px-2.5 py-1 rounded-full bg-slate-100 border border-slate-200 text-[11px] text-slate-700 font-medium flex items-center gap-1.5">
+                    <Lock className="w-3 h-3 text-emerald-600 shrink-0" />
+                    <span className="truncate flex-1">{SIMULATED_DISPLAY_HOST}</span>
+                    <span className="inline-flex items-center gap-1 text-[9px] font-black px-1.5 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-200 shrink-0">
+                      <span className="w-1.5 h-1.5 rounded-full bg-gradient-to-tr from-emerald-500 via-amber-400 to-blue-500" />
+                      Chrome
+                    </span>
+                    <Share className="w-3.5 h-3.5 text-blue-600 shrink-0" />
+                  </div>
                 </div>
-              </div>
+              ) : device === 'apple' ? (
+                /* Barra Safari iOS */
+                <div className="h-[42px] px-3 bg-slate-100 border-b border-slate-200 flex items-center justify-center shrink-0">
+                  <div className="w-full px-3 py-1 rounded-full bg-white border border-slate-300 text-[11px] text-slate-700 font-medium flex items-center justify-center gap-1.5 shadow-inner truncate">
+                    <Lock className="w-3 h-3 text-emerald-600 shrink-0" />
+                    <span className="truncate">{SIMULATED_DISPLAY_HOST}</span>
+                    <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-slate-100 text-slate-500 shrink-0">
+                      Safari
+                    </span>
+                  </div>
+                </div>
+              ) : (
+                /* Barra Chrome Android */
+                <div className="h-[42px] px-2.5 bg-slate-100 border-b border-slate-200 flex items-center gap-1.5 shrink-0">
+                  <div className="flex-1 min-w-0 px-2.5 py-1 rounded-full bg-white border border-slate-300 text-[11px] text-slate-700 font-medium flex items-center gap-1.5 shadow-inner">
+                    <Lock className="w-3 h-3 text-emerald-600 shrink-0" />
+                    <span className="truncate flex-1">{SIMULATED_DISPLAY_HOST}</span>
+                    <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-slate-100 text-slate-500 shrink-0">
+                      Chrome
+                    </span>
+                  </div>
+                  <MoreVertical className="w-4 h-4 text-slate-600 shrink-0" />
+                </div>
+              )
             )}
 
             {/* Iframe Live Interattivo con reale Viewport Mobile */}
@@ -351,7 +439,13 @@ export const SimulatoreDispositivoMobile: React.FC<SimulatoreDispositivoMobilePr
                 <div className="absolute inset-0 z-10 bg-slate-950/90 flex flex-col items-center justify-center gap-2 text-slate-200">
                   <RefreshCw className="w-6 h-6 animate-spin text-amber-400" />
                   <span className="text-xs font-bold">
-                    Caricamento vista {spec.shortLabel} per {account.nome}...
+                    Caricamento vista {spec.shortLabel}
+                    {displayMode === 'browser'
+                      ? activeBrowser === 'chrome'
+                        ? ' (Google Chrome)'
+                        : ' (Safari)'
+                      : ' (App PWA)'}{' '}
+                    per {account.nome}...
                   </span>
                 </div>
               )}
@@ -365,11 +459,37 @@ export const SimulatoreDispositivoMobile: React.FC<SimulatoreDispositivoMobilePr
               />
             </div>
 
+            {/* Barra Inferiore Browser iOS (Safari vs Google Chrome iOS) */}
+            {device === 'apple' && displayMode === 'browser' && (
+              isAppleChrome ? (
+                <div className="h-[36px] px-6 bg-slate-50 border-t border-slate-200 flex items-center justify-between text-slate-600 shrink-0">
+                  <ChevronLeft className="w-4 h-4 opacity-50" />
+                  <ChevronRight className="w-4 h-4 opacity-40" />
+                  <div className="w-6 h-6 rounded-full bg-slate-200/90 flex items-center justify-center text-slate-700">
+                    <Plus className="w-3.5 h-3.5" />
+                  </div>
+                  <div className="w-4 h-4 rounded-[4px] border-[1.5px] border-slate-600 flex items-center justify-center text-[9px] font-black leading-none">
+                    1
+                  </div>
+                  <MoreHorizontal className="w-4 h-4 text-slate-700" />
+                </div>
+              ) : (
+                <div className="h-[36px] px-7 bg-slate-50 border-t border-slate-200 flex items-center justify-between text-blue-600 shrink-0">
+                  <ChevronLeft className="w-4 h-4 opacity-45" />
+                  <ChevronRight className="w-4 h-4 opacity-35" />
+                  <Share className="w-4 h-4 text-blue-600" />
+                  <div className="w-4 h-4 rounded-[4px] border-[1.5px] border-blue-600/80 flex items-center justify-center text-[9px] font-bold leading-none">
+                    1
+                  </div>
+                </div>
+              )
+            )}
+
             {/* Barra Inferiore OS (Apple Home Indicator vs Android 3-Button Nav) */}
             {device === 'apple' ? (
               <div
                 className={`h-[24px] flex items-center justify-center shrink-0 ${
-                  displayMode === 'browser' ? 'bg-white' : 'bg-slate-950'
+                  displayMode === 'browser' ? 'bg-slate-50' : 'bg-slate-950'
                 }`}
               >
                 <div

@@ -883,6 +883,9 @@ export interface ComunicazioneBacheca {
   richiedePresaVisione?: boolean; // Conferma lettura obbligatoria per comunicazioni importanti
   preseVisione?: PresaVisioneBacheca[]; // Elenco volontari che hanno confermato la presa visione
   ultimoPromemoriaPresaVisione?: string; // Data/ora ultimo sollecito inviato ai mancanti
+  isAutoReleaseNote?: boolean; // True per comunicazioni automatiche di aggiornamento app filtrate per profilo
+  releaseVersion?: string; // Versione app associata (es. '5.4.0')
+  releaseAudienceLabel?: string; // Profilo destinatario calcolato per l'account corrente
 }
 
 // ---------------------------------------------------------------------------

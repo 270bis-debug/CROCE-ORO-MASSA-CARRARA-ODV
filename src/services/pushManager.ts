@@ -3,6 +3,7 @@
 
 import { realtime } from './realtime';
 import { savePushSubscriptionFirestore } from './firebase';
+import { authFetch } from '../utils/apiAuthFetch';
 
 function urlBase64ToUint8Array(base64String: string): Uint8Array {
   const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
@@ -277,7 +278,7 @@ export async function inviaTestPushRadioLocale(): Promise<{ ok: boolean; error?:
   const sameOriginBase = typeof window !== 'undefined' ? window.location.origin.replace(/\/$/, '') : '';
   const pushBase = sameOriginBase || realtime.getPushBackendBaseUrl().replace(/\/$/, '');
   try {
-    const res = await fetch(`${pushBase}/api/push-test`, {
+    const res = await authFetch(`${pushBase}/api/push-test`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ endpoint, subscription: subscriptionJson }),

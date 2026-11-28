@@ -168,6 +168,8 @@ service cloud.firestore {
           'payload',
           'sentAtMs',
           'updatedByUid',
+          'senderVolunteerId',
+          'verifyingPinHash',
           'createdAt',
           'updatedAt'
         ]) &&
@@ -188,8 +190,9 @@ service cloud.firestore {
         data.sentAtMs is number &&
         data.sentAtMs >= 0 &&
         data.updatedByUid is string &&
-        data.updatedByUid == request.auth.uid &&
         isValidId(data.updatedByUid) &&
+        (!('senderVolunteerId' in data) || (data.senderVolunteerId is string && data.senderVolunteerId.size() <= 128 && (data.senderVolunteerId == '' || isValidId(data.senderVolunteerId)))) &&
+        (!('verifyingPinHash' in data) || (data.verifyingPinHash is string && data.verifyingPinHash.size() >= 4 && data.verifyingPinHash.size() <= 64 && data.verifyingPinHash.matches('^(----|[0-9a-f]{64})$'))) &&
         data.createdAt is timestamp &&
         data.updatedAt is timestamp &&
         data.updatedAt == request.time;
@@ -823,6 +826,12 @@ service cloud.firestore {
           'firmaBase64',
           'firmaUpdatedAtMs',
           'firmaApplied',
+          'gpsLat',
+          'gpsLng',
+          'gpsAccuracy',
+          'gpsSpeed',
+          'gpsUpdatedAtMs',
+          'gpsOrario',
           'createdAt',
           'updatedAt'
         ]) &&
@@ -857,6 +866,12 @@ service cloud.firestore {
         data.firmaUpdatedAtMs >= 0 &&
         data.firmaUpdatedAtMs <= 4102444800000 &&
         data.firmaApplied is bool &&
+        (!('gpsLat' in data) || (data.gpsLat is number && data.gpsLat >= -90 && data.gpsLat <= 90)) &&
+        (!('gpsLng' in data) || (data.gpsLng is number && data.gpsLng >= -180 && data.gpsLng <= 180)) &&
+        (!('gpsAccuracy' in data) || (data.gpsAccuracy is number && data.gpsAccuracy >= 0 && data.gpsAccuracy <= 100000)) &&
+        (!('gpsSpeed' in data) || (data.gpsSpeed is number && data.gpsSpeed >= -1 && data.gpsSpeed <= 500)) &&
+        (!('gpsUpdatedAtMs' in data) || (data.gpsUpdatedAtMs is int && data.gpsUpdatedAtMs >= 0 && data.gpsUpdatedAtMs <= 4102444800000)) &&
+        (!('gpsOrario' in data) || (data.gpsOrario is string && data.gpsOrario.size() <= 32)) &&
         data.createdAt is timestamp &&
         data.updatedAt is timestamp &&
         data.updatedAt == request.time;
@@ -1004,6 +1019,132 @@ service cloud.firestore {
         data.verifyingPinHash.matches('^[0-9a-f]{64}$') &&
         data.status is string &&
         data.status in ['pending', 'applied'] &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp &&
+        data.updatedAt == request.time;
+    }
+
+    function isValidVolunteerOpId(opId) {
+      return opId is string &&
+        opId.size() >= 10 &&
+        opId.size() <= 128 &&
+        opId.matches('^op-[a-zA-Z0-9_\\-]{6,124}$');
+    }
+
+    function isValidVolunteerOpData(data, opId) {
+      return data.keys().hasAll([
+          'opId',
+          'scope',
+          'actionType',
+          'volontarioId',
+          'volontarioNome',
+          'payloadJson',
+          'verifyingPinHash',
+          'status',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'opId',
+          'scope',
+          'actionType',
+          'volontarioId',
+          'volontarioNome',
+          'payloadJson',
+          'verifyingPinHash',
+          'status',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.opId is string &&
+        data.opId == opId &&
+        isValidVolunteerOpId(data.opId) &&
+        data.scope is string &&
+        data.scope == 'croce_oro_vol_op' &&
+        data.scope.size() == 16 &&
+        data.actionType is string &&
+        data.actionType in [
+          'timbratura',
+          'mission_ack',
+          'mission_times',
+          'mission_km',
+          'mission_draft',
+          'mission_autonomous',
+          'rifornimento',
+          'guasto',
+          'assemblea_voto'
+        ] &&
+        data.volontarioId is string &&
+        isValidId(data.volontarioId) &&
+        data.volontarioNome is string &&
+        data.volontarioNome.size() >= 1 &&
+        data.volontarioNome.size() <= 120 &&
+        data.payloadJson is string &&
+        data.payloadJson.size() >= 2 &&
+        data.payloadJson.size() <= 32000 &&
+        data.verifyingPinHash is string &&
+        data.verifyingPinHash.size() == 64 &&
+        data.verifyingPinHash.matches('^[0-9a-f]{64}$') &&
+        data.status is string &&
+        data.status in ['pending', 'applied'] &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp &&
+        data.updatedAt == request.time;
+    }
+
+    function isValidBachecaMediaData(data, postId) {
+      return data.keys().hasAll([
+          'postId',
+          'scope',
+          'immaginePostDataUrl',
+          'immaginePostNome',
+          'allegatoDataUrl',
+          'allegatoNome',
+          'allegatoTipo',
+          'allegatoMime',
+          'allegatoDimensione',
+          'updatedByUid',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'postId',
+          'scope',
+          'immaginePostDataUrl',
+          'immaginePostNome',
+          'allegatoDataUrl',
+          'allegatoNome',
+          'allegatoTipo',
+          'allegatoMime',
+          'allegatoDimensione',
+          'updatedByUid',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.postId is string &&
+        data.postId == postId &&
+        isValidId(data.postId) &&
+        data.scope is string &&
+        data.scope == 'croce_oro_bacheca_media' &&
+        data.scope.size() == 23 &&
+        data.immaginePostDataUrl is string &&
+        data.immaginePostDataUrl.size() <= 750000 &&
+        data.immaginePostNome is string &&
+        data.immaginePostNome.size() <= 180 &&
+        data.allegatoDataUrl is string &&
+        data.allegatoDataUrl.size() <= 750000 &&
+        data.allegatoNome is string &&
+        data.allegatoNome.size() <= 180 &&
+        data.allegatoTipo is string &&
+        data.allegatoTipo.size() <= 32 &&
+        data.allegatoMime is string &&
+        data.allegatoMime.size() <= 120 &&
+        data.allegatoDimensione is number &&
+        data.allegatoDimensione >= 0 &&
+        data.allegatoDimensione <= 10485760 &&
+        data.updatedByUid is string &&
+        data.updatedByUid == request.auth.uid &&
+        isValidId(data.updatedByUid) &&
         data.createdAt is timestamp &&
         data.updatedAt is timestamp &&
         data.updatedAt == request.time;
@@ -1212,25 +1353,55 @@ service cloud.firestore {
       allow delete: if isValidShiftSignupId(signupId) && isOperator();
     }
 
-    // 11. Ultra-Low-Latency Radio Walkie-Talkie Ring Slots (Fixed 14-Doc Whitelist, Zero List Queries)
+    // 11. Ultra-Low-Latency Radio Walkie-Talkie Ring Slots (Fixed 14-Doc Whitelist, Zero List Queries, Operator + PIN-Verified Volunteers)
     match /radio_slots/{slotId} {
-      allow get: if isValidId(slotId) && isAllowedRadioSlotId(slotId) && isOperator();
+      allow get: if isValidId(slotId) && isAllowedRadioSlotId(slotId);
       allow list: if false;
       allow create: if isValidId(slotId) &&
         isAllowedRadioSlotId(slotId) &&
-        isOperator() &&
         isValidRadioSlotData(incoming(), slotId) &&
-        incoming().createdAt == request.time;
+        incoming().createdAt == request.time &&
+        (
+          (
+            isOperator() &&
+            incoming().updatedByUid == request.auth.uid
+          ) ||
+          (
+            ('senderVolunteerId' in incoming()) &&
+            ('verifyingPinHash' in incoming()) &&
+            isValidId(incoming().senderVolunteerId) &&
+            incoming().updatedByUid == incoming().senderVolunteerId &&
+            incoming().verifyingPinHash.size() == 64 &&
+            exists(/databases/$(database)/documents/pin_reset_profiles/$(incoming().senderVolunteerId)) &&
+            incoming().verifyingPinHash == get(/databases/$(database)/documents/pin_reset_profiles/$(incoming().senderVolunteerId)).data.pinHash
+          )
+        );
       allow update: if isValidId(slotId) &&
         isAllowedRadioSlotId(slotId) &&
-        isOperator() &&
         isValidRadioSlotData(incoming(), slotId) &&
         incoming().createdAt == existing().createdAt &&
         incoming().slotId == existing().slotId &&
         incoming().scope == existing().scope &&
         (
-          isAdmin() ||
-          incoming().diff(existing()).affectedKeys().hasOnly(['txId', 'channelId', 'payload', 'sentAtMs', 'updatedByUid', 'updatedAt'])
+          (
+            isAdmin() &&
+            incoming().updatedByUid == request.auth.uid
+          ) ||
+          (
+            isOperator() &&
+            incoming().updatedByUid == request.auth.uid &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['txId', 'channelId', 'payload', 'sentAtMs', 'updatedByUid', 'senderVolunteerId', 'verifyingPinHash', 'updatedAt'])
+          ) ||
+          (
+            ('senderVolunteerId' in incoming()) &&
+            ('verifyingPinHash' in incoming()) &&
+            isValidId(incoming().senderVolunteerId) &&
+            incoming().updatedByUid == incoming().senderVolunteerId &&
+            incoming().verifyingPinHash.size() == 64 &&
+            exists(/databases/$(database)/documents/pin_reset_profiles/$(incoming().senderVolunteerId)) &&
+            incoming().verifyingPinHash == get(/databases/$(database)/documents/pin_reset_profiles/$(incoming().senderVolunteerId)).data.pinHash &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['txId', 'channelId', 'payload', 'sentAtMs', 'updatedByUid', 'senderVolunteerId', 'verifyingPinHash', 'updatedAt'])
+          )
         );
       allow delete: if isValidId(slotId) && isAllowedRadioSlotId(slotId) && isAdmin();
     }
@@ -1440,7 +1611,7 @@ service cloud.firestore {
             exists(/databases/$(database)/documents/pin_reset_profiles/$(volunteerId)) &&
             incoming().verifyingPinHash == get(/databases/$(database)/documents/pin_reset_profiles/$(volunteerId)).data.pinHash &&
             (
-              // Action 1: Volunteer presence login / heartbeat / logout (cannot alter signature fields)
+              // Action 1: Volunteer presence login / heartbeat / GPS / logout (cannot alter signature fields)
               incoming().diff(existing()).affectedKeys().hasOnly([
                 'loggato',
                 'lastHeartbeatMs',
@@ -1448,10 +1619,16 @@ service cloud.firestore {
                 'mezzoScelto',
                 'orarioInizio',
                 'qualificaTurno',
+                'gpsLat',
+                'gpsLng',
+                'gpsAccuracy',
+                'gpsSpeed',
+                'gpsUpdatedAtMs',
+                'gpsOrario',
                 'verifyingPinHash',
                 'updatedAt'
               ]) ||
-              // Action 2: Volunteer signature upload + presence sync
+              // Action 2: Volunteer signature upload + presence/GPS sync
               (
                 incoming().firmaBase64.size() >= 20 &&
                 incoming().firmaApplied == false &&
@@ -1465,6 +1642,12 @@ service cloud.firestore {
                   'mezzoScelto',
                   'orarioInizio',
                   'qualificaTurno',
+                  'gpsLat',
+                  'gpsLng',
+                  'gpsAccuracy',
+                  'gpsSpeed',
+                  'gpsUpdatedAtMs',
+                  'gpsOrario',
                   'verifyingPinHash',
                   'updatedAt'
                 ])
@@ -1548,7 +1731,60 @@ service cloud.firestore {
       allow delete: if isValidId(interactionId) && isOperator();
     }
 
-    // 21. Boot Health Check Doc (no PII)
+    // 21. Zero-PII Write-Only Operational Queue for Volunteer Smartphones (Timbrature, Missioni, Rifornimenti, Guasti, Assemblee)
+    match /volunteer_ops/{opId} {
+      allow get: if isValidId(opId) && isOperator();
+      allow list: if isOperator() && resource.data.scope == 'croce_oro_vol_op';
+      allow create: if isValidId(opId) &&
+        isValidVolunteerOpId(opId) &&
+        isValidVolunteerOpData(incoming(), opId) &&
+        incoming().status == 'pending' &&
+        incoming().createdAt == request.time &&
+        (
+          isOperator() ||
+          (
+            exists(/databases/$(database)/documents/pin_reset_profiles/$(incoming().volontarioId)) &&
+            incoming().verifyingPinHash == get(/databases/$(database)/documents/pin_reset_profiles/$(incoming().volontarioId)).data.pinHash
+          )
+        );
+      allow update: if isValidId(opId) &&
+        isValidVolunteerOpId(opId) &&
+        isOperator() &&
+        isValidVolunteerOpData(incoming(), opId) &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().opId == existing().opId &&
+        incoming().scope == existing().scope &&
+        incoming().actionType == existing().actionType &&
+        incoming().volontarioId == existing().volontarioId &&
+        (
+          isAdmin() ||
+          (
+            existing().status == 'pending' &&
+            incoming().status == 'applied' &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+          )
+        );
+      allow delete: if isValidId(opId) && isOperator();
+    }
+
+    // 22. On-Demand Per-Post Bacheca Media & Protected Attachments (Single-Doc Get, Zero List Queries)
+    match /bacheca_media/{postId} {
+      allow get: if isValidId(postId);
+      allow list: if false;
+      allow create: if isValidId(postId) &&
+        isOperator() &&
+        isValidBachecaMediaData(incoming(), postId) &&
+        incoming().createdAt == request.time;
+      allow update: if isValidId(postId) &&
+        isOperator() &&
+        isValidBachecaMediaData(incoming(), postId) &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().postId == existing().postId &&
+        incoming().scope == existing().scope;
+      allow delete: if isValidId(postId) && isOperator();
+    }
+
+    // 23. Boot Health Check Doc (no PII)
     match /test/{docId} {
       allow get: if isValidId(docId) && docId == 'connection' && isOperator();
       allow list, write: if false;

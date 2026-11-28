@@ -1,6 +1,7 @@
 // Vercel Serverless Function: POST /api/push-subscribe
 // Conferma la sottoscrizione Push sul dominio statico (la persistenza multi-dispositivo è su Firestore push_subscriptions)
 import type { IncomingMessage, ServerResponse } from 'http';
+import { applyStrictCors } from '../server-lib/apiAuth';
 
 export default function handler(
   req: IncomingMessage & { method?: string; body?: any },
@@ -8,12 +9,10 @@ export default function handler(
 ) {
   res.setHeader('Content-Type', 'application/json; charset=utf-8');
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  const originAllowed = applyStrictCors(req, res, 'POST, OPTIONS');
 
   if (req.method === 'OPTIONS') {
-    res.statusCode = 204;
+    res.statusCode = originAllowed ? 204 : 403;
     return res.end();
   }
 

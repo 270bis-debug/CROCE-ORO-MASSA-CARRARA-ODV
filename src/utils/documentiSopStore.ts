@@ -48,7 +48,54 @@ const STORAGE_KEY = 'CROCE_ORO_DOCUMENTI_SOP_V1';
 const UPDATED_AT_KEY = 'CROCE_ORO_DOCUMENTI_SOP_UPDATED_AT';
 export const DOCUMENTI_SOP_UPDATED_EVENT = 'croce_oro_documenti_sop_updated';
 
+export const DOC_ID_GUIDA_INSTALLAZIONE_APP = 'doc-sop-guida-installazione-app';
+
+const GUIDA_INSTALLAZIONE_APP_SOP: DocumentoAssociativoSop = {
+  id: DOC_ID_GUIDA_INSTALLAZIONE_APP,
+  titolo: 'SOP-00 — Guida Installazione App Croce Oro (Apple & Android • Chrome & Safari)',
+  categoria: 'Procedure Operative (SOP)',
+  versione: 'Rev. 2026 (v5.4)',
+  descrizione:
+    'Guida passo-passo per scaricare e installare l\'applicazione da https://croce-oro-massa-carrarra.vercel.app/ su Apple (Safari e Google Chrome) e Android (Google Chrome e altri browser).',
+  contenutoTesto:
+    'GUIDA UFFICIALE INSTALLAZIONE APP — CROCE ORO MASSA CARRARA OdV\n' +
+    'Indirizzo ufficiale: https://croce-oro-massa-carrarra.vercel.app/\n\n' +
+    'Non serve scaricare l\'app da App Store o Google Play Store: si installa direttamente dal browser del telefono e si aggiorna da sola ad ogni nuova versione.\n\n' +
+    '1. APPLE (iPhone / iPad) — SAFARI (Consigliato)\n' +
+    '• Apri Safari e visita https://croce-oro-massa-carrarra.vercel.app/\n' +
+    '• Tocca l\'icona Condividi (quadrato con freccia verso l\'alto) nella barra in basso.\n' +
+    '• Scorri il menu e tocca "Aggiungi alla schermata Home".\n' +
+    '• Tocca "Aggiungi" in alto a destra: troverai l\'icona Croce Oro sulla Home.\n\n' +
+    '2. APPLE (iPhone / iPad) — GOOGLE CHROME\n' +
+    '• Apri Google Chrome su iPhone/iPad e vai su https://croce-oro-massa-carrarra.vercel.app/\n' +
+    '• Tocca l\'icona Condividi (quadrato con freccia in alto) nella barra indirizzi in alto a destra (o nel menu "•••" in basso a destra su alcuni modelli).\n' +
+    '• Scorri l\'elenco e seleziona "Aggiungi alla schermata Home".\n' +
+    '• Conferma toccando "Aggiungi" in alto a destra.\n' +
+    '• Nota iOS: se usi un iOS anteriore alla versione 16.4 e la voce non appare in Chrome, apri il link con Safari.\n\n' +
+    '3. ANDROID (Smartphone / Tablet) — GOOGLE CHROME (Consigliato)\n' +
+    '• Apri Google Chrome e visita https://croce-oro-massa-carrarra.vercel.app/\n' +
+    '• Se compare il tasto verde "Installa App" in alto (o il banner in basso), toccalo direttamente.\n' +
+    '• In alternativa tocca i 3 puntini verticali (⋮) in alto a destra di Chrome.\n' +
+    '• Seleziona "Installa app" (oppure "Aggiungi a schermata Home" -> "Installa") e conferma.\n\n' +
+    '4. ANDROID — NOTA SU SAFARI E ALTRI BROWSER\n' +
+    '• Safari è un browser esclusivo Apple e non è disponibile su Android.\n' +
+    '• Su Android usa Google Chrome (consigliato). Se usi Samsung Internet o Microsoft Edge, apri il menu (☰ o ⋮) e scegli "Aggiungi pagina a -> Schermata Home" o "Installa app".\n\n' +
+    '5. PRIMO AVVIO E AUTORIZZAZIONI\n' +
+    '• Apri sempre l\'app dall\'icona Croce Oro sulla schermata Home.\n' +
+    '• Accedi con il tuo PIN personale e consenti Notifiche Push, Posizione GPS e Microfono/Audio per ricevere avvisi bacheca, turni e comunicazioni radio.',
+  urlEsterno: 'https://croce-oro-massa-carrarra.vercel.app/',
+  allegatoNome: 'Guida_Installazione_App_Croce_Oro.pdf',
+  obbligatorio: false,
+  sezioneTargetId: 'tutte',
+  sezioneTargetNome: 'Tutte le Sezioni',
+  caricatoDa: 'Presidenza & Sistemi Informativi',
+  dataPubblicazione: '2026-11-28',
+  confermeLettura: [],
+  updatedAt: 1795824000000,
+};
+
 const DOCUMENTI_SOP_PREDEFINITI: DocumentoAssociativoSop[] = [
+  GUIDA_INSTALLAZIONE_APP_SOP,
   {
     id: 'doc-sop-statuto-odv',
     titolo: 'Statuto Sociale Croce Oro Massa Carrara OdV (Adeguato CTS)',
@@ -130,12 +177,18 @@ const DOCUMENTI_SOP_PREDEFINITI: DocumentoAssociativoSop[] = [
   },
 ];
 
+function ensureBuiltInSopDocs(lista: DocumentoAssociativoSop[]): DocumentoAssociativoSop[] {
+  const hasGuida = lista.some((d) => d?.id === DOC_ID_GUIDA_INSTALLAZIONE_APP);
+  if (hasGuida) return lista;
+  return [GUIDA_INSTALLAZIONE_APP_SOP, ...lista];
+}
+
 export function getDocumentiSop(): DocumentoAssociativoSop[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed)) return parsed;
+      if (Array.isArray(parsed)) return ensureBuiltInSopDocs(parsed);
     }
   } catch {}
   return DOCUMENTI_SOP_PREDEFINITI;
@@ -189,7 +242,7 @@ export function mergeDocumentiSopCloud(
       byId.set(d.id, { ...base, confermeLettura: Array.from(mapConf.values()) });
     }
   }
-  const merged = Array.from(byId.values());
+  const merged = ensureBuiltInSopDocs(Array.from(byId.values()));
   const nextTs = Math.max(getDocumentiSopUpdatedAt(), remoteUpdatedAt || Date.now());
   return salvaDocumentiSop(merged, nextTs);
 }

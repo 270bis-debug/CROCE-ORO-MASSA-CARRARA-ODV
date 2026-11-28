@@ -1419,65 +1419,140 @@ export async function writeRadioSlotDoc(params: {
   payload: Record<string, any>;
   sentAtMs?: number;
   knownExists?: boolean;
+  senderVolunteerId?: string;
+  verifyingPinHashes?: Array<string | undefined | null>;
 }): Promise<boolean> {
   const user = auth.currentUser;
-  if (!user || !user.emailVerified) return false;
+  const isAuthOperator = Boolean(user && user.emailVerified);
   const cleanPayload = sanitizeForFirestore(params.payload || {});
   const ref = doc(db, 'radio_slots', params.slotId);
   const safeTxId = String(params.txId || '').slice(0, 96);
   const safeChannelId = (String(params.channelId || 'general').trim() || 'general').slice(0, 96);
-  const safeSentAtMs = typeof params.sentAtMs === 'number' && Number.isFinite(params.sentAtMs) && params.sentAtMs >= 0
-    ? Math.floor(params.sentAtMs)
-    : Date.now();
+  const safeSentAtMs =
+    typeof params.sentAtMs === 'number' && Number.isFinite(params.sentAtMs) && params.sentAtMs >= 0
+      ? Math.floor(params.sentAtMs)
+      : Date.now();
 
-  if (params.knownExists) {
+  if (isAuthOperator && user) {
+    if (params.knownExists) {
+      try {
+        await updateDoc(ref, {
+          txId: safeTxId,
+          channelId: safeChannelId,
+          payload: cleanPayload,
+          sentAtMs: safeSentAtMs,
+          updatedByUid: user.uid,
+          senderVolunteerId: '',
+          verifyingPinHash: '----',
+          updatedAt: serverTimestamp(),
+        });
+        return true;
+      } catch (err: any) {
+        const code = String(err?.code || '');
+        if (code !== 'not-found' && !String(err?.message || '').includes('No document to update')) {
+          return false;
+        }
+      }
+    }
+
     try {
-      await updateDoc(ref, {
+      await setDoc(ref, {
+        slotId: params.slotId,
+        scope: 'croce_oro_radio',
         txId: safeTxId,
         channelId: safeChannelId,
         payload: cleanPayload,
         sentAtMs: safeSentAtMs,
         updatedByUid: user.uid,
+        senderVolunteerId: '',
+        verifyingPinHash: '----',
+        createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
       return true;
-    } catch (err: any) {
-      const code = String(err?.code || '');
-      if (code !== 'not-found' && !String(err?.message || '').includes('No document to update')) {
+    } catch {
+      try {
+        await updateDoc(ref, {
+          txId: safeTxId,
+          channelId: safeChannelId,
+          payload: cleanPayload,
+          sentAtMs: safeSentAtMs,
+          updatedByUid: user.uid,
+          senderVolunteerId: '',
+          verifyingPinHash: '----',
+          updatedAt: serverTimestamp(),
+        });
+        return true;
+      } catch {
         return false;
       }
     }
   }
 
-  try {
-    await setDoc(ref, {
-      slotId: params.slotId,
-      scope: 'croce_oro_radio',
-      txId: safeTxId,
-      channelId: safeChannelId,
-      payload: cleanPayload,
-      sentAtMs: safeSentAtMs,
-      updatedByUid: user.uid,
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    });
-    return true;
-  } catch (err: any) {
-    // Se il documento esisteva già (race tra due trasmettitori), ritenta con updateDoc
+  // Smartphone volontario PIN-only: scrittura autenticata tramite pinHash su /pin_reset_profiles/{senderVolunteerId}
+  const senderVolId = String(params.senderVolunteerId || '').trim();
+  if (!senderVolId || !VALID_DOC_ID_REGEX.test(senderVolId) || senderVolId === 'vol-admin' || senderVolId === 'admin-centrale-root') {
+    return false;
+  }
+  const hashes = await resolveVolunteerPinHashesWithRosterFallback(senderVolId, params.verifyingPinHashes || []);
+  if (hashes.length === 0) return false;
+
+  for (const hash of hashes) {
+    if (params.knownExists) {
+      try {
+        await updateDoc(ref, {
+          txId: safeTxId,
+          channelId: safeChannelId,
+          payload: cleanPayload,
+          sentAtMs: safeSentAtMs,
+          updatedByUid: senderVolId,
+          senderVolunteerId: senderVolId,
+          verifyingPinHash: hash,
+          updatedAt: serverTimestamp(),
+        });
+        return true;
+      } catch (err: any) {
+        const code = String(err?.code || '');
+        if (code !== 'not-found' && !String(err?.message || '').includes('No document to update')) {
+          continue;
+        }
+      }
+    }
+
     try {
-      await updateDoc(ref, {
+      await setDoc(ref, {
+        slotId: params.slotId,
+        scope: 'croce_oro_radio',
         txId: safeTxId,
         channelId: safeChannelId,
         payload: cleanPayload,
         sentAtMs: safeSentAtMs,
-        updatedByUid: user.uid,
+        updatedByUid: senderVolId,
+        senderVolunteerId: senderVolId,
+        verifyingPinHash: hash,
+        createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
       return true;
     } catch {
-      return false;
+      try {
+        await updateDoc(ref, {
+          txId: safeTxId,
+          channelId: safeChannelId,
+          payload: cleanPayload,
+          sentAtMs: safeSentAtMs,
+          updatedByUid: senderVolId,
+          senderVolunteerId: senderVolId,
+          verifyingPinHash: hash,
+          updatedAt: serverTimestamp(),
+        });
+        return true;
+      } catch {
+        // Prova eventuale hash successivo
+      }
     }
   }
+  return false;
 }
 
 function hashStringSimpleHex(input: string): string {
@@ -2546,6 +2621,31 @@ export function buildPublicRaspberryBacheca(bacheca: any[]): any[] {
       ...(cleanCommenti.length > 0 ? { commenti: cleanCommenti } : {}),
       ...(typeof c.scadenza === 'string' && c.scadenza.trim() ? { scadenza: c.scadenza.trim().slice(0, 24) } : {}),
       ...(typeof c.updatedAt === 'number' ? { updatedAt: c.updatedAt } : {}),
+      ...(typeof c.immaginePostDataUrl === 'string' && c.immaginePostDataUrl.length > 20
+        ? {
+            hasImmagine: true,
+            ...(typeof c.immaginePostNome === 'string' && c.immaginePostNome.trim()
+              ? { immaginePostNome: c.immaginePostNome.trim().slice(0, 180) }
+              : {}),
+          }
+        : {}),
+      ...(typeof c.allegatoDataUrl === 'string' && c.allegatoDataUrl.length > 20
+        ? {
+            hasAllegato: true,
+            ...(typeof c.allegatoNome === 'string' && c.allegatoNome.trim()
+              ? { allegatoNome: c.allegatoNome.trim().slice(0, 180) }
+              : {}),
+            ...(typeof c.allegatoTipo === 'string' && c.allegatoTipo.trim()
+              ? { allegatoTipo: c.allegatoTipo.trim().slice(0, 32) }
+              : {}),
+            ...(typeof c.allegatoMime === 'string' && c.allegatoMime.trim()
+              ? { allegatoMime: c.allegatoMime.trim().slice(0, 120) }
+              : {}),
+            ...(typeof c.allegatoDimensione === 'number' && Number.isFinite(c.allegatoDimensione)
+              ? { allegatoDimensione: Math.max(0, Math.round(c.allegatoDimensione)) }
+              : {}),
+          }
+        : {}),
     });
     if (out.length >= 140) break;
   }
@@ -3220,6 +3320,12 @@ export interface VolunteerActivityRecord {
   firmaBase64: string;
   firmaUpdatedAtMs: number;
   firmaApplied: boolean;
+  gpsLat?: number;
+  gpsLng?: number;
+  gpsAccuracy?: number;
+  gpsSpeed?: number;
+  gpsUpdatedAtMs?: number;
+  gpsOrario?: string;
   createdAt?: any;
   updatedAt?: any;
 }
@@ -3357,13 +3463,19 @@ export async function publishVolunteerActivityFirestore(input: {
   qualificaTurno?: string;
   firmaBase64?: string | null;
   firmaUpdatedAtMs?: number;
+  gpsLat?: number;
+  gpsLng?: number;
+  gpsAccuracy?: number;
+  gpsSpeed?: number;
+  gpsUpdatedAtMs?: number;
+  gpsOrario?: string;
 }): Promise<{ ok: boolean; code?: string }> {
   const volId = String(input?.volunteerId || '').trim();
   if (!VALID_DOC_ID_REGEX.test(volId) || volId === 'vol-admin' || volId === 'admin-centrale-root') {
     return { ok: false, code: 'invalid-volunteer-id' };
   }
 
-  const hashes = getCachedVolunteerPinHashes(volId, input.verifyingPinHashes || []);
+  const hashes = await resolveVolunteerPinHashesWithRosterFallback(volId, input.verifyingPinHashes || []);
   if (hashes.length === 0) {
     return { ok: false, code: 'missing-pin-hash' };
   }
@@ -3379,6 +3491,40 @@ export async function publishVolunteerActivityFirestore(input: {
     ? Math.max(0, Math.min(4102444800000, Math.round(Number(input.firmaUpdatedAtMs) || nowMs)))
     : 0;
 
+  const hasValidGps =
+    typeof input.gpsLat === 'number' &&
+    Number.isFinite(input.gpsLat) &&
+    input.gpsLat >= -90 &&
+    input.gpsLat <= 90 &&
+    typeof input.gpsLng === 'number' &&
+    Number.isFinite(input.gpsLng) &&
+    input.gpsLng >= -180 &&
+    input.gpsLng <= 180;
+
+  const gpsPatch: Record<string, any> = hasValidGps
+    ? {
+        gpsLat: Number(input.gpsLat!.toFixed(6)),
+        gpsLng: Number(input.gpsLng!.toFixed(6)),
+        gpsAccuracy:
+          typeof input.gpsAccuracy === 'number' && Number.isFinite(input.gpsAccuracy)
+            ? Math.max(0, Math.min(50000, Math.round(input.gpsAccuracy)))
+            : 0,
+        gpsSpeed:
+          typeof input.gpsSpeed === 'number' && Number.isFinite(input.gpsSpeed)
+            ? Math.max(0, Math.min(400, Math.round(input.gpsSpeed * 10) / 10))
+            : 0,
+        gpsUpdatedAtMs: Math.max(
+          0,
+          Math.min(4102444800000, Math.round(Number(input.gpsUpdatedAtMs) || nowMs))
+        ),
+        gpsOrario: String(
+          input.gpsOrario || new Date(nowMs).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+        )
+          .trim()
+          .slice(0, 32),
+      }
+    : {};
+
   const docRef = doc(db, 'volunteer_activity', volId);
 
   for (const hash of hashes) {
@@ -3391,6 +3537,7 @@ export async function publishVolunteerActivityFirestore(input: {
       qualificaTurno: qualifica,
       verifyingPinHash: hash,
       updatedAt: serverTimestamp(),
+      ...gpsPatch,
       ...(hasNewFirma
         ? {
             firmaBase64: cleanFirma,
@@ -3421,6 +3568,7 @@ export async function publishVolunteerActivityFirestore(input: {
             firmaBase64: hasNewFirma ? cleanFirma : '',
             firmaUpdatedAtMs: hasNewFirma ? firmaTs : 0,
             firmaApplied: false,
+            ...gpsPatch,
             createdAt: serverTimestamp(),
             updatedAt: serverTimestamp(),
           });
@@ -3785,6 +3933,293 @@ export async function markBachecaInteractionAppliedFirestore(interactionId: stri
       updatedAt: serverTimestamp(),
     });
   } catch {}
+}
+
+// ============================================================================
+// ZERO-PII WRITE-ONLY VOLUNTEER OPERATIONAL QUEUE (volunteer_ops/{opId})
+// Consente agli smartphone volontari PIN-only di inviare in tempo reale:
+// Timbrature, Conferma Lettura Missione, Tempi Operativi, KM, Bozza Missione,
+// Servizi Autonomi, Rifornimenti, Guasti/Sinistri e Voti Assemblee/Sondaggi.
+// ============================================================================
+
+const VOLUNTEER_OP_SCOPE = 'croce_oro_vol_op' as const;
+
+export type VolunteerOpActionType =
+  | 'timbratura'
+  | 'mission_ack'
+  | 'mission_times'
+  | 'mission_km'
+  | 'mission_draft'
+  | 'mission_autonomous'
+  | 'rifornimento'
+  | 'guasto'
+  | 'assemblea_voto';
+
+export interface VolunteerOpRecord {
+  opId: string;
+  scope: typeof VOLUNTEER_OP_SCOPE;
+  actionType: VolunteerOpActionType;
+  volontarioId: string;
+  volontarioNome: string;
+  payloadJson: string;
+  verifyingPinHash: string;
+  status: 'pending' | 'applied';
+  createdAt?: any;
+  updatedAt?: any;
+}
+
+export async function submitVolunteerOpFirestore(input: {
+  actionType: VolunteerOpActionType;
+  volontarioId: string;
+  volontarioNome: string;
+  payload: Record<string, any>;
+  verifyingPinHashes?: Array<string | undefined | null>;
+}): Promise<{ ok: boolean; opId?: string; code?: string }> {
+  const volId = String(input?.volontarioId || '').trim();
+  if (!VALID_DOC_ID_REGEX.test(volId) || volId === 'vol-admin' || volId === 'admin-centrale-root') {
+    return { ok: false, code: 'invalid-volunteer-id' };
+  }
+  const hashes = await resolveVolunteerPinHashesWithRosterFallback(volId, input.verifyingPinHashes || []);
+  if (hashes.length === 0) {
+    return { ok: false, code: 'missing-pin-hash' };
+  }
+
+  let payloadClean = sanitizeForFirestore(input.payload || {});
+  let payloadJson = JSON.stringify(payloadClean);
+  if (payloadJson.length > 30000) {
+    payloadClean = sanitizeForFirestore(stripHeavyMediaRecursive(payloadClean, 2000));
+    payloadJson = JSON.stringify(payloadClean);
+  }
+  if (payloadJson.length > 31500) {
+    payloadClean = sanitizeForFirestore(stripHeavyMediaRecursive(payloadClean, 256));
+    payloadJson = JSON.stringify(payloadClean);
+  }
+  if (payloadJson.length < 2 || payloadJson.length > 32000) {
+    return { ok: false, code: 'payload-too-large' };
+  }
+
+  const nome = String(input.volontarioNome || 'Volontario').trim().slice(0, 120) || 'Volontario';
+  const suffix = `${Date.now()}-${Math.floor(Math.random() * 100000)}`;
+  const opId = `op-${input.actionType.replace(/_/g, '')}-${suffix}`.slice(0, 128);
+  const ref = doc(db, 'volunteer_ops', opId);
+
+  for (const hash of hashes) {
+    try {
+      await setDoc(ref, {
+        opId,
+        scope: VOLUNTEER_OP_SCOPE,
+        actionType: input.actionType,
+        volontarioId: volId,
+        volontarioNome: nome,
+        payloadJson,
+        verifyingPinHash: hash,
+        status: 'pending',
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+      return { ok: true, opId };
+    } catch {
+      // Ritenta con eventuale hash successivo
+    }
+  }
+  return { ok: false, code: 'permission-denied' };
+}
+
+export function listenPendingVolunteerOpsFirestore(
+  onItems: (items: VolunteerOpRecord[]) => void,
+  onError?: (err: Error) => void
+): Unsubscribe {
+  const q = query(
+    collection(db, 'volunteer_ops'),
+    where('scope', '==', VOLUNTEER_OP_SCOPE)
+  );
+  return onSnapshot(
+    q,
+    (snapshot) => {
+      const items: VolunteerOpRecord[] = [];
+      snapshot.forEach((docSnap) => {
+        const d = docSnap.data() as VolunteerOpRecord;
+        if (d && d.status === 'pending' && typeof d.opId === 'string' && typeof d.volontarioId === 'string') {
+          items.push(d);
+        }
+      });
+      items.sort((a, b) => {
+        const msA = typeof a.createdAt?.toMillis === 'function' ? a.createdAt.toMillis() : 0;
+        const msB = typeof b.createdAt?.toMillis === 'function' ? b.createdAt.toMillis() : 0;
+        return msA - msB;
+      });
+      onItems(items);
+    },
+    (error) => {
+      try {
+        handleFirestoreError(error, OperationType.LIST, 'volunteer_ops');
+      } catch (wrapped: any) {
+        onError?.(wrapped);
+      }
+    }
+  );
+}
+
+export async function markVolunteerOpAppliedFirestore(opId: string): Promise<void> {
+  const user = auth.currentUser;
+  if (!user || !user.emailVerified) return;
+  const cleanId = String(opId || '').trim();
+  if (!VALID_DOC_ID_REGEX.test(cleanId)) return;
+  try {
+    await updateDoc(doc(db, 'volunteer_ops', cleanId), {
+      status: 'applied',
+      updatedAt: serverTimestamp(),
+    });
+  } catch {}
+}
+
+// ============================================================================
+// ON-DEMAND BACHECA MEDIA & PROTECTED ATTACHMENTS (bacheca_media/{postId})
+// Consente agli smartphone volontari PIN-only di visualizzare immagini e
+// documenti/PDF allegati ai post della Bacheca caricandoli on-demand per postId.
+// ============================================================================
+
+const BACHECA_MEDIA_SCOPE = 'croce_oro_bacheca_media' as const;
+const syncedBachecaMediaSignatures = new Map<string, string>();
+
+export interface BachecaMediaRecord {
+  postId: string;
+  scope: typeof BACHECA_MEDIA_SCOPE;
+  immaginePostDataUrl: string;
+  immaginePostNome: string;
+  allegatoDataUrl: string;
+  allegatoNome: string;
+  allegatoTipo: string;
+  allegatoMime: string;
+  allegatoDimensione: number;
+  updatedByUid: string;
+  createdAt?: any;
+  updatedAt?: any;
+}
+
+export async function syncBachecaMediaFirestore(posts: any[]): Promise<void> {
+  const user = auth.currentUser;
+  if (!user || !user.emailVerified || !Array.isArray(posts)) return;
+
+  for (const post of posts.slice(0, 60)) {
+    if (!post || typeof post !== 'object' || post.attiva === false) continue;
+    const postId = String(post.id || '').trim();
+    if (!postId || !VALID_DOC_ID_REGEX.test(postId)) continue;
+
+    const imgUrl = typeof post.immaginePostDataUrl === 'string' ? post.immaginePostDataUrl.trim() : '';
+    const attUrl = typeof post.allegatoDataUrl === 'string' ? post.allegatoDataUrl.trim() : '';
+    if (!imgUrl && !attUrl) continue;
+
+    // Rispetta il limite documento Firestore (max 750KB per campo, max ~900KB sommati)
+    let safeImg = imgUrl.length <= 740000 ? imgUrl : '';
+    let safeAtt = attUrl.length <= 740000 ? attUrl : '';
+    if (safeImg.length + safeAtt.length > 880000) {
+      if (safeAtt.length > safeImg.length) {
+        safeAtt = '';
+      } else {
+        safeImg = '';
+      }
+    }
+    if (!safeImg && !safeAtt) continue;
+
+    const imgNome = String(post.immaginePostNome || '').trim().slice(0, 180);
+    const attNome = String(post.allegatoNome || '').trim().slice(0, 180);
+    const attTipo = String(post.allegatoTipo || '').trim().slice(0, 32);
+    const attMime = String(post.allegatoMime || '').trim().slice(0, 120);
+    const attDim = Math.max(0, Math.min(10485760, Math.round(Number(post.allegatoDimensione) || 0)));
+
+    const sig = `${safeImg.length}:${safeImg.slice(0, 32)}|${safeAtt.length}:${safeAtt.slice(0, 32)}|${attNome}`;
+    if (syncedBachecaMediaSignatures.get(postId) === sig) continue;
+
+    const ref = doc(db, 'bacheca_media', postId);
+    const dataFields = {
+      postId,
+      scope: BACHECA_MEDIA_SCOPE,
+      immaginePostDataUrl: safeImg,
+      immaginePostNome: imgNome,
+      allegatoDataUrl: safeAtt,
+      allegatoNome: attNome,
+      allegatoTipo: attTipo,
+      allegatoMime: attMime,
+      allegatoDimensione: attDim,
+      updatedByUid: user.uid,
+    };
+
+    try {
+      const snap = await getDoc(ref);
+      if (!snap.exists()) {
+        await setDoc(ref, {
+          ...dataFields,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+      } else {
+        await updateDoc(ref, {
+          ...dataFields,
+          updatedAt: serverTimestamp(),
+        });
+      }
+      syncedBachecaMediaSignatures.set(postId, sig);
+    } catch {
+      // Non bloccare il sync principale della Bacheca
+    }
+  }
+}
+
+export async function fetchBachecaMediaFirestore(postId: string): Promise<BachecaMediaRecord | null> {
+  const cleanId = String(postId || '').trim();
+  if (!cleanId || !VALID_DOC_ID_REGEX.test(cleanId)) return null;
+
+  // 1. Tentativo rapido via Firestore REST API (ottimale su iOS Safari / smartphone PIN-only)
+  try {
+    const url = `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(
+      firebaseConfig.projectId
+    )}/databases/${encodeURIComponent(
+      firebaseConfig.firestoreDatabaseId
+    )}/documents/bacheca_media/${encodeURIComponent(cleanId)}?key=${encodeURIComponent(
+      firebaseConfig.apiKey
+    )}`;
+    const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    const timeoutId = controller ? setTimeout(() => controller.abort(), 8000) : null;
+    const res = await fetch(url, {
+      method: 'GET',
+      cache: 'no-store',
+      signal: controller ? controller.signal : undefined,
+    });
+    if (timeoutId) clearTimeout(timeoutId);
+    if (res.ok) {
+      const json = await res.json();
+      const decoded = decodeFirestoreRestValue({ mapValue: { fields: json?.fields || {} } });
+      if (decoded && typeof decoded.postId === 'string') {
+        return {
+          postId: decoded.postId,
+          scope: BACHECA_MEDIA_SCOPE,
+          immaginePostDataUrl: String(decoded.immaginePostDataUrl || ''),
+          immaginePostNome: String(decoded.immaginePostNome || ''),
+          allegatoDataUrl: String(decoded.allegatoDataUrl || ''),
+          allegatoNome: String(decoded.allegatoNome || ''),
+          allegatoTipo: String(decoded.allegatoTipo || ''),
+          allegatoMime: String(decoded.allegatoMime || ''),
+          allegatoDimensione: Number(decoded.allegatoDimensione) || 0,
+          updatedByUid: String(decoded.updatedByUid || ''),
+        };
+      }
+    }
+    if (res.status === 404) return null;
+  } catch {}
+
+  // 2. Fallback SDK Firestore
+  try {
+    const snap = await getDocFromServer(doc(db, 'bacheca_media', cleanId));
+    return snap.exists() ? (snap.data() as BachecaMediaRecord) : null;
+  } catch {
+    try {
+      const snap = await getDoc(doc(db, 'bacheca_media', cleanId));
+      return snap.exists() ? (snap.data() as BachecaMediaRecord) : null;
+    } catch {
+      return null;
+    }
+  }
 }
 
 

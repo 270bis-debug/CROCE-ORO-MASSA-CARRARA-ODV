@@ -12,6 +12,8 @@ import { scaricaAttestatoPDF } from './src/utils/pdfAttestatoCorso';
 import { LUOGHI_TIMBRATURA_DEFAULT } from './src/data/adminMockData';
 import { LuogoTimbratura } from './src/types/adminTypes';
 import { BUILD_INFO } from './src/buildInfo';
+import { applyStrictCors, verifyApiCaller } from './server-lib/apiAuth';
+import { handleServerlessEmailRoute } from './server-lib/smtpMailer';
 import {
   formatDateItaly,
   formatDateTimeItaly,
@@ -41,10 +43,13 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // Configurazione Web Push VAPID per Notifiche Push in Background a Schermo Spento
-const VAPID_KEYS = {
-  publicKey: process.env.VAPID_PUBLIC_KEY || 'BBIgy7sPt5aiNKmumUH57K28pFivVG3qKun0xMT7ZLJq8Kc6c_hCzawksKptqyOI0pIXRZ7I6tmEr9D_jM4a6bc',
-  privateKey: process.env.VAPID_PRIVATE_KEY || '19czcRLqXXAWjqLkkhHa53NQ5erahFRbIcJ-mTOOqBE'
-};
+// Le chiavi di produzione vengono lette da process.env (nessun segreto hardcoded nel codice)
+const envVapidPublic = (process.env.VAPID_PUBLIC_KEY || '').trim();
+const envVapidPrivate = (process.env.VAPID_PRIVATE_KEY || '').trim();
+const VAPID_KEYS =
+  envVapidPublic && envVapidPrivate
+    ? { publicKey: envVapidPublic, privateKey: envVapidPrivate }
+    : webpush.generateVAPIDKeys();
 
 webpush.setVapidDetails(
   'mailto:centrale@croceoromassacarrara.it',
@@ -1453,13 +1458,11 @@ async function startServer() {
   const server = http.createServer(app);
   const wss = new WebSocketServer({ server });
 
-  // ABILITA CORS COMPLETO per consentire l'accesso da smartphone Android (TWA / WebView / app installata)
+  // CORS rigoroso su domini autorizzati (croceoro.org, vercel.app, AI Studio, localhost)
   app.use((req, res, next) => {
-    res.header('Access-Control-Allow-Origin', '*');
-    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+    const originAllowed = applyStrictCors(req, res, 'GET, POST, PUT, DELETE, OPTIONS');
     if (req.method === 'OPTIONS') {
-      return res.sendStatus(200);
+      return res.sendStatus(originAllowed ? 204 : 403);
     }
     next();
   });
@@ -1698,7 +1701,7 @@ async function startServer() {
 
     try {
       const smtpHost = process.env.SMTP_HOST || 'mail.tophost.it';
-      const smtpPass = process.env.SMTP_PASS || 'Applicazione26!';
+      const smtpPass = process.env.SMTP_PASS || '';
       const smtpPort = Number(process.env.SMTP_PORT) || 587;
       const isSecure = smtpPort === 465;
 
@@ -2201,7 +2204,7 @@ async function startServer() {
 
     try {
       const smtpHost = process.env.SMTP_HOST || 'mail.tophost.it';
-      const smtpPass = process.env.SMTP_PASS || 'Applicazione26!';
+      const smtpPass = process.env.SMTP_PASS || '';
       const smtpPort = Number(process.env.SMTP_PORT) || 587;
       const isSecure = smtpPort === 465;
 
@@ -8130,7 +8133,7 @@ async function startServer() {
       `;
 
       const smtpHost = process.env.SMTP_HOST || 'mail.tophost.it';
-      const smtpPass = process.env.SMTP_PASS || 'Applicazione26!';
+      const smtpPass = process.env.SMTP_PASS || '';
       const smtpPort = Number(process.env.SMTP_PORT) || 587;
       const isSecure = smtpPort === 465;
       const candidateUsers = Array.from(new Set([
@@ -8343,6 +8346,10 @@ async function startServer() {
 
   // Self-test Push sul proprio dispositivo (invia solo all'endpoint chiamante già registrato o passato nel body, con rate-limit 5s)
   app.post('/api/push-test', async (req, res) => {
+    const auth = await verifyApiCaller(req);
+    if (!auth.authorized) {
+      return res.status(401).json({ success: false, error: auth.reason || 'Autenticazione richiesta' });
+    }
     const directSub = req.body?.subscription;
     const endpoint = typeof req.body?.endpoint === 'string'
       ? req.body.endpoint.trim()
@@ -8391,6 +8398,10 @@ async function startServer() {
 
   // Inoltro diretto Push ad alta priorità a sottoscrizioni sincronizzate via Firestore
   app.post('/api/push-send', async (req, res) => {
+    const auth = await verifyApiCaller(req);
+    if (!auth.authorized) {
+      return res.status(401).json({ success: false, error: auth.reason || 'Autenticazione richiesta' });
+    }
     const rawSubs = Array.isArray(req.body?.subscriptions) ? req.body.subscriptions.slice(0, 250) : [];
     const notifPayload = req.body?.payload && typeof req.body.payload === 'object' ? req.body.payload : null;
     if (rawSubs.length === 0 || !notifPayload) {
@@ -9589,7 +9600,7 @@ async function startServer() {
 
       // Configurazione SMTP mail.tophost.it (TopHost)
       const smtpHost = process.env.SMTP_HOST || 'mail.tophost.it';
-      const smtpPass = process.env.SMTP_PASS || 'Applicazione26!';
+      const smtpPass = process.env.SMTP_PASS || '';
       const smtpPort = Number(process.env.SMTP_PORT) || 587;
       const isSecure = smtpPort === 465;
 
@@ -10306,6 +10317,30 @@ async function startServer() {
     }
   });
 
+  // ENDPOINT: Invio Email con PDF Guida Installazione App Croce Oro (Apple & Android • Chrome & Safari)
+  app.post('/api/invia-email-guida-installazione', async (req, res) => {
+    try {
+      const caller = await verifyApiCaller(req);
+      if (!caller.authorized) {
+        return res.status(401).json({
+          ok: false,
+          success: false,
+          inviata: false,
+          error: caller.reason || 'Non autorizzato',
+        });
+      }
+      const result = await handleServerlessEmailRoute('/api/invia-email-guida-installazione', req.body || {});
+      return res.status(result.status).json(result.payload);
+    } catch (err: any) {
+      return res.status(500).json({
+        ok: false,
+        success: false,
+        inviata: false,
+        error: err?.message || 'Errore elaborazione invio PDF guida installazione',
+      });
+    }
+  });
+
   // ENDPOINT: Invio Email Automatica di Attivazione con PIN Provvisorio, Link Pubblico e Portale HTML Autonomo (No Account Google)
   app.post('/api/invia-email-invito-reset-pin', async (req, res) => {
     try {
@@ -10372,7 +10407,7 @@ async function startServer() {
       const EMAIL_MITTENTE_UFFICIALE = 'sistemiautomatizzati@croceoro.org';
 
       const smtpHost = process.env.SMTP_HOST || 'mail.tophost.it';
-      const smtpPass = process.env.SMTP_PASS || 'Applicazione26!';
+      const smtpPass = process.env.SMTP_PASS || '';
       const smtpPort = Number(process.env.SMTP_PORT) || 587;
       const isSecure = smtpPort === 465;
 
@@ -10611,7 +10646,7 @@ async function startServer() {
       const EMAIL_MITTENTE_UFFICIALE = 'sistemiautomatizzati@croceoro.org';
 
       const smtpHost = process.env.SMTP_HOST || 'mail.tophost.it';
-      const smtpPass = process.env.SMTP_PASS || 'Applicazione26!';
+      const smtpPass = process.env.SMTP_PASS || '';
       const smtpPort = Number(process.env.SMTP_PORT) || 587;
       const isSecure = smtpPort === 465;
 
@@ -10859,7 +10894,7 @@ async function startServer() {
       const destinatari = ['presidenza@croceoro.org'];
 
       const smtpHost = process.env.SMTP_HOST || 'mail.tophost.it';
-      const smtpPass = process.env.SMTP_PASS || 'Applicazione26!';
+      const smtpPass = process.env.SMTP_PASS || '';
       const smtpPort = Number(process.env.SMTP_PORT) || 587;
       const isSecure = smtpPort === 465;
 
@@ -11003,7 +11038,7 @@ async function startServer() {
   // Helper interno SMTP riusabile per notifiche automatiche (Scadenze Fiscali ODV & Strumenti Turni)
   const createCroceOroMailTransporter = async () => {
     const smtpHost = process.env.SMTP_HOST || 'mail.tophost.it';
-    const smtpPass = process.env.SMTP_PASS || 'Applicazione26!';
+    const smtpPass = process.env.SMTP_PASS || '';
     const smtpPort = Number(process.env.SMTP_PORT) || 587;
     const isSecure = smtpPort === 465;
     const candidateUsers = Array.from(new Set([
@@ -11369,7 +11404,7 @@ async function startServer() {
       const destinatari = ['mezzi@croceoro.org', 'presidenza@croceoro.org'];
 
       const smtpHost = process.env.SMTP_HOST || 'mail.tophost.it';
-      const smtpPass = process.env.SMTP_PASS || 'Applicazione26!';
+      const smtpPass = process.env.SMTP_PASS || '';
       const smtpPort = Number(process.env.SMTP_PORT) || 587;
       const isSecure = smtpPort === 465;
 
@@ -11628,7 +11663,7 @@ async function startServer() {
       ]));
 
       const smtpHost = process.env.SMTP_HOST || 'mail.tophost.it';
-      const smtpPass = process.env.SMTP_PASS || 'Applicazione26!';
+      const smtpPass = process.env.SMTP_PASS || '';
       const smtpPort = Number(process.env.SMTP_PORT) || 587;
       const isSecure = smtpPort === 465;
 
@@ -11934,7 +11969,7 @@ async function startServer() {
       ]));
 
       const smtpHost = process.env.SMTP_HOST || 'mail.tophost.it';
-      const smtpPass = process.env.SMTP_PASS || 'Applicazione26!';
+      const smtpPass = process.env.SMTP_PASS || '';
       const smtpPort = Number(process.env.SMTP_PORT) || 587;
       const isSecure = smtpPort === 465;
 
@@ -12587,7 +12622,7 @@ async function startServer() {
       ]));
 
       const smtpHost = process.env.SMTP_HOST || 'mail.tophost.it';
-      const smtpPass = process.env.SMTP_PASS || 'Applicazione26!';
+      const smtpPass = process.env.SMTP_PASS || '';
       const smtpPort = Number(process.env.SMTP_PORT) || 587;
       const isSecure = smtpPort === 465;
 
@@ -12704,13 +12739,12 @@ async function startServer() {
   });
 
   // Endpoint versione corrente per auto-aggiornamento PWA e verifica immediata release su Android e Apple
-  app.get(['/api/version', '/api/version.json', '/version.json'], (_req, res) => {
+  app.get(['/api/version', '/api/version.json', '/version.json'], (req, res) => {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0');
     res.setHeader('Pragma', 'no-cache');
     res.setHeader('Expires', '0');
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+    applyStrictCors(req, res, 'GET, OPTIONS');
 
     try {
       const vPath = isProd && distExists

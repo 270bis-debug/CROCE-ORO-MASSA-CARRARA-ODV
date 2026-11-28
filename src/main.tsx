@@ -5,6 +5,10 @@ import App from './App.tsx';
 import './index.css';
 import { initPWAUpdater } from './services/pwaUpdater';
 import { AppErrorBoundary } from './components/common/AppErrorBoundary';
+import { installApiAuthFetchInterceptor } from './utils/apiAuthFetch';
+
+// Inizializza autenticazione automatica per tutte le chiamate /api/* (Firebase Bearer o PIN Volontario)
+installApiAuthFetchInterceptor();
 
 // Inizializza Service Worker e controllo aggiornamenti automatici su Android e Apple
 initPWAUpdater();

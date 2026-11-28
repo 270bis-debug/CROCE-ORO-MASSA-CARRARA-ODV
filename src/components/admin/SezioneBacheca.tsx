@@ -73,6 +73,7 @@ interface SezioneBachecaProps {
   isPresidente?: boolean;
   onNotificaRadio?: (testo: string, tipo?: 'centrale' | 'mezzo' | 'sistema' | 'allarme') => void;
   allowedSubtabs?: string[] | null;
+  onDismissAutoReleaseNote?: (postId: string) => void;
 }
 
 export const SezioneBacheca: React.FC<SezioneBachecaProps> = ({
@@ -86,7 +87,8 @@ export const SezioneBacheca: React.FC<SezioneBachecaProps> = ({
   isAdmin = true,
   isPresidente = false,
   onNotificaRadio,
-  allowedSubtabs = null
+  allowedSubtabs = null,
+  onDismissAutoReleaseNote
 }) => {
   const nomiSubCustom = useNomiSottosezioniCustom();
   const canShowSubtab = (id: string) => !allowedSubtabs || allowedSubtabs.includes(id);
@@ -943,14 +945,17 @@ export const SezioneBacheca: React.FC<SezioneBachecaProps> = ({
           {comunicazioniFiltrate.map((com) => {
             const isUrgente = com.priorita === 'Urgente';
             const isImportante = com.priorita === 'Importante';
+            const isAutoRelease = Boolean(com.isAutoReleaseNote);
             const puoModificarePost =
-              isAdmin ||
-              (com.autoreId && com.autoreId === operatoreId) ||
-              (com.autore && com.autore.trim().toLowerCase() === operatoreCorrente.trim().toLowerCase());
+              !isAutoRelease &&
+              (isAdmin ||
+                (com.autoreId && com.autoreId === operatoreId) ||
+                (com.autore && com.autore.trim().toLowerCase() === operatoreCorrente.trim().toLowerCase()));
             const puoEliminarePost =
-              isAdmin ||
-              (com.autoreId && com.autoreId === operatoreId) ||
-              (com.autore && com.autore.trim().toLowerCase() === operatoreCorrente.trim().toLowerCase());
+              !isAutoRelease &&
+              (isAdmin ||
+                (com.autoreId && com.autoreId === operatoreId) ||
+                (com.autore && com.autore.trim().toLowerCase() === operatoreCorrente.trim().toLowerCase()));
 
             return (
               <div
@@ -958,6 +963,8 @@ export const SezioneBacheca: React.FC<SezioneBachecaProps> = ({
                 className={`p-4 sm:p-5 rounded-2xl border-2 transition-all relative overflow-hidden ${
                   !com.attiva
                     ? 'bg-slate-900/40 border-slate-800/70 opacity-60'
+                    : isAutoRelease
+                    ? 'bg-gradient-to-r from-cyan-950/50 via-slate-900 to-slate-900 border-cyan-500/70 shadow-lg shadow-cyan-950/30'
                     : com.evidenziata
                     ? 'bg-gradient-to-r from-violet-950/40 via-slate-900 to-slate-900 border-violet-500/80 shadow-lg shadow-violet-950/40 ring-1 ring-violet-400/50'
                     : isUrgente
@@ -970,6 +977,11 @@ export const SezioneBacheca: React.FC<SezioneBachecaProps> = ({
                 {/* Header Scheda: Badge, Titolo, Data */}
                 <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2.5 pb-2.5 border-b border-slate-800/80">
                   <div className="flex items-center gap-2 flex-wrap">
+                    {isAutoRelease && (
+                      <span className="px-2 py-0.5 rounded-full bg-cyan-400 text-slate-950 text-[10px] font-black uppercase shadow-sm">
+                        Aggiornamento App v{com.releaseVersion || ''}
+                      </span>
+                    )}
                     {/* Badge Evidenziata */}
                     {com.evidenziata && (
                       <span className="px-2 py-0.5 rounded-full bg-violet-500 text-slate-950 text-[10px] font-black uppercase flex items-center gap-1 shadow-sm">
@@ -979,21 +991,23 @@ export const SezioneBacheca: React.FC<SezioneBachecaProps> = ({
                     )}
 
                     {/* Badge Priorità */}
-                    <span
-                      className={`px-2 py-0.5 rounded-full text-[10px] font-black uppercase border ${
-                        isUrgente
-                          ? 'bg-red-950 text-red-300 border-red-700/60 animate-pulse'
-                          : isImportante
-                          ? 'bg-amber-950 text-amber-300 border-amber-700/60'
-                          : 'bg-emerald-950 text-emerald-300 border-emerald-700/60'
-                      }`}
-                    >
-                      {isUrgente ? '🔴 Urgente' : isImportante ? '🟡 Importante' : '🟢 Ordinaria'}
-                    </span>
+                    {!isAutoRelease && (
+                      <span
+                        className={`px-2 py-0.5 rounded-full text-[10px] font-black uppercase border ${
+                          isUrgente
+                            ? 'bg-red-950 text-red-300 border-red-700/60 animate-pulse'
+                            : isImportante
+                            ? 'bg-amber-950 text-amber-300 border-amber-700/60'
+                            : 'bg-emerald-950 text-emerald-300 border-emerald-700/60'
+                        }`}
+                      >
+                        {isUrgente ? '🔴 Urgente' : isImportante ? '🟡 Importante' : '🟢 Ordinaria'}
+                      </span>
+                    )}
 
                     {/* Categoria */}
                     <span className="px-2 py-0.5 rounded-full bg-slate-950 text-slate-300 border border-slate-800 text-[10px] font-bold">
-                      {com.categoria}
+                      {isAutoRelease ? 'Novità per il tuo account' : com.categoria}
                     </span>
 
                     {/* Sezione Target */}
@@ -1196,84 +1210,101 @@ export const SezioneBacheca: React.FC<SezioneBachecaProps> = ({
                 {/* Footer Scheda: Autore e Azioni Amministratore */}
                 <div className="pt-2.5 border-t border-slate-800/80 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs">
                   <div className="flex items-center gap-2 text-slate-400 text-[11px]">
-                    <span className="font-semibold">Pubblicato da:</span>
-                    <strong className="text-slate-200">{com.autore}</strong>
+                    <span className="font-semibold">{isAutoRelease ? 'Avviso automatico:' : 'Pubblicato da:'}</span>
+                    <strong className={isAutoRelease ? 'text-cyan-300' : 'text-slate-200'}>{com.autore}</strong>
                   </div>
 
                   <div className="flex items-center gap-1.5 flex-wrap self-end sm:self-auto">
-                    {/* Toggle Evidenziata (Pin) */}
-                    {canPubblicaBacheca && (
-                    <button
-                      type="button"
-                      onClick={() => toggleEvidenziata(com.id)}
-                      className={`px-2.5 py-1 rounded-lg text-xs font-bold flex items-center gap-1 transition-all cursor-pointer border ${
-                        com.evidenziata
-                          ? 'bg-violet-900/60 text-violet-300 border-violet-700/60 hover:bg-violet-800'
-                          : 'bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-700'
-                      }`}
-                      title={com.evidenziata ? 'Rimuovi evidenza' : 'Fissa in evidenza in cima'}
-                    >
-                      {com.evidenziata ? <PinOff className="w-3.5 h-3.5 text-violet-300" /> : <Pin className="w-3.5 h-3.5 text-slate-400" />}
-                      <span>{com.evidenziata ? 'Sfissa' : 'Evidenzia'}</span>
-                    </button>
-                    )}
+                    {isAutoRelease ? (
+                      onDismissAutoReleaseNote && (
+                        <button
+                          type="button"
+                          onClick={() => onDismissAutoReleaseNote(com.id)}
+                          className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-cyan-200 text-xs font-bold border border-cyan-500/40 transition-all cursor-pointer"
+                          title="Nascondi questo avviso di aggiornamento per il tuo account"
+                        >
+                          Ho capito • Nascondi
+                        </button>
+                      )
+                    ) : (
+                      <>
+                        {/* Toggle Evidenziata (Pin) */}
+                        {canPubblicaBacheca && (
+                        <button
+                          type="button"
+                          onClick={() => toggleEvidenziata(com.id)}
+                          className={`px-2.5 py-1 rounded-lg text-xs font-bold flex items-center gap-1 transition-all cursor-pointer border ${
+                            com.evidenziata
+                              ? 'bg-violet-900/60 text-violet-300 border-violet-700/60 hover:bg-violet-800'
+                              : 'bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-700'
+                          }`}
+                          title={com.evidenziata ? 'Rimuovi evidenza' : 'Fissa in evidenza in cima'}
+                        >
+                          {com.evidenziata ? <PinOff className="w-3.5 h-3.5 text-violet-300" /> : <Pin className="w-3.5 h-3.5 text-slate-400" />}
+                          <span>{com.evidenziata ? 'Sfissa' : 'Evidenzia'}</span>
+                        </button>
+                        )}
 
-                    {/* Toggle Attiva / Archivia */}
-                    {canPubblicaBacheca && (
-                    <button
-                      type="button"
-                      onClick={() => toggleAttiva(com.id)}
-                      className={`px-2.5 py-1 rounded-lg text-xs font-bold flex items-center gap-1 transition-all cursor-pointer border ${
-                        com.attiva
-                          ? 'bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-700'
-                          : 'bg-emerald-950 hover:bg-emerald-900 text-emerald-300 border-emerald-700'
-                      }`}
-                      title={com.attiva ? 'Archivia (non visibile ai volontari)' : 'Riattiva in bacheca'}
-                    >
-                      {com.attiva ? <EyeOff className="w-3.5 h-3.5 text-slate-400" /> : <Eye className="w-3.5 h-3.5 text-emerald-400" />}
-                      <span>{com.attiva ? 'Archivia' : 'Riattiva'}</span>
-                    </button>
-                    )}
+                        {/* Toggle Attiva / Archivia */}
+                        {canPubblicaBacheca && (
+                        <button
+                          type="button"
+                          onClick={() => toggleAttiva(com.id)}
+                          className={`px-2.5 py-1 rounded-lg text-xs font-bold flex items-center gap-1 transition-all cursor-pointer border ${
+                            com.attiva
+                              ? 'bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-700'
+                              : 'bg-emerald-950 hover:bg-emerald-900 text-emerald-300 border-emerald-700'
+                          }`}
+                          title={com.attiva ? 'Archivia (non visibile ai volontari)' : 'Riattiva in bacheca'}
+                        >
+                          {com.attiva ? <EyeOff className="w-3.5 h-3.5 text-slate-400" /> : <Eye className="w-3.5 h-3.5 text-emerald-400" />}
+                          <span>{com.attiva ? 'Archivia' : 'Riattiva'}</span>
+                        </button>
+                        )}
 
-                    {/* Modifica: consentita all'autore del post o all'Amministratore */}
-                    {canPubblicaBacheca && puoModificarePost && (
-                      <button
-                        type="button"
-                        onClick={() => apriModifica(com)}
-                        className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-teal-300 hover:text-white text-xs font-bold flex items-center gap-1 border border-slate-700 transition-all cursor-pointer"
-                        title="Modifica comunicazione (Autore o Admin)"
-                      >
-                        <Edit3 className="w-3.5 h-3.5 text-teal-400" />
-                        <span>Modifica</span>
-                      </button>
-                    )}
+                        {/* Modifica: consentita all'autore del post o all'Amministratore */}
+                        {canPubblicaBacheca && puoModificarePost && (
+                          <button
+                            type="button"
+                            onClick={() => apriModifica(com)}
+                            className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-teal-300 hover:text-white text-xs font-bold flex items-center gap-1 border border-slate-700 transition-all cursor-pointer"
+                            title="Modifica comunicazione (Autore o Admin)"
+                          >
+                            <Edit3 className="w-3.5 h-3.5 text-teal-400" />
+                            <span>Modifica</span>
+                          </button>
+                        )}
 
-                    {/* Elimina: consentita all'autore del post o all'Amministratore */}
-                    {canPubblicaBacheca && puoEliminarePost && (
-                      <button
-                        type="button"
-                        onClick={() => setIdDaEliminare(com.id)}
-                        className="px-2.5 py-1 rounded-lg bg-red-950/60 hover:bg-red-900/80 text-red-300 hover:text-white text-xs font-bold flex items-center gap-1 border border-red-800/60 transition-all cursor-pointer"
-                        title="Elimina comunicazione (Autore o Admin)"
-                      >
-                        <Trash2 className="w-3.5 h-3.5 text-red-400" />
-                        <span>Elimina</span>
-                      </button>
+                        {/* Elimina: consentita all'autore del post o all'Amministratore */}
+                        {canPubblicaBacheca && puoEliminarePost && (
+                          <button
+                            type="button"
+                            onClick={() => setIdDaEliminare(com.id)}
+                            className="px-2.5 py-1 rounded-lg bg-red-950/60 hover:bg-red-900/80 text-red-300 hover:text-white text-xs font-bold flex items-center gap-1 border border-red-800/60 transition-all cursor-pointer"
+                            title="Elimina comunicazione (Autore o Admin)"
+                          >
+                            <Trash2 className="w-3.5 h-3.5 text-red-400" />
+                            <span>Elimina</span>
+                          </button>
+                        )}
+                      </>
                     )}
                   </div>
                 </div>
 
                 {/* Sezione Commenti, Risposte Annidate e Likes del Post */}
-                <CommentiBachecaPost
-                  post={com}
-                  currentUserId={operatoreId || 'admin'}
-                  currentUserName={operatoreCorrente || 'Amministratore'}
-                  currentUserRuolo={isAdmin ? 'Amministratore' : isPresidente ? 'Presidente' : 'Operatore'}
-                  isAdmin={Boolean(isAdmin)}
-                  isPresidente={Boolean(isPresidente)}
-                  onAggiornaPost={handleAggiornaSingoloPost}
-                  mostraCommentiIniziali={true}
-                />
+                {!isAutoRelease && (
+                  <CommentiBachecaPost
+                    post={com}
+                    currentUserId={operatoreId || 'admin'}
+                    currentUserName={operatoreCorrente || 'Amministratore'}
+                    currentUserRuolo={isAdmin ? 'Amministratore' : isPresidente ? 'Presidente' : 'Operatore'}
+                    isAdmin={Boolean(isAdmin)}
+                    isPresidente={Boolean(isPresidente)}
+                    onAggiornaPost={handleAggiornaSingoloPost}
+                    mostraCommentiIniziali={true}
+                  />
+                )}
               </div>
             );
           })}

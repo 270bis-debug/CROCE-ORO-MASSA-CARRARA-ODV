@@ -2,6 +2,7 @@
 // 1. Firebase Cloud Firestore Live (onSnapshot) -> Sincronizzazione globale reale su Vercel, Mobile PWA e Desktop
 // 2. WebSocket & HTTP Polling -> Sincronizzazione locale/Express (tsx server.ts / Cloud Server dedicato)
 
+import { authFetch } from '../utils/apiAuthFetch';
 import {
   subscribeToFirebaseAuth,
   signInWithGoogleCloudSync,
@@ -72,6 +73,14 @@ import {
   submitBachecaInteractionFirestore,
   listenPendingBachecaInteractionsFirestore,
   markBachecaInteractionAppliedFirestore,
+  VolunteerOpActionType,
+  VolunteerOpRecord,
+  submitVolunteerOpFirestore,
+  listenPendingVolunteerOpsFirestore,
+  markVolunteerOpAppliedFirestore,
+  BachecaMediaRecord,
+  syncBachecaMediaFirestore,
+  fetchBachecaMediaFirestore,
 } from './firebase';
 import { buildPinResetHash } from '../utils/hashReset';
 import {
@@ -351,6 +360,12 @@ class RealtimeService {
   private bachecaInteractionsUnsub: (() => void) | null = null;
   private bachecaInteractionsReconciling: Set<string> = new Set();
   private pendingBachecaInteractionsQueue: BachecaInteractionRecord[] = [];
+  private volunteerOpsUnsub: (() => void) | null = null;
+  private volunteerOpsReconciling: Set<string> = new Set();
+  private pendingVolunteerOpsQueue: VolunteerOpRecord[] = [];
+  private bachecaMediaCache: Map<string, BachecaMediaRecord | null> = new Map();
+  private lastVolunteerCloudGpsAt: number = 0;
+  private lastOperationalPushByKey: Map<string, number> = new Map();
   private lastBachecaPushSentByPost: Map<string, number> = new Map();
   private publicRosterUnsub: (() => void) | null = null;
   private publicBoardUnsub: (() => void) | null = null;
@@ -480,6 +495,77 @@ class RealtimeService {
     'UPDATE_ASSEMBLEE_SONDAGGI',
   ]);
 
+  private readonly PIN_CHANNELED_NO_LEGACY_QUEUE_TYPES = new Set<string>([
+    'UPDATE_TIMBRATURE',
+    'UPDATE_BACHECA',
+    'CONFIRM_MISSION_READ',
+    'UPDATE_OPERATIVE_TIMES',
+    'UPDATE_KM',
+    'UPDATE_MISSION_DRAFT_DATA',
+    'DISPATCH_MISSION',
+    'UPDATE_RIFORNIMENTI_MEZZI',
+    'UPDATE_GUASTI_MEZZI',
+    'UPDATE_ASSEMBLEE_SONDAGGI',
+    'SUBMIT_CANDIDATURA_TURNO',
+    'UPDATE_SHIFT',
+    'UPDATE_VOLONTARI_LIST',
+    'UPDATE_VOLONTARIO',
+    'UPDATE_TURNI',
+    'SEND_RADIO_MESSAGE',
+    'TOGGLE_RADIO_PTT_LIVE',
+    'TRIGGER_RADIO_EMERGENCY',
+    'NOTIFICA_BACHECA',
+  ]);
+
+  private getActivePinVolunteerIdentity(): {
+    id: string;
+    nome: string;
+    qualifica: string;
+    mezzo: string;
+    orarioInizio: string;
+    pinHashes: string[];
+  } | null {
+    if (typeof localStorage === 'undefined') return null;
+    let id = String(this.localRadioClientMeta.volontarioId || '').trim();
+    let nome = '';
+    let qualifica = '';
+    let mezzo = '';
+    let orarioInizio = '';
+    try {
+      const rawActive = localStorage.getItem('CROCE_ORO_VOLONTARIO_LOGGATO');
+      if (rawActive) {
+        const parsed = JSON.parse(rawActive);
+        if (parsed && typeof parsed === 'object') {
+          if (!id && typeof parsed.id === 'string') id = parsed.id.trim();
+          nome = `${parsed.nome || ''} ${parsed.cognome || ''}`.trim() || String(parsed.volontarioNome || '').trim();
+          qualifica = String(parsed.qualifica || '').trim();
+          mezzo = String(parsed.mezzoAttivo || parsed.mezzoScelto || '').trim();
+          orarioInizio = String(parsed.orarioInizio || parsed.ultimoAccesso || '').trim();
+        }
+      }
+    } catch {}
+    if (!id) {
+      try {
+        id = String(localStorage.getItem('CROCE_ORO_SUBSCRIBED_VOL_ID') || '').trim();
+      } catch {}
+    }
+    if (!id || id === 'vol-admin' || id === 'admin-centrale-root') return null;
+    if (!nome) {
+      try {
+        nome = String(localStorage.getItem('CROCE_ORO_SUBSCRIBED_VOL_NOME') || '').trim();
+      } catch {}
+    }
+    const pinHashes = this.resolveVolunteerPinHashCandidates(id);
+    return {
+      id,
+      nome: nome || 'Volontario',
+      qualifica: qualifica || 'Volontario',
+      mezzo,
+      orarioInizio,
+      pinHashes,
+    };
+  }
+
   private loadOfflineQueueFromStorage() {
     if (typeof window === 'undefined') return;
     try {
@@ -487,9 +573,28 @@ class RealtimeService {
       if (raw) {
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed)) {
-          this.offlineQueue = parsed
-            .filter((x) => x && typeof x.type === 'string')
+          const maxAgeMs = 12 * 3600 * 1000;
+          const now = Date.now();
+          const isStaticPinMode = this.isServerlessStaticHost() && !this.firebaseSession.isAuthorized;
+          const cleaned = parsed
+            .filter((x) => {
+              if (!x || typeof x.type !== 'string') return false;
+              if (this.EPHEMERAL_NO_QUEUE_TYPES.has(x.type)) return false;
+              const age = now - Number(x.createdAt || 0);
+              if (age > maxAgeMs) return false;
+              // Su Vercel in modalità volontario PIN-only elimina eventuali vecchi eventi legacy non smaltibili (fix banner bloccato)
+              if (isStaticPinMode && !x.type.startsWith('VOLUNTEER_OP:')) {
+                return false;
+              }
+              return true;
+            })
             .slice(-60);
+          this.offlineQueue = cleaned;
+          if (cleaned.length !== parsed.length) {
+            try {
+              localStorage.setItem(this.OFFLINE_QUEUE_STORAGE_KEY, JSON.stringify(cleaned));
+            } catch {}
+          }
         }
       }
     } catch {
@@ -535,6 +640,14 @@ class RealtimeService {
 
   private enqueueOfflineEvent(type: string, data: any) {
     if (this.EPHEMERAL_NO_QUEUE_TYPES.has(type)) return;
+    // Su host statico Vercel senza Google Auth, non intrappolare eventi già instradati sui canali PIN Firestore
+    if (
+      this.isServerlessStaticHost() &&
+      !this.firebaseSession.isAuthorized &&
+      !type.startsWith('VOLUNTEER_OP:')
+    ) {
+      return;
+    }
     // Evita di saturare localStorage con payload enormi (>250KB)
     try {
       const serializedSize = JSON.stringify(data || {}).length;
@@ -573,9 +686,6 @@ class RealtimeService {
     }
     const wsOpen = Boolean(this.ws && this.ws.readyState === WebSocket.OPEN);
     const cloudReady = Boolean(this.firebaseSession.isAuthorized && this.firestoreActive);
-    if (!wsOpen && !cloudReady && this.isServerlessStaticHost()) {
-      return 0;
-    }
 
     this.isFlushingOfflineQueue = true;
     this.emitOfflineQueueStatus();
@@ -588,23 +698,46 @@ class RealtimeService {
       for (const item of batch) {
         let delivered = false;
         try {
-          this.applyLocalEventToShards(item.type, item.data);
-          if (cloudReady) {
-            delivered = true;
-          }
-          if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-            this.ws.send(JSON.stringify({ type: item.type, data: item.data }));
-            delivered = true;
-          } else if (!this.isServerlessStaticHost()) {
-            const targetBase = this.getApiBaseUrl();
-            if (targetBase) {
-              const resp = await fetch(`${targetBase}/api/event`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ type: item.type, data: item.data }),
-                cache: 'no-store',
+          if (item.type.startsWith('VOLUNTEER_OP:')) {
+            const actionType = item.type.slice('VOLUNTEER_OP:'.length) as VolunteerOpActionType;
+            const vol = this.getActivePinVolunteerIdentity();
+            if (vol && item.data && typeof item.data === 'object') {
+              const res = await submitVolunteerOpFirestore({
+                actionType,
+                volontarioId: item.data._volId || vol.id,
+                volontarioNome: item.data._volNome || vol.nome,
+                payload: item.data.payload || item.data,
+                verifyingPinHashes: vol.pinHashes,
               });
-              if (resp.ok) delivered = true;
+              if (res.ok) {
+                delivered = true;
+              }
+            } else {
+              // Nessun volontario attivo compatibile: evita blocco infinito
+              delivered = true;
+            }
+          } else if (this.isServerlessStaticHost() && !wsOpen && !cloudReady) {
+            // Evento legacy non inviabile su host statico PIN-only: scarta per sbloccare definitivamente la coda
+            delivered = true;
+          } else {
+            this.applyLocalEventToShards(item.type, item.data);
+            if (cloudReady) {
+              delivered = true;
+            }
+            if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+              this.ws.send(JSON.stringify({ type: item.type, data: item.data }));
+              delivered = true;
+            } else if (!this.isServerlessStaticHost()) {
+              const targetBase = this.getApiBaseUrl();
+              if (targetBase) {
+                const resp = await fetch(`${targetBase}/api/event`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ type: item.type, data: item.data }),
+                  cache: 'no-store',
+                });
+                if (resp.ok) delivered = true;
+              }
             }
           }
         } catch {
@@ -848,11 +981,12 @@ class RealtimeService {
   private initFirebaseRealtime() {
     if (typeof window === 'undefined') return;
     try {
-      // Listener pubblici zero-PII attivi subito all'avvio: consentono sia ai nuovi smartphone/iPhone
-      // sia alla Modalità Monitor (senza login) di ricevere istantaneamente volontari, tabellone turni e bacheca.
+      // Listener pubblici zero-PII + Radio VHF attivi subito all'avvio: consentono sia ai nuovi smartphone/iPhone
+      // (anche PIN-only senza Google Auth) sia alla Modalità Monitor di ricevere volontari, turni, bacheca e radio live.
       this.attachPublicRosterListener();
       this.attachPublicBoardListener();
       this.attachPublicRaspberryListener();
+      this.attachRadioSlotListeners();
 
       subscribeToFirebaseAuth((session) => {
         this.firebaseSession = session;
@@ -1487,7 +1621,16 @@ class RealtimeService {
       } catch {}
       this.bachecaInteractionsUnsub = null;
     }
-    this.detachRadioSlotListeners();
+    if (this.volunteerOpsUnsub) {
+      try {
+        this.volunteerOpsUnsub();
+      } catch {}
+      this.volunteerOpsUnsub = null;
+    }
+    // Mantiene attivi i listener radio_slots anche per i volontari PIN-only (whitelist 14 doc)
+    if (this.radioSlotUnsubscribers.length === 0) {
+      this.attachRadioSlotListeners();
+    }
     this.firestoreActive = false;
     this.cloudShardsReadyEmitted = false;
     this.pendingInitialWrites.clear();
@@ -1667,12 +1810,14 @@ class RealtimeService {
   }
 
   private writeRadioLiveStateToCloud(channelId: string = 'general', txId: string = '') {
-    if (!this.firebaseSession.isAuthorized) return;
+    const pinVol = !this.firebaseSession.isAuthorized ? this.getActivePinVolunteerIdentity() : null;
+    if (!this.firebaseSession.isAuthorized && !pinVol) return;
     writeRadioSlotDoc({
       slotId: 'live_state',
       txId: txId || this.activeRadioTxId || '',
       channelId: channelId || 'general',
       knownExists: Boolean(this.radioSlotExists['live_state']),
+      ...(pinVol ? { senderVolunteerId: pinVol.id, verifyingPinHashes: pinVol.pinHashes } : {}),
       payload: {
         radioPttEnabled: Boolean(this.cloudState.radioPtt?.enabled ?? this.cloudState.radioPttEnabled),
         radioPttToggledBy: this.cloudState.radioPtt?.toggledBy || this.cloudState.radioPttToggledBy || null,
@@ -1696,8 +1841,9 @@ class RealtimeService {
 
     const channelId = String(batch[0]?.channelId || this.activeRadioTxMeta?.channelId || 'general');
     const txId = this.activeRadioTxId || `tx-${Date.now()}`;
+    const pinVol = !this.firebaseSession.isAuthorized ? this.getActivePinVolunteerIdentity() : null;
 
-    if (this.firebaseSession.isAuthorized) {
+    if (this.firebaseSession.isAuthorized || pinVol) {
       const slotId = RADIO_RING_SLOT_IDS[this.radioRingSlotCursor % RADIO_RING_SLOT_IDS.length];
       this.radioRingSlotCursor = (this.radioRingSlotCursor + 1) % RADIO_RING_SLOT_IDS.length;
       writeRadioSlotDoc({
@@ -1705,6 +1851,7 @@ class RealtimeService {
         txId,
         channelId,
         knownExists: Boolean(this.radioSlotExists[slotId]),
+        ...(pinVol ? { senderVolunteerId: pinVol.id, verifyingPinHashes: pinVol.pinHashes } : {}),
         payload: {
           chunks: batch,
         },
@@ -1738,7 +1885,8 @@ class RealtimeService {
   }
 
   private saveLastTxToRadioCloud() {
-    if (!this.firebaseSession.isAuthorized) return;
+    const pinVol = !this.firebaseSession.isAuthorized ? this.getActivePinVolunteerIdentity() : null;
+    if (!this.firebaseSession.isAuthorized && !pinVol) return;
     const meta = this.activeRadioTxMeta;
     const chunks = this.radioTxRecordedChunks;
     if (!meta || chunks.length === 0) return;
@@ -1750,6 +1898,7 @@ class RealtimeService {
       txId: meta.txId,
       channelId: meta.channelId,
       knownExists: Boolean(this.radioSlotExists['last_tx']),
+      ...(pinVol ? { senderVolunteerId: pinVol.id, verifyingPinHashes: pinVol.pinHashes } : {}),
       payload: {
         id: meta.txId,
         channelId: meta.channelId,
@@ -1780,7 +1929,6 @@ class RealtimeService {
     endedAt: number;
     chunks: any[];
   } | null> {
-    if (!this.firebaseSession.isAuthorized) return null;
     try {
       const res = await readRadioSlotDoc('last_tx');
       if (!res.exists || !res.data?.payload) return null;
@@ -1843,7 +1991,7 @@ class RealtimeService {
       if (targetSubs.length === 0) return;
 
       const pushApiBase = window.location.origin.replace(/\/$/, '');
-      await fetch(`${pushApiBase}/api/push-send`, {
+      await authFetch(`${pushApiBase}/api/push-send`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1997,7 +2145,7 @@ class RealtimeService {
           : `bacheca-${params.postId || Date.now()}`;
 
       const pushApiBase = window.location.origin.replace(/\/$/, '');
-      await fetch(`${pushApiBase}/api/push-send`, {
+      await authFetch(`${pushApiBase}/api/push-send`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -2023,6 +2171,350 @@ class RealtimeService {
         keepalive: true,
       }).catch(() => {});
     } catch {}
+  }
+
+  public async sendOperationalWebPush(params: {
+    tipo: 'mission_dispatch' | 'mission_ring' | 'turno_update';
+    title: string;
+    body: string;
+    urgenza?: 'ROSSO' | 'GIALLO' | 'VERDE';
+    soundType?: string;
+    codice?: string;
+    source?: string;
+    turnoId?: string;
+    targetVolontariIds?: string[];
+    targetRoles?: Array<'admin' | 'centrale' | 'volontario'>;
+  }): Promise<void> {
+    if (typeof window === 'undefined' || !this.firebaseSession.isAuthorized) return;
+    const rateKey = `${params.tipo}:${params.codice || params.turnoId || params.title.slice(0, 32)}`;
+    const lastSent = this.lastOperationalPushByKey.get(rateKey) || 0;
+    const minInterval = params.tipo === 'mission_ring' ? 2000 : 3500;
+    if (Date.now() - lastSent < minInterval) return;
+    this.lastOperationalPushByKey.set(rateKey, Date.now());
+
+    try {
+      const allSubs = await fetchPushSubscriptionsFirestore();
+      if (allSubs.length === 0) return;
+
+      const myEndpoint = this.getSavedPushEndpoint();
+      const targetVolSet =
+        Array.isArray(params.targetVolontariIds) && params.targetVolontariIds.length > 0
+          ? new Set(params.targetVolontariIds.map((x) => String(x || '').trim()).filter(Boolean))
+          : null;
+      const roleSet =
+        Array.isArray(params.targetRoles) && params.targetRoles.length > 0
+          ? new Set(params.targetRoles)
+          : null;
+
+      const targetSubs = allSubs.filter((sub) => {
+        if (!sub || !sub.endpoint) return false;
+        if (myEndpoint && sub.endpoint === myEndpoint) return false;
+        if (targetVolSet) {
+          return Boolean(sub.volontarioId && targetVolSet.has(String(sub.volontarioId)));
+        }
+        if (roleSet) {
+          return roleSet.has(sub.role as any);
+        }
+        // Per missioni e squilli da Centrale: notifica tutti i terminali volontari registrati
+        if (params.tipo === 'mission_dispatch' || params.tipo === 'mission_ring') {
+          return sub.role === 'volontario' || sub.role === 'all';
+        }
+        return true;
+      });
+
+      if (targetSubs.length === 0) return;
+
+      const pushApiBase = window.location.origin.replace(/\/$/, '');
+      await authFetch(`${pushApiBase}/api/push-send`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          subscriptions: targetSubs.map((s) => ({
+            endpoint: s.endpoint,
+            p256dh: s.p256dh,
+            auth: s.auth,
+          })),
+          payload: {
+            title: params.title,
+            body: params.body,
+            tag: `croce-oro-${params.tipo}-${params.codice || params.turnoId || Date.now()}`,
+            urgenza: params.urgenza || (params.tipo === 'turno_update' ? 'GIALLO' : 'ROSSO'),
+            soundType: params.soundType || (params.tipo === 'mission_ring' ? 'sirena' : 'telefono'),
+            tipo: params.tipo,
+            codice: params.codice || '',
+            source: params.source || 'Centrale Operativa',
+            turnoId: params.turnoId || '',
+            isEmergency: params.tipo === 'mission_ring',
+            requireInteraction: params.tipo !== 'turno_update',
+          },
+        }),
+        cache: 'no-store',
+        keepalive: true,
+      }).catch(() => {});
+    } catch {}
+  }
+
+  public async submitVolunteerOp(
+    actionType: VolunteerOpActionType,
+    payload: Record<string, any>
+  ): Promise<{ ok: boolean; opId?: string; code?: string }> {
+    const vol = this.getActivePinVolunteerIdentity();
+    if (!vol) {
+      return { ok: false, code: 'no-active-volunteer' };
+    }
+    const isOnline = typeof navigator !== 'undefined' ? navigator.onLine !== false : true;
+    if (!isOnline) {
+      this.enqueueOfflineEvent(`VOLUNTEER_OP:${actionType}`, {
+        _volId: vol.id,
+        _volNome: vol.nome,
+        payload,
+      });
+      return { ok: false, code: 'offline-queued' };
+    }
+    const res = await submitVolunteerOpFirestore({
+      actionType,
+      volontarioId: vol.id,
+      volontarioNome: vol.nome,
+      payload,
+      verifyingPinHashes: vol.pinHashes,
+    });
+    if (!res.ok && res.code !== 'invalid-volunteer-id' && res.code !== 'payload-too-large') {
+      this.enqueueOfflineEvent(`VOLUNTEER_OP:${actionType}`, {
+        _volId: vol.id,
+        _volNome: vol.nome,
+        payload,
+      });
+    }
+    return res;
+  }
+
+  private async applyPendingVolunteerOps(ops: VolunteerOpRecord[]): Promise<number> {
+    this.pendingVolunteerOpsQueue = Array.isArray(ops) ? ops : [];
+    if (!this.firebaseSession.isAuthorized || this.pendingVolunteerOpsQueue.length === 0) return 0;
+    if (!this.cloudShardsReadyEmitted) return 0;
+
+    let appliedCount = 0;
+    const toMarkApplied: string[] = [];
+
+    for (const op of this.pendingVolunteerOpsQueue) {
+      if (!op?.opId || this.volunteerOpsReconciling.has(op.opId)) continue;
+      this.volunteerOpsReconciling.add(op.opId);
+
+      try {
+        let parsed: any = null;
+        try {
+          parsed = JSON.parse(op.payloadJson || '{}');
+        } catch {
+          parsed = null;
+        }
+        if (!parsed || typeof parsed !== 'object') {
+          toMarkApplied.push(op.opId);
+          continue;
+        }
+
+        switch (op.actionType) {
+          case 'timbratura': {
+            const incomingRecord = parsed.record || parsed;
+            if (incomingRecord && incomingRecord.id) {
+              const currentList: any[] = Array.isArray(this.cloudState.timbrature) ? [...this.cloudState.timbrature] : [];
+              const idx = currentList.findIndex((t: any) => t && String(t.id) === String(incomingRecord.id));
+              if (idx >= 0) {
+                currentList[idx] = { ...currentList[idx], ...incomingRecord };
+              } else {
+                currentList.unshift(incomingRecord);
+              }
+              this.cloudState.timbrature = currentList;
+              try {
+                localStorage.setItem('CROCE_ORO_TIMBRATURE', JSON.stringify(currentList));
+              } catch {}
+              this.scheduleShardWrite('timbrature', { timbrature: currentList });
+              this.publishRaspberryBoardNow({ timbrature: currentList }, true).catch(() => {});
+              this.emit('TIMBRATURE_UPDATED', {
+                timbrature: currentList,
+                messaggio: parsed.messaggio || `Timbratura registrata da ${op.volontarioNome}`,
+              });
+              appliedCount++;
+            }
+            break;
+          }
+          case 'mission_ack': {
+            this.cloudState.letturaConfermata = true;
+            this.scheduleShardWrite('mission', { letturaConfermata: true });
+            this.emit('MISSION_READ_CONFIRMED', {
+              codice: parsed.codice || this.cloudState.activeMission?.codice,
+              volontarioNome: op.volontarioNome,
+            });
+            appliedCount++;
+            break;
+          }
+          case 'mission_times': {
+            const mergedTimes = mergeOperativeTimesImmutable(this.cloudState.tempiOperativi, parsed.times || {});
+            this.cloudState.tempiOperativi = mergedTimes;
+            this.scheduleShardWrite('mission', { tempiOperativi: mergedTimes });
+            this.emit('OPERATIVE_TIMES_UPDATED', {
+              times: mergedTimes,
+              label: parsed.label || 'Aggiornamento Tempi',
+              timeStr: parsed.timeStr || formatTimeItaly(),
+              isRientro: Boolean(parsed.isRientro),
+              codice: parsed.codice || this.cloudState.activeMission?.codice,
+            });
+            appliedCount++;
+            break;
+          }
+          case 'mission_km': {
+            const nextMission = this.cloudState.activeMission
+              ? {
+                  ...this.cloudState.activeMission,
+                  ...(parsed.kmInizio !== undefined ? { kmInizio: parsed.kmInizio } : {}),
+                  ...(parsed.kmFine !== undefined ? { kmFine: parsed.kmFine } : {}),
+                  ...(parsed.campiCompilatiDa
+                    ? {
+                        campiCompilatiDa: {
+                          ...(this.cloudState.activeMission.campiCompilatiDa || {}),
+                          ...parsed.campiCompilatiDa,
+                        },
+                      }
+                    : {}),
+                }
+              : this.cloudState.activeMission;
+            if (nextMission) {
+              this.cloudState.activeMission = nextMission;
+              this.scheduleShardWrite('mission', { activeMission: nextMission });
+            }
+            this.emit('KM_UPDATED', {
+              kmInizio: parsed.kmInizio,
+              kmFine: parsed.kmFine,
+              messaggio: parsed.messaggio,
+              campiCompilatiDa: parsed.campiCompilatiDa,
+            });
+            appliedCount++;
+            break;
+          }
+          case 'mission_draft': {
+            if (this.cloudState.activeMission) {
+              const nextMission = {
+                ...this.cloudState.activeMission,
+                ...(parsed.manovreEffettuatePatologie !== undefined
+                  ? { manovreEffettuatePatologie: parsed.manovreEffettuatePatologie }
+                  : {}),
+                ...(parsed.noteNonVet !== undefined ? { noteNonVet: parsed.noteNonVet } : {}),
+                ...(parsed.convalidaCapoServizio ? { convalidaCapoServizio: parsed.convalidaCapoServizio } : {}),
+                ...(parsed.campiCompilatiDa
+                  ? {
+                      campiCompilatiDa: {
+                        ...(this.cloudState.activeMission.campiCompilatiDa || {}),
+                        ...parsed.campiCompilatiDa,
+                      },
+                    }
+                  : {}),
+              };
+              this.cloudState.activeMission = nextMission;
+              this.scheduleShardWrite('mission', { activeMission: nextMission });
+            }
+            this.emit('MISSION_DRAFT_UPDATED', parsed);
+            appliedCount++;
+            break;
+          }
+          case 'mission_autonomous': {
+            const mission = parsed.mission || parsed;
+            if (mission && mission.codice) {
+              this.cloudState.activeMission = mission;
+              this.cloudState.letturaConfermata = true;
+              this.scheduleShardWrite('mission', {
+                activeMission: mission,
+                letturaConfermata: true,
+              });
+              this.emit('MISSION_DISPATCHED', mission);
+              appliedCount++;
+            }
+            break;
+          }
+          case 'rifornimento': {
+            const item = parsed.record || parsed;
+            if (item && item.id) {
+              const merged = mergeRifornimentiCloud([item], Date.now());
+              this.cloudState.rifornimentiMezzi = merged;
+              this.cloudState.rifornimentiUpdatedAt = Date.now();
+              this.scheduleShardWrite('magazzino', {
+                rifornimentiMezzi: merged,
+                rifornimentiUpdatedAt: this.cloudState.rifornimentiUpdatedAt,
+              });
+              this.emit('RIFORNIMENTI_MEZZI_UPDATED', {
+                rifornimenti: merged,
+                updatedAt: this.cloudState.rifornimentiUpdatedAt,
+              });
+              appliedCount++;
+            }
+            break;
+          }
+          case 'guasto': {
+            const item = parsed.record || parsed;
+            if (item && item.id) {
+              const merged = mergeSegnalazioniGuastiCloud([item], Date.now());
+              this.cloudState.segnalazioniGuastiMezzi = merged;
+              this.cloudState.segnalazioniGuastiUpdatedAt = Date.now();
+              this.scheduleShardWrite('magazzino', {
+                segnalazioniGuastiMezzi: merged,
+                segnalazioniGuastiUpdatedAt: this.cloudState.segnalazioniGuastiUpdatedAt,
+              });
+              this.emit('GUASTI_MEZZI_UPDATED', {
+                guasti: merged,
+                updatedAt: this.cloudState.segnalazioniGuastiUpdatedAt,
+              });
+              appliedCount++;
+            }
+            break;
+          }
+          case 'assemblea_voto': {
+            const conv = Array.isArray(parsed.convocazioni) ? parsed.convocazioni : [];
+            const sond = Array.isArray(parsed.sondaggi) ? parsed.sondaggi : [];
+            if (conv.length > 0 || sond.length > 0) {
+              const merged = mergeAssembleeSondaggiCloud({
+                convocazioni: conv,
+                sondaggi: sond,
+                updatedAt: Date.now(),
+              });
+              this.cloudState.convocazioniAssemblee = merged.convocazioni;
+              this.cloudState.sondaggiRapidi = merged.sondaggi;
+              this.cloudState.assembleeSondaggiUpdatedAt = Date.now();
+              this.scheduleShardWrite('config', {
+                convocazioniAssemblee: merged.convocazioni,
+                sondaggiRapidi: merged.sondaggi,
+                assembleeSondaggiUpdatedAt: this.cloudState.assembleeSondaggiUpdatedAt,
+              });
+              this.emit('ASSEMBLEE_SONDAGGI_UPDATED', {
+                convocazioni: merged.convocazioni,
+                sondaggi: merged.sondaggi,
+                updatedAt: this.cloudState.assembleeSondaggiUpdatedAt,
+              });
+              appliedCount++;
+            }
+            break;
+          }
+        }
+        toMarkApplied.push(op.opId);
+      } catch {
+        toMarkApplied.push(op.opId);
+      }
+    }
+
+    for (const opId of toMarkApplied) {
+      await markVolunteerOpAppliedFirestore(opId).catch(() => {});
+      this.volunteerOpsReconciling.delete(opId);
+    }
+
+    return appliedCount;
+  }
+
+  public async fetchBachecaPostMedia(postId: string): Promise<BachecaMediaRecord | null> {
+    const cleanId = String(postId || '').trim();
+    if (!cleanId) return null;
+    if (this.bachecaMediaCache.has(cleanId)) {
+      return this.bachecaMediaCache.get(cleanId) || null;
+    }
+    const media = await fetchBachecaMediaFirestore(cleanId);
+    this.bachecaMediaCache.set(cleanId, media);
+    return media;
   }
 
   private async applyPendingBachecaAcks(acks: BachecaAckRecord[]) {
@@ -2451,6 +2943,9 @@ class RealtimeService {
             if (this.pendingBachecaInteractionsQueue.length > 0) {
               this.applyPendingBachecaInteractions(this.pendingBachecaInteractionsQueue).catch(() => {});
             }
+            if (this.pendingVolunteerOpsQueue.length > 0) {
+              this.applyPendingVolunteerOps(this.pendingVolunteerOpsQueue).catch(() => {});
+            }
             this.emit('cloud_shards_ready', { shardExists: { ...this.shardExists } });
           }
         },
@@ -2518,7 +3013,20 @@ class RealtimeService {
       }
     );
 
-    this.attachRadioSlotListeners();
+    this.volunteerOpsUnsub = listenPendingVolunteerOpsFirestore(
+      (ops) => {
+        if (Array.isArray(ops) && ops.length > 0) {
+          this.applyPendingVolunteerOps(ops).catch(() => {});
+        }
+      },
+      (err) => {
+        console.warn('[Realtime] Errore listener volunteer_ops:', err?.message);
+      }
+    );
+
+    if (this.radioSlotUnsubscribers.length === 0) {
+      this.attachRadioSlotListeners();
+    }
 
     this.firestoreActive = true;
     this.recomputeConnectionStatus();
@@ -5813,7 +6321,8 @@ class RealtimeService {
           sentViaWs = true;
         } catch {}
       }
-      const needFirestoreRelay = Boolean(this.firebaseSession.isAuthorized);
+      const pinVolForAudio = !this.firebaseSession.isAuthorized ? this.getActivePinVolunteerIdentity() : null;
+      const needFirestoreRelay = Boolean(this.firebaseSession.isAuthorized || pinVolForAudio);
       const needHttpBurstRelay = !sentViaWs && !this.isServerlessStaticHost();
       if ((needFirestoreRelay || needHttpBurstRelay) && data?.payloadBase64) {
         const chunkEntry = {
@@ -5864,8 +6373,13 @@ class RealtimeService {
       }
     }
 
-    // 3. Se offline o nessun trasporto attivo, accoda in modo persistente su localStorage per invio automatico al rientro rete
-    if (!isBrowserOnline || (!sentWs && !this.firestoreActive)) {
+    // 3. Se offline o nessun trasporto attivo, accoda in modo persistente solo gli eventi realmente smaltibili
+    if (
+      !isBrowserOnline ||
+      (!sentWs &&
+        !this.firestoreActive &&
+        !(this.isServerlessStaticHost() && !this.firebaseSession.isAuthorized && this.PIN_CHANNELED_NO_LEGACY_QUEUE_TYPES.has(type)))
+    ) {
       this.enqueueOfflineEvent(type, data);
     }
 
@@ -6193,6 +6707,33 @@ class RealtimeService {
           segnaFirmaVolontarioApplicataFirestore(volId).catch(() => {});
         } finally {
           this.volunteerActivitySignatureReconciling.delete(volId);
+        }
+      }
+      // 3. Riconcilia posizione GPS live inviata dallo smartphone volontario PIN-only
+      if (
+        typeof rec.gpsLat === 'number' &&
+        Number.isFinite(rec.gpsLat) &&
+        typeof rec.gpsLng === 'number' &&
+        Number.isFinite(rec.gpsLng) &&
+        typeof rec.gpsUpdatedAtMs === 'number' &&
+        rec.gpsUpdatedAtMs > 0 &&
+        Date.now() - rec.gpsUpdatedAtMs < 15 * 60 * 1000
+      ) {
+        const prevGpsTs = Number(this.cloudState.gps?.timestampMs || 0);
+        if (rec.gpsUpdatedAtMs > prevGpsTs) {
+          const gpsData = {
+            lat: rec.gpsLat,
+            lng: rec.gpsLng,
+            accuracy: typeof rec.gpsAccuracy === 'number' ? rec.gpsAccuracy : 0,
+            speed: typeof rec.gpsSpeed === 'number' ? rec.gpsSpeed : 0,
+            orario: rec.gpsOrario || formatTimeItaly(new Date(rec.gpsUpdatedAtMs)),
+            mezzo: rec.mezzoScelto || vol.mezzoAttivo || '',
+            volontarioId: volId,
+            volontarioNome: rec.volontarioNome || `${vol.nome || ''} ${vol.cognome || ''}`.trim(),
+            timestampMs: rec.gpsUpdatedAtMs,
+          };
+          this.cloudState.gps = gpsData;
+          this.emit('GPS_UPDATED', gpsData);
         }
       }
     }
@@ -6629,14 +7170,43 @@ class RealtimeService {
   // Metodi operativi missioni e radio
   public dispatchMission(mission: any, isManual: boolean = false) {
     const payload = isManual && mission ? { ...mission, _manualDispatch: true } : mission;
+    if (this.firebaseSession.isAuthorized && mission) {
+      const codice = String(mission.codice || '').trim();
+      const indirizzo = String(mission.luogo || mission.indirizzo || 'Destinazione da scheda').trim();
+      const mezzo = String(mission.mezzo || '').trim();
+      this.sendOperationalWebPush({
+        tipo: 'mission_dispatch',
+        title: `🚨 NUOVA MISSIONE ${codice || ''}`.trim(),
+        body: `${mezzo ? `[${mezzo}] ` : ''}${indirizzo}`.slice(0, 220),
+        urgenza: String(mission.codiceGravita || mission.urgenza || 'ROSSO').toUpperCase().includes('VERD') ? 'VERDE' : 'ROSSO',
+        soundType: 'telefono',
+        codice,
+        source: 'Centrale Operativa',
+      }).catch(() => {});
+    } else if (!this.firebaseSession.isAuthorized && mission) {
+      this.submitVolunteerOp('mission_autonomous', { mission: payload }).catch(() => {});
+    }
     return this.send('DISPATCH_MISSION', payload);
   }
 
   public confirmMissionRead(codice?: string) {
+    if (!this.firebaseSession.isAuthorized) {
+      this.submitVolunteerOp('mission_ack', { codice: codice || '' }).catch(() => {});
+    }
     return this.send('CONFIRM_MISSION_READ', { codice });
   }
 
   public triggerRing(source: string, soundType: 'telefono' | 'sirena' | 'chiamata' = 'telefono') {
+    if (this.firebaseSession.isAuthorized) {
+      this.sendOperationalWebPush({
+        tipo: 'mission_ring',
+        title: '🚨 SQUILLO CENTRALE OPERATIVA',
+        body: `${source || 'Centrale Operativa'} richiede conferma immediata sul terminale di bordo.`,
+        urgenza: 'ROSSO',
+        soundType,
+        source: source || 'Centrale Operativa',
+      }).catch(() => {});
+    }
     return this.send('TRIGGER_RING', { source, soundType });
   }
 
@@ -6645,6 +7215,9 @@ class RealtimeService {
   }
 
   public updateOperativeTimes(times: any, label: string, timeStr: string, isRientro: boolean, codice?: string) {
+    if (!this.firebaseSession.isAuthorized) {
+      this.submitVolunteerOp('mission_times', { times, label, timeStr, isRientro, codice }).catch(() => {});
+    }
     return this.send('UPDATE_OPERATIVE_TIMES', { times, label, timeStr, isRientro, codice });
   }
 
@@ -6654,6 +7227,9 @@ class RealtimeService {
     messaggio?: string,
     campiCompilatiDa?: Record<string, { byId?: string; byNome: string; at: string }>
   ) {
+    if (!this.firebaseSession.isAuthorized) {
+      this.submitVolunteerOp('mission_km', { kmInizio, kmFine, messaggio, campiCompilatiDa }).catch(() => {});
+    }
     return this.send('UPDATE_KM', { kmInizio, kmFine, messaggio, campiCompilatiDa });
   }
 
@@ -6673,6 +7249,9 @@ class RealtimeService {
     capoServizioNome?: string;
     messaggioNotifica?: string;
   }) {
+    if (!this.firebaseSession.isAuthorized) {
+      this.submitVolunteerOp('mission_draft', patch).catch(() => {});
+    }
     return this.send('UPDATE_MISSION_DRAFT_DATA', patch);
   }
 
@@ -6883,6 +7462,30 @@ class RealtimeService {
     if (Number.isFinite(lat) && Number.isFinite(lng)) {
       this.lastGpsSentCoords = { lat, lng };
       this.lastGpsSentAt = now;
+
+      // Smartphone volontario PIN-only: pubblica posizione GPS live in /volunteer_activity/{volunteerId}
+      if (!this.firebaseSession.isAuthorized && (forceImmediate || now - this.lastVolunteerCloudGpsAt >= 8000)) {
+        const vol = this.getActivePinVolunteerIdentity();
+        if (vol) {
+          this.lastVolunteerCloudGpsAt = now;
+          publishVolunteerActivityFirestore({
+            volunteerId: vol.id,
+            verifyingPinHashes: vol.pinHashes,
+            loggato: true,
+            lastHeartbeatMs: now,
+            volontarioNome: vol.nome,
+            mezzoScelto: String(position?.mezzo || vol.mezzo || ''),
+            orarioInizio: vol.orarioInizio,
+            qualificaTurno: vol.qualifica,
+            gpsLat: lat,
+            gpsLng: lng,
+            gpsAccuracy: typeof position?.accuracy === 'number' ? position.accuracy : 0,
+            gpsSpeed: typeof position?.speed === 'number' ? position.speed : 0,
+            gpsUpdatedAtMs: now,
+            gpsOrario: String(position?.orario || formatTimeItaly()),
+          }).catch(() => {});
+        }
+      }
     }
     return this.send('UPDATE_GPS', position);
   }
@@ -7107,6 +7710,25 @@ class RealtimeService {
 
   public syncTimbrature(timbrature: any[], messaggio?: string) {
     this.cloudState.timbrature = timbrature;
+    if (!this.firebaseSession.isAuthorized && Array.isArray(timbrature) && timbrature.length > 0) {
+      const vol = this.getActivePinVolunteerIdentity();
+      if (vol) {
+        const volNomeLower = vol.nome.toLowerCase();
+        const latestRec =
+          timbrature.find(
+            (t: any) =>
+              t &&
+              ((t.volontarioId && String(t.volontarioId) === vol.id) ||
+                (t.volontarioNome && String(t.volontarioNome).trim().toLowerCase() === volNomeLower))
+          ) || timbrature[0];
+        if (latestRec && latestRec.id) {
+          this.submitVolunteerOp('timbratura', {
+            record: latestRec,
+            messaggio: messaggio || '',
+          }).catch(() => {});
+        }
+      }
+    }
     this.send('UPDATE_TIMBRATURE', { timbrature, messaggio });
     this.publishRaspberryBoardNow({ timbrature });
     if (!this.isServerlessStaticHost()) {
@@ -7144,6 +7766,9 @@ class RealtimeService {
     ]);
     this.cloudState.bacheca = bacheca;
     this.send('UPDATE_BACHECA', { bacheca, notifica, bachecaEliminatiIds: deletedIds });
+    if (this.firebaseSession.isAuthorized && Array.isArray(bacheca)) {
+      syncBachecaMediaFirestore(bacheca).catch(() => {});
+    }
     const publishPromise = this.publishRaspberryBoardNow({ bacheca }, true);
 
     // Invia notifica Web Push reale SOLO DOPO aver completato la pubblicazione su public_raspberry/display_v1
@@ -7790,6 +8415,9 @@ class RealtimeService {
     const clean = Array.isArray(rifornimenti) ? rifornimenti.slice(0, 180) : [];
     this.cloudState.rifornimentiMezzi = clean;
     this.cloudState.rifornimentiUpdatedAt = ts;
+    if (!this.firebaseSession.isAuthorized && clean.length > 0) {
+      this.submitVolunteerOp('rifornimento', { record: clean[0] }).catch(() => {});
+    }
     this.send('UPDATE_RIFORNIMENTI_MEZZI', { rifornimenti: clean, updatedAt: ts });
   }
 
@@ -7806,6 +8434,9 @@ class RealtimeService {
     const clean = Array.isArray(guasti) ? guasti.slice(0, 80) : [];
     this.cloudState.segnalazioniGuastiMezzi = clean;
     this.cloudState.segnalazioniGuastiUpdatedAt = ts;
+    if (!this.firebaseSession.isAuthorized && clean.length > 0) {
+      this.submitVolunteerOp('guasto', { record: clean[0] }).catch(() => {});
+    }
     this.send('UPDATE_GUASTI_MEZZI', { guasti: clean, updatedAt: ts });
   }
 
@@ -7824,6 +8455,12 @@ class RealtimeService {
     this.cloudState.convocazioniAssemblee = cleanConv;
     this.cloudState.sondaggiRapidi = cleanSond;
     this.cloudState.assembleeSondaggiUpdatedAt = ts;
+    if (!this.firebaseSession.isAuthorized && (cleanConv.length > 0 || cleanSond.length > 0)) {
+      this.submitVolunteerOp('assemblea_voto', {
+        convocazioni: cleanConv.slice(0, 6),
+        sondaggi: cleanSond.slice(0, 8),
+      }).catch(() => {});
+    }
     this.send('UPDATE_ASSEMBLEE_SONDAGGI', { convocazioni: cleanConv, sondaggi: cleanSond, updatedAt: ts });
   }
 

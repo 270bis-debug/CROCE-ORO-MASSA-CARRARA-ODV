@@ -1,5 +1,6 @@
 export type SimulatedDevicePlatform = 'desktop' | 'android' | 'apple';
 export type SimulatedDisplayMode = 'pwa' | 'browser';
+export type SimulatedBrowserType = 'safari' | 'chrome';
 
 let runtimeSimulatedDevice: SimulatedDevicePlatform | null = null;
 
@@ -50,6 +51,15 @@ export function getSimulatedDisplayModeFromUrl(): SimulatedDisplayMode | null {
   return null;
 }
 
+export function getSimulatedBrowserFromUrl(): SimulatedBrowserType | null {
+  const params = getSearchParams();
+  if (!params) return null;
+  const raw = (params.get('simulaBrowser') || '').toLowerCase().trim();
+  if (raw === 'chrome') return 'chrome';
+  if (raw === 'safari') return 'safari';
+  return null;
+}
+
 export function isInsideDeviceSimulationFrame(): boolean {
   const params = getSearchParams();
   if (!params) return false;
@@ -67,6 +77,7 @@ export function buildDeviceSimulationIframeUrl(options: {
   device: 'android' | 'apple';
   ruolo: 'admin' | 'volontario';
   displayMode: SimulatedDisplayMode;
+  browser?: SimulatedBrowserType;
 }): string {
   if (typeof window === 'undefined') return '';
   const url = new URL(window.location.origin + window.location.pathname);
@@ -75,5 +86,10 @@ export function buildDeviceSimulationIframeUrl(options: {
   url.searchParams.set('simulaDevice', options.device);
   url.searchParams.set('simulaRuolo', options.ruolo);
   url.searchParams.set('simulaWeb', options.displayMode === 'browser' ? '1' : '0');
+  if (options.displayMode === 'browser') {
+    const effectiveBrowser: SimulatedBrowserType =
+      options.browser || (options.device === 'apple' ? 'safari' : 'chrome');
+    url.searchParams.set('simulaBrowser', effectiveBrowser);
+  }
   return url.toString();
 }

@@ -1,56 +1,13 @@
 // Vercel Serverless Function: POST /api/push-test
-// Invia una notifica Push reale ad alta priorità direttamente al dispositivo chiamante (senza dipendere da ais-pre)
+// Invia una notifica Push reale ad alta priorità direttamente al dispositivo chiamante autenticato
 import type { IncomingMessage, ServerResponse } from 'http';
 import webpush from 'web-push';
-
-const VAPID_PUBLIC_KEY =
-  process.env.VAPID_PUBLIC_KEY ||
-  'BBIgy7sPt5aiNKmumUH57K28pFivVG3qKun0xMT7ZLJq8Kc6c_hCzawksKptqyOI0pIXRZ7I6tmEr9D_jM4a6bc';
-const VAPID_PRIVATE_KEY =
-  process.env.VAPID_PRIVATE_KEY || '19czcRLqXXAWjqLkkhHa53NQ5erahFRbIcJ-mTOOqBE';
-
-webpush.setVapidDetails('mailto:centrale@croceoromassacarrara.it', VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
-
-async function readJsonBody(req: IncomingMessage & { body?: any }): Promise<any> {
-  if (req.body && typeof req.body === 'object') return req.body;
-  if (typeof req.body === 'string') {
-    try {
-      return JSON.parse(req.body);
-    } catch {
-      return {};
-    }
-  }
-  return new Promise((resolve) => {
-    let raw = '';
-    req.on('data', (chunk) => {
-      raw += String(chunk || '');
-      if (raw.length > 64_000) {
-        try {
-          req.destroy();
-        } catch {}
-      }
-    });
-    req.on('end', () => {
-      try {
-        resolve(raw ? JSON.parse(raw) : {});
-      } catch {
-        resolve({});
-      }
-    });
-    req.on('error', () => resolve({}));
-  });
-}
+import { applyStrictCors, readJsonBody, verifyApiCaller } from '../server-lib/apiAuth';
 
 export default async function handler(
   req: IncomingMessage & { method?: string; body?: any },
   res: ServerResponse & { status?: (code: number) => any; json?: (data: any) => any }
 ) {
-  res.setHeader('Content-Type', 'application/json; charset=utf-8');
-  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-
   const sendJson = (status: number, data: any) => {
     if (typeof res.status === 'function' && typeof res.json === 'function') {
       return res.status(status).json(data);
@@ -58,6 +15,10 @@ export default async function handler(
     res.statusCode = status;
     return res.end(JSON.stringify(data));
   };
+
+  if (!applyStrictCors(req, res, 'POST, OPTIONS')) {
+    return sendJson(403, { success: false, error: 'Origine non autorizzata.' });
+  }
 
   if (req.method === 'OPTIONS') {
     res.statusCode = 204;
@@ -67,7 +28,22 @@ export default async function handler(
     return sendJson(405, { success: false, error: 'Metodo non consentito' });
   }
 
-  const body = await readJsonBody(req);
+  const caller = await verifyApiCaller(req);
+  if (!caller.authorized) {
+    return sendJson(401, { success: false, error: caller.reason || 'Non autorizzato' });
+  }
+
+  const pub = (process.env.VAPID_PUBLIC_KEY || '').trim();
+  const priv = (process.env.VAPID_PRIVATE_KEY || '').trim();
+  if (!pub || !priv) {
+    return sendJson(503, {
+      success: false,
+      error: 'Chiavi VAPID non configurate sul server (imposta VAPID_PUBLIC_KEY e VAPID_PRIVATE_KEY).',
+    });
+  }
+  webpush.setVapidDetails('mailto:centrale@croceoromassacarrara.it', pub, priv);
+
+  const body = await readJsonBody(req, 64_000);
   const sub = body?.subscription;
   if (
     !sub ||
@@ -93,7 +69,7 @@ export default async function handler(
       },
       JSON.stringify({
         title: '📻 WALKIE-TALKIE BACKGROUND ATTIVO',
-        body: 'Test riuscito! Questo dispositivo riceve chiamate radio (Emergenza, Gruppi, Tutti) anche a schermo spento.',
+        body: 'Test riuscito! Questo dispositivo riceve chiamate radio, missioni e avvisi bacheca anche a schermo spento.',
         tag: `radio-test-${Date.now()}`,
         soundType: 'cicalino',
         urgenza: 'GIALLO',

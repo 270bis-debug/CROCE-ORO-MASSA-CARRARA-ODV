@@ -1,7 +1,11 @@
 import { useState, useEffect } from 'react';
 import { APP_VERSION } from '../version';
 import { BUILD_INFO } from '../buildInfo';
-import { getEffectiveSimulatedDevice, getSimulatedDisplayModeFromUrl } from '../utils/deviceSimulation';
+import {
+  getEffectiveSimulatedDevice,
+  getSimulatedBrowserFromUrl,
+  getSimulatedDisplayModeFromUrl
+} from '../utils/deviceSimulation';
 
 interface BeforeInstallPromptEvent extends Event {
   prompt: () => Promise<void>;
@@ -404,10 +408,13 @@ export function usePWAInstall() {
   const [deferredPrompt, setDeferredPrompt] = useState<BeforeInstallPromptEvent | null>(null);
   const [isInstalled, setIsInstalled] = useState(false);
   const [isIOS, setIsIOS] = useState(false);
+  const [isAndroid, setIsAndroid] = useState(false);
+  const [isChromeIOS, setIsChromeIOS] = useState(false);
 
   useEffect(() => {
     const simulatedDevice = getEffectiveSimulatedDevice();
     const simulatedMode = getSimulatedDisplayModeFromUrl();
+    const simulatedBrowser = getSimulatedBrowserFromUrl();
 
     const isStandalone =
       simulatedMode === 'pwa'
@@ -428,6 +435,21 @@ export function usePWAInstall() {
         ? false
         : /iphone|ipad|ipod/.test(userAgent);
     setIsIOS(isIOSDevice);
+
+    const isAndroidDevice =
+      simulatedDevice === 'android'
+        ? true
+        : simulatedDevice === 'apple'
+        ? false
+        : /android/.test(userAgent);
+    setIsAndroid(isAndroidDevice);
+
+    const isChromeOnIOS =
+      isIOSDevice &&
+      (simulatedBrowser !== null
+        ? simulatedBrowser === 'chrome'
+        : /crios/.test(userAgent));
+    setIsChromeIOS(isChromeOnIOS);
 
     const handleBeforeInstallPrompt = (e: Event) => {
       e.preventDefault();
@@ -464,6 +486,9 @@ export function usePWAInstall() {
     isInstallable: !!deferredPrompt,
     isInstalled,
     isIOS,
+    isAndroid,
+    isChromeIOS,
+    isSafariIOS: isIOS && !isChromeIOS,
     install,
     pendingUpdate: pendingUpdateInfo
   };

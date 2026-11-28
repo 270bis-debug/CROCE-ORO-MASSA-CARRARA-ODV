@@ -459,6 +459,20 @@
           "maxLength": 128,
           "pattern": "^[a-zA-Z0-9_\\-]+$"
         },
+        "senderVolunteerId": {
+          "type": "string",
+          "description": "Optional volunteer ID when transmitting via PIN-verified smartphone without Google Auth",
+          "minLength": 0,
+          "maxLength": 128,
+          "pattern": "^(|[a-zA-Z0-9_\\-]+)$"
+        },
+        "verifyingPinHash": {
+          "type": "string",
+          "description": "Optional SHA-256 PIN proof hash verified against pin_reset_profiles for PIN-only radio transmitters",
+          "minLength": 4,
+          "maxLength": 64,
+          "pattern": "^(----|[0-9a-f]{64})$"
+        },
         "createdAt": {
           "type": "string",
           "format": "date-time"
@@ -915,6 +929,31 @@
         "firmaApplied": {
           "type": "boolean"
         },
+        "gpsLat": {
+          "type": "number",
+          "description": "Optional live GPS latitude reported by volunteer terminal"
+        },
+        "gpsLng": {
+          "type": "number",
+          "description": "Optional live GPS longitude reported by volunteer terminal"
+        },
+        "gpsAccuracy": {
+          "type": "number",
+          "description": "Optional GPS accuracy in meters"
+        },
+        "gpsSpeed": {
+          "type": "number",
+          "description": "Optional GPS speed in km/h (-1 when unavailable)"
+        },
+        "gpsUpdatedAtMs": {
+          "type": "integer",
+          "description": "Optional timestamp in milliseconds of the last GPS fix"
+        },
+        "gpsOrario": {
+          "type": "string",
+          "maxLength": 32,
+          "description": "Optional formatted Italian time of the last GPS fix"
+        },
         "createdAt": {
           "type": "string",
           "format": "date-time"
@@ -1123,6 +1162,155 @@
         "createdAt",
         "updatedAt"
       ]
+    },
+    "VolunteerOp": {
+      "title": "VolunteerOp",
+      "description": "Zero-PII write-only operational submission queue allowing PIN-verified volunteer smartphones to submit timbrature, mission confirmations/times/km/autonomous services, fuel logs, vehicle fault reports, and assembly votes without Google Auth.",
+      "type": "object",
+      "properties": {
+        "opId": {
+          "type": "string",
+          "minLength": 10,
+          "maxLength": 128,
+          "pattern": "^op-[a-zA-Z0-9_\\-]{6,124}$"
+        },
+        "scope": {
+          "type": "string",
+          "enum": ["croce_oro_vol_op"]
+        },
+        "actionType": {
+          "type": "string",
+          "enum": [
+            "timbratura",
+            "mission_ack",
+            "mission_times",
+            "mission_km",
+            "mission_draft",
+            "mission_autonomous",
+            "rifornimento",
+            "guasto",
+            "assemblea_voto"
+          ]
+        },
+        "volontarioId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "volontarioNome": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "payloadJson": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 32000
+        },
+        "verifyingPinHash": {
+          "type": "string",
+          "minLength": 64,
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["pending", "applied"]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "opId",
+        "scope",
+        "actionType",
+        "volontarioId",
+        "volontarioNome",
+        "payloadJson",
+        "verifyingPinHash",
+        "status",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "BachecaMedia": {
+      "title": "BachecaMedia",
+      "description": "On-demand per-post image and protected document attachment payload for Bacheca notices so volunteer smartphones can view media without bloating the public feed.",
+      "type": "object",
+      "properties": {
+        "postId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "scope": {
+          "type": "string",
+          "enum": ["croce_oro_bacheca_media"]
+        },
+        "immaginePostDataUrl": {
+          "type": "string",
+          "maxLength": 750000
+        },
+        "immaginePostNome": {
+          "type": "string",
+          "maxLength": 180
+        },
+        "allegatoDataUrl": {
+          "type": "string",
+          "maxLength": 750000
+        },
+        "allegatoNome": {
+          "type": "string",
+          "maxLength": 180
+        },
+        "allegatoTipo": {
+          "type": "string",
+          "maxLength": 32
+        },
+        "allegatoMime": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "allegatoDimensione": {
+          "type": "number"
+        },
+        "updatedByUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "postId",
+        "scope",
+        "immaginePostDataUrl",
+        "immaginePostNome",
+        "allegatoDataUrl",
+        "allegatoNome",
+        "allegatoTipo",
+        "allegatoMime",
+        "allegatoDimensione",
+        "updatedByUid",
+        "createdAt",
+        "updatedAt"
+      ]
     }
   },
   "firestore": {
@@ -1184,7 +1372,7 @@
     },
     "/volunteer_activity/{volunteerId}": {
       "schema": { "$ref": "#/entities/VolunteerActivity" },
-      "description": "Zero-PII write-only volunteer login presence heartbeat and digital signature submission queue verified against pin_reset_profiles PIN hash, readable exclusively by verified operators."
+      "description": "Zero-PII write-only volunteer login presence heartbeat, live GPS telemetry, and digital signature submission queue verified against pin_reset_profiles PIN hash, readable exclusively by verified operators."
     },
     "/bacheca_acks/{ackId}": {
       "schema": { "$ref": "#/entities/BachecaAck" },
@@ -1193,6 +1381,14 @@
     "/bacheca_interactions/{interactionId}": {
       "schema": { "$ref": "#/entities/BachecaInteraction" },
       "description": "Zero-PII write-only notice board comments and likes queue verified against pin_reset_profiles PIN hash, readable and reconcilable exclusively by verified operators."
+    },
+    "/volunteer_ops/{opId}": {
+      "schema": { "$ref": "#/entities/VolunteerOp" },
+      "description": "Zero-PII write-only operational submission queue (timbrature, mission acks/times/km/autonomous, fuel, vehicle faults, assembly votes) verified against pin_reset_profiles PIN hash, readable and reconcilable exclusively by verified operators."
+    },
+    "/bacheca_media/{postId}": {
+      "schema": { "$ref": "#/entities/BachecaMedia" },
+      "description": "Per-post image and protected document attachment storage loaded on demand by volunteer smartphones via exact postId get."
     }
   }
 }

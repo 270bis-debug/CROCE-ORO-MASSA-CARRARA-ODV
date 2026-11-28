@@ -59,6 +59,7 @@ interface ModalBachecaVolontarioProps {
   sedi?: SedeAssociativaCompleta[];
   highlightPostId?: string | null;
   onClearHighlight?: () => void;
+  onDismissAutoReleaseNote?: (postId: string) => void;
 }
 
 export const ModalBachecaVolontario: React.FC<ModalBachecaVolontarioProps> = ({
@@ -76,7 +77,8 @@ export const ModalBachecaVolontario: React.FC<ModalBachecaVolontarioProps> = ({
   sezioneVolontarioNome,
   sezioneVolontarioId,
   highlightPostId = null,
-  onClearHighlight
+  onClearHighlight,
+  onDismissAutoReleaseNote
 }) => {
   const [ricerca, setRicerca] = useState('');
   const [categoriaSelezionata, setCategoriaSelezionata] = useState('tutte');
@@ -87,6 +89,22 @@ export const ModalBachecaVolontario: React.FC<ModalBachecaVolontarioProps> = ({
   const [dettaglioLettoriPostId, setDettaglioLettoriPostId] = useState<string | null>(null);
   const [avvisoBacheca, setAvvisoBacheca] = useState<string | null>(null);
   const [aggiornamentoLive, setAggiornamentoLive] = useState(false);
+  const [loadedMediaByPostId, setLoadedMediaByPostId] = useState<
+    Record<
+      string,
+      {
+        immaginePostDataUrl?: string;
+        immaginePostNome?: string;
+        allegatoDataUrl?: string;
+        allegatoNome?: string;
+        allegatoTipo?: 'pdf' | 'excel' | 'image';
+        allegatoMime?: string;
+        allegatoDimensione?: number;
+      }
+    >
+  >({});
+  const [loadingMediaIds, setLoadingMediaIds] = useState<Record<string, boolean>>({});
+  const requestedMediaIdsRef = useRef<Set<string>>(new Set());
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
 
   // All'apertura della bacheca forza SEMPRE un refresh live dal server; se aperta da notifica, apri direttamente il post
@@ -153,6 +171,63 @@ export const ModalBachecaVolontario: React.FC<ModalBachecaVolontarioProps> = ({
     if (!focusedPostId) return null;
     return comunicazioni.find((c) => c.id === focusedPostId && c.attiva !== false) || null;
   }, [comunicazioni, focusedPostId]);
+
+  // Caricamento on-demand di immagini e allegati protetti da /bacheca_media/{postId}
+  // (permette ai volontari PIN-only su smartphone di vedere foto e PDF senza appesantire il documento pubblico)
+  useEffect(() => {
+    if (!aperta) return;
+    let cancelled = false;
+    const candidates: ComunicazioneBacheca[] = [];
+    if (postFocalizzato) candidates.push(postFocalizzato);
+    comunicazioniAttive.slice(0, 12).forEach((c) => {
+      if (!candidates.some((x) => x.id === c.id)) candidates.push(c);
+    });
+
+    const toFetch = candidates.filter((c) => {
+      const anyC = c as any;
+      const needsImg = Boolean(anyC.hasImmagine && !c.immaginePostDataUrl && !loadedMediaByPostId[c.id]?.immaginePostDataUrl);
+      const needsAtt = Boolean(anyC.hasAllegato && !c.allegatoDataUrl && !loadedMediaByPostId[c.id]?.allegatoDataUrl);
+      return (needsImg || needsAtt) && !requestedMediaIdsRef.current.has(c.id);
+    });
+
+    if (toFetch.length === 0) return;
+
+    toFetch.forEach((c) => {
+      requestedMediaIdsRef.current.add(c.id);
+      setLoadingMediaIds((prev) => ({ ...prev, [c.id]: true }));
+      realtime
+        .fetchBachecaPostMedia(c.id)
+        .then((media) => {
+          if (cancelled || !media) return;
+          setLoadedMediaByPostId((prev) => ({
+            ...prev,
+            [c.id]: {
+              immaginePostDataUrl: media.immaginePostDataUrl,
+              immaginePostNome: media.immaginePostNome,
+              allegatoDataUrl: media.allegatoDataUrl,
+              allegatoNome: media.allegatoNome,
+              allegatoTipo: media.allegatoTipo as any,
+              allegatoMime: media.allegatoMime,
+              allegatoDimensione: media.allegatoDimensione,
+            },
+          }));
+        })
+        .catch(() => {})
+        .finally(() => {
+          if (!cancelled) {
+            setLoadingMediaIds((prev) => {
+              const next = { ...prev };
+              delete next[c.id];
+              return next;
+            });
+          }
+        });
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [aperta, postFocalizzato, comunicazioniAttive, loadedMediaByPostId]);
 
   // Prossimi corsi / formazione in programma (visibili fino al giorno stesso in cui iniziano, poi rimossi automaticamente)
   const corsiInBacheca = useMemo(() => {
@@ -339,6 +414,7 @@ export const ModalBachecaVolontario: React.FC<ModalBachecaVolontarioProps> = ({
   const renderPostCard = (com: ComunicazioneBacheca, inSingleView: boolean) => {
     const isUrgente = com.priorita === 'Urgente';
     const isImportante = com.priorita === 'Importante';
+    const isAutoRelease = Boolean(com.isAutoReleaseNote);
     const isHighlighted = Boolean(highlightPostId && com.id === highlightPostId);
     const isAuthorOrStaff =
       isAdmin ||
@@ -354,6 +430,8 @@ export const ModalBachecaVolontario: React.FC<ModalBachecaVolontarioProps> = ({
         className={`p-3.5 sm:p-4 rounded-2xl border-2 transition-all relative ${
           inSingleView || isHighlighted
             ? 'bg-gradient-to-r from-violet-900/50 via-slate-950 to-slate-950 border-violet-400 ring-1 ring-violet-400/50 shadow-xl shadow-violet-900/40'
+            : isAutoRelease
+            ? 'bg-gradient-to-r from-cyan-950/50 via-slate-950 to-slate-950 border-cyan-500/70 shadow-lg shadow-cyan-950/30'
             : com.evidenziata
             ? 'bg-gradient-to-r from-violet-950/40 via-slate-950 to-slate-950 border-violet-500/80 shadow-lg shadow-violet-950/40'
             : isUrgente
@@ -366,6 +444,11 @@ export const ModalBachecaVolontario: React.FC<ModalBachecaVolontarioProps> = ({
         {/* Badge e Data */}
         <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 pb-2 border-b border-slate-800/80">
           <div className="flex items-center gap-1.5 flex-wrap">
+            {isAutoRelease && (
+              <span className="px-2 py-0.5 rounded-full bg-cyan-400 text-slate-950 text-[9.5px] font-black uppercase">
+                Aggiornamento App v{com.releaseVersion || ''}
+              </span>
+            )}
             {isHighlighted && (
               <span className="px-2 py-0.5 rounded-full bg-amber-400 text-slate-950 text-[9.5px] font-black uppercase">
                 Da notifica
@@ -378,20 +461,22 @@ export const ModalBachecaVolontario: React.FC<ModalBachecaVolontarioProps> = ({
               </span>
             )}
 
-            <span
-              className={`px-2 py-0.5 rounded-full text-[9.5px] font-black uppercase border ${
-                isUrgente
-                  ? 'bg-red-950 text-red-300 border-red-700/60'
-                  : isImportante
-                  ? 'bg-amber-950 text-amber-300 border-amber-700/60'
-                  : 'bg-emerald-950 text-emerald-300 border-emerald-700/60'
-              }`}
-            >
-              {isUrgente ? '🔴 Urgente' : isImportante ? '🟡 Importante' : '🟢 Ordinaria'}
-            </span>
+            {!isAutoRelease && (
+              <span
+                className={`px-2 py-0.5 rounded-full text-[9.5px] font-black uppercase border ${
+                  isUrgente
+                    ? 'bg-red-950 text-red-300 border-red-700/60'
+                    : isImportante
+                    ? 'bg-amber-950 text-amber-300 border-amber-700/60'
+                    : 'bg-emerald-950 text-emerald-300 border-emerald-700/60'
+                }`}
+              >
+                {isUrgente ? '🔴 Urgente' : isImportante ? '🟡 Importante' : '🟢 Ordinaria'}
+              </span>
+            )}
 
             <span className="px-2 py-0.5 rounded-full bg-slate-900 text-slate-300 border border-slate-800 text-[10px] font-bold">
-              {com.categoria}
+              {isAutoRelease ? 'Novità per il tuo account' : com.categoria}
             </span>
 
             <span className="px-2 py-0.5 rounded-full bg-blue-950 text-blue-300 border border-blue-800/50 text-[10px] font-bold flex items-center gap-1">
@@ -438,62 +523,164 @@ export const ModalBachecaVolontario: React.FC<ModalBachecaVolontarioProps> = ({
             {com.contenuto}
           </p>
 
-          {com.immaginePostDataUrl && (
-            <ImmaginePostProtetta
-              dataUrl={com.immaginePostDataUrl}
-              nome={com.immaginePostNome}
-              titoloPost={com.titolo}
-              utenteWatermark={volontarioNome || 'Volontario Croce Oro'}
-              onApriProtetto={() =>
-                setContenutoProtettoAperto({
-                  titolo: com.titolo,
-                  nomeFile: com.immaginePostNome || `${com.titolo}.jpg`,
-                  dataUrl: com.immaginePostDataUrl!,
-                  tipo: 'image',
-                })
-              }
-            />
-          )}
+          {(() => {
+            const mediaCloud = loadedMediaByPostId[com.id];
+            const anyCom = com as any;
+            const imgDataUrl = com.immaginePostDataUrl || mediaCloud?.immaginePostDataUrl;
+            const imgNome = com.immaginePostNome || mediaCloud?.immaginePostNome;
+            const hasImgPending = Boolean(anyCom.hasImmagine && !imgDataUrl);
+            const attDataUrl = com.allegatoDataUrl || mediaCloud?.allegatoDataUrl;
+            const attNome = com.allegatoNome || mediaCloud?.allegatoNome || (anyCom.hasAllegato ? 'Documento allegato' : undefined);
+            const attTipo = com.allegatoTipo || mediaCloud?.allegatoTipo || 'pdf';
+            const attDim = com.allegatoDimensione || mediaCloud?.allegatoDimensione;
+            const isLoadingMedia = Boolean(loadingMediaIds[com.id]);
 
-          {com.allegatoDataUrl && com.allegatoNome && (
-            <div className="p-2.5 rounded-xl bg-slate-900 border border-violet-500/40 flex flex-wrap items-center justify-between gap-2">
-              <div className="flex items-center gap-2 min-w-0">
-                <div className="w-8 h-8 rounded-lg bg-violet-950 border border-violet-500/40 flex items-center justify-center shrink-0">
-                  {com.allegatoTipo === 'excel' ? (
-                    <FileSpreadsheet className="w-4 h-4 text-emerald-400" />
-                  ) : com.allegatoTipo === 'image' ? (
-                    <ImageIcon className="w-4 h-4 text-sky-400" />
-                  ) : (
-                    <FileText className="w-4 h-4 text-violet-300" />
-                  )}
-                </div>
-                <div className="min-w-0">
-                  <div className="text-xs font-bold text-white truncate">{com.allegatoNome}</div>
-                  <div className="text-[10px] text-slate-400 flex items-center gap-1.5">
-                    <Lock className="w-2.5 h-2.5 text-rose-400" />
-                    <span>Solo visualizzazione protetta</span>
-                    {com.allegatoDimensione ? <span>• {formatDimensioneFile(com.allegatoDimensione)}</span> : null}
+            return (
+              <>
+                {imgDataUrl ? (
+                  <ImmaginePostProtetta
+                    dataUrl={imgDataUrl}
+                    nome={imgNome}
+                    titoloPost={com.titolo}
+                    utenteWatermark={volontarioNome || 'Volontario Croce Oro'}
+                    onApriProtetto={() =>
+                      setContenutoProtettoAperto({
+                        titolo: com.titolo,
+                        nomeFile: imgNome || `${com.titolo}.jpg`,
+                        dataUrl: imgDataUrl,
+                        tipo: 'image',
+                      })
+                    }
+                  />
+                ) : hasImgPending ? (
+                  <div className="p-3 rounded-xl bg-slate-900/80 border border-slate-800 flex items-center justify-between gap-2 text-xs text-slate-300">
+                    <span className="flex items-center gap-2">
+                      <ImageIcon className="w-4 h-4 text-violet-400" />
+                      <span>{isLoadingMedia ? 'Caricamento immagine protetta...' : 'Immagine allegata disponibile'}</span>
+                    </span>
+                    {!isLoadingMedia && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          requestedMediaIdsRef.current.delete(com.id);
+                          setLoadingMediaIds((prev) => ({ ...prev, [com.id]: true }));
+                          realtime
+                            .fetchBachecaPostMedia(com.id)
+                            .then((media) => {
+                              if (media) {
+                                setLoadedMediaByPostId((prev) => ({
+                                  ...prev,
+                                  [com.id]: {
+                                    immaginePostDataUrl: media.immaginePostDataUrl,
+                                    immaginePostNome: media.immaginePostNome,
+                                    allegatoDataUrl: media.allegatoDataUrl,
+                                    allegatoNome: media.allegatoNome,
+                                    allegatoTipo: media.allegatoTipo as any,
+                                    allegatoMime: media.allegatoMime,
+                                    allegatoDimensione: media.allegatoDimensione,
+                                  },
+                                }));
+                              }
+                            })
+                            .catch(() => {})
+                            .finally(() => {
+                              setLoadingMediaIds((prev) => {
+                                const next = { ...prev };
+                                delete next[com.id];
+                                return next;
+                              });
+                            });
+                        }}
+                        className="px-2.5 py-1 rounded-lg bg-violet-600 hover:bg-violet-500 text-white font-bold text-[10.5px] cursor-pointer"
+                      >
+                        Carica Foto
+                      </button>
+                    )}
                   </div>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() =>
-                  setContenutoProtettoAperto({
-                    titolo: com.titolo,
-                    nomeFile: com.allegatoNome!,
-                    dataUrl: com.allegatoDataUrl!,
-                    tipo: com.allegatoTipo || 'pdf',
-                    dimensione: com.allegatoDimensione,
-                  })
-                }
-                className="px-3 py-1.5 rounded-lg bg-violet-600 hover:bg-violet-500 text-white font-black text-[10.5px] uppercase inline-flex items-center gap-1.5 cursor-pointer shrink-0"
-              >
-                <Eye className="w-3.5 h-3.5" />
-                <span>Visualizza</span>
-              </button>
-            </div>
-          )}
+                ) : null}
+
+                {(attDataUrl || anyCom.hasAllegato) && attNome && (
+                  <div className="p-2.5 rounded-xl bg-slate-900 border border-violet-500/40 flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <div className="w-8 h-8 rounded-lg bg-violet-950 border border-violet-500/40 flex items-center justify-center shrink-0">
+                        {attTipo === 'excel' ? (
+                          <FileSpreadsheet className="w-4 h-4 text-emerald-400" />
+                        ) : attTipo === 'image' ? (
+                          <ImageIcon className="w-4 h-4 text-sky-400" />
+                        ) : (
+                          <FileText className="w-4 h-4 text-violet-300" />
+                        )}
+                      </div>
+                      <div className="min-w-0">
+                        <div className="text-xs font-bold text-white truncate">{attNome}</div>
+                        <div className="text-[10px] text-slate-400 flex items-center gap-1.5">
+                          <Lock className="w-2.5 h-2.5 text-rose-400" />
+                          <span>Solo visualizzazione protetta</span>
+                          {attDim ? <span>• {formatDimensioneFile(attDim)}</span> : null}
+                        </div>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={isLoadingMedia && !attDataUrl}
+                      onClick={async () => {
+                        let resolvedUrl = attDataUrl;
+                        let resolvedNome = attNome;
+                        let resolvedTipo = attTipo;
+                        let resolvedDim = attDim;
+                        if (!resolvedUrl) {
+                          setLoadingMediaIds((prev) => ({ ...prev, [com.id]: true }));
+                          try {
+                            const media = await realtime.fetchBachecaPostMedia(com.id);
+                            if (media?.allegatoDataUrl) {
+                              resolvedUrl = media.allegatoDataUrl;
+                              resolvedNome = media.allegatoNome || resolvedNome;
+                              resolvedTipo = (media.allegatoTipo as any) || resolvedTipo;
+                              resolvedDim = media.allegatoDimensione || resolvedDim;
+                              setLoadedMediaByPostId((prev) => ({
+                                ...prev,
+                                [com.id]: {
+                                  ...(prev[com.id] || {}),
+                                  immaginePostDataUrl: media.immaginePostDataUrl,
+                                  immaginePostNome: media.immaginePostNome,
+                                  allegatoDataUrl: media.allegatoDataUrl,
+                                  allegatoNome: media.allegatoNome,
+                                  allegatoTipo: media.allegatoTipo as any,
+                                  allegatoMime: media.allegatoMime,
+                                  allegatoDimensione: media.allegatoDimensione,
+                                },
+                              }));
+                            }
+                          } catch {}
+                          setLoadingMediaIds((prev) => {
+                            const next = { ...prev };
+                            delete next[com.id];
+                            return next;
+                          });
+                        }
+                        if (resolvedUrl) {
+                          setContenutoProtettoAperto({
+                            titolo: com.titolo,
+                            nomeFile: resolvedNome,
+                            dataUrl: resolvedUrl,
+                            tipo: resolvedTipo || 'pdf',
+                            dimensione: resolvedDim,
+                          });
+                        } else {
+                          setAvvisoBacheca('Allegato temporaneamente non disponibile, riprova tra qualche secondo.');
+                          setTimeout(() => setAvvisoBacheca(null), 3500);
+                        }
+                      }}
+                      className="px-3 py-1.5 rounded-lg bg-violet-600 hover:bg-violet-500 disabled:opacity-50 text-white font-black text-[10.5px] uppercase inline-flex items-center gap-1.5 cursor-pointer shrink-0"
+                    >
+                      <Eye className="w-3.5 h-3.5" />
+                      <span>{isLoadingMedia && !attDataUrl ? 'Caricamento...' : 'Visualizza'}</span>
+                    </button>
+                  </div>
+                )}
+              </>
+            );
+          })()}
         </div>
 
         {/* Box Presa Visione Obbligatoria */}
@@ -588,37 +775,60 @@ export const ModalBachecaVolontario: React.FC<ModalBachecaVolontarioProps> = ({
         {/* Firma Autore & Azioni Post Autore/Admin */}
         <div className="pt-2 border-t border-slate-800/80 flex items-center justify-between text-[11px] text-slate-400 gap-2 flex-wrap">
           <div>
-            Firma: <strong className="text-slate-200">{com.autore}</strong>
+            {isAutoRelease ? (
+              <span>Avviso automatico di sistema • <strong className="text-cyan-300">{com.autore}</strong></span>
+            ) : (
+              <>Firma: <strong className="text-slate-200">{com.autore}</strong></>
+            )}
           </div>
           <div className="flex items-center gap-2">
-            {(isAdmin || (com.autoreId && com.autoreId === volontarioId) || (com.autore && com.autore.trim().toLowerCase() === volontarioNome.trim().toLowerCase())) && (
-              confermaEliminaPostId === com.id ? (
-                <span className="inline-flex items-center gap-1">
+            {isAutoRelease ? (
+              onDismissAutoReleaseNote && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    onDismissAutoReleaseNote(com.id);
+                    if (focusedPostId === com.id) {
+                      setFocusedPostId(null);
+                      onClearHighlight?.();
+                    }
+                  }}
+                  className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-cyan-200 border border-cyan-500/40 transition-colors cursor-pointer text-[10px] font-bold"
+                  title="Nascondi questo avviso di aggiornamento dal tuo account"
+                >
+                  Ho capito • Nascondi
+                </button>
+              )
+            ) : (
+              (isAdmin || (com.autoreId && com.autoreId === volontarioId) || (com.autore && com.autore.trim().toLowerCase() === volontarioNome.trim().toLowerCase())) && (
+                confermaEliminaPostId === com.id ? (
+                  <span className="inline-flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => handleEliminaPost(com.id)}
+                      className="px-2 py-0.5 rounded-lg bg-red-600 hover:bg-red-500 text-white font-black text-[10px] cursor-pointer"
+                    >
+                      Conferma Elimina
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setConfermaEliminaPostId(null)}
+                      className="px-2 py-0.5 rounded-lg bg-slate-800 text-slate-300 text-[10px] font-bold cursor-pointer"
+                    >
+                      Annulla
+                    </button>
+                  </span>
+                ) : (
                   <button
                     type="button"
                     onClick={() => handleEliminaPost(com.id)}
-                    className="px-2 py-0.5 rounded-lg bg-red-600 hover:bg-red-500 text-white font-black text-[10px] cursor-pointer"
+                    className="px-2 py-0.5 rounded-lg text-slate-400 hover:text-red-400 hover:bg-red-950/40 border border-slate-800 transition-colors cursor-pointer flex items-center gap-1 text-[10px] font-bold"
+                    title="Elimina post (consentito all'autore o all'Amministratore)"
                   >
-                    Conferma Elimina
+                    <Trash2 className="w-3 h-3 text-red-400" />
+                    <span>Elimina Post</span>
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => setConfermaEliminaPostId(null)}
-                    className="px-2 py-0.5 rounded-lg bg-slate-800 text-slate-300 text-[10px] font-bold cursor-pointer"
-                  >
-                    Annulla
-                  </button>
-                </span>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => handleEliminaPost(com.id)}
-                  className="px-2 py-0.5 rounded-lg text-slate-400 hover:text-red-400 hover:bg-red-950/40 border border-slate-800 transition-colors cursor-pointer flex items-center gap-1 text-[10px] font-bold"
-                  title="Elimina post (consentito all'autore o all'Amministratore)"
-                >
-                  <Trash2 className="w-3 h-3 text-red-400" />
-                  <span>Elimina Post</span>
-                </button>
+                )
               )
             )}
             <span className="text-[10px] font-bold text-violet-400/90 uppercase">
@@ -627,17 +837,19 @@ export const ModalBachecaVolontario: React.FC<ModalBachecaVolontarioProps> = ({
           </div>
         </div>
 
-        {/* Sezione Commenti, Risposte Annidate e Likes del Post */}
-        <CommentiBachecaPost
-          post={com}
-          currentUserId={volontarioId || `vol-${Date.now()}`}
-          currentUserName={volontarioNome || 'Volontario'}
-          currentUserRuolo={isAdmin ? 'Amministratore' : isPresidente ? 'Presidente' : 'Volontario'}
-          isAdmin={Boolean(isAdmin)}
-          isPresidente={Boolean(isPresidente)}
-          onAggiornaPost={handleAggiornaSingoloPost}
-          mostraCommentiIniziali={true}
-        />
+        {/* Sezione Commenti, Risposte Annidate e Likes del Post (non applicabile ad avvisi automatici per-profilo) */}
+        {!isAutoRelease && (
+          <CommentiBachecaPost
+            post={com}
+            currentUserId={volontarioId || `vol-${Date.now()}`}
+            currentUserName={volontarioNome || 'Volontario'}
+            currentUserRuolo={isAdmin ? 'Amministratore' : isPresidente ? 'Presidente' : 'Volontario'}
+            isAdmin={Boolean(isAdmin)}
+            isPresidente={Boolean(isPresidente)}
+            onAggiornaPost={handleAggiornaSingoloPost}
+            mostraCommentiIniziali={true}
+          />
+        )}
       </div>
     );
   };

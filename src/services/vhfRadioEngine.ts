@@ -429,11 +429,150 @@ class VhfRadioEngine {
   private activeVoiceClipAudio: HTMLAudioElement | null = null;
   private activeFallbackWavUrl: string | null = null;
   private bgStatusListeners: Set<(armed: boolean) => void> = new Set();
+  private continuousShiftListen: boolean = false;
+  private continuousListenListeners: Set<(enabled: boolean) => void> = new Set();
 
   public subscribeBackgroundArmed(cb: (armed: boolean) => void): () => void {
     this.bgStatusListeners.add(cb);
     cb(this.isBackgroundReceptionArmed());
     return () => this.bgStatusListeners.delete(cb);
+  }
+
+  public subscribeContinuousShiftListen(cb: (enabled: boolean) => void): () => void {
+    this.continuousListenListeners.add(cb);
+    cb(this.continuousShiftListen);
+    return () => this.continuousListenListeners.delete(cb);
+  }
+
+  public isContinuousShiftListenEnabled(): boolean {
+    return this.continuousShiftListen;
+  }
+
+  private notifyContinuousShiftListen() {
+    const enabled = this.continuousShiftListen;
+    this.continuousListenListeners.forEach((cb) => {
+      try {
+        cb(enabled);
+      } catch {}
+    });
+  }
+
+  private async requestShiftWakeLock() {
+    if (typeof navigator === 'undefined') return;
+    const wl = (navigator as any).wakeLock;
+    if (!wl || typeof wl.request !== 'function') return;
+    if (this.wakeLockSentinel && !this.wakeLockSentinel.released) return;
+    try {
+      const sentinel = await wl.request('screen');
+      this.wakeLockSentinel = sentinel;
+      sentinel.addEventListener?.('release', () => {
+        if (this.wakeLockSentinel === sentinel) {
+          this.wakeLockSentinel = null;
+        }
+      });
+    } catch {}
+  }
+
+  private releaseShiftWakeLock() {
+    if (this.wakeLockSentinel) {
+      try {
+        this.wakeLockSentinel.release?.();
+      } catch {}
+      this.wakeLockSentinel = null;
+    }
+  }
+
+  private applyContinuousShiftMediaSession() {
+    if (typeof navigator === 'undefined' || !('mediaSession' in navigator)) return;
+    try {
+      const ms = (navigator as any).mediaSession;
+      const MediaMetadataClass = (window as any).MediaMetadata;
+      if (typeof MediaMetadataClass === 'function') {
+        ms.metadata = new MediaMetadataClass({
+          title: '📻 Radio Croce Oro — Ascolto Continuo in Turno',
+          artist: 'Croce Oro Massa Carrara OdV',
+          album: 'Canale VHF/UHF Attivo in Turno',
+          artwork: [
+            { src: '/icon-192-v2.png', sizes: '192x192', type: 'image/png' },
+            { src: '/icon-512-v2.png', sizes: '512x512', type: 'image/png' },
+          ],
+        });
+      }
+      ms.playbackState = 'playing';
+      try {
+        ms.setActionHandler('pause', () => {
+          this.setContinuousShiftListen(false).catch(() => {});
+        });
+        ms.setActionHandler('stop', () => {
+          this.setContinuousShiftListen(false).catch(() => {});
+        });
+      } catch {}
+    } catch {}
+  }
+
+  public async setContinuousShiftListen(enabled: boolean): Promise<boolean> {
+    if (typeof window === 'undefined') return false;
+    if (!enabled) {
+      this.continuousShiftListen = false;
+      if (this.bgKeepAliveWatchdog) {
+        clearInterval(this.bgKeepAliveWatchdog);
+        this.bgKeepAliveWatchdog = null;
+      }
+      this.releaseShiftWakeLock();
+      this.releaseIdleMediaSession(true);
+      this.notifyContinuousShiftListen();
+      return false;
+    }
+
+    this.continuousShiftListen = true;
+    await this.armBackgroundReception('📻 Radio Croce Oro — Ascolto Continuo in Turno').catch(() => {});
+
+    // Avvia loop micro-dither impercettibile (~ -66 dB) solo su richiesta esplicita in turno
+    const wavUrl = this.createSilentWavBlobUrl();
+    if (wavUrl && typeof document !== 'undefined') {
+      if (!this.bgKeepAliveAudio) {
+        const el = document.createElement('audio');
+        el.loop = true;
+        el.volume = 0.01;
+        el.preload = 'auto';
+        (el as any).playsInline = true;
+        el.setAttribute('playsinline', 'true');
+        el.setAttribute('webkit-playsinline', 'true');
+        this.attachHiddenAudioElement(el, 'croce-oro-radio-keepalive');
+        this.bgKeepAliveAudio = el;
+      } else {
+        this.attachHiddenAudioElement(this.bgKeepAliveAudio, 'croce-oro-radio-keepalive');
+      }
+      try {
+        if (this.bgKeepAliveAudio.src !== wavUrl) {
+          this.bgKeepAliveAudio.src = wavUrl;
+        }
+        this.bgKeepAliveAudio.loop = true;
+        this.bgKeepAliveAudio.volume = 0.01;
+        await this.bgKeepAliveAudio.play();
+      } catch {
+        // Se il browser blocca autoplay, riproverà al prossimo tocco
+      }
+    }
+
+    await this.requestShiftWakeLock();
+    this.applyContinuousShiftMediaSession();
+
+    if (this.bgKeepAliveWatchdog) {
+      clearInterval(this.bgKeepAliveWatchdog);
+    }
+    this.bgKeepAliveWatchdog = setInterval(() => {
+      if (!this.continuousShiftListen) return;
+      if (this.bgKeepAliveAudio && this.bgKeepAliveAudio.paused) {
+        this.bgKeepAliveAudio.play().catch(() => {});
+      }
+      if (this.audioCtx && this.audioCtx.state === 'suspended') {
+        this.audioCtx.resume().catch(() => {});
+      }
+    }, 15000);
+
+    this.notifyContinuousShiftListen();
+    return true;
   }
 
   private notifyBackgroundArmed() {
@@ -892,7 +1031,15 @@ class VhfRadioEngine {
 
   // Rilascia completamente MediaSession e chiude qualsiasi elemento audio di standby per azzerare
   // fruscio hardware (DAC/amplificatore Android e iOS) e chiudere la scheda player nella tendina notifiche
-  public releaseIdleMediaSession() {
+  public releaseIdleMediaSession(force: boolean = false) {
+    if (!force && this.continuousShiftListen) {
+      // L'operatore ha attivato esplicitamente "Ascolto Continuo in Turno": mantieni vivo il canale e ripristina l'etichetta
+      this.applyContinuousShiftMediaSession();
+      if (this.bgKeepAliveAudio && this.bgKeepAliveAudio.paused) {
+        this.bgKeepAliveAudio.play().catch(() => {});
+      }
+      return;
+    }
     if (this.bgKeepAliveAudio) {
       try {
         this.bgKeepAliveAudio.pause();
@@ -918,7 +1065,7 @@ class VhfRadioEngine {
     if (typeof navigator === 'undefined' || !('mediaSession' in navigator)) return;
     const isActive = Boolean(info?.isEmergency || this.isActiveTransmissionLabel(info?.title));
     if (!isActive) {
-      // Nessuna trasmissione attiva: rilascia subito la scheda multimediale OS
+      // Nessuna trasmissione attiva: rilascia subito la scheda multimediale OS (salvo ascolto continuo in turno)
       this.releaseIdleMediaSession();
       return;
     }
@@ -975,21 +1122,29 @@ class VhfRadioEngine {
           if (c && c.state === 'suspended') {
             c.resume().catch(() => {});
           }
+          if (this.continuousShiftListen) {
+            this.requestShiftWakeLock().catch(() => {});
+            if (this.bgKeepAliveAudio && this.bgKeepAliveAudio.paused) {
+              this.bgKeepAliveAudio.play().catch(() => {});
+            }
+          }
         }
       });
     }
 
-    // Assicura che nessun vecchio loop keep-alive resti attivo (zero fruscio e nessuna scheda player fissa)
-    if (this.bgKeepAliveWatchdog) {
-      clearInterval(this.bgKeepAliveWatchdog);
-      this.bgKeepAliveWatchdog = null;
-    }
-    if (this.bgKeepAliveAudio) {
-      try {
-        this.bgKeepAliveAudio.pause();
-        this.bgKeepAliveAudio.removeAttribute('src');
-        this.bgKeepAliveAudio.load();
-      } catch {}
+    // In modalità standard (default) assicura che nessun vecchio loop keep-alive resti attivo (zero fruscio e nessuna scheda player fissa)
+    if (!this.continuousShiftListen) {
+      if (this.bgKeepAliveWatchdog) {
+        clearInterval(this.bgKeepAliveWatchdog);
+        this.bgKeepAliveWatchdog = null;
+      }
+      if (this.bgKeepAliveAudio) {
+        try {
+          this.bgKeepAliveAudio.pause();
+          this.bgKeepAliveAudio.removeAttribute('src');
+          this.bgKeepAliveAudio.load();
+        } catch {}
+      }
     }
 
     try {
@@ -1021,7 +1176,7 @@ class VhfRadioEngine {
         }
       }
 
-      // Aggiorna MediaSession SOLO se è in corso una vera trasmissione o emergenza; altrimenti rilascia la scheda
+      // Aggiorna MediaSession SOLO se è in corso una vera trasmissione/emergenza o ascolto continuo in turno; altrimenti rilascia la scheda
       if (this.isActiveTransmissionLabel(label)) {
         this.updateMediaSessionState({
           title: label,
@@ -1052,17 +1207,14 @@ class VhfRadioEngine {
 
   public disarmBackgroundReception() {
     this.bgReceptionArmed = false;
+    this.continuousShiftListen = false;
     if (this.bgKeepAliveWatchdog) {
       clearInterval(this.bgKeepAliveWatchdog);
       this.bgKeepAliveWatchdog = null;
     }
-    if (this.wakeLockSentinel) {
-      try {
-        this.wakeLockSentinel.release?.();
-      } catch {}
-      this.wakeLockSentinel = null;
-    }
-    this.releaseIdleMediaSession();
+    this.releaseShiftWakeLock();
+    this.releaseIdleMediaSession(true);
+    this.notifyContinuousShiftListen();
     this.notifyBackgroundArmed();
   }
 
